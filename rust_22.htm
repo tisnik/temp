@@ -1,0 +1,1216 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Programovací jazyk Rust: jednoduchý server a klient komunikující přes TCP</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Programovací jazyk Rust: jednoduchý server a klient komunikující přes TCP</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Jednou ze zajímavých domén použití programovacího jazyka Rust mohou být serverové aplikace. Proto si v dnešní části seriálu o Rustu ukážeme základní použití knihovních funkcí pro práci s TCP sockety, a to jak při implementaci serveru, tak i klienta.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Programovací jazyk Rust: jednoduchý server a klient komunikující přes TCP</a></p>
+<p><a href="#k02">2. První verze serveru se sekvenčním zpracováním požadavků</a></p>
+<p><a href="#k03">3. Otestování serveru Telnetem</a></p>
+<p><a href="#k04">4. Vylepšení zdrojového kódu serveru použitím pattern matchingu</a></p>
+<p><a href="#k05">5. Obsluha odpovědi ve zvláštním vláknu</a></p>
+<p><a href="#k06">6. Zpracování příchozích dat (jednoduchý echo server)</a></p>
+<p><a href="#k07">7. Zobrazení přijatých i odeslaných dat</a></p>
+<p><a href="#k08">8. Zdrojový kód pátého demonstračního příkladu</a></p>
+<p><a href="#k09">9. Vytvoření TCP klienta</a></p>
+<p><a href="#k10">10. Funkce pro poslání zprávy a přijmutí zprávy</a></p>
+<p><a href="#k11">11. Zdrojový kód šestého demonstračního příkladu</a></p>
+<p><a href="#k12">12. Otestování komunikace mezi serverem a klientem</a></p>
+<p><a href="#k13">13. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Programovací jazyk Rust: jednoduchý server a klient komunikující přes TCP</h2>
+
+<p>Již v&nbsp;předchozím článku jsme se krátce zmínili o jednoduchém serveru,
+který naslouchá na zvoleném portu a na každý požadavek odpoví řetězcem
+&bdquo;Server response...\r\n&ldquo; a následně ukončí spojení. Tento server je
+vytvořen podobným postupem, jaký by byl použit například v&nbsp;céčku. Nejprve
+vytvoříme <i>listener</i>, který naslouchá na určitém portu. V&nbsp;tomto
+příkladu je zvolen port 1234, jehož hodnota je větší než 1024, takže ho může
+otevřít i aplikace, která nemá rootovská práva (nicméně si dejte pozor na to,
+ať neotvíráte již použitý port, typicky 8080 či 8000 když běží Jetty/Tomcat
+atd.). Povšimněte si, jak se zadává adresa a port, existuje totiž několik
+různých způsobů a každý je vhodné použít v&nbsp;jiné situaci:</p>
+
+<pre>
+<i>// adresa i port jsou reprezentovány řetězcem</i>
+let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+&nbsp;
+<i>// můžeme použít i localhost a samozřejmě i odlišný port</i>
+let listener = TcpListener::bind("localhost:9999").unwrap();
+&nbsp;
+<i>// závorky jsou zde nutné, protože předáváme n-tici (tuple)</i>
+let listener = TcpListener::bind( ("localhost",9999) ).unwrap();
+&nbsp;
+<i>// vytvoření adresy jiným způsobem</i>
+let ip = Ipv4Addr::new(127, 0, 0, 1);
+let port = 1234;
+let listener = TcpListener::bind(SocketAddrV4::new(ip, port)).unwrap();
+&nbsp;
+<i>// IPv6 adresa by se vytvořila následovně</i>
+let ip6 = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff);
+</pre>
+
+<p>Poznámka: návratová hodnota <strong>TcpListener::bind()</strong> je
+<strong>Result&lt;TcpListener&gt;</strong> a nikoli přímo
+<strong>TcpListener</strong>, tj.&nbsp;mělo by se kontrolovat, zda se nevrátí
+chybová hodnota. Pokud to nastane, dojde při pokusu o zavolání
+<strong>unwrap()</strong> k&nbsp;pádu programu:</p>
+
+<pre>
+thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Error { repr: Custom(Custom { kind: InvalidInput, error: StringError("invalid port value") }) }', ../src/libcore/result.rs:788
+</pre>
+
+<p>Ve druhém kroku se získá nekonečný iterátor, který při každém požadavku o
+spojení od klienta vrátí strukturu typu
+<strong>Option&lt;Result&lt;TcpStream&gt;&gt;</strong>, která již reprezentuje
+obousměrný komunikační kanál. Vzhledem k&nbsp;tomu, že je iterátor nekonečný,
+bude nutné server ukončit jinak, například přes klávesovou zkratku Ctrl+C
+z&nbsp;terminálu, posláním signálu STOP příkazem <strong>kill</strong>
+atd.:</p>
+
+<pre>
+let tcp_stream_iter = listener.incoming();
+</pre>
+
+<p>Nejjednodušší možný způsob realizace na požadavek o spojení může vypadat
+takto. Nejprve otestujeme, zda iterátor vrátil korektní TCP stream (opět se
+totiž pracuje s&nbsp;typem <strong>Result</strong>) a následně se zavolá
+uživatelsky definovaný handler:</p>
+
+<pre>
+for tcp_stream in tcp_stream_iter {
+    if tcp_stream.is_ok() {
+        handler(tcp_stream.unwrap());
+    } else {
+        println!("connection failed");
+    }
+}
+</pre>
+
+<p>Handler je prozatím velmi primitivní, protože pouze klientovi pošle textovou
+odpověď a následně spojení ukončí:</p>
+
+<pre>
+fn handler(mut stream:TcpStream) {
+    println!("Accepted connection");
+    stream.write(b"Server response...\r\n").unwrap();
+}
+</pre>
+
+<p>Dvě důležité poznámky k&nbsp;handleru:</p>
+
+<ol>
+
+<li>Povšimněte si, že se nikde nevolá žádná funkce typu
+<strong>close()</strong> pro otevřený TCP stream. To není nutné (ostatně tato
+funkce ani neexistuje), protože se stream zavře automaticky sám ve chvíli, kdy
+skončí jeho životnost (nebo viditelnost). V&nbsp;našem případě je tímto
+okamžikem opuštění funkce <strong>handler()</strong>.</li>
+
+<li>Dále je nutné si uvědomit, že řetězce v&nbsp;Rustu jsou vždy reprezentovány
+v&nbsp;UTF-8, což jsme si již řekli v&nbsp;úvodním článku. Takže pokud si
+skutečně chceme být jistí, že posleme klientovi ASCII znaky (co znak to jeden
+bajt) zadané v&nbsp;řetězci, je nutné použít prefix b". Ten zajistí, že omylem
+nezapíšeme odlišné znaky, které nelze reprezentovat jediným bajtem (kontrolu
+provádí překladač).</li>
+
+</ol>
+
+<p>Pokus o použití znaků, které nelze reprezentovat v&nbsp;ASCII, vede
+k&nbsp;tomuto chybovému hlášení:</p>
+
+<pre>
+error: byte constant must be ASCII. Use a \xHH escape for a non-ASCII byte
+ --&gt; test.rs:7:31
+  |
+7 |     stream.write(b"Server respřčšěonse...\r\n").unwrap();
+  |                               ^
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. První verze serveru se sekvenčním zpracováním požadavků</h2>
+
+<p>Úplný zdrojový kód dnešního prvního demonstračního příkladu vypadá
+následovně a naleznete ho i v&nbsp;GIT repositáři na adrese <a
+href="https://github.com/tisnik/presentations/blob/master/rust/292_tcp_listener_1.rs">https://github.com/tisnik/presentations/blob/master/rust/292_tcp_listener_1.rs</a>:</p>
+
+<pre>
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
+&nbsp;
+fn handler(mut stream:TcpStream) {
+    println!("Accepted connection");
+    stream.write(b"Server response...\r\n").unwrap();
+}
+&nbsp;
+fn main() {
+    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+&nbsp;
+    let tcp_stream_iter = listener.incoming();
+&nbsp;
+    for tcp_stream in tcp_stream_iter {
+        if tcp_stream.is_ok() {
+            handler(tcp_stream.unwrap());
+        } else {
+            println!("connection failed");
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Otestování serveru Telnetem</h2>
+
+<p>Otestování serveru může být velmi jednoduché, protože postačuje použít
+program Telnet či podobný nástroj. Nejdříve si server přeložte a spusťte
+v&nbsp;jednom terminálu:</p>
+
+<pre>
+$ <strong>rustc 292_tcp_listener_1.rs</strong>
+&nbsp;
+$ <strong>./292_tcp_listener_1</strong>
+</pre>
+
+<p>Následně se z&nbsp;jiného terminálu pokusíme k&nbsp;serveru připojit. Měli
+bychom přijmout zprávu &bdquo;Server response...&ldquo; a spojení by se mělo
+ihned poté automaticky ukončit, protože server na své straně uzavře TCP
+stream:</p>
+
+<pre>
+$ <strong>telnet localhost 1234</strong>
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+<strong>Server response...</strong>
+Connection closed by foreign host.
+</pre>
+
+<a href="https://www.root.cz/obrazek/287018/"><img src="https://i.iinfo.cz/images/474/rust22-1-prev.png" class="image-287018" alt="&#160;" width="370" height="231" /></a>
+<p><i>Obrázek 1: Komunikace s&nbsp;první verzí serveru přes Telnet.</i></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Vylepšení zdrojového kódu serveru použitím pattern matchingu</h2>
+
+<p>První verze serveru popsaná v&nbsp;předchozích třech kapitolách nebyla
+naprogramována stylem, který je pro zdrojové kódy Rustu doporučován. Zejména
+kontrola, zda hodnota typu <strong>Result&lt;typ&gt;</strong> obsahuje skutečný
+objekt typu &bdquo;typ&ldquo; nebo jen chybu, by se neměla psát otrocky
+s&nbsp;použitím if-then:</p>
+
+<pre>
+if tcp_stream.is_ok() {
+    handler(tcp_stream.unwrap());
+} else {
+    println!("connection failed");
+}
+</pre>
+
+<p>Mnohem lepší je použití <a
+href="https://www.root.cz/clanky/reakce-na-chyby-v-programovacim-jazyku-rust/#k06">pattern
+matchingu</a>, který nám umožní přepsat tělo smyčky čitelnějším způsobem. Navíc
+můžeme snadno přistoupit k&nbsp;objektu představujícímu chybu:</p>
+
+<pre>
+match tcp_stream {
+    Ok(tcp_stream) =&gt; {
+        handler(tcp_stream);
+    }
+    Err(e) =&gt; {
+        println!("connection failed: {}", e);
+    }
+}
+</pre>
+
+<p>Úplný zdrojový kód druhé verze našeho jednoduchého serveru, který naleznete
+na adrese <a
+href="https://github.com/tisnik/presentations/blob/master/rust/293_tcp_listener_2.rs">https://github.com/tisnik/presentations/blob/master/rust/293_tcp_listener_2.rs</a>,
+bude vypadat následovně:</p>
+
+<pre>
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
+&nbsp;
+fn handler(mut stream:TcpStream) {
+    println!("Accepted connection");
+    stream.write(b"Server response...\r\n").unwrap();
+}
+&nbsp;
+fn main() {
+    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+&nbsp;
+    for tcp_stream in listener.incoming() {
+        match tcp_stream {
+            Ok(tcp_stream) =&gt; {
+                handler(tcp_stream);
+            }
+            Err(e) =&gt; {
+                println!("connection failed: {}", e);
+            }
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Obsluha odpovědi ve zvláštním vláknu</h2>
+
+<p>Obě předchozí verze serveru nedokázaly současně reagovat na požadavky
+většího množství připojení, protože se jednotlivé požadavky zpracovávaly
+postupně (sekvenčně):</p>
+
+<pre>
+for tcp_stream in listener.incoming() {
+    match tcp_stream {
+        Ok(tcp_stream) =&gt; {
+            <strong>handler(tcp_stream);</strong>
+        }
+        Err(e) =&gt; {
+            println!("connection failed: {}", e);
+        }
+    }
+}
+</pre>
+
+<p>To sice (alespoň prozatím) nemuselo vadit, protože server odešle jen několik
+bajtů a ihned poté spojení ukončí, což bude relativně krátký okamžik. Ale
+v&nbsp;reálné aplikaci by toto chování již nemuselo být akceptovatelné.
+Představme si například situaci, kdy handler pracuje s&nbsp;databází,
+serializuje nějaké výsledky (do JSONu), zpracovává vstupní data atd. Jedno
+z&nbsp;nejjednodušších řešení v&nbsp;Rustu představuje použití vláken, kdy se
+každý handler spustí v&nbsp;samostatném vláknu. Problematiku vytváření vláken
+již známe, takže přepis smyčky, v&nbsp;níž se pro každou žádost o připojení
+vytvoří handler v&nbsp;samostatném vláknu, bude jednoduchý:</p>
+
+<pre>
+for tcp_stream in listener.incoming() {
+    match tcp_stream {
+        Ok(tcp_stream) =&gt; {
+            <strong>thread::spawn(|| {</strong>
+                <strong>handler(tcp_stream);</strong>
+            <strong>})</strong>;
+        }
+        Err(e) =&gt; {
+            println!("connection failed: {}", e);
+        }
+    }
+}
+</pre>
+
+<p>I v&nbsp;tomto případě platí, že viditelnost/životnost TCP streamu končí ve
+chvíli, kdy se opustí funkce <strong>handler()</strong>. Přesně v&nbsp;tomto
+okamžiku se stream a tím pádem i připojení uzavře.</p>
+
+<p>Úplný zdrojový kód třetí verze našeho serveru bude vypadat následovně
+(naleznete ho na adrese <a
+href="https://github.com/tisnik/presentations/blob/master/rust/294_tcp_listener_3.rs">https://github.com/tisnik/presentations/blob/master/rust/294_tcp_listener_3.rs</a>):</p>
+
+<pre>
+use std::thread;
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
+&nbsp;
+fn handler(mut stream:TcpStream) {
+    println!("Accepted connection");
+    stream.write(b"Server response...\r\n").unwrap();
+}
+&nbsp;
+fn main() {
+    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+&nbsp;
+    for tcp_stream in listener.incoming() {
+        match tcp_stream {
+            Ok(tcp_stream) =&gt; {
+                thread::spawn(|| {
+                    handler(tcp_stream);
+                });
+            }
+            Err(e) =&gt; {
+                println!("connection failed: {}", e);
+            }
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zpracování příchozích dat (jednoduchý echo server)</h2>
+
+<p>Zkusme si vytvořit složitější server, konkrétně server, který po připojení
+klienta odešle řetězec &bdquo;Entering echo mode...&ldquo; a následně pouze
+vrací zpět všechna přečtená data. Jedná se vlastně o zjednodušenou podobu
+služby <i>echo</i>. Jediné, co od této služby požadujeme, je skutečně vracet
+data poslaná klientem zpět. Existuje přitom několik způsobů implementace. Jeden
+z&nbsp;nich je založený na práci s&nbsp;celými řádky (viz například <a
+href="https://rosettacode.org/wiki/Echo_server#Rust">https://rosettacode.org/wiki/Echo_server#Rust</a>),
+my si však ukážeme poněkud odlišný způsob, kde se pracuje s&nbsp;bufferem o
+pevné délce a tím pádem lze snadno predikovat, jaké budou paměťové nároky. Do
+tohoto bufferu se načítají data od klienta a postupně se posílají zpět. Buffer
+vytvoříme snadno &ndash; bude se jednat o pole celých čísel:</p>
+
+<pre>
+let mut buffer = [0; 16];
+</pre>
+
+<p>Alternativně lze explicitně určit typ prvků, to ovšem není nutné, protože
+typ prvků si dokáže překladač odvodit sám:</p>
+
+<pre>
+let mut buffer: [u8;100] = [0u8; 100];
+</pre>
+
+<p>Poznámka: musí se skutečně jednat o pole bajtů, jinak překladač nahlásí
+chybu při použití funkce <strong>TcpStream::read()</strong>.</p>
+
+<p>Tento buffer je použit v&nbsp;programové smyčce, kde se postupně snažíme
+načíst data poslaná od klienta, informovat o nich na standardním výstupu a
+poslat je zpět. Taktéž si ve smyčce zkontrolujeme, zda mezitím nedošlo
+k&nbsp;odpojení klienta nebo zda ještě zbývají nějaká data od klienta.
+V&nbsp;této smyčce důsledně využíváme pattern matching (dokonce dvakrát):</p>
+
+<pre>
+loop {
+    match stream.read(&amp;mut buffer) {
+        Ok(size) =&gt; {
+            println!("read: {} bytes", size);
+            if size == 0 {
+                println!("no data to read?");
+                break;
+            }
+            match stream.write(&amp;buffer[0..size]) {
+                Ok(_)  =&gt; {}
+                Err(_) =&gt; {
+                    println!("write error");
+                    break;
+                }
+            }
+        }
+        Err(_) =&gt; {
+            println!("read error");
+            break;
+        }
+    }
+}
+</pre>
+
+<p>Úplný zdrojový kód echo serveru může vypadat následovně:</p>
+
+<pre>
+use std::thread;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
+&nbsp;
+fn handler(mut stream:TcpStream) {
+    println!("Accepted connection");
+    stream.write(b"Entering echo mode...\r\n").unwrap();
+&nbsp;
+    let mut buffer = [0; 16];
+&nbsp;
+    loop {
+        match stream.read(&amp;mut buffer) {
+            Ok(size) =&gt; {
+                println!("read: {} bytes", size);
+                if size == 0 {
+                    println!("no data to read?");
+                    break;
+                }
+                match stream.write(&amp;buffer[0..size]) {
+                    Ok(_)  =&gt; {}
+                    Err(_) =&gt; {
+                        println!("write error");
+                        break;
+                    }
+                }
+            }
+            Err(_) =&gt; {
+                println!("read error");
+                break;
+            }
+        }
+    }
+    println!("disconnected")
+}
+&nbsp;
+fn main() {
+    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+&nbsp;
+    for tcp_stream in listener.incoming() {
+        match tcp_stream {
+            Ok(tcp_stream) =&gt; {
+                thread::spawn(|| {
+                    handler(tcp_stream);
+                });
+            }
+            Err(e) =&gt; {
+                println!("connection failed: {}", e);
+            }
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zobrazení přijatých i odeslaných dat</h2>
+
+<p>Pokud budeme chtít zobrazit data, která server přijal od klienta, musíme
+převést přijatou sekvenci bajtů na řetězec a naopak. K&nbsp;převodu řetězce na
+pole bajtů lze použít následující sekvenci příkazů (schválně ukazuji příklad
+s&nbsp;řetězcem s&nbsp;Unicode znaky):</p>
+
+<pre>
+fn main() {
+    let s = String::from_str("fň bž λ ζ ж").unwrap();
+    let bytes = s.into_bytes();
+    println!("{:?}", bytes);
+}
+</pre>
+
+<p>Výsledkem bude tento výstup (obsah pole <strong>bytes</strong>):</p>
+
+<pre>
+[102, 197, 136, 32, 98, 197, 190, 32, 206, 187, 32, 206, 182, 32, 208, 182]
+</pre>
+
+<p>Pro opačný převod, tedy pro převod pole bajtů na řetězec, se používá taktéž
+dvojice funkcí, první pro převod pole libovolného typu na vektor s&nbsp;prvky
+téhož typu:</p>
+
+<pre>
+fn from(s: &amp;'a [T]) -&gt; Vec&lt;T&gt;
+</pre>
+
+<p>Dále se vektor obsahující bajty (prvky typu <strong>u8</strong>) může
+převést na řetězec funkcí <strong>from_utf8</strong>:</p>
+
+<pre>
+fn from_utf8(vec: Vec&lt;u8&gt;) -&gt; Result&lt;String, FromUtf8Error&gt;
+</pre>
+
+<p>Poznámka: tato funkce skutečně může vrátit chybu, a to v&nbsp;tom případě,
+kdy sekvenci bajtů nelze interpretovat jako řetězec UTF-8 znaků.</p>
+
+<p>Můžeme si tedy připravit pomocnou funkci nazvanou
+<strong>utf8_to_string()</strong>, která za nás převod provede:</p>
+
+<pre>
+fn utf8_to_string(bytes: &amp;[u8]) -&gt; String {
+    let vector: Vec&lt;u8&gt; = Vec::from(bytes);
+    String::from_utf8(vector).unwrap()
+}
+</pre>
+
+<p>A ihned si ji můžeme otestovat:</p>
+
+<pre>
+fn utf8_to_string(bytes: &amp;[u8]) -&gt; String {
+    let vector: Vec&lt;u8&gt; = Vec::from(bytes);
+    String::from_utf8(vector).unwrap()
+}
+&nbsp;
+fn main() {
+    let chars : [u8; 8] = [64, 65, 66, 32, 97, 98, 32, 33];
+    println!("{}", utf8_to_string(&amp;chars));
+}
+</pre>
+
+<p>Výsledkem spuštění tohoto testu by měla být tato zpráva:</p>
+
+<pre>
+@AB ab !
+</pre>
+
+<p>V&nbsp;případě bajtů reprezentujících UTF-8 znaky:</p>
+
+<pre>
+fn main() {
+    let chars = [102, 197, 136, 32, 98, 197, 190, 32, 206, 187, 32, 206, 182, 32, 208, 182];
+    println!("{}", utf8_to_string(&amp;chars));
+}
+</pre>
+
+<p>Dostaneme tento &ndash; korektní &ndash; výstup:</p>
+
+<pre>
+fň bž λ ζ ж
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Zdrojový kód pátého demonstračního příkladu</h2>
+
+<p>Předchozí server můžeme snadno upravit tak, aby vypisoval všechna přijatá
+data a zobrazil je jak ve formě řetězce, tak i jako sekvenci bajtů. Přidané
+řádky jsou zvýrazněny tučně:</p>
+
+<pre>
+use std::thread;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
+&nbsp;
+fn utf8_to_string(bytes: &amp;[u8]) -&gt; String {
+    let vector: Vec&lt;u8&gt; = Vec::from(bytes);
+    String::from_utf8(vector).unwrap()
+}
+&nbsp;
+fn handler(mut stream:TcpStream) {
+    println!("Accepted connection");
+    stream.write(b"Entering echo mode...\r\n").unwrap();
+&nbsp;
+    let mut buffer = [0; 16];
+&nbsp;
+    loop {
+        match stream.read(&amp;mut buffer) {
+            Ok(size) =&gt; {
+                println!("read: {} bytes", size);
+                if size == 0 {
+                    println!("no data to read?");
+                    break;
+                } else {
+                    <strong>let response = utf8_to_string(&amp;buffer[0..size]);</strong>
+                    <strong>println!("read: {:?}: '{}'", &amp;buffer[0..size], response);</strong>
+                    match stream.write(&amp;buffer[0..size]) {
+                        Ok(_)  =&gt; {}
+                        Err(error) =&gt; {
+                            println!("write error {:?}", error);
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) =&gt; {
+                println!("read error {:?}", error);
+                break;
+            }
+        }
+    }
+    println!("disconnected")
+}
+&nbsp;
+fn main() {
+    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+&nbsp;
+    for tcp_stream in listener.incoming() {
+        match tcp_stream {
+            Ok(tcp_stream) =&gt; {
+                thread::spawn(|| {
+                    handler(tcp_stream);
+                });
+            }
+            Err(error) =&gt; {
+                println!("connection failed: {}", error);
+            }
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Vytvoření TCP klienta</h2>
+
+<p>V&nbsp;posledním demonstračním příkladu, který si dnes ukážeme, bude
+implementován jednoduchý TCP klient. Ten vlastně bude pracovat velmi podobně
+jako server, ovšem namísto struktury nazvané <strong>TcpListener</strong> bude
+pracovat přímo se strukturou <strong>TcpStream</strong>, protože klient se
+(velmi zjednodušeně řečeno) musí aktivně připojovat k&nbsp;serveru, zatímco
+server jen pasivně vyčkává na žádosti o připojení.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Funkce pro poslání zprávy a přijmutí zprávy</h2>
+
+<p>V&nbsp;klientu využijeme dvě funkce, první pro příjem zprávy a druhou pro
+odeslání zprávy. Funkce pro příjem zprávy může vypadat takto:</p>
+
+<pre>
+fn receive_message(mut stream:&amp;TcpStream) {
+    let mut buffer = [0; 40];
+    match stream.read(&amp;mut buffer) {
+        Ok(size) =&gt; {
+            let response = utf8_to_string(&amp;buffer[0..size]);
+            println!("read: {} bytes: {:?}\n'{}'", size, &amp;buffer[0..size], response);
+            if size == 0 {
+                println!("no data to read?");
+            }
+        }
+        Err(_) =&gt; {
+            println!("read error");
+        }
+     }
+}
+</pre>
+
+<p>Pro jednoduchost počítáme s&nbsp;tím, že zpráva bude mít maximální délku 40
+bajtů.</p>
+
+<p>Funkce pro odeslání zprávy je velmi jednoduchá, protože pouze získá interní
+reprezentaci řetězce a odešle ji na server:</p>
+
+<pre>
+fn send_message(mut stream:&amp;TcpStream, message: &amp;str) {
+    let message_as_bytes = message.as_bytes();
+&nbsp;
+    match stream.write_all(&amp;message_as_bytes) {
+        Ok(_) =&gt; {
+            println!("write ok");
+        }
+        Err(error) =&gt; {
+            println!("write error: {}", error);
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Samotné připojení klienta k&nbsp;serveru se již neprovádí přes
+<i>listenera</i>, ale funkcí <strong>connect()</strong>:</p>
+
+<pre>
+let tcp_stream = TcpStream::connect("127.0.0.1:1234").unwrap();
+&nbsp;
+receive_message(&amp;tcp_stream);
+send_message(&amp;tcp_stream, "Hello\r\n");
+receive_message(&amp;tcp_stream);
+&nbsp;
+println!("closing stream");
+</pre>
+
+<p>Poznámka: TCP stream je opět automaticky uzavřen, zde konkrétně ve chvíli,
+kdy přestane být viditelná proměnná <strong>tcp_stream</strong>.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Zdrojový kód šestého demonstračního příkladu</h2>
+
+<p>Úplný zdrojový kód jednoduchého TCP klienta naleznete na adrese <a
+href="https://github.com/tisnik/presentations/blob/master/rust/297_tcp_client_1.rs">https://github.com/tisnik/presentations/blob/master/rust/297_tcp_client_1.rs</a>:</p>
+
+<pre>
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpStream;
+&nbsp;
+fn utf8_to_string(bytes: &amp;[u8]) -&gt; String {
+    let vector: Vec&lt;u8&gt; = Vec::from(bytes);
+    String::from_utf8(vector).unwrap()
+}
+&nbsp;
+fn send_message(mut stream:&amp;TcpStream, message: &amp;str) {
+    let message_as_bytes = message.as_bytes();
+&nbsp;
+    match stream.write_all(&amp;message_as_bytes) {
+        Ok(_) =&gt; {
+            println!("write ok");
+        }
+        Err(error) =&gt; {
+            println!("write error: {}", error);
+        }
+    }
+&nbsp;
+}
+&nbsp;
+fn receive_message(mut stream:&amp;TcpStream) {
+    let mut buffer = [0; 40];
+    match stream.read(&amp;mut buffer) {
+        Ok(size) =&gt; {
+            let response = utf8_to_string(&amp;buffer[0..size]);
+            println!("read: {} bytes: {:?}\n'{}'", size, &amp;buffer[0..size], response);
+            if size == 0 {
+                println!("no data to read?");
+            }
+        }
+        Err(_) =&gt; {
+            println!("read error");
+        }
+     }
+}
+&nbsp;
+fn main() {
+    let tcp_stream = TcpStream::connect("127.0.0.1:1234").unwrap();
+    println!("{:?}", tcp_stream);
+&nbsp;
+    receive_message(&amp;tcp_stream);
+    send_message(&amp;tcp_stream, "Hello\r\n");
+    receive_message(&amp;tcp_stream);
+&nbsp;
+    println!("closing stream");
+}
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Otestování komunikace mezi serverem a klientem</h2>
+
+<p>Pro otestování komunikace mezi serverem a klientem nyní již nemusíme použít
+Telnet, ale stačí nám si přeložit poslední dva příklady a každý spustit ve
+vlastním terminálu. Ostatně se podívejme, jak to vypadá v&nbsp;praxi
+(povšimněte si, že zprávy obsahují i znaky pro odřádkování):</p>
+
+<a href="https://www.root.cz/obrazek/287019/"><img src="https://i.iinfo.cz/images/474/rust22-2-prev.png" class="image-287019" alt="&#160;" width="370" height="231" /></a>
+<p><i>Obrázek 2: Komunikace s&nbsp;poslední verzí serveru a klientu.</i></p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny dnes popisované demonstrační příklady byly, podobně jako ve všech
+předchozích částech tohoto seriálu, uloženy do Git repositáře dostupného na
+adrese <a
+href="https://github.com/tisnik/presentations">https://github.com/tisnik/presentations</a>.
+Příklady si můžete v&nbsp;případě potřeby stáhnout i jednotlivě bez nutnosti
+klonovat celý repositář:</p>
+
+<table>
+<tr><td>292_tcp_listener_1.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/292_tcp_listener_1.rs">https://github.com/tisnik/presentations/blob/master/rust/292_tcp_listener_1.rs</a></td></tr>
+<tr><td>293_tcp_listener_2.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/293_tcp_listener_2.rs">https://github.com/tisnik/presentations/blob/master/rust/293_tcp_listener_2.rs</a></td></tr>
+<tr><td>294_tcp_listener_3.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/294_tcp_listener_3.rs">https://github.com/tisnik/presentations/blob/master/rust/294_tcp_listener_3.rs</a></td></tr>
+<tr><td>295_tcp_listener_4.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/295_tcp_listener_4.rs">https://github.com/tisnik/presentations/blob/master/rust/295_tcp_listener_4.rs</a></td></tr>
+<tr><td>296_tcp_listener_5.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/296_tcp_listener_5.rs">https://github.com/tisnik/presentations/blob/master/rust/296_tcp_listener_5.rs</a></td></tr>
+<tr><td>297_tcp_client_1.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/297_tcp_client_1.rs">https://github.com/tisnik/presentations/blob/master/rust/297_tcp_client_1.rs</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>std::net::IpAddr<br />
+<a href="https://doc.rust-lang.org/std/net/enum.IpAddr.html">https://doc.rust-lang.org/std/net/enum.IpAddr.html</a>
+</li>
+
+<li>std::net::Ipv4Addr<br />
+<a href="https://doc.rust-lang.org/std/net/struct.Ipv4Addr.html">https://doc.rust-lang.org/std/net/struct.Ipv4Addr.html</a>
+</li>
+
+<li>std::net::Ipv6Addr<br />
+<a href="https://doc.rust-lang.org/std/net/struct.Ipv6Addr.html">https://doc.rust-lang.org/std/net/struct.Ipv6Addr.html</a>
+</li>
+
+<li>TcpListener<br />
+<a href="https://doc.rust-lang.org/std/net/struct.TcpListener.html">https://doc.rust-lang.org/std/net/struct.TcpListener.html</a>
+</li>
+
+<li>TcpStream<br />
+<a href="https://doc.rust-lang.org/std/net/struct.TcpStream.html">https://doc.rust-lang.org/std/net/struct.TcpStream.html</a>
+</li>
+
+<li>Binary heap (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Binary_heap">https://en.wikipedia.org/wiki/Binary_heap</a>
+</li>
+
+<li>Binární halda (Wikipedia)<br />
+<a href="https://cs.wikipedia.org/wiki/Bin%C3%A1rn%C3%AD_halda">https://cs.wikipedia.org/wiki/Bin%C3%A1rn%C3%AD_halda</a>
+</li>
+
+<li>Halda (datová struktura)<br />
+<a href="https://cs.wikipedia.org/wiki/Halda_%28datov%C3%A1_struktura%29">https://cs.wikipedia.org/wiki/Halda_%28datov%C3%A1_struktura%29</a>
+</li>
+
+<li>Struct std::collections::HashSet<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.HashSet.html">https://doc.rust-lang.org/std/collections/struct.HashSet.html</a>
+</li>
+
+<li>Struct std::collections::BTreeSet<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.BTreeSet.html">https://doc.rust-lang.org/std/collections/struct.BTreeSet.html</a>
+</li>
+
+<li>Struct std::collections::BinaryHeap<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html">https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html</a>
+</li>
+
+<li>Set (abstract data type)<br />
+<a href="https://en.wikipedia.org/wiki/Set_%28abstract_data_type%29#Language_support">https://en.wikipedia.org/wiki/Set_%28abstract_data_type%29#Language_support</a>
+</li>
+
+<li>Associative array<br />
+<a href="https://en.wikipedia.org/wiki/Associative_array">https://en.wikipedia.org/wiki/Associative_array</a>
+</li>
+
+<li>Hash Table<br />
+<a href="https://en.wikipedia.org/wiki/Hash_table">https://en.wikipedia.org/wiki/Hash_table</a>
+</li>
+
+<li>B-tree<br />
+<a href="https://en.wikipedia.org/wiki/B-tree">https://en.wikipedia.org/wiki/B-tree</a>
+</li>
+
+<li>Pedro Celis: Robin Hood Hashing (naskenované PDF!)<br />
+<a href="https://cs.uwaterloo.ca/research/tr/1986/CS-86-14.pdf">https://cs.uwaterloo.ca/research/tr/1986/CS-86-14.pdf</a>
+</li>
+
+<li>Robin Hood hashing<br />
+<a href="http://codecapsule.com/2013/11/11/robin-hood-hashing/">http://codecapsule.com/2013/11/11/robin-hood-hashing/</a>
+</li>
+
+<li>Robin Hood hashing: backward shift deletion<br />
+<a href="http://codecapsule.com/2013/11/17/robin-hood-hashing-backward-shift-deletion/">http://codecapsule.com/2013/11/17/robin-hood-hashing-backward-shift-deletion/</a>
+</li>
+
+<li>Module std::collections<br />
+<a href="https://doc.rust-lang.org/std/collections/">https://doc.rust-lang.org/std/collections/</a>
+</li>
+
+<li>Module std::vec<br />
+<a href="https://doc.rust-lang.org/nightly/std/vec/index.html">https://doc.rust-lang.org/nightly/std/vec/index.html</a>
+</li>
+
+<li>Struct std::collections::VecDeque<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.VecDeque.html">https://doc.rust-lang.org/std/collections/struct.VecDeque.html</a>
+</li>
+
+<li>Struct std::collections::LinkedList<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.LinkedList.html">https://doc.rust-lang.org/std/collections/struct.LinkedList.html</a>
+</li>
+
+<li>Module std::fmt<br />
+<a href="https://doc.rust-lang.org/std/fmt/">https://doc.rust-lang.org/std/fmt/</a>
+</li>
+
+<li>Macro std::println<br />
+<a href="https://doc.rust-lang.org/std/macro.println.html">https://doc.rust-lang.org/std/macro.println.html</a>
+</li>
+
+<li>Enum std::result::Result<br />
+<a href="https://doc.rust-lang.org/std/result/enum.Result.html">https://doc.rust-lang.org/std/result/enum.Result.html</a>
+</li>
+
+<li>Module std::result<br />
+<a href="https://doc.rust-lang.org/std/result/">https://doc.rust-lang.org/std/result/</a>
+</li>
+
+<li>Result<br />
+<a href="http://rustbyexample.com/std/result.html">http://rustbyexample.com/std/result.html</a>
+</li>
+
+<li>Rust stdlib: Option<br />
+<a href="https://doc.rust-lang.org/std/option/enum.Option.html">https://doc.rust-lang.org/std/option/enum.Option.html</a>
+</li>
+
+<li>Module std::option<br />
+<a href="https://doc.rust-lang.org/std/option/index.html">https://doc.rust-lang.org/std/option/index.html</a>
+</li>
+
+<li>Rust by example: option<br />
+<a href="http://rustbyexample.com/std/option.html">http://rustbyexample.com/std/option.html</a>
+</li>
+
+<li>Rust by example: if-let<br />
+<a href="http://rustbyexample.com/flow_control/if_let.html">http://rustbyexample.com/flow_control/if_let.html</a>
+</li>
+
+<li>Rust by example: while let<br />
+<a href="http://rustbyexample.com/flow_control/while_let.html">http://rustbyexample.com/flow_control/while_let.html</a>
+</li>
+
+<li>Rust by example: Option&lt;i32&gt;<br />
+<a href="http://rustbyexample.com/std/option.html">http://rustbyexample.com/std/option.html</a>
+</li>
+
+<li>An Overview of Macros in Rust<br />
+<a href="http://words.steveklabnik.com/an-overview-of-macros-in-rust">http://words.steveklabnik.com/an-overview-of-macros-in-rust</a>
+</li>
+
+<li>A Practical Intro to Macros in Rust 1.0<br />
+<a href="https://danielkeep.github.io/practical-intro-to-macros.html">https://danielkeep.github.io/practical-intro-to-macros.html</a>
+</li>
+
+<li>The Rust Programming Language: macros<br />
+<a href="https://doc.rust-lang.org/beta/book/macros.html">https://doc.rust-lang.org/beta/book/macros.html</a>
+</li>
+
+<li>Rust by example: 15 macro_rules!<br />
+<a href="http://rustbyexample.com/macros.html">http://rustbyexample.com/macros.html</a>
+</li>
+
+<li>Primitive Type isize<br />
+<a href="https://doc.rust-lang.org/nightly/std/primitive.isize.html">https://doc.rust-lang.org/nightly/std/primitive.isize.html</a>
+</li>
+
+<li>Primitive Type usize<br />
+<a href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">https://doc.rust-lang.org/nightly/std/primitive.usize.html</a>
+</li>
+
+<li>Primitive Type array<br />
+<a href="https://doc.rust-lang.org/nightly/std/primitive.array.html">https://doc.rust-lang.org/nightly/std/primitive.array.html</a>
+</li>
+
+<li>Module std::slice<br />
+<a href="https://doc.rust-lang.org/nightly/std/slice/">https://doc.rust-lang.org/nightly/std/slice/</a>
+</li>
+
+<li>Rust by Example: 2.3 Arrays and Slices<br />
+<a href="http://rustbyexample.com/primitives/array.html">http://rustbyexample.com/primitives/array.html</a>
+</li>
+
+<li>What is the difference between Slice and Array (stackoverflow)<br />
+<a href="http://stackoverflow.com/questions/30794235/what-is-the-difference-between-slice-and-array">http://stackoverflow.com/questions/30794235/what-is-the-difference-between-slice-and-array</a>
+</li>
+
+<li>Learning Rust With Entirely Too Many Linked Lists<br />
+<a href="http://cglab.ca/~abeinges/blah/too-many-lists/book/">http://cglab.ca/~abeinges/blah/too-many-lists/book/</a>
+</li>
+
+<li>Testcase: linked list<br />
+<a href="http://rustbyexample.com/custom_types/enum/testcase_linked_list.html">http://rustbyexample.com/custom_types/enum/testcase_linked_list.html</a>
+</li>
+
+<li>Operators and Overloading<br />
+<a href="https://doc.rust-lang.org/book/operators-and-overloading.html">https://doc.rust-lang.org/book/operators-and-overloading.html</a>
+</li>
+
+<li>Module std::ops<br />
+<a href="https://doc.rust-lang.org/std/ops/index.html">https://doc.rust-lang.org/std/ops/index.html</a>
+</li>
+
+<li>Module std::cmp<br />
+<a href="https://doc.rust-lang.org/std/cmp/index.html">https://doc.rust-lang.org/std/cmp/index.html</a>
+</li>
+
+<li>Trait std::ops::Add<br />
+<a href="https://doc.rust-lang.org/stable/std/ops/trait.Add.html">https://doc.rust-lang.org/stable/std/ops/trait.Add.html</a>
+</li>
+
+<li>Trait std::ops::AddAssign<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.AddAssign.html">https://doc.rust-lang.org/std/ops/trait.AddAssign.html</a>
+</li>
+
+<li>Trait std::ops::Drop<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.Drop.html">https://doc.rust-lang.org/std/ops/trait.Drop.html</a>
+</li>
+
+<li>Trait std::cmp::Eq<br />
+<a href="https://doc.rust-lang.org/std/cmp/trait.Eq.html">https://doc.rust-lang.org/std/cmp/trait.Eq.html</a>
+</li>
+
+<li>Struct std::boxed::Box<br />
+<a href="https://doc.rust-lang.org/std/boxed/struct.Box.html">https://doc.rust-lang.org/std/boxed/struct.Box.html</a>
+</li>
+
+<li>Explore the ownership system in Rust<br />
+<a href="https://nercury.github.io/rust/guide/2015/01/19/ownership.html">https://nercury.github.io/rust/guide/2015/01/19/ownership.html</a>
+</li>
+
+<li>Rust's ownership and move semantic<br/>
+<a href="http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics">http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics</a>
+</li>
+
+<li>Trait std::marker::Copy<br/>
+<a href="https://doc.rust-lang.org/stable/std/marker/trait.Copy.html">https://doc.rust-lang.org/stable/std/marker/trait.Copy.html</a>
+</li>
+
+<li>Trait std::clone::Clone<br />
+<a href="https://doc.rust-lang.org/stable/std/clone/trait.Clone.html">https://doc.rust-lang.org/stable/std/clone/trait.Clone.html</a>
+</li>
+
+<li>The Stack and the Heap<br />
+<a href="https://doc.rust-lang.org/book/the-stack-and-the-heap.html">https://doc.rust-lang.org/book/the-stack-and-the-heap.html</a>
+</li>
+
+<li>Rust Compare: Pointers &amp; References<br />
+<a href="http://www.rust-compare.com/site/pointers.html">http://www.rust-compare.com/site/pointers.html</a>
+</li>
+
+<li>Rust Compare: Parameters<br />
+<a href="http://www.rust-compare.com/site/params.html">http://www.rust-compare.com/site/params.html</a>
+</li>
+
+<li>Why does this compile? Automatic dereferencing?<br />
+<a href="https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183">https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183</a>
+</li>
+
+<li>Understanding Pointers, Ownership, and Lifetimes in Rust<br />
+<a href="http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html">http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html</a>
+</li>
+
+<li>Rust lang series episode #25 — pointers (#rust-series)<br />
+<a href="https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series">https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series</a>
+</li>
+
+<li>Rust - home page<br />
+<a href="https://www.rust-lang.org/en-US/">https://www.rust-lang.org/en-US/</a>
+</li>
+
+<li>Rust - Frequently Asked Questions<br />
+<a href="https://www.rust-lang.org/en-US/faq.html">https://www.rust-lang.org/en-US/faq.html</a>
+</li>
+
+<li>Destructuring and Pattern Matching<br />
+<a href="https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/">https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/</a>
+</li>
+
+<li>The Rust Programming Language<br />
+<a href="https://doc.rust-lang.org/book/">https://doc.rust-lang.org/book/</a>
+</li>
+
+<li>Rust (programming language)<br />
+<a href="https://en.wikipedia.org/wiki/Rust_%28programming_language%29">https://en.wikipedia.org/wiki/Rust_%28programming_language%29</a>
+</li>
+
+<li>Go - home page<br />
+<a href="https://golang.org/">https://golang.org/</a>
+</li>
+
+<li>Stack Overflow - Most Loved, Dreaded, and Wanted language<br />
+<a href="https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted">https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted</a>
+</li>
+
+<li>Rust vs Go (dva roky staré hodnocení, od té doby došlo k posunům v obou jazycích)<br />
+<a href="http://jaredforsyth.com/2014/03/22/rust-vs-go/">http://jaredforsyth.com/2014/03/22/rust-vs-go/</a>
+</li>
+
+<li>Rust vs Go: My experience<br />
+<a href="https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/">https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/</a>
+</li>
+
+<li>Friends of Rust (Organizations running Rust in production)<br />
+<a href="https://www.rust-lang.org/en-US/friends.html">https://www.rust-lang.org/en-US/friends.html</a>
+</li>
+
+<li>Rust programs versus C++ g++<br />
+<a href="https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp">https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp</a>
+</li>
+
+<li>Další benchmarky (nejedná se o reálné příklady &bdquo;ze života&ldquo;)<br />
+<a href="https://github.com/kostya/benchmarks">https://github.com/kostya/benchmarks</a>
+</li>
+
+<li>Go na Redditu<br />
+<a href="https://www.reddit.com/r/golang/">https://www.reddit.com/r/golang/</a>
+</li>
+
+<li>Rust vs. Go<br />
+<a href="http://vschart.com/compare/rust/vs/go-language">http://vschart.com/compare/rust/vs/go-language</a>
+</li>
+
+<li>Abstraction without overhead: traits in Rust<br />
+<a href="https://blog.rust-lang.org/2015/05/11/traits.html">https://blog.rust-lang.org/2015/05/11/traits.html</a>
+</li>
+
+<li>Method Syntax<br />
+<a href="https://doc.rust-lang.org/book/method-syntax.html">https://doc.rust-lang.org/book/method-syntax.html</a>
+</li>
+
+<li>Traits in Rust<br />
+<a href="https://doc.rust-lang.org/book/traits.html">https://doc.rust-lang.org/book/traits.html</a>
+</li>
+
+<li>Functional Programming in Rust - Part 1 : Function Abstraction<br />
+<a href="http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/">http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/</a>
+</li>
+
+<li>Of the emerging systems languages Rust, D, Go and Nim, which is the strongest language and why?<br />
+<a href="https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why">https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why</a>
+</li>
+
+<li>Chytré ukazatele (moderní verze jazyka C++) [MSDN]<br />
+<a href="https://msdn.microsoft.com/cs-cz/library/hh279674.aspx">https://msdn.microsoft.com/cs-cz/library/hh279674.aspx</a>
+</li>
+
+<li>UTF-8 Everywhere<br />
+<a href="http://utf8everywhere.org/">http://utf8everywhere.org/</a>
+</li>
+
+<li>Rust by Example<br />
+<a href="http://rustbyexample.com/">http://rustbyexample.com/</a>
+</li>
+
+<li>Rust oficiálně ve Fedoře<br />
+<a href="https://mojefedora.cz/rust-oficialne-ve-fedore/">https://mojefedora.cz/rust-oficialne-ve-fedore/</a>
+</li>
+
+<li>Resource acquisition is initialization<br />
+<a href="https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization">https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization</a>
+</li>
+
+<li>TIOBE index (October 2016)<br />
+<a href="http://www.tiobe.com/tiobe-index/">http://www.tiobe.com/tiobe-index/</a>
+</li>
+
+<li>Porovnání Go, D a Rustu na OpenHubu:<br />
+<a href="https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits">https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits</a>
+</li>
+
+<li>String Types in Rust<br />
+<a href="http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/">http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/</a>
+</li>
+
+<li>Trait (computer programming)<br />
+<a href="https://en.wikipedia.org/wiki/Trait_%28computer_programming%29">https://en.wikipedia.org/wiki/Trait_%28computer_programming%29</a>
+</li>
+
+<li>Type inference<br />
+<a href="https://en.wikipedia.org/wiki/Type_inference">https://en.wikipedia.org/wiki/Type_inference</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2017</small></p>
+</body>
+</html>
+
