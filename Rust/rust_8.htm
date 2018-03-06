@@ -1,0 +1,1273 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Správa paměti v programovacím jazyku Rust s počítáním referencí</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Správa paměti v programovacím jazyku Rust s počítáním referencí</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;sedmé části seriálu o programovacím jazyku Rust jsme si ukázali jeden ze způsobů alokace objektů na haldě (heapu) s&nbsp;jejich automatickou dealokací ve chvíli, kdy objekt přestal být viditelný. Dnes si popíšeme další způsob, který spočívá v&nbsp;počítání referencí na objekt umístěný na haldě.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Přímé volání destruktoru?</a></p>
+<p><a href="#k02">2. Nepřímé volání destruktoru s&nbsp;využitím funkce <strong>std::mem::drop</strong></a></p>
+<p><a href="#k03">3. Alokace objektů na haldě s&nbsp;počítáním referencí</a></p>
+<p><a href="#k04">4. Demonstrační příklad &ndash; alokace struktury představující komplexní číslo</a></p>
+<p><a href="#k05">5. Vytvoření většího množství referencí na jediný objekt alokovaný na haldě</a></p>
+<p><a href="#k06">6. Mutace objektu alokovaného na haldě, na nějž existuje větší množství referencí</a></p>
+<p><a href="#k07">7. Sémantika &bdquo;move&ldquo; a referencované objekty na haldě</a></p>
+<p><a href="#k08">8. Sémantika &bdquo;move&ldquo; a použití Rc::clone()</a></p>
+<p><a href="#k09">9. Reference na objekt vlastněná jiným objektem</a></p>
+<p><a href="#k10">10. Poznámka na závěr: použití datového typu <strong>Self</strong></a></p>
+<p><a href="#k11">11. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Přímé volání destruktoru?</h2>
+
+<p><a
+href="https://www.root.cz/clanky/pretezovani-operatoru-a-sprava-pameti-v-programovacim-jazyku-rust/">V&nbsp;předchozí
+části</a> <a
+href="https://www.root.cz/serialy/programovaci-jazyk-rust/">seriálu o
+programovacím jazyku Rust</a> jsme si řekli, že metodu <strong>drop()</strong>
+deklarovanou pro nějakou datovou strukturu, například pro naši implementaci
+komplexních čísel, není možné volat explicitně &ndash; toto zakázané volání je
+detekováno, podobně jako další sémantické chyby, již při překladu. Jen pro
+připomentí &ndash; v&nbsp;následujícím kódu se pokoušíme o explicitní volání
+destruktoru:</p>
+
+<pre>
+fn main() {
+    let c1 = Complex::new(1.0, 1.0);
+    let c2 = Complex::new(3.0, 4.0);
+    let c3 = Complex::new(0.0, 0.0);
+    c1.print();
+    c2.print();
+    c3.print();
+    <strong>c1.drop();</strong>   // zakázáno, porušení je detekováno překladačem
+    <strong>c2.drop();</strong>   // zakázáno, porušení je detekováno překladačem
+    <strong>c3.drop();</strong>   // zakázáno, porušení je detekováno překladačem
+}
+</pre>
+
+<p>Při pokusu o překlad kódu s&nbsp;takto napsanou funkcí
+<strong>main()</strong> se vypíše následující chybové hlášení:</p>
+
+<pre>
+error[E0040]: explicit use of destructor method
+  --&gt; test.rs:35:8
+   |
+35 |     c1.drop();
+   |        ^^^^ call to destructor method
+&nbsp;
+error[E0040]: explicit use of destructor method
+  --&gt; test.rs:36:8
+   |
+36 |     c2.drop();
+   |        ^^^^ call to destructor method
+&nbsp;
+error[E0040]: explicit use of destructor method
+  --&gt; test.rs:37:8
+   |
+37 |     c3.drop();
+   |        ^^^^ call to destructor method
+&nbsp;
+error: aborting due to 3 previous errors
+</pre>
+
+<p>Ve skutečnosti však není nutné čekat na to, až se destruktor zavolá
+automaticky, protože existuje způsob nepřímého zavolání destruktoru.
+Podrobnosti si uvedeme v&nbsp;navazující kapitole.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Nepřímé volání destruktoru s&nbsp;využitím funkce <strong>std::mem::drop</strong></h2>
+
+<p>Destruktor je možné v&nbsp;případě potřeby volat nepřímo, a to konkrétně
+s&nbsp;využitím funkce nazvané <strong>std::mem::drop()</strong>. U funkce
+z&nbsp;tohoto modulu není zapotřebí explicitně zapisovat jmenný prostor, proto
+ji můžeme volat pouze jako <strong>drop()</strong>. I přes stejné pojmenování
+je mezi následujícími programovými řádky dosti podstatný rozdíl, protože na
+druhém řádku se pokoušíme zavolat destruktor přímo (jako by se jednalo o běžnou
+funkci), zatímco na řádku třetím voláme funkci <strong>std::mem::drop</strong>,
+která sice taktéž zavolá destruktor, ale postará se i o zajištění celé
+sémantiky dealokace objektu (viz též sedmou část tohoto seriálu):</p>
+
+<pre>
+let c1 = Complex::new(1.0, 1.0);
+<strong>c1.drop();</strong>   // explicitní zavolání destruktoru - nelze provést
+<strong>drop(c1);</strong>    // dealokace objektu - toto lze provést
+</pre>
+
+<p>Následuje výpis dvou prakticky shodných zdrojových kódů, které se od sebe
+odlišují pouze tím, že v&nbsp;prvním příkladu necháme na překladači, kam přesně
+umístí volání destruktoru (bude to ihned poté, co zanikne viditelnost proměnné,
+na níž je komplexní číslo navázáno), zatímco ve druhém příkladu se destruktor
+zavolá dříve (explicitním nepřímým zavoláním):</p>
+
+<h3>Zdrojový kód, v&nbsp;němž je volání destruktoru navázáno na oblast viditelnosti proměnných</h3>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn fn2() {
+    println!("fn2 begin");
+    let c = Box::new(Complex::new(2.0, 2.0));
+    println!("fn2 end");
+}
+&nbsp;
+fn fn1() {
+    println!("fn1 begin");
+    let c = Box::new(Complex::new(1.0, 1.0));
+    fn2();
+    println!("fn1 end");
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = Box::new(Complex::new(0.0, 0.0));
+    fn1();
+    println!("main end");
+}
+</pre>
+
+<h3>Zdrojový kód, v&nbsp;němž se destruktory volají explicitně (i když nepřímo)</h3>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn fn2() {
+    println!("fn2 begin");
+    let c = Box::new(Complex::new(2.0, 2.0));
+    <strong>drop(c);</strong>
+    println!("fn2 end");
+}
+&nbsp;
+fn fn1() {
+    println!("fn1 begin");
+    let c = Box::new(Complex::new(1.0, 1.0));
+    <strong>drop(c);</strong>
+    fn2();
+    println!("fn1 end");
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = Box::new(Complex::new(0.0, 0.0));
+    <strong>drop(c);</strong>
+    fn1();
+    println!("main end");
+}
+</pre>
+
+<p>Rozdíl ve výpisech obou příkladů nám naznačuje, kde přesně došlo
+k&nbsp;dealokaci komplexních čísel:</p>
+
+<pre>
+Automatické volání destruktorů            "Vynucené" zavolání destruktorů
+--------------------------------------------------------------------------
+main begin                                main begin
+Constructing complex number: 0+0i         Constructing complex number: 0+0i
+fn1 begin                                 Dropping complex number: 0+0i
+Constructing complex number: 1+1i         fn1 begin
+fn2 begin                                 Constructing complex number: 1+1i
+Constructing complex number: 2+2i         Dropping complex number: 1+1i
+fn2 end                                   fn2 begin
+Dropping complex number: 2+2i             Constructing complex number: 2+2i
+fn1 end                                   Dropping complex number: 2+2i
+Dropping complex number: 1+1i             fn2 end
+main end                                  fn1 end
+Dropping complex number: 0+0i             main end
+</pre>
+
+<p>Poznámka: volání <strong>drop(c1)</strong> v&nbsp;našem případě odpovídá
+sémantice &bdquo;move&ldquo; (protože jsme neimplementovali
+<strong>Copy</strong> či <strong>Clone</strong> traity), což znamená, že si
+překladač pohlídá následující (samozřejmě nekorektní) zápis, a to
+s&nbsp;použitím prostředků, o nichž jsme se již zmiňovali v&nbsp;předchozích
+částech (vlastnictví objektů):</p>
+
+<pre>
+fn fn2() {
+    println!("fn2 begin");
+    let c = Box::new(Complex::new(2.0, 2.0));
+    drop(c);
+    println!("{}", c.real);
+    println!("fn2 end");
+}
+</pre>
+
+<p>Při pokusu o překlad dostaneme po právu vynadáno, že se snažíme přistupovat
+k&nbsp;objektu předaného jinému vlastníkovi:</p>
+
+<pre>
+error[E0382]: use of moved value: `c.real`
+  --&gt; test.rs:25:20
+   |
+24 |     drop(c);
+   |          - value moved here
+25 |     println!("{}", c.real);
+   |                    ^^^^^^ value used here after move
+&lt;std macros&gt;:2:27: 2:58 note: in this expansion of format_args!
+&lt;std macros&gt;:3:1: 3:54 note: in this expansion of print! (defined in &lt;std macros&gt;)
+test.rs:25:5: 25:28 note: in this expansion of println! (defined in &lt;std macros&gt;)
+   |
+   = note: move occurs because `c` has type `Box&lt;Complex&gt;`, which does not implement the `Copy` trait
+&nbsp;
+error: aborting due to previous error
+</pre>
+
+<p>Poznámka<sup>2</sup>: do <strong>drop()</strong> lze předat i referenci,
+potom se ovšem destruktor nezavolá, neboť vlastník se předáním reference
+nezmění. Ostatně si to můžete velmi snadno vyzkoušet:</p>
+
+<pre>
+fn fn2() {
+    println!("fn2 begin");
+    let c = Box::new(Complex::new(2.0, 2.0));
+    drop(&amp;c);
+    println!("{}", c.real);
+    println!("fn2 end");
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Alokace objektů na haldě s&nbsp;počítáním referencí</h2>
+
+<p>Prozatím známe pouze jeden způsob alokace objektů na haldě, a to konkrétně
+použitím objektu typu <strong>Box</strong>. Připomeňme si, že po zápisu:</p>
+
+<pre>
+let c = Box::new(Complex::new(2.0, 2.0));
+</pre>
+
+<p>se na haldě (<i>heap</i>) alokuje místo pro datovou strukturu představující
+komplexní číslo. Adresa tohoto místa je uložena do objektu typu
+<strong>Box</strong>, kde je zapouzdřena, protože nás její konkrétní hodnota
+nezajímá, a tento objekt je následně vrácen a navázán na proměnnou
+<strong>c</strong>. Ve chvíli, kdy skončí viditelnost proměnné
+<strong>c</strong>, dojde i k&nbsp;uvolnění objektu z&nbsp;haldy.
+V&nbsp;průběhu tohoto procesu se zavolá destruktor. Samozřejmě je možné hodnotu
+z&nbsp;proměnné <strong>c</strong> přesunout (sémantika &bdquo;move&ldquo;) do
+jiné proměnné, další funkce atd.; vše je hlídáno překladačem, který
+v&nbsp;každém okamžiku ví, kdy se má objekt uvolnit.</p>
+
+<p>Ovšem u mnoha programů potřebujeme zajistit odlišné chování. Konkrétně stále
+vyžadujeme vytvoření objektu na haldě, ovšem takovým způsobem, aby jsme se na
+něj mohli odkázat z&nbsp;více míst v&nbsp;programu (tedy aby byl objekt
+sdílený). V&nbsp;takovém případě nám chování objektů typu <strong>Box</strong>
+přestane vyhovovat a musíme se poohlédnout po jiném způsobu alokace.
+V&nbsp;programovacím jazyce Rust lze použít objekt typu <strong>Rc</strong>,
+kde &bdquo;RC&ldquo; je odvozeno od výrazu &bdquo;reference count(er)&ldquo;.
+Interně je skutečně v&nbsp;<strong>Rc</strong> uložen atribut nesoucí informaci
+o počtu referencí existujících na objekt uložený na haldě (dokonce existuje i
+metoda vracející hodnotu tohoto atributu, tato metoda je však označena jako
+<i>deprecated</i>). Nová reference se získá zavoláním funkce
+<strong>Rc.clone()</strong>. Toto volání navíc zvýší počitadlo referencí o
+jedničku. Počitadlo je snižováno ve chvíli, kdy zanikne viditelnost proměnné,
+do něhož se reference uložila (stejně jako u <strong>Box</strong>). Ve chvíli,
+kdy počitadlo klesne k&nbsp;nule, je referencovaný objekt z&nbsp;haldy
+odstraněn a přitom se samozřejmě zavolá jeho destruktor.</p>
+
+<p>Poznámka: pokud nepoužijeme <strong>Rc.clone()</strong>, nebude mezi
+chováním <strong>Rc</strong> a <strong>Box</strong> znatelný rozdíl.</p>
+
+<p>Poznámka<sup>2</sup>: pokud se nějaký objekt má sdílet mezi větším množstvím
+vláken, musí se namísto <strong>Rc</strong> použít <strong>Arc</strong>
+s&nbsp;atomickou modifikací hodnoty počitadla referencí. Příklad si ukážeme
+příště.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad &ndash; alokace struktury představující komplexní číslo</h2>
+
+<p>Podívejme se na to, co se stane ve chvíli, kdy nahradíme alokaci komplexního
+čísla na haldě s&nbsp;použitím <strong>Box</strong> za alokaci s&nbsp;použitím
+<strong>Rc</strong>. V&nbsp;následujícím příkladu je přidán první řádek (use) a
+volání <strong>Box::new()</strong> bylo nahrazeno za
+<strong>Rc::new()</strong>:</p>
+
+<pre>
+<strong>use std::rc::Rc;</strong>
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn fn2() {
+    println!("fn2 begin");
+    let c = <strong>Rc::new(Complex::new(2.0, 2.0));</strong>
+    println!("fn2 end");
+}
+&nbsp;
+fn fn1() {
+    println!("fn1 begin");
+    let c = <strong>Rc::new(Complex::new(1.0, 1.0));</strong>
+    fn2();
+    println!("fn1 end");
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = <strong>Rc::new(Complex::new(0.0, 0.0));</strong>
+    fn1();
+    println!("main end");
+}
+</pre>
+
+<p>Po překladu a spuštění získáme na standardním výstupu následující řádky,
+které naznačují, že se chování <strong>Rc</strong> v&nbsp;tomto případě nijak
+neliší od chování <strong>Box</strong>:</p>
+
+<pre>
+main begin
+Constructing complex number: 0+0i
+fn1 begin
+Constructing complex number: 1+1i
+fn2 begin
+Constructing complex number: 2+2i
+fn2 end
+Dropping complex number: 2+2i
+fn1 end
+Dropping complex number: 1+1i
+main end
+Dropping complex number: 0+0i
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Vytvoření většího množství referencí na jediný objekt alokovaný na haldě</h2>
+
+<p>Nyní se zaměřme na tu důležitou část alokace na haldě &ndash; na vlastní
+počítání referencí. V&nbsp;následujícím zdrojovém kódu jsou na haldě postupně
+alokována tři komplexní čísla, jejichž oblast životnosti je omezena
+viditelností proměnných navázaných do objekty typu <strong>Rc</strong>. Opět
+zde tedy není většího rozdílu oproti použití <strong>Box</strong>:</p>
+
+<pre>
+<strong>use std::rc::Rc;</strong>
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:?}+{:?}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = <strong>Rc::new(Complex::new(0.0, 0.0));</strong>
+    c.print();
+    {
+        println!("inner block begin");
+        let c2 = <strong>Rc::new(Complex::new(0.0, 0.0));</strong>
+        c2.print();
+        {
+            println!("inmost block begin");
+            let c3 = <strong>Rc::new(Complex::new(0.0, 0.0));</strong>
+            c3.print();
+            println!("inmost block end");
+        }
+        println!("inner block end");
+    }
+    println!("main end");
+}
+</pre>
+
+<p>Podle zpráv vypisovaných na standardní výstup je patrné, že se skutečně
+alokovala tři komplexní čísla a dealokace probíhala v&nbsp;opačném pořadí
+(stačí změnit hodnoty reálné či imaginární složky):</p>
+
+<pre>
+main begin
+Constructing complex number: 0+0i
+complex number: 0+0i
+inner block begin
+Constructing complex number: 0+0i
+complex number: 0+0i
+inmost block begin
+Constructing complex number: 0+0i
+complex number: 0+0i
+inmost block end
+Dropping complex number: 0+0i
+inner block end
+Dropping complex number: 0+0i
+main end
+Dropping complex number: 0+0i
+</pre>
+
+<p>Příklad však můžeme snadno změnit tak, aby všechny tři lokální proměnné
+<strong>c</strong>, <strong>c2</strong> a <strong>c3</strong> obsahovaly
+<strong>Rc</strong> s&nbsp;referencí na jediné komplexní číslo. Zde již musíme
+použít <strong>Rc.clone()</strong>, nestačí pouhé přiřazení:</p>
+
+<pre>
+<strong>use std::rc::Rc;</strong>
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:?}+{:?}i", self.real, self.imag);
+    }
+
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = <strong>Rc::new(Complex::new(0.0, 0.0));</strong>
+    c.print();
+    {
+        println!("inner block begin");
+        let c2 = <strong>c.clone();</strong>
+        c2.print();
+        {
+            println!("inmost block begin");
+            let c3 = <strong>c.clone();</strong>
+            c3.print();
+            println!("inmost block end");
+        }
+        println!("inner block end");
+    }
+    println!("main end");
+}
+</pre>
+
+<p>Chování programu se zásadním způsobem změní, protože se skutečně vytvoří
+jediné komplexní číslo, jehož destruktor je zavolán až ve chvíli, kdy skončí
+oblast viditelnosti proměnné <strong>c</strong> (tím se totiž sníží hodnota
+počitadla referencí na nulu):</p>
+
+<pre>
+main begin
+Constructing complex number: 0+0i
+complex number: 0+0i
+// nyní je počitadlo referencí nastaveno na 1
+inner block begin
+// zvýšení počitadla referencí na 2
+complex number: 0+0i
+inmost block begin
+// zvýšení počitadla referencí na 3
+complex number: 0+0i
+inmost block end
+inner block end
+main end
+// proměnná c není viditelná &rarr; počitadlo kleslo na 0 &rarr; proběhne dealokace
+Dropping complex number: 0+0i
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Mutace objektu alokovaného na haldě, na nějž existuje větší množství referencí</h2>
+
+<p>Zajímavé bude zjistit, co se stane ve chvíli, kdy změníme objekt na haldě a
+přitom na tento objekt bude existovat větší množství referencí. Existují dva
+způsoby mutace objektu, přičemž první způsob používá metodu
+<strong>Rc::get_mut()</strong> (ovšem jen ve chvíli, kdy existuje jen jedna
+reference) a druhý způsob používá metodu <strong>Rc::make_mut()</strong>, která
+v&nbsp;případě potřeby objekt naklonuje (&bdquo;clone on write&ldquo;):</p>
+
+<pre>
+*Rc::get_mut(&amp;mut c).unwrap() = Complex::new(100., 100.);
+</pre>
+
+<p>Způsob změny objektu předtím, než je na něj vytvořeno větší množství
+referencí, lze implementovat takto:</p>
+
+<pre>
+use std::rc::Rc;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:?}+{:?}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let mut c = Rc::new(Complex::new(0.0, 0.0));
+    print!("original value: ");
+    c.print();
+    *Rc::get_mut(&amp;mut c).unwrap() = Complex::new(100., 100.);
+    print!("new value: ");
+    c.print();
+    {
+        println!("inner block begin");
+        let c2 = c.clone();
+        c2.print();
+        {
+            println!("inmost block begin");
+            let c3 = c.clone();
+            c3.print();
+            println!("inmost block end");
+        }
+        println!("inner block end");
+    }
+    println!("main end");
+}
+</pre>
+
+<p>Změna se projeví dealokací původního komplexního čísla a alokací (+
+konstrukcí) čísla nového:</p>
+
+<pre>
+main begin
+<strong>Constructing complex number: 0+0i</strong>
+original value: complex number: 0+0i
+<strong>Constructing complex number: 100+100i</strong>
+<strong>Dropping complex number: 0+0i</strong>
+new value: complex number: 100+100i
+inner block begin
+complex number: 100+100i
+inmost block begin
+complex number: 100+100i
+inmost block end
+inner block end
+main end
+<strong>Dropping complex number: 100+100i</strong>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Sémantika &bdquo;move&ldquo; a referencované objekty na haldě</h2>
+
+<p>V&nbsp;předchozím textu jsme si řekli, že pouhé předání objektu
+<strong>Rc</strong> odpovídá sémantice &bdquo;move&ldquo;, Jinými slovy:
+předáním objektu či jeho přiřazením do jiné proměnné dojde i ke změně
+vlastníka. To si můžeme ukázat na příkladu, v&nbsp;němž se pokusíme dvakrát
+zavolat funkci <strong>f2()</strong> a přitom jí předat stejný objekt
+(obsahující referenci na komplexní číslo uložené na haldě + počitadlo
+referencí):</p>
+
+<pre>
+fn f2(c:Rc&lt;Complex&gt;) {
+    c.print();
+}
+</pre>
+
+<p>Úplný zdrojový kód tohoto příkladu vypadá následovně:</p>
+
+<pre>
+use std::rc::Rc;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:?}+{:?}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn f1() -&gt; Rc&lt;Complex&gt; {
+    Rc::new(Complex::new(0.0, 0.0))
+}
+&nbsp;
+fn f2(c:Rc&lt;Complex&gt;) {
+    c.print();
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = f1();
+    c.print();
+    f2(c);
+    f2(c);
+}
+</pre>
+
+<p>Při překladu je změna vlastníka detekována, podobně jako je tomu i u dalších
+datových typů (<strong>Rc</strong> tedy není nijak výjimečný):</p>
+
+<pre>
+error[E0382]: use of moved value: `c`
+  --&gt; 104_rc_move_semantic_no_clone.rs:40:8
+   |
+39 |     f2(c);
+   |        - value moved here
+40 |     f2(c);
+   |        ^ value used here after move
+   |
+   = note: move occurs because `c` has type `std::rc::Rc&lt;Complex&gt;`, which does not implement the `Copy` trait
+&nbsp;
+error: aborting due to previous error
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Sémantika &bdquo;move&ldquo; a použití Rc::clone()</h2>
+
+<p>Předchozí příklad lze velmi snadno upravit takovým způsobem, aby pracoval
+podle očekávání. Postačuje naklonovat <strong>Rc</strong>, což interně znamená,
+že se zvýší počitadlo referencí a vrátí se <strong>Rc</strong> s&nbsp;referencí
+na to samé komplexní číslo. Uvolnění tohoto čísla z&nbsp;paměti bude provedeno
+ve chvíli, kdy bude počitadlo referencí sníženo na nulu:</p>
+
+<pre>
+let c = f1();
+c.print();
+f2(c.clone());
+f2(c.clone());
+</pre>
+
+<p>Úplný zdrojový kód tohoto příkladu vypadá následovně:</p>
+
+<pre>
+use std::rc::Rc;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:?}+{:?}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn f1() -&gt; Rc&lt;Complex&gt; {
+    Rc::new(Complex::new(0.0, 0.0))
+}
+&nbsp;
+fn f2(c:Rc&lt;Complex&gt;) {
+    c.print();
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = f1();
+    c.print();
+    f2(c.clone());
+    f2(c.clone());
+}
+</pre>
+
+<p>Překlad takto upraveného příkladu proběhne korektně, zajímavé však bude
+sledovat chování programu v&nbsp;době běhu:</p>
+
+<pre>
+main begin
+Constructing complex number: 0+0i
+complex number: 0+0i
+complex number: 0+0i
+complex number: 0+0i
+end of main
+Dropping complex number: 0+0i
+</pre>
+
+<p>Vidíme, že komplexní číslo bylo vytvořeno (zkonstruováno) jen jedenkrát,
+uvolněno z&nbsp;paměti bylo až za koncem funkce <strong>main</strong>.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Reference na objekt vlastněná jiným objektem</h2>
+
+<p>Reálnému světu bude bližší následující příklad, v&nbsp;němž je deklarována
+datová struktura nazvaná <strong>ComplexNumberOwner</strong>. Tato struktura má
+dva prvky &ndash; celočíselný identifikátor a <strong>Rc</strong>
+s&nbsp;referencí na komplexní číslo alokované na haldě:</p>
+
+<pre>
+struct ComplexNumberOwner {
+    id: i32,
+    value: Rc&lt;Complex&gt;
+}
+</pre>
+
+<p>Pokud vytvoříme větší množství těchto struktur (pole, vektor), lze mezi nimi
+v&nbsp;případě potřeby komplexní čísla sdílet. V&nbsp;následujícím kódu budou
+první tři struktury <strong>ComplexNumberOwner</strong> &bdquo;vlastnit&ldquo;
+stejné komplexní číslo:</p>
+
+<pre>
+let c1 = Rc::new(Complex::new(1.0, 1.0));
+let c2 = Rc::new(Complex::new(2.0, 2.0));
+&nbsp;
+let owner1 = ComplexNumberOwner{id:1, value: c1.clone()};
+let owner2 = ComplexNumberOwner{id:2, value: c1.clone()};
+let owner3 = ComplexNumberOwner{id:3, value: c1.clone()};
+&nbsp;
+let owner4 = ComplexNumberOwner{id:4, value: c2.clone()};
+</pre>
+
+<p>Úplný zdrojový kód tohoto příkladu vypadá následovně:</p>
+
+<pre>
+use std::rc::Rc;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:?}+{:?}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+struct ComplexNumberOwner {
+    id: i32,
+    value: Rc&lt;Complex&gt;
+}
+&nbsp;
+impl ComplexNumberOwner {
+    fn print(&amp;self) {
+        println!("owner: number #{} with value {}+{}i", self.id, self.value.real, self.value.imag);
+    }
+}
+&nbsp;
+fn main() {
+    let c1 = Rc::new(Complex::new(1.0, 1.0));
+    let c2 = Rc::new(Complex::new(2.0, 2.0));
+&nbsp;
+    let owner1 = ComplexNumberOwner{id:1, value: c1.clone()};
+    let owner2 = ComplexNumberOwner{id:2, value: c1.clone()};
+    let owner3 = ComplexNumberOwner{id:3, value: c1.clone()};
+    let owner4 = ComplexNumberOwner{id:4, value: c2.clone()};
+&nbsp;
+    owner1.print();
+    owner2.print();
+    owner3.print();
+    owner4.print();
+}
+</pre>
+
+<p>Chování příkladu po spuštění:</p>
+
+<pre>
+Constructing complex number: 1+1i
+Constructing complex number: 2+2i
+owner: number #1 with value 1+1i
+owner: number #2 with value 1+1i
+owner: number #3 with value 1+1i
+owner: number #4 with value 2+2i
+Dropping complex number: 2+2i
+Dropping complex number: 1+1i
+</pre>
+
+<p>Vidíme, že první tři objekty typu <strong>ComplexNumberOwner</strong>
+skutečně vlastní stejné komplexní číslo, které je následně po opuštění funkce
+<strong>main</strong> korektně uvolněno z&nbsp;paměti.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Poznámka na závěr: použití datového typu <strong>Self</strong></h2>
+
+<p>Na závěr si uvedeme poměrně užitečný trik, který souvisí s&nbsp;datovým
+typem <strong>Self</strong> (musí se psát s&nbsp;velkým písmenem na začátku).
+Použití <strong>Self</strong> si nejlépe ukážeme na příkladu. Prozatím jsme ve
+všech demonstračních příkladech s&nbsp;komplexními čísly používali tento
+konstruktor, resp.&nbsp;přesněji řečeno metodu, která se jako konstruktor
+chovala:</p>
+
+<pre>
+fn new(real: f32, imag: f32) -&gt; <strong>Complex</strong> {
+    Complex{real:real, imag:imag}
+}
+</pre>
+
+<p>Ve skutečnosti však překladač ví, v&nbsp;jakém kontextu je metoda
+deklarována, protože je umístěna do bloku <strong>impl Complex</strong>.
+V&nbsp;tomto kontextu je možné použít datový typ <strong>Self</strong>, což je
+vlastně pouze syntaktický cukr umožňující, aby se nemusel pořád opisovat datový
+typ (většinou není tvořen jen identifikátorem). Konstruktor lze tedy napsat i
+následovně:</p>
+
+<pre>
+fn new(real: f32, imag: f32) -&gt; <strong>Self</strong> {
+    Complex{real:real, imag:imag}
+}
+</pre>
+
+<p>Pozor však na to, že následující zápis již není možný, protože
+<strong>Self</strong> zastupuje skutečný datový typ jen při deklaraci parametrů
+funkcí/metod a jejích návratových typů:</p>
+
+<pre>
+fn new(real: f32, imag: f32) -&gt; <strong>Self</strong> {
+    <strong>Self</strong>{real:real, imag:imag}
+}
+</pre>
+
+<p>Navíc platí, že pokud je první parametr metody pojmenovaný
+<strong>self</strong>, je překladačem chápán jako <strong>self:Self</strong>.
+Totéž platí i pro další modifikace, tedy: <strong>&amp;self</strong> znamená
+<strong>self: &amp;Self</strong> a <strong>&amp;mut self</strong> znamená
+<strong>self: &amp;mut Self</strong>. To jsme ostatně již bez dalšího
+vysvětlení použili v&nbsp;deklaraci destruktoru:</p>
+
+<pre>
+impl Drop for Complex {
+    fn drop(<strong>&amp;mut self</strong>) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(<strong>self: &amp;mut Self</strong>) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+</pre>
+
+<p>Podívejme se na úpravu příkladu s&nbsp;komplexními čísly, kde je tento
+syntaktický cukr použit:</p>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; <strong>Self</strong> {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    let c = Box::new(Complex::new(1.0, 2.0));
+}
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny dnes popisované demonstrační příklady byly, podobně jako ve všech
+předchozích částech tohoto seriálu, uloženy do Git repositáře dostupného na
+adrese <a
+href="https://github.com/tisnik/presentations">https://github.com/tisnik/presentations</a>.
+Příklady si můžete v&nbsp;případě potřeby stáhnout i jednotlivě bez nutnosti
+klonovat celý (dnes již poněkud objemný) repositář:</p>
+
+<table>
+<tr><th>Příklad</th><th>Odkaz</th></tr>
+<tr><td>96_explicit_drop.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/96_explicit_drop.rs">https://github.com/tisnik/presentations/blob/master/rust/96_explicit_drop.rs</a></td></tr>
+<tr><td>97_rc.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/97_rc.rs">https://github.com/tisnik/presentations/blob/master/rust/97_rc.rs</a></td></tr>
+<tr><td>101_rc_no_clone.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/101_rc_no_clone.rs">https://github.com/tisnik/presentations/blob/master/rust/101_rc_no_clone.rs</a></td></tr>
+<tr><td>102_rc_clone.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/102_rc_clone.rs">https://github.com/tisnik/presentations/blob/master/rust/102_rc_clone.rs</a></td></tr>
+<tr><td>103_rc_get_mut.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/103_rc_get_mut.rs">https://github.com/tisnik/presentations/blob/master/rust/103_rc_get_mut.rs</a></td></tr>
+<tr><td>104_rc_move_semantic_no_clone.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/104_rc_move_semantic_no_clone.rs">https://github.com/tisnik/presentations/blob/master/rust/104_rc_move_semantic_no_clone.rs</a></td></tr>
+<tr><td>105_rc_move_semantic_clone.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/105_rc_move_semantic_clone.rs">https://github.com/tisnik/presentations/blob/master/rust/105_rc_move_semantic_clone.rs</a></td></tr>
+<tr><td>106_owned_references.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/106_owned_references.rs">https://github.com/tisnik/presentations/blob/master/rust/106_owned_references.rs</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Learning Rust With Entirely Too Many Linked Lists<br />
+<a href="http://cglab.ca/~abeinges/blah/too-many-lists/book/">http://cglab.ca/~abeinges/blah/too-many-lists/book/</a>
+</li>
+
+<li>Testcase: linked list<br />
+<a href="http://rustbyexample.com/custom_types/enum/testcase_linked_list.html">http://rustbyexample.com/custom_types/enum/testcase_linked_list.html</a>
+</li>
+
+<li>Operators and Overloading<br />
+<a href="https://doc.rust-lang.org/book/operators-and-overloading.html">https://doc.rust-lang.org/book/operators-and-overloading.html</a>
+</li>
+
+<li>Module std::ops<br />
+<a href="https://doc.rust-lang.org/std/ops/index.html">https://doc.rust-lang.org/std/ops/index.html</a>
+</li>
+
+<li>Module std::cmp<br />
+<a href="https://doc.rust-lang.org/std/cmp/index.html">https://doc.rust-lang.org/std/cmp/index.html</a>
+</li>
+
+<li>Trait std::ops::Add<br />
+<a href="https://doc.rust-lang.org/stable/std/ops/trait.Add.html">https://doc.rust-lang.org/stable/std/ops/trait.Add.html</a>
+</li>
+
+<li>Trait std::ops::AddAssign<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.AddAssign.html">https://doc.rust-lang.org/std/ops/trait.AddAssign.html</a>
+</li>
+
+<li>Trait std::ops::Drop<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.Drop.html">https://doc.rust-lang.org/std/ops/trait.Drop.html</a>
+</li>
+
+<li>Trait std::cmp::Eq<br />
+<a href="https://doc.rust-lang.org/std/cmp/trait.Eq.html">https://doc.rust-lang.org/std/cmp/trait.Eq.html</a>
+</li>
+
+<li>Struct std::boxed::Box<br />
+<a href="https://doc.rust-lang.org/std/boxed/struct.Box.html">https://doc.rust-lang.org/std/boxed/struct.Box.html</a>
+</li>
+
+<li>Module std::rc<br />
+<a href="https://doc.rust-lang.org/std/rc/">https://doc.rust-lang.org/std/rc/</a>
+</li>
+
+<li>Struct std::sync::Arc<br />
+<a href="https://doc.rust-lang.org/std/sync/struct.Arc.html">https://doc.rust-lang.org/std/sync/struct.Arc.html</a>
+</li>
+
+<li>Module std::sync::atomic<br />
+<a href="https://doc.rust-lang.org/std/sync/atomic/">https://doc.rust-lang.org/std/sync/atomic/</a>
+</li>
+
+<li>Explore the ownership system in Rust<br />
+<a href="https://nercury.github.io/rust/guide/2015/01/19/ownership.html">https://nercury.github.io/rust/guide/2015/01/19/ownership.html</a>
+</li>
+
+<li>Rust's ownership and move semantic<br/>
+<a href="http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics">http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics</a>
+</li>
+
+<li>Trait std::marker::Copy<br/>
+<a href="https://doc.rust-lang.org/stable/std/marker/trait.Copy.html">https://doc.rust-lang.org/stable/std/marker/trait.Copy.html</a>
+</li>
+
+<li>Trait std::clone::Clone<br />
+<a href="https://doc.rust-lang.org/stable/std/clone/trait.Clone.html">https://doc.rust-lang.org/stable/std/clone/trait.Clone.html</a>
+</li>
+
+<li>The Stack and the Heap<br />
+<a href="https://doc.rust-lang.org/book/the-stack-and-the-heap.html">https://doc.rust-lang.org/book/the-stack-and-the-heap.html</a>
+</li>
+
+<li>Rust Compare: Pointers &amp; References<br />
+<a href="http://www.rust-compare.com/site/pointers.html">http://www.rust-compare.com/site/pointers.html</a>
+</li>
+
+<li>Rust Compare: Parameters<br />
+<a href="http://www.rust-compare.com/site/params.html">http://www.rust-compare.com/site/params.html</a>
+</li>
+
+<li>Why does this compile? Automatic dereferencing?<br />
+<a href="https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183">https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183</a>
+</li>
+
+<li>Understanding Pointers, Ownership, and Lifetimes in Rust<br />
+<a href="http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html">http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html</a>
+</li>
+
+<li>Rust lang series episode #25 — pointers (#rust-series)<br />
+<a href="https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series">https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series</a>
+</li>
+
+<li>Rust - home page<br />
+<a href="https://www.rust-lang.org/en-US/">https://www.rust-lang.org/en-US/</a>
+</li>
+
+<li>Rust - Frequently Asked Questions<br />
+<a href="https://www.rust-lang.org/en-US/faq.html">https://www.rust-lang.org/en-US/faq.html</a>
+</li>
+
+<li>Destructuring and Pattern Matching<br />
+<a href="https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/">https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/</a>
+</li>
+
+<li>The Rust Programming Language<br />
+<a href="https://doc.rust-lang.org/book/">https://doc.rust-lang.org/book/</a>
+</li>
+
+<li>Rust (programming language)<br />
+<a href="https://en.wikipedia.org/wiki/Rust_%28programming_language%29">https://en.wikipedia.org/wiki/Rust_%28programming_language%29</a>
+</li>
+
+<li>Go - home page<br />
+<a href="https://golang.org/">https://golang.org/</a>
+</li>
+
+<li>Stack Overflow - Most Loved, Dreaded, and Wanted language<br />
+<a href="https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted">https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted</a>
+</li>
+
+<li>Rust vs Go (dva roky staré hodnocení, od té doby došlo k posunům v obou jazycích)<br />
+<a href="http://jaredforsyth.com/2014/03/22/rust-vs-go/">http://jaredforsyth.com/2014/03/22/rust-vs-go/</a>
+</li>
+
+<li>Rust vs Go: My experience<br />
+<a href="https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/">https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/</a>
+</li>
+
+<li>Friends of Rust (Organizations running Rust in production)<br />
+<a href="https://www.rust-lang.org/en-US/friends.html">https://www.rust-lang.org/en-US/friends.html</a>
+</li>
+
+<li>Rust programs versus C++ g++<br />
+<a href="https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp">https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp</a>
+</li>
+
+<li>Další benchmarky (nejedná se o reálné příklady &bdquo;ze života&ldquo;)<br />
+<a href="https://github.com/kostya/benchmarks">https://github.com/kostya/benchmarks</a>
+</li>
+
+<li>Go na Redditu<br />
+<a href="https://www.reddit.com/r/golang/">https://www.reddit.com/r/golang/</a>
+</li>
+
+<li>Rust vs. Go<br />
+<a href="http://vschart.com/compare/rust/vs/go-language">http://vschart.com/compare/rust/vs/go-language</a>
+</li>
+
+<li>Abstraction without overhead: traits in Rust<br />
+<a href="https://blog.rust-lang.org/2015/05/11/traits.html">https://blog.rust-lang.org/2015/05/11/traits.html</a>
+</li>
+
+<li>Method Syntax<br />
+<a href="https://doc.rust-lang.org/book/method-syntax.html">https://doc.rust-lang.org/book/method-syntax.html</a>
+</li>
+
+<li>Traits in Rust<br />
+<a href="https://doc.rust-lang.org/book/traits.html">https://doc.rust-lang.org/book/traits.html</a>
+</li>
+
+<li>Functional Programming in Rust - Part 1 : Function Abstraction<br />
+<a href="http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/">http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/</a>
+</li>
+
+<li>Of the emerging systems languages Rust, D, Go and Nim, which is the strongest language and why?<br />
+<a href="https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why">https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why</a>
+</li>
+
+<li>Chytré ukazatele (moderní verze jazyka C++) [MSDN]<br />
+<a href="https://msdn.microsoft.com/cs-cz/library/hh279674.aspx">https://msdn.microsoft.com/cs-cz/library/hh279674.aspx</a>
+</li>
+
+<li>UTF-8 Everywhere<br />
+<a href="http://utf8everywhere.org/">http://utf8everywhere.org/</a>
+</li>
+
+<li>Rust by Example<br />
+<a href="http://rustbyexample.com/">http://rustbyexample.com/</a>
+</li>
+
+<li>Rust oficiálně ve Fedoře<br />
+<a href="https://mojefedora.cz/rust-oficialne-ve-fedore/">https://mojefedora.cz/rust-oficialne-ve-fedore/</a>
+</li>
+
+<li>Resource acquisition is initialization<br />
+<a href="https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization">https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization</a>
+</li>
+
+<li>TIOBE index (October 2016)<br />
+<a href="http://www.tiobe.com/tiobe-index/">http://www.tiobe.com/tiobe-index/</a>
+</li>
+
+<li>Porovnání Go, D a Rustu na OpenHubu:<br />
+<a href="https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits">https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits</a>
+</li>
+
+<li>String Types in Rust<br />
+<a href="http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/">http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/</a>
+</li>
+
+<li>Trait (computer programming)<br />
+<a href="https://en.wikipedia.org/wiki/Trait_%28computer_programming%29">https://en.wikipedia.org/wiki/Trait_%28computer_programming%29</a>
+</li>
+
+<li>Type inference<br />
+<a href="https://en.wikipedia.org/wiki/Type_inference">https://en.wikipedia.org/wiki/Type_inference</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2017</small></p>
+</body>
+</html>
+
