@@ -1,0 +1,1086 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Přetěžování operátorů a správa paměti v programovacím jazyku Rust</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Přetěžování operátorů a správa paměti v programovacím jazyku Rust</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V sedmé části seriálu o programovacím jazyku Rust nejprve dokončíme téma, kterému jsme se začali věnovat minule &ndash; přetěžování operátorů. Následně se zaměříme na způsob alokace objektů na haldě (heapu), s&nbsp;čímž souvisí problematika řešení správy paměti v&nbsp;Rustu.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Přetěžování operátorů a správa paměti v&nbsp;programovacím jazyku Rust</a></p>
+<p><a href="#k02">2. Přetížení operátoru +=</a></p>
+<p><a href="#k03">3. Trait specifikující chování operátoru +=</a></p>
+<p><a href="#k04">4. Měnitelná proměnná na levé straně operátoru +=</a></p>
+<p><a href="#k05">5. Trait &bdquo;Drop&ldquo;</a></p>
+<p><a href="#k06">6. Implementace traitu &bdquo;Drop&ldquo;</a></p>
+<p><a href="#k07">7. Explicitní volání destruktoru</a></p>
+<p><a href="#k08">8. Alokace paměti pro objekty ukládané na haldu (heap)</a></p>
+<p><a href="#k09">9. Základní použití traitu &bdquo;Box&ldquo;</a></p>
+<p><a href="#k10">10. Alokace komplexního čísla na haldě</a></p>
+<p><a href="#k11">11. Konstruktor pro alokaci na haldě</a></p>
+<p><a href="#k12">12. Životnost objektů</a></p>
+<p><a href="#k13">13. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Přetěžování operátorů a správa paměti v&nbsp;programovacím jazyku Rust</h2>
+
+<p><a
+href="https://www.root.cz/clanky/genericke-typy-v-programovacim-jazyku-rust/">V&nbsp;předchozí
+části</a> <a
+href="https://www.root.cz/serialy/programovaci-jazyk-rust/">seriálu o
+programovacím jazyku Rust</a> jsme se mj.&nbsp;seznámili i se způsobem
+přetížení některých operátorů pro uživatelské datové typy, tj.&nbsp;pro datové
+struktury implementující traity s&nbsp;&bdquo;předpisem&ldquo; metod, které
+s&nbsp;hodnotami uživatelských typů pracují popř.&nbsp;s&nbsp;nimi manipulují
+(modifikují je). Ukázali jsme si, jak lze přetížit operátor + a taktéž operátor
+== pro uživatelský datový typ představující jednu z&nbsp;možných implementací
+komplexních čísel. Operátory + a == jsou ve skutečnosti pro přetěžování vlastně
+velmi jednoduché, protože se v&nbsp;jejich implementaci nemusí (a neměly by)
+měnit hodnoty vstupních operandů &ndash; jinými slovy to znamená, že tyto
+operátory lze přetížit a používat i pro neměnné (<i>immutable</i>) hodnoty, což
+bylo ostatně v&nbsp;našich demonstračních příkladech splněno. Jen pro
+připomenutí, jak lze takové přetížení operátorů implementovat:</p>
+
+<pre>
+impl Add for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: Complex) -&gt; Self::Output {
+        Complex{real: self.real + right.real,
+                imag: self.imag + right.imag}
+    }
+&nbsp;
+}
+</pre>
+
+<pre>
+impl PartialEq for Complex {
+&nbsp;
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Přetížení operátoru +=</h2>
+
+<p>Poněkud složitější situace nastane ve chvíli, kdy je nutné přetížit i ty
+operátory, u nichž se jeden z&nbsp;operandů mění. Jedná se především o všechny
+<a
+href="https://doc.rust-lang.org/reference.html#compound-assignment-expressions">složené
+operátory</a>, které vznikají kombinací nějakého binárního operátoru
+s&nbsp;operátorem přiřazení. Tyto operátory, které můžeme najít i v&nbsp;mnoha
+dalších programovacích jazycích, se zapisují následujícím způsobem:</p>
+
+<pre>
+lvalue OPERATOR= value
+</pre>
+
+<p>Přičemž by tento zápis měl být ekvivalentní zápisu:</p>
+
+<pre>
+lvalue = lvalue OPERATOR value
+</pre>
+
+<p>Příkladem může být složený operátor +=, který je zapotřebí implementovat
+jako kombinaci operátoru přiřazení a součtu. Tento operátor je implementován
+v&nbsp;traitu nazvaném <strong>AddAssign</strong> a v&nbsp;našem případě
+komplexních čísel může vypadat takto:</p>
+
+<pre>
+impl AddAssign for Complex {
+    fn add_assign(&amp;mut self, right: Complex) {
+        *self = Complex::new(self.real + right.real,
+                             self.imag + right.imag)
+    }
+}
+</pre>
+
+<p>Povšimněte si, jak se tento trait odlišuje od již zmíněného traitu
+<strong>Add</strong>:</p>
+
+<ol>
+
+<li>Není zde uveden řádek s&nbsp;typem výsledku (ani nemusí být, protože víme,
+že se modifikuje první operand).</li>
+
+<li>První operand musí být deklarován jako &amp;mut (<i>mutable</i>).</li>
+
+<li>Výsledek je přiřazen, nikoli vrácen.</li>
+
+</ol>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Trait specifikující chování operátoru +=</h2>
+
+<p>Následující demonstrační příklad vznikl rozšířením již minule popsaného
+příkladu. Nyní je však možné s&nbsp;komplexními čísly provádět i operace
+complex1+=complex2:</p>
+
+<pre>
+use std::ops::Add;
+use std::ops::AddAssign;
+use std::cmp::PartialEq;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Add&lt;Complex&gt; for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: Complex) -&gt; Self::Output {
+        Complex::new(self.real + right.real,
+                     self.imag + right.imag)
+    }
+}
+&nbsp;
+impl Add&lt;f32&gt; for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: f32) -&gt; Self::Output {
+        Complex::new(self.real + right,
+                     self.imag)
+    }
+}
+&nbsp;
+impl AddAssign for Complex {
+    fn add_assign(&amp;mut self, right: Complex) {
+        *self = Complex::new(self.real + right.real,
+                             self.imag + right.imag)
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+&nbsp;
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+&nbsp;
+fn main() {
+    let c1 = Complex::new(1.0, 1.0);
+    let c2 = Complex::new(3.0, 4.0);
+    c1.print();
+    c2.print();
+    let c3 = c1 + c2;
+    let c4 = Complex::new(4.0, 5.0);
+    c3.print();
+    c4.print();
+    println!("c3 == c4? {}", (if c3==c4 { "yes"} else {"no"}));
+&nbsp;
+    let c6 = Complex::new(1.0, 1.0);
+    let c7 = Complex::new(3.0, 4.0);
+    c6 += c7;
+    c6.print();
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Měnitelná proměnná na levé straně operátoru +=</h2>
+
+<p>Při pokusu o překlad předchozího kódu však překladač zcela správně vypíše
+chybové hlášení, protože se snažíme o změnu proměnné <strong>c6</strong>, která
+je neměnitelná (<i>immutable</i>):</p>
+
+<pre>
+error: cannot borrow immutable local variable `c6` as mutable
+  --&gt; 90_addassign_trait_no_mut.rs:69:5
+   |
+67 |     let c6 = Complex::new(1.0, 1.0);
+   |         -- use `mut c6` here to make mutable
+68 |     let c7 = Complex::new(3.0, 4.0);
+69 |     c6 += c7;
+   |     ^^ cannot borrow mutably
+&nbsp;
+error: aborting due to previous error
+</pre>
+
+<p>Úprava je velmi snadná a spočívá v&nbsp;náhradě řádku:</p>
+
+<pre>
+let c6 = Complex::new(1.0, 1.0);
+</pre>
+
+<p>za řádek:</p>
+
+<pre>
+let mut c6 = Complex::new(1.0, 1.0);
+</pre>
+
+<p>Celý zdrojový kód demonstračního příkladu nyní vypadá následovně:</p>
+
+<pre>
+use std::ops::Add;
+use std::ops::AddAssign;
+use std::cmp::PartialEq;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Add&lt;Complex&gt; for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: Complex) -&gt; Self::Output {
+        Complex::new(self.real + right.real,
+                     self.imag + right.imag)
+    }
+}
+&nbsp;
+impl Add&lt;f32&gt; for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: f32) -&gt; Self::Output {
+        Complex::new(self.real + right,
+                     self.imag)
+    }
+}
+&nbsp;
+impl AddAssign for Complex {
+    fn add_assign(&amp;mut self, right: Complex) {
+        *self = Complex::new(self.real + right.real,
+                             self.imag + right.imag)
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+&nbsp;
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+&nbsp;
+fn main() {
+    let c1 = Complex::new(1.0, 1.0);
+    let c2 = Complex::new(3.0, 4.0);
+    c1.print();
+    c2.print();
+    let c3 = c1 + c2;
+    let c4 = Complex::new(4.0, 5.0);
+    c3.print();
+    c4.print();
+    println!("c3 == c4? {}", (if c3==c4 { "yes"} else {"no"}));
+&nbsp;
+    let mut c6 = Complex::new(1.0, 1.0);
+    let c7 = Complex::new(3.0, 4.0);
+    c6 += c7;
+    c6.print();
+}
+</pre>
+
+<p>Tento program již pracuje podle očekávání:</p>
+
+<pre>
+complex number: 1+1i
+complex number: 3+4i
+complex number: 4+5i
+complex number: 4+5i
+c3 == c4? yes
+complex number: 4+5i
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Trait &bdquo;Drop&ldquo;</h2>
+
+<p>V&nbsp;dalších kapitolách se zaměříme na popis způsobů alokace a dealokace
+objektů. Při sledování stavu objektů může být užitečné implementovat pro
+zvolený uživatelský datový typ trait nazvaný <strong>Drop</strong>. Tento trait
+obsahuje pouze jedinou metodu pojmenovanou <strong>drop</strong>, přičemž tato
+metoda je zavolána ve chvíli, kdy se program dostane na místo, odkud již není
+daný objekt dosažitelný (může se jednat o návrat z&nbsp;funkce, výskok
+z&nbsp;programového bloku atd.):</p>
+
+<pre>
+pub trait Drop {
+    fn drop(&amp;mut self);
+}
+</pre>
+
+<p>Ve chvíli, kdy je metoda <strong>drop</strong> zavolána, ještě objekt
+existuje, což znamená, že <strong>self</strong> je možné použít pro přístup ke
+složkám objektu, provést ruční dealokaci, zavření souborů či socketů atd.
+Teprve po výskoku z&nbsp;této metody je provedena automatická dealokace, což
+znamená, že <strong>drop</strong> vlastně nahrazuje klasické destruktory.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Implementace traitu &bdquo;Drop&ldquo;</h2>
+
+<p>Do příkladu s&nbsp;implementací jedné varianty komplexních čísel přidáme
+implementaci traitu <strong>Drop</strong>. Tato implementace nebude provádět
+žádný skutečný úklid objektu, pouze vypíše, který objekt je právě odstraňován
+z&nbsp;paměti. Vzhledem k&nbsp;tomu, že je při volání metody
+<strong>drop</strong> celý objekt ještě kompletní, lze bez problémů přistupovat
+k&nbsp;jeho prvkům (datovým složkám):</p>
+
+<pre>
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+</pre>
+
+<p>Celý zdrojový kód další verze našeho demonstračního příkladu nyní vypadá
+takto:</p>
+
+<pre>
+use std::ops::Add;
+use std::ops::AddAssign;
+use std::cmp::PartialEq;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;mself) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Add&lt;Complex&gt; for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: Complex) -&gt;  Self::Output {
+        Complex::new(self.real + right.real,
+                     self.imag + right.imag)
+    }
+}
+&nbsp;
+impl Add&lt;f32&gt; for Complex {
+&nbsp;
+    type Output = Complex;
+&nbsp;
+    fn add(self, right: f32) -&gt;  Self::Output {
+        Complex::new(self.real + right,
+                     self.imag)
+    }
+}
+&nbsp;
+impl AddAssign for Complex {
+    fn add_assign(&amp;mmut self, right: Complex) {
+        *self = Complex::new(self.real + right.real,
+                             self.imag + right.imag)
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+&nbsp;
+    fn eq(&amp;mself, right: &amp;mComplex) -&gt;  bool {
+        self.real == right.real &amp;m&amp;m self.imag == right.imag
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    let c1 = Complex::new(1.0, 1.0);
+    let c2 = Complex::new(3.0, 4.0);
+    c1.print();
+    c2.print();
+    let c3 = c1 + c2;
+    let c4 = Complex::new(4.0, 5.0);
+    c3.print();
+    c4.print();
+    println!("c3 == c4? {}", (if c3==c4 { "yes"} else {"no"}));
+&nbsp;
+    let mut c6 = Complex::new(1.0, 1.0);
+    let c7 = Complex::new(3.0, 4.0);
+    c6 += c7;
+    c6.print();
+}
+</pre>
+
+<p>Po spuštění tohoto příkladu by se na standardní výstup měly vypsat
+následující zprávy:</p>
+
+<pre>
+complex number: 1+1i
+complex number: 3+4i
+Dropping complex number: 3+4i
+Dropping complex number: 1+1i
+complex number: 4+5i
+complex number: 4+5i
+c3 == c4? yes
+Dropping complex number: 1+1i
+Dropping complex number: 3+4i
+complex number: 4+5i
+Dropping complex number: 4+5i
+Dropping complex number: 4+5i
+Dropping complex number: 4+5i
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Explicitní volání destruktoru</h2>
+
+<p>Destruktory, resp.&nbsp;přesněji řečeno metodu <strong>drop</strong>, se
+volají pouze automaticky ve chvíli, kdy se mění oblast platnosti objektu.
+Metodu <strong>drop</strong> nelze zavolat explicitně, o čemž se ostatně můžeme
+velmi snadno přesvědčit pokusem o překlad následujícího příkladu:</p>
+
+<pre>
+use std::ops::Add;
+use std::ops::AddAssign;
+use std::cmp::PartialEq;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+    
+}   
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    let c1 = Complex::new(1.0, 1.0);
+    let c2 = Complex::new(3.0, 4.0);
+    let c3 = Complex::new(0.0, 0.0);
+    c1.print();
+    c2.print();
+    c3.print();
+    c1.drop();
+    c2.drop();
+    c3.drop();
+}
+</pre>
+
+<p>Při pokusu o překlad se vypíše toto chybové hlášení:</p>
+
+<pre>
+error[E0040]: explicit use of destructor method
+  --&gt; test.rs:35:8
+   |
+35 |     c1.drop();
+   |        ^^^^ call to destructor method
+&nbsp;
+error[E0040]: explicit use of destructor method
+  --&gt; test.rs:36:8
+   |
+36 |     c2.drop();
+   |        ^^^^ call to destructor method
+&nbsp;
+error[E0040]: explicit use of destructor method
+  --&gt; test.rs:37:8
+   |
+37 |     c3.drop();
+   |        ^^^^ call to destructor method
+&nbsp;
+error: aborting due to 3 previous errors
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Alokace paměti pro objekty ukládané na haldu (heap)</h2>
+
+<p>Programovací jazyk Rust neobsahuje žádnou formu automatického správce paměti
+(<i>garbage collector</i>), který je použit, samozřejmě s&nbsp;výjimkou céčka a
+standardního C++, v&nbsp;prakticky všech vyšších programovacích jazycích. To
+v&nbsp;praxi znamená, že programátor musí explicitně stanovit, kdy a jakým
+způsobem jsou objekty alokovány a dealokovány. Prozatím jsme s&nbsp;tímto
+konceptem vlastně neměli žádný větší problém, a to z&nbsp;toho důvodu, že
+objekty jsou implicitně alokovány na zásobníku (<i>stack</i>),
+resp.&nbsp;přesněji řečeno v&nbsp;právě aktivním zásobníkovém rámci (<i>stack
+frame</i>). To je v&nbsp;mnoha ohledech výhodné, protože se po návratu
+z&nbsp;funkcí zásobníkový rámec (a tím pádem i objekty v&nbsp;něm uložené)
+automaticky uvolní z&nbsp;paměti, navíc nenastává ani fragmentace paměti atd.
+Ovšem ve chvíli, kdy je nutné vytvořit objekt viditelný i mimo aktivní
+zásobníkový rámec (či rámce nad ním), je nutné objekty alokovat na haldě
+(<i>heapu</i>). To se provádí s&nbsp;využitím speciálního konstruktoru
+<strong>Box::new(x:T)</strong>, který alokuje novou oblast na haldě a posléze
+do této oblasti uloží <strong>x</strong>. Návratovým typem
+<strong>Box::new(x:T)</strong> je <strong>Box&lt;T&gt;</strong>.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Základní použití traitu &bdquo;Box&ldquo;</h2>
+
+<p>Podívejme se nyní na pravděpodobně úplně nejjednodušší příklad ukazující,
+jakým způsobem je možné alokovat nějaký objekt na haldě. Tímto objektem je zde
+myšlena celočíselná hodnota 42. Pokud v&nbsp;programu pouze zapíšeme:</p>
+
+<pre>
+fn foo() {
+    let x = 42;
+&nbsp;
+    println!("{}", x);
+}
+</pre>
+
+<p>vytvoří se proměnná <strong>x</strong> a na ní navázaná hodnota na
+zásobníku, resp.&nbsp;přesněji řečeno na zásobníkovém rámci. Životnost této
+proměnné i hodnoty navázané na proměnnou je omezena dobou, po kterou se řízení
+programu nachází v&nbsp;této funkci popř.&nbsp;ve funkcích volaných. Naproti
+tomu následující funkce:</p>
+
+<pre>
+fn main() {
+    let x = Box::new(42);
+&nbsp;
+    println!("{}", x);
+}
+</pre>
+
+<p>je poněkud komplikovanější, protože volání <strong>Box::new(42)</strong>
+alokuje oblast paměti na haldě a posléze do této oblasti uloží číslo 42.
+Následně se vrátí struktura, která mj.&nbsp;obsahuje i adresu alokované oblasti
+paměti na haldě, to vše je zabalené do objektu typu <strong>Box</strong>.</p>
+
+<p>Navíc tento objekt implementuje i trait <strong>Drop</strong>, který zajistí
+automatické uvolnění oblasti alokované na haldě, což si ukážeme
+v&nbsp;navazujících příkladech. Povšimněte si, že se jedná o dosti podstatný
+rozdíl oproti mnoha dalším jazykům, které po alokaci vrací ukazatele či
+reference a ztrácí tak informace o tom, jaká je životnost objektu.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Alokace komplexního čísla na haldě</h2>
+
+<p>Následující příklad ukazuje, jakým způsobem můžeme na haldě alokovat prostor
+pro komplexní číslo, tj.&nbsp;pro datovou strukturu obsahující dva prvky typu
+<strong>f32</strong>: reálnou a imaginární složku. Ve skutečnosti je komplexní
+číslo vytvořeno na zásobníkovém rámci a až poté zkopírováno na haldu, ovšem
+právě tento typ operace je optimalizován (Rust je postaven nad LLVM), takže se
+většinou kopie bitového obrazu objektu zcela eliminuje:</p>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    let x = Box::new(42);
+&nbsp;
+    println!("{}", x);
+&nbsp;
+    let c = Box::new(Complex::new(1.0, 2.0));
+}
+</pre>
+
+<p>Po překladu a spuštění tohoto příkladu získáme na standardním výstupu
+následující dva řádky, které ukazují, že se <strong>Drop</strong> skutečně
+zavolá:</p>
+
+<pre>
+42
+Dropping complex number: 1+2i
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Konstruktor pro alokaci na haldě</h2>
+
+<p>Malým rozšířením zdrojového kódu můžeme zařídit, aby třída popisující
+komplexní čísla obsahovala i speciální typ konstruktoru, který vytvoří
+komplexní číslo přímo na haldě. Tento konstruktor se může jmenovat například
+<strong>new_on_heap</strong>. Tím, že samotné vytvoření komplexního čísla je
+použito ve volání konstruktoru <strong>Box::new()</strong> pomůžeme překladači
+programovacího jazyka Rust při optimalizaci výsledného strojového kódu:</p>
+
+<pre>
+fn new_on_heap(real: f32, imag: f32) -&gt; Box&lt;Complex&gt; {
+    Box::new(Complex{real:real, imag:imag})
+}
+</pre>
+
+<p>Úplný zdrojový kód tohoto příkladu vypadá následovně:</p>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+    fn new_on_heap(real: f32, imag: f32) -&gt; Box&lt;Complex&gt; {
+        Box::new(Complex{real:real, imag:imag})
+    }
+&nbsp;
+    fn print(&amp;self) {
+        println!("complex number: {}+{}i", self.real, self.imag);
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn main() {
+    let c1 = Box::new(Complex::new(1.0, 2.0));
+    let c2 = Complex::new_on_heap(3.0, 4.0);
+    c1.print();
+    c2.print();
+}
+</pre>
+
+<p>Po spuštění příkladu se na standardní výstup vypíšou následující zprávy:</p>
+
+<pre>
+complex number: 1+2i
+complex number: 3+4i
+Dropping complex number: 3+4i
+Dropping complex number: 1+2i
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Životnost objektů</h2>
+
+<p>V&nbsp;dalším, dnes již posledním, demonstračním příkladu si ukážeme, že
+destruktory objektů vytvořené implementací traitu <strong>Drop</strong> jsou
+skutečně volány ve chvíli, kdy dochází k&nbsp;ukončení životnosti (či
+viditelnosti) objektů. Nejedná se tedy o žádnou obdobu metody <i>finalize</i>
+známé z&nbsp;Javy, která může být volána mnohdy až dlouho poté, co je objekt
+nedosažitelný, nebo dokonce nemusí být volána vůbec:</p>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+&nbsp;
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        println!("Constructing complex number: {:}+{:}i", real, imag);
+        Complex{real:real, imag:imag}
+    }
+&nbsp;
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn fn2() {
+    println!("fn2 begin");
+    let c = Box::new(Complex::new(2.0, 2.0));
+    println!("fn2 end");
+}
+&nbsp;
+fn fn1() {
+    println!("fn1 begin");
+    let c = Box::new(Complex::new(1.0, 1.0));
+    fn2();
+    println!("fn1 end");
+}
+&nbsp;
+fn main() {
+    println!("main begin");
+    let c = Box::new(Complex::new(0.0, 0.0));
+    fn1();
+    println!("main end");
+}
+</pre>
+
+<p>Překladač sice bude při překladu tohoto demonstračního příkladu vypisovat
+varování o tom, že vytvořené objekty nejsou nikde použity, to však vůbec
+nevadí, protože zdrojový kód je v&nbsp;pořádku:</p>
+
+<pre>
+  --&gt; 95_lifetime.rs:23:9
+   |
+23 |     let c = Box::new(Complex::new(2.0, 2.0));
+   |         ^
+&nbsp;
+warning: unused variable: `c`, #[warn(unused_variables)] on by default
+  --&gt; 95_lifetime.rs:29:9
+   |
+29 |     let c = Box::new(Complex::new(1.0, 1.0));
+   |         ^
+&nbsp;
+warning: unused variable: `c`, #[warn(unused_variables)] on by default
+  --&gt; 95_lifetime.rs:36:9
+   |
+36 |     let c = Box::new(Complex::new(0.0, 0.0));
+   |         ^
+</pre>
+
+<p>Zajímavé jsou pro nás výsledky běhu tohoto příkladu, protože v&nbsp;něm
+z&nbsp;funkce <strong>main</strong> voláme funkci <strong>fn1</strong> a
+z&nbsp;ní funkci <strong>fn2</strong>. To samozřejmě ovlivňuje životnost
+lokálních proměnných (všechny se jmenují stejně) a tím pádem i
+alokaci/dealokaci komplexních čísel na haldě:</p>
+
+<pre>
+main begin
+Constructing complex number: 0+0i
+fn1 begin
+Constructing complex number: 1+1i
+fn2 begin
+Constructing complex number: 2+2i
+fn2 end
+Dropping complex number: 2+2i
+fn1 end
+Dropping complex number: 1+1i
+main end
+Dropping complex number: 0+0i
+</pre>
+
+<p>Vidíme, že komplexní číslo 0+0i bylo vytvořeno jako první ve funkci
+<strong>main</strong> a dealokace proběhla až na samotném konci programu,
+tj.&nbsp;ihned po opuštění funkce <strong>main</strong>. Podobně je tomu
+s&nbsp;životností komplexních čísel 1+1i a 2+2i (to má nejkratší
+životnost).</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny dnes popisované demonstrační příklady byly, podobně jako ve všech
+předchozích částech tohoto seriálu, uloženy do Git repositáře dostupného na
+adrese <a
+href="https://github.com/tisnik/presentations">https://github.com/tisnik/presentations</a>.
+Příklady si můžete v&nbsp;případě potřeby stáhnout i jednotlivě bez nutnosti
+klonovat celý (dnes již poněkud objemný) repositář:</p>
+
+<table>
+<tr><th>Příklad</th><th>Odkaz</th></tr>
+<tr><td>90_addassign_trait_no_mut.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/90_addassign_trait_no_mut.rs">https://github.com/tisnik/presentations/blob/master/rust/90_addassign_trait_no_mut.rs</a></td></tr>
+<tr><td>91_addassign_trait.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/91_addassign_trait.rs">https://github.com/tisnik/presentations/blob/master/rust/91_addassign_trait.rs</a></td></tr>
+<tr><td>92_drop_trait.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/92_drop_trait.rs">https://github.com/tisnik/presentations/blob/master/rust/92_drop_trait.rs</a></td></tr>
+<tr><td>93_box_new.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/93_box_new.rs">https://github.com/tisnik/presentations/blob/master/rust/93_box_new.rs</a></td></tr>
+<tr><td>94_box_new_complex.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/94_box_new_complex.rs">https://github.com/tisnik/presentations/blob/master/rust/94_box_new_complex.rs</a></td></tr>
+<tr><td>95_lifetime.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/95_lifetime.rs">https://github.com/tisnik/presentations/blob/master/rust/95_lifetime.rs</a></td></tr>
+<tr><td>99_explicit_drop.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/99_explicit_drop.rs">https://github.com/tisnik/presentations/blob/master/rust/99_explicit_drop.rs</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Operators and Overloading<br />
+<a href="https://doc.rust-lang.org/book/operators-and-overloading.html">https://doc.rust-lang.org/book/operators-and-overloading.html</a>
+</li>
+
+<li>Module std::ops<br />
+<a href="https://doc.rust-lang.org/std/ops/index.html">https://doc.rust-lang.org/std/ops/index.html</a>
+</li>
+
+<li>Module std::cmp<br />
+<a href="https://doc.rust-lang.org/std/cmp/index.html">https://doc.rust-lang.org/std/cmp/index.html</a>
+</li>
+
+<li>Trait std::ops::Add<br />
+<a href="https://doc.rust-lang.org/stable/std/ops/trait.Add.html">https://doc.rust-lang.org/stable/std/ops/trait.Add.html</a>
+</li>
+
+<li>Trait std::ops::AddAssign<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.AddAssign.html">https://doc.rust-lang.org/std/ops/trait.AddAssign.html</a>
+</li>
+
+<li>Trait std::ops::Drop<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.Drop.html">https://doc.rust-lang.org/std/ops/trait.Drop.html</a>
+</li>
+
+<li>Trait std::cmp::Eq<br />
+<a href="https://doc.rust-lang.org/std/cmp/trait.Eq.html">https://doc.rust-lang.org/std/cmp/trait.Eq.html</a>
+</li>
+
+<li>Struct std::boxed::Box<br />
+<a href="https://doc.rust-lang.org/std/boxed/struct.Box.html">https://doc.rust-lang.org/std/boxed/struct.Box.html</a>
+</li>
+
+<li>Explore the ownership system in Rust<br />
+<a href="https://nercury.github.io/rust/guide/2015/01/19/ownership.html">https://nercury.github.io/rust/guide/2015/01/19/ownership.html</a>
+</li>
+
+<li>Rust's ownership and move semantic<br/>
+<a href="http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics">http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics</a>
+</li>
+
+<li>Trait std::marker::Copy<br/>
+<a href="https://doc.rust-lang.org/stable/std/marker/trait.Copy.html">https://doc.rust-lang.org/stable/std/marker/trait.Copy.html</a>
+</li>
+
+<li>Trait std::clone::Clone<br />
+<a href="https://doc.rust-lang.org/stable/std/clone/trait.Clone.html">https://doc.rust-lang.org/stable/std/clone/trait.Clone.html</a>
+</li>
+
+<li>The Stack and the Heap<br />
+<a href="https://doc.rust-lang.org/book/the-stack-and-the-heap.html">https://doc.rust-lang.org/book/the-stack-and-the-heap.html</a>
+</li>
+
+<li>Rust Compare: Pointers &amp; References<br />
+<a href="http://www.rust-compare.com/site/pointers.html">http://www.rust-compare.com/site/pointers.html</a>
+</li>
+
+<li>Rust Compare: Parameters<br />
+<a href="http://www.rust-compare.com/site/params.html">http://www.rust-compare.com/site/params.html</a>
+</li>
+
+<li>Why does this compile? Automatic dereferencing?<br />
+<a href="https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183">https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183</a>
+</li>
+
+<li>Understanding Pointers, Ownership, and Lifetimes in Rust<br />
+<a href="http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html">http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html</a>
+</li>
+
+<li>Rust lang series episode #25 — pointers (#rust-series)<br />
+<a href="https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series">https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series</a>
+</li>
+
+<li>Rust - home page<br />
+<a href="https://www.rust-lang.org/en-US/">https://www.rust-lang.org/en-US/</a>
+</li>
+
+<li>Rust - Frequently Asked Questions<br />
+<a href="https://www.rust-lang.org/en-US/faq.html">https://www.rust-lang.org/en-US/faq.html</a>
+</li>
+
+<li>Destructuring and Pattern Matching<br />
+<a href="https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/">https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/</a>
+</li>
+
+<li>The Rust Programming Language<br />
+<a href="https://doc.rust-lang.org/book/">https://doc.rust-lang.org/book/</a>
+</li>
+
+<li>Rust (programming language)<br />
+<a href="https://en.wikipedia.org/wiki/Rust_%28programming_language%29">https://en.wikipedia.org/wiki/Rust_%28programming_language%29</a>
+</li>
+
+<li>Go - home page<br />
+<a href="https://golang.org/">https://golang.org/</a>
+</li>
+
+<li>Stack Overflow - Most Loved, Dreaded, and Wanted language<br />
+<a href="https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted">https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted</a>
+</li>
+
+<li>Rust vs Go (dva roky staré hodnocení, od té doby došlo k posunům v obou jazycích)<br />
+<a href="http://jaredforsyth.com/2014/03/22/rust-vs-go/">http://jaredforsyth.com/2014/03/22/rust-vs-go/</a>
+</li>
+
+<li>Rust vs Go: My experience<br />
+<a href="https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/">https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/</a>
+</li>
+
+<li>Friends of Rust (Organizations running Rust in production)<br />
+<a href="https://www.rust-lang.org/en-US/friends.html">https://www.rust-lang.org/en-US/friends.html</a>
+</li>
+
+<li>Rust programs versus C++ g++<br />
+<a href="https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp">https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp</a>
+</li>
+
+<li>Další benchmarky (nejedná se o reálné příklady &bdquo;ze života&ldquo;)<br />
+<a href="https://github.com/kostya/benchmarks">https://github.com/kostya/benchmarks</a>
+</li>
+
+<li>Go na Redditu<br />
+<a href="https://www.reddit.com/r/golang/">https://www.reddit.com/r/golang/</a>
+</li>
+
+<li>Rust vs. Go<br />
+<a href="http://vschart.com/compare/rust/vs/go-language">http://vschart.com/compare/rust/vs/go-language</a>
+</li>
+
+<li>Abstraction without overhead: traits in Rust<br />
+<a href="https://blog.rust-lang.org/2015/05/11/traits.html">https://blog.rust-lang.org/2015/05/11/traits.html</a>
+</li>
+
+<li>Method Syntax<br />
+<a href="https://doc.rust-lang.org/book/method-syntax.html">https://doc.rust-lang.org/book/method-syntax.html</a>
+</li>
+
+<li>Traits in Rust<br />
+<a href="https://doc.rust-lang.org/book/traits.html">https://doc.rust-lang.org/book/traits.html</a>
+</li>
+
+<li>Functional Programming in Rust - Part 1 : Function Abstraction<br />
+<a href="http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/">http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/</a>
+</li>
+
+<li>Of the emerging systems languages Rust, D, Go and Nim, which is the strongest language and why?<br />
+<a href="https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why">https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why</a>
+</li>
+
+<li>Chytré ukazatele (moderní verze jazyka C++) [MSDN]<br />
+<a href="https://msdn.microsoft.com/cs-cz/library/hh279674.aspx">https://msdn.microsoft.com/cs-cz/library/hh279674.aspx</a>
+</li>
+
+<li>UTF-8 Everywhere<br />
+<a href="http://utf8everywhere.org/">http://utf8everywhere.org/</a>
+</li>
+
+<li>Rust by Example<br />
+<a href="http://rustbyexample.com/">http://rustbyexample.com/</a>
+</li>
+
+<li>Rust oficiálně ve Fedoře<br />
+<a href="https://mojefedora.cz/rust-oficialne-ve-fedore/">https://mojefedora.cz/rust-oficialne-ve-fedore/</a>
+</li>
+
+<li>Resource acquisition is initialization<br />
+<a href="https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization">https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization</a>
+</li>
+
+<li>TIOBE index (October 2016)<br />
+<a href="http://www.tiobe.com/tiobe-index/">http://www.tiobe.com/tiobe-index/</a>
+</li>
+
+<li>Porovnání Go, D a Rustu na OpenHubu:<br />
+<a href="https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits">https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits</a>
+</li>
+
+<li>String Types in Rust<br />
+<a href="http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/">http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/</a>
+</li>
+
+<li>Trait (computer programming)<br />
+<a href="https://en.wikipedia.org/wiki/Trait_%28computer_programming%29">https://en.wikipedia.org/wiki/Trait_%28computer_programming%29</a>
+</li>
+
+<li>Type inference<br />
+<a href="https://en.wikipedia.org/wiki/Type_inference">https://en.wikipedia.org/wiki/Type_inference</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
