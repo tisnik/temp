@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>RPython vs Cython aneb dvojí přístup k překladu Pythonu do nativního kódu</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>RPython vs Cython aneb dvojí přístup k překladu Pythonu do nativního kódu</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -38,6 +38,9 @@
 <h2>Obsah</h2>
 
 <p><a href="#k01">*** 1. Význam písmene &bdquo;R&ldquo; ve jménu RPython</a></p>
+<p><a href="#k02">*** 2. Automatické odvozování typů proměnných, argumentů i návratových hodnot funkcí</a></p>
+<p><a href="#k03">*** 3. Tři přístupy při odvození datových typů</a></p>
+
 <p><a href="#k02">*** 2. Nejčastější chyba při analýze kódu: <strong>UnionError</strong></a></p>
 <p><a href="#k03">*** 3. </a></p>
 <p><a href="#k04">*** 4. </a></p>
@@ -48,7 +51,7 @@
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
+<p><a href="#k12">*** 12. Alternativní přístup k&nbsp;překladu Pythonu do nativního kódu: projekt Cython</a></p>
 <p><a href="#k13">*** 13. </a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
@@ -63,7 +66,19 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Význam písmene &bdquo;R&ldquo; ve jménu RPython</h2>
 
-<p></p>
+<p>V&nbsp;úvodním článku o projektu RPython jsme se seznámili se základními postupy, na nichž je tento projekt založen. Připomeňme si ve stručnosti, že RPython je určen pro překlad programů napsaných v&nbsp;podmnožině Pythonu do nativního kódu, ať již se jedná o přímo spustitelný kód či o dynamicky linkovanou knihovnu. Samotný RPython byl vyvinut primárně pro autory interpretrů a překladačů dalších programovacích jazyků (využit je například v&nbsp;projektu Pixie) a autoři RPythonu nepředpokládají, že by byl masivně využíván mimo tuto dosti úzce vymezenou oblast (samozřejmě to však nezakazují). Pokud se rozhodnete RPython využít ve svém projektu, například pro urychlení některých výpočtů, je nutné se již dopředu připravit na tři potenciální problémy:</p>
+
+<ul>
+
+<li>Počáteční písmeno v&nbsp;názvu RPython znamená &bdquo;restricted&ldquo;, což se týká jak omezení, která nám klade vlastní jazyk, tak i omezení dostupných knihoven. Pokud se však skutečně překládají výpočty či simulace, nemusí být tato vlastnost RPythonu příliš omezující.</li>
+
+<li>Některá chybová hlášení RPythonu jsou poněkud kryptická a pro jejich vyluštění je dobré vědět, jakým způsobem vlastně RPython provádí překlad. Právě z&nbsp;tohoto důvodu si v&nbsp;navazujících kapitolách význam některých chybových hlášení popíšeme podrobněji.</li>
+
+<li>Čas překladu je v&nbsp;porovnání s&nbsp;dále zmíněným Cythonem významně delší. Na mém obstarožním notebooku s&nbsp;procesorem i5 (4&times;M 540 @ 2.53GHz) trvá překlad i jednoduchého programu typu &bdquo;Hello world!&ldquo; prakticky přesně 25 sekund, což při vývoji může být otravné. Na druhou stranu je většina chyb vedoucích k&nbsp;zastavení překladu detekována již na samotném začátku celého procesu.</li>
+
+</ul>
+
+<p>Vraťme se nyní k&nbsp;tématu, kterým jsme se již částečně začali zabývat minule. Jedná se o typový systém RPythonu. RPython totiž kvůli překladu do nativního kódu potřebuje znát typ proměnných, argumentů funkcí i návratových hodnot funkcí. Navíc tuto znalost musí rozšířit z&nbsp;oblasti přiřazení hodnoty do proměnné (zde je typ zřejmý) i do všech dalších částí programu. Původní varianty RPythonu neumožnily po prvním přiřazení hodnoty do proměnné měnit její typ, ovšem současné varianty to umožňují (za předpokladu, že se dodrží podmínky popsané později), což je ostatně patrné i z&nbsp;dnešního prvního příkladu. Povšimněte si, že se v&nbsp;tomto příkladu jedné lokální proměnné postupně přiřazují hodnoty různých typů:</p>
 
 <pre>
 def <strong>entry_point</strong>(argv):
@@ -85,22 +100,26 @@ def <strong>target</strong>(driver, args):
     return entry_point, None
 </pre>
 
+<p>Tento program by měl jít bez problémů přeložit i spustit.</p>
+
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Nejčastější chyba při analýze kódu: <strong>UnionError</strong></h2>
 
-<p></p>
+<p>Při pohledu na předchozí demonstrační příklad by se mohlo zdát, že RPython dokáže typ hodnoty určit vlastně kdykoli a kdekoli. Ve skutečnosti tomu tak není, což si ukážeme na třech zdánlivě totožných příkladech.</p>
+
+<p>V&nbsp;prvním příkladu je pomocná funkce <strong>f</strong> volána dvakrát, a to s&nbsp;parametrem vždy nastaveným na <strong>False</strong>. V&nbsp;tomto případě překladač vlastně nikdy neprojde první větví ve funkci <strong>f</strong> a překlad (včetně analýzy celého &bdquo;flow&ldquo;) proběhne v&nbsp;pořádku:</p>
 
 <pre>
-def f(param):
+def <strong>f</strong>(param):
     if param:
         return 42
     else:
         return "foobar"
 &nbsp;
 &nbsp;
-def entry_point(argv):
+def <strong>entry_point</strong>(argv):
     z = f(False)
     print z
 &nbsp;
@@ -110,20 +129,24 @@ def entry_point(argv):
     return 0
 &nbsp;
 &nbsp;
-def target(driver, args):
+def <strong>target</strong>(driver, args):
     print "*** target ***"
     return entry_point, None
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že skutečně musela být provedena statická analýza chování programu, neboť funkce <strong>entry_point</strong> je volána v&nbsp;runtime a nikoli v&nbsp;compile time.</div></p>
+
+<p>Druhá varianta příkladu je prakticky totožná s&nbsp;variantou předchozí, ovšem až na ten detail, že funkce <strong>f</strong> je vždy volána s&nbsp;parametrem <strong>True</strong> a tudíž se řízení programu nikdy nedostane do větve <i>else</i>. I tento příklad bude možné bez problémů přeložit a spustit:</p>
+
 <pre>
-def f(param):
+def <strong>f</strong>(param):
     if param:
         return 42
     else:
         return "foobar"
 &nbsp;
 &nbsp;
-def entry_point(argv):
+def <strong>entry_point</strong>(argv):
     z = f(True)
     print z
 &nbsp;
@@ -133,20 +156,22 @@ def entry_point(argv):
     return 0
 &nbsp;
 &nbsp;
-def target(driver, args):
+def <strong>target</strong>(driver, args):
     print "*** target ***"
     return entry_point, None
 </pre>
 
+<p>Konečně se dostáváme k&nbsp;poslední variantě, ve které se (v&nbsp;runtime) volá funkce <strong>f</strong> opět dvakrát, tentokrát však s&nbsp;odlišnou hodnotou parametru:</p>
+
 <pre>
-def f(param):
+def <strong>f</strong>(param):
     if param:
         return 42
     else:
         return "foobar"
 &nbsp;
 &nbsp;
-def entry_point(argv):
+def <strong>entry_point</strong>(argv):
     z = f(True)
     print z
 &nbsp;
@@ -156,10 +181,12 @@ def entry_point(argv):
     return 0
 &nbsp;
 &nbsp;
-def target(driver, args):
+def <strong>target</strong>(driver, args):
     print "*** target ***"
     return entry_point, None
 </pre>
+
+<p>V&nbsp;klasickém Pythonu to není nijak problematické &ndash; funkce prostě při prvním volání vrátí hodnotu 42 a při volání druhém hodnotu &bdquo;foobar&ldquo;. Ovšem překladač RPythonu je v&nbsp;tomto ohledu striktnější a vypíše chybu při překladu. Ta může vypadat poněkud krypticky:</p>
 
 <pre>
 [translation:ERROR] UnionError: 
@@ -177,6 +204,8 @@ Processing block:
        v2 = bool(param_0) 
  --end--
 </pre>
+
+<p></p>
 
 
 
@@ -596,20 +625,104 @@ def target(driver, args):
 <p><a name="k13"></a></p>
 <h2 id="k13">13. </h2>
 
+<pre>
+$ <strong>pip3 install --user cython</strong>
+&nbsp;
+Collecting cython
+  Cache entry deserialization failed, entry ignored
+  Downloading https://files.pythonhosted.org/packages/6f/79/d8e2cd00bea8156a995fb284ce7b6677c49eccd2d318f73e201a9ce560dc/Cython-0.28.3-cp36-cp36m-manylinux1_x86_64.whl (3.4MB)
+    100% |████████████████████████████████| 3.4MB 443kB/s 
+Installing collected packages: cython
+Successfully installed cython-0.28.3
+You are using pip version 9.0.1, however version 10.0.1 is available.
+You should consider upgrading via the 'pip install --upgrade pip' command.
+</pre>
+
+<pre>
+$ cython --version
+&nbsp;
+Cython version 0.28.3
+</pre>
+
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. </h2>
+
+<pre>
+print("Hello world!")
+</pre>
+
+<pre>
+rm -f hello_world.c
+rm -f hello_world
+
+cython --embed hello_world.py
+
+gcc -O9 -I /usr/include/python3.6m/ -L/usr/lib64 -lpython3.6m hello_world.c -o hello_world
+</pre>
 
 
 
 <p><a name="k15"></a></p>
 <h2 id="k15">15. </h2>
 
+<pre>
+from distutils import sysconfig
+
+PROGNAME = "hello_world"
+CC = "gcc"
+CC_OPT = "-O9"
+
+INCLUDE_DIR = sysconfig.get_python_inc()
+LIBRARY_DIR = sysconfig.get_config_var('LIBDIR')
+PYTHON_LIB = sysconfig.get_config_var('LIBRARY')[3:-2]
+SYSTEM_LIBS = sysconfig.get_config_var('SYSLIBS')
+
+print("rm -f {progname}.c".format(progname=PROGNAME))
+print("rm -f {progname}".format(progname=PROGNAME))
+
+print("cython --embed {progname}.py".format(progname=PROGNAME))
+print("{cc} {cc_opt} -I {include_dir} -L{library_dir} -l{python_lib} {system_libs} {progname}.c -o {progname}".format(
+    cc=CC, cc_opt=CC_OPT, include_dir=INCLUDE_DIR, library_dir=LIBRARY_DIR,
+    python_lib=PYTHON_LIB, system_libs=SYSTEM_LIBS, progname=PROGNAME))
+</pre>
+
 
 
 <p><a name="k16"></a></p>
 <h2 id="k16">16. </h2>
+
+<pre>
+PYTHON=python3
+COMPILER=gcc
+LINKER=gcc
+
+# GCCOPTIONS=-O9 -ffast-math
+CCOPTIONS=-O9
+
+INCLUDE_DIR:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_python_inc())")
+LIBRARY_DIR:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+PYTHON_LIB:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_config_var('LIBRARY')[3:-2])")
+SYSLIBS:=$(shell $(PYTHON) -c "import distutils.sysconfig; print(distutils.sysconfig.get_config_var('SYSLIBS'))")
+
+
+all: hello_world
+
+hello_world: hello_world.o
+        $(LINKER) -o $@ $^ -L$(LIBRARY_DIR) -l$(PYTHON_LIB) $(SYSLIBS)
+
+hello_world.o: hello_world.c
+        $(COMPILER) $(CCOPTIONS) -I$(INCLUDE_DIR) -c $<
+
+hello_world.c: hello_world.py
+        cython --embed $<
+
+clean:
+        rm -f hello_world
+        rm -f hello_world.c
+        rm -f hello_world.o
+</pre>
 
 
 
@@ -620,6 +733,85 @@ def target(driver, args):
 
 <p><a name="k18"></a></p>
 <h2 id="k18">18. </h2>
+
+<pre>
+#!/usr/bin/env python
+# vim: set fileencoding=utf-8
+
+import palette_mandmap
+from sys import argv, exit
+
+
+def calc_mandelbrot(width, height, maxiter, palette):
+    print("P3")
+    print("{w} {h}".format(w=width, h=height))
+    print("255")
+
+    cy = -1.5
+    for y in range(0, height):
+        cx = -2.0
+        for x in range(0, width):
+            zx = 0.0
+            zy = 0.0
+            i = 0
+            while i < maxiter:
+                zx2 = zx * zx
+                zy2 = zy * zy
+                if zx2 + zy2 > 4.0:
+                    break
+                zy = 2.0 * zx * zy + cy
+                zx = zx2 - zy2 + cx
+                i += 1
+
+            r = palette[i][0]
+            g = palette[i][1]
+            b = palette[i][2]
+            print("{r} {g} {b}".format(r=r, g=g, b=b))
+            cx += 3.0/width
+        cy += 3.0/height
+
+
+if __name__ == "__main__":
+    if len(argv) < 4:
+        print("usage: python mandelbrot width height maxiter")
+        exit(1)
+
+    width = int(argv[1])
+    height = int(argv[2])
+    maxiter = int(argv[3])
+    calc_mandelbrot(width, height, maxiter, palette_mandmap.palette)
+</pre>
+
+<pre>
+PYTHON=python3
+COMPILER=gcc
+LINKER=gcc
+
+# GCCOPTIONS=-O9 -ffast-math
+CCOPTIONS=-O9
+
+INCLUDE_DIR:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_python_inc())")
+LIBRARY_DIR:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+PYTHON_LIB:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_config_var('LIBRARY')[3:-2])")
+SYSLIBS:=$(shell $(PYTHON) -c "from distutils import sysconfig; print(sysconfig.get_config_var('SYSLIBS'))")
+
+
+all: mandelbrot_cython
+
+mandelbrot_cython: mandelbrot_cython.o
+        $(LINKER) -o $@ $^ -L$(LIBRARY_DIR) -l$(PYTHON_LIB) $(SYSLIBS)
+
+mandelbrot_cython.o: mandelbrot_cython.c
+        $(COMPILER) $(CCOPTIONS) -I$(INCLUDE_DIR) -c $<
+
+mandelbrot_cython.c: mandelbrot_cython.py
+        cython --embed $<
+
+clean:
+        rm -f mandelbrot_cython
+        rm -f mandelbrot_cython.c
+        rm -f mandelbrot_cython.o
+</pre>
 
 
 
@@ -750,6 +942,14 @@ benchmark používající Jython samozřejmě vyžaduje i tento interpret):</p>
 
 <li>Tutorial: Writing an Interpreter with PyPy, Part 1<br />
 <a href="https://morepypy.blogspot.com/2011/04/tutorial-writing-interpreter-with-pypy.html">https://morepypy.blogspot.com/2011/04/tutorial-writing-interpreter-with-pypy.html</a>
+</li>
+
+<li>EmbeddingCython<br />
+<a href="https://github.com/cython/cython/wiki/EmbeddingCython">https://github.com/cython/cython/wiki/EmbeddingCython</a>
+</li>
+
+<li>The Basics of Cython<br />
+<a href="http://docs.cython.org/en/latest/src/tutorial/cython_tutorial.html">http://docs.cython.org/en/latest/src/tutorial/cython_tutorial.html</a>
 </li>
 
 </ol>
