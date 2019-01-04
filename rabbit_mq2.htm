@@ -38,12 +38,12 @@
 <h2>Obsah</h2>
 
 <p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
+<p><a href="#k02">*** 2. Použití explicitně specifikované fronty pro posílání i pro výběr zpráv</a></p>
+<p><a href="#k03">*** 3. Upravené implementace producenta i konzumenta zpráv</a></p>
+<p><a href="#k04">*** 4. Zobecnění předchozích skriptů</a></p>
+<p><a href="#k05">*** 5. Specifikace jména fronty použité producentem i konzumentem na příkazové řádce</a></p>
+<p><a href="#k06">*** 6. Rozvětvení (fanout) zpráv do většího množství front</a></p>
+<p><a href="#k07">*** 7. Konfigurace exchange s&nbsp;navázáním front</a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
@@ -66,32 +66,290 @@
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Použití explicitně specifikované fronty pro posílání i pro výběr zpráv</h2>
+
+<pre>
+import pika
+
+
+def connect(where='localhost'):
+    connection = pika.BlockingConnection(pika.ConnectionParameters(where))
+    return connection
+
+
+def open_channel(connection, queue_name='test'):
+    # pokus o nove vytvoreni fronty ve skutecnosti neovlivni jiz existujici frontu
+    channel = connection.channel()
+    channel.queue_declare(queue=queue_name)
+    return channel
+</pre>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Upravené implementace producenta i konzumenta zpráv</h2>
+
+<pre>
+#!/usr/bin/env python
+from rabbitmq_connect import connect, open_channel
+
+connection = connect()
+channel = open_channel(connection)
+
+channel.basic_publish(exchange='',
+                      routing_key='test',
+                      body='Hello World!')
+
+print("Sent 'Hello World!'")
+connection.close()
+</pre>
+
+<pre>
+#!/usr/bin/env python
+from rabbitmq_connect import connect, open_channel
+
+connection = connect()
+channel = open_channel(connection)
+
+for i in range(1, 11):
+    channel.basic_publish(exchange='',
+                          routing_key='test',
+                          body='Hello World! #{i}'.format(i=i))
+
+print("Sent 'Hello World!' ten times")
+connection.close()
+</pre>
+
+<pre>
+#!/usr/bin/env python
+
+from time import sleep
+from rabbitmq_connect import connect, open_channel
+
+connection = connect()
+channel = open_channel(connection)
+
+def on_receive(ch, method, properties, body):
+    print("Received %r" % body)
+    sleep(5)
+    print("Done processing %r" % body)
+    ch.basic_ack(delivery_tag = method.delivery_tag)
+
+
+channel.basic_qos(prefetch_count=1)
+channel.basic_consume(on_receive,
+                      queue='test',
+                      no_ack=False)
+
+print('Waiting for messages. To exit press CTRL+C')
+print("...")
+channel.start_consuming()
+</pre>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Zobecnění předchozích skriptů</h2>
+
+<pre>
+#!/usr/bin/env python
+from rabbitmq_connect import connect, open_channel
+&nbsp;
+&nbsp;
+def run_producer(queue_name):
+    connection = connect()
+    channel = open_channel(connection, queue_name)
+&nbsp;
+    channel.basic_publish(exchange='',
+                          routing_key=queue_name,
+                          body='Hello World!')
+&nbsp;
+    print('Sent \'Hello World!\' message into the queue "{q}"'.format(q=queue_name))
+&nbsp;
+    connection.close()
+&nbsp;
+&nbsp;
+run_producer('test')
+</pre>
+
+<pre>
+#!/usr/bin/env python
+from rabbitmq_connect import connect, open_channel
+&nbsp;
+&nbsp;
+def run_producer(queue_name):
+    connection = connect()
+    channel = open_channel(connection)
+&nbsp;
+    for i in range(1, 11):
+        channel.basic_publish(exchange='',
+                              routing_key=queue_name,
+                              body='Hello World! #{i}'.format(i=i))
+&nbsp;
+    print('Sent \'Hello World!\' ten times into the queue "{q}"'.format(q=queue_name))
+    connection.close()
+&nbsp;
+&nbsp;
+run_producer('test')
+</pre>
+
+<pre>
+#!/usr/bin/env python
+&nbsp;
+from time import sleep
+from rabbitmq_connect import connect, open_channel
+&nbsp;
+&nbsp;
+def on_receive(ch, method, properties, body):
+    print("Received %r" % body)
+    sleep(1)
+    print("Done processing %r" % body)
+    ch.basic_ack(delivery_tag=method.delivery_tag)
+&nbsp;
+&nbsp;
+def run_consumer(queue_name):
+    connection = connect()
+    channel = open_channel(connection, queue_name)
+    channel.basic_qos(prefetch_count=1)
+    channel.basic_consume(on_receive,
+                          queue=queue_name,
+                          no_ack=False)
+    print('Waiting for messages in queue "{q}". To exit press CTRL+C'.format(q=queue_name))
+    print("...")
+    channel.start_consuming()
+&nbsp;
+&nbsp;
+run_consumer('test')
+</pre>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Specifikace jména fronty použité producentem i konzumentem na příkazové řádce</h2>
+
+<pre>
+#!/usr/bin/env python
+from sys import exit, argv
+from rabbitmq_connect import connect, open_channel
+
+
+def run_producer(queue_name):
+    connection = connect()
+    channel = open_channel(connection, queue_name)
+
+    channel.basic_publish(exchange='',
+                          routing_key=queue_name,
+                          body='Hello World!')
+
+    print('Sent \'Hello World!\' message into the queue "{q}"'.format(q=queue_name))
+
+    connection.close()
+
+
+if len(argv) &lt;= 1:
+    print('Please provide queue name on the CLI')
+    exit(1)
+
+run_producer(argv[1])
+</pre>
+
+<pre>
+#!/usr/bin/env python
+from sys import exit, argv
+from rabbitmq_connect import connect, open_channel
+
+
+def run_producer(queue_name):
+    connection = connect()
+    channel = open_channel(connection)
+
+    for i in range(1, 11):
+        channel.basic_publish(exchange='',
+                              routing_key=queue_name,
+                              body='Hello World! #{i}'.format(i=i))
+
+    print('Sent \'Hello World!\' ten times into the queue "{q}"'.format(q=queue_name))
+    connection.close()
+
+
+if len(argv) &lt;= 1:
+    print('Please provide queue name on the CLI')
+    exit(1)
+
+run_producer(argv[1])
+</pre>
+
+<pre>
+#!/usr/bin/env python
+
+from sys import exit, argv
+from time import sleep
+from rabbitmq_connect import connect, open_channel
+
+
+def on_receive(ch, method, properties, body):
+    print("Received %r" % body)
+    sleep(1)
+    print("Done processing %r" % body)
+    ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def run_consumer(queue_name):
+    connection = connect()
+    channel = open_channel(connection, queue_name)
+    channel.basic_qos(prefetch_count=1)
+    channel.basic_consume(on_receive,
+                          queue=queue_name,
+                          no_ack=False)
+    print('Waiting for messages in queue "{q}". To exit press CTRL+C'.format(q=queue_name))
+    print("...")
+    channel.start_consuming()
+
+
+if len(argv) &lt;= 1:
+    print('Please provide queue name on the CLI')
+    exit(1)
+
+run_consumer(argv[1])
+</pre>
 
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Rozvětvení (fanout) zpráv do většího množství front</h2>
 
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Konfigurace exchange s&nbsp;navázáním front</h2>
+
+<pre>
+import pika
+&nbsp;
+&nbsp;
+def connect(where='localhost'):
+    connection = pika.BlockingConnection(pika.ConnectionParameters(where))
+    return connection
+&nbsp;
+&nbsp;
+def open_channel(connection, queue_name='test'):
+    # pokus o nove vytvoreni fronty ve skutecnosti neovlivni jiz existujici frontu
+    channel = connection.channel()
+    channel.queue_declare(queue=queue_name)
+    return channel
+&nbsp;
+&nbsp;
+def use_fanout(channel, exchange_name='fanout_exchange'):
+    print(exchange_name)
+    channel.exchange_declare(exchange=exchange_name,
+                             exchange_type='fanout')
+&nbsp;
+&nbsp;
+def bind_queue(channel, queue_name, exchange_name='fanout_exchange'):
+    channel.queue_declare(queue=queue_name)
+    channel.queue_bind(exchange=exchange_name,
+                       queue=queue_name)
+</pre>
 
 
 
@@ -155,7 +413,16 @@
 
 <table>
 <tr><th>Příklad</th><th>Skript</th><th>Popis</th><th>Cesta</th></tr>
-<tr><td>1</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/</a></td></tr>
+<tr><td>1</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py</a></td></tr>
+<tr><td>1</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py</a></td></tr>
+<tr><td>1</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py</a></td></tr>
+<tr><td>1</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>2</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/rabbitmq_connect.py</a></td></tr>
+<tr><td>2</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/consumer.py</a></td></tr>
+<tr><td>2</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_work.py</a></td></tr>
+<tr><td>2</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_more_work.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 </table>
 
 
