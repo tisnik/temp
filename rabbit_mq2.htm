@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Pokročilejší operace se systémem RabbitMQ</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Pokročilejší operace se systémem RabbitMQ</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,14 +37,14 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
+<p><a href="#k01">*** 1. Pokročilejší operace se systémem RabbitMQ</a></p>
 <p><a href="#k02">*** 2. Použití explicitně specifikované fronty pro posílání i pro výběr zpráv</a></p>
 <p><a href="#k03">*** 3. Upravené implementace producenta i konzumenta zpráv</a></p>
-<p><a href="#k04">*** 4. Zobecnění předchozích skriptů</a></p>
-<p><a href="#k05">*** 5. Specifikace jména fronty použité producentem i konzumentem na příkazové řádce</a></p>
-<p><a href="#k06">*** 6. Rozvětvení (fanout) zpráv do většího množství front</a></p>
-<p><a href="#k07">*** 7. Konfigurace exchange s&nbsp;navázáním front</a></p>
-<p><a href="#k08">*** 8. </a></p>
+<p><a href="#k04">*** 4. Zjištění aktuálně vytvořených front a směrovačů příkazem <strong>rabbitmqctl</strong></a></p>
+<p><a href="#k05">*** 5. Zobecnění předchozích skriptů</a></p>
+<p><a href="#k06">*** 6. Specifikace jména fronty použité producentem i konzumentem na příkazové řádce</a></p>
+<p><a href="#k07">*** 7. Rozvětvení (fanout) zpráv do většího množství front</a></p>
+<p><a href="#k08">*** 8. Konfigurace exchange s&nbsp;navázáním front</a></p>
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
@@ -61,24 +61,42 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Pokročilejší operace se systémem RabbitMQ</h2>
+
+<p><a href="https://www.root.cz/clanky/rabbitmq-jedna-z-nejuspesnejsich-implementaci-brokera/">V&nbsp;úvodním článku</a> jsme se seznámili se základními vlastnostmi systému RabbitMQ a ukázali jsme si, jakým způsobem je možné použít jednoduchou aplikaci typu producent-konzument, v&nbsp;níž se využije jediná pojmenovaná fronta (<i>queue</i>) a výchozí konfigurace systému pro směrování zpráv do front (<i>exchange</i>). Dnes si ukážeme některé další možnosti, které nám systém RabbitMQ nabízí. Nejprve použijeme výchozí strategii směrování, ovšem s&nbsp;využitím <a href="#k02">několika pojmenovaných front</a>. Posléze si ukážeme způsob provedení <a href="#k07">rozvětvení</a> (<i>fanout</i>) zpráv do většího množství front, což je druhá velmi často používaná strategie. Samozřejmě nezapomeneme ani na další strategii, která se nazývá <i>topic</i> a v&nbsp;níž je možné při konfiguraci směrovače použít regulární výrazy, což umožňuje i tvorbu aplikací s&nbsp;poměrně komplikovaným směrováním zpráv.</p>
+
+<p>Všechny dnes použité demonstrační příklady budou opět naprogramovány <a href="https://www.python.org/">v&nbsp;Pythonu</a> a jsou postaveny nad <a href="https://pika.readthedocs.io/en/stable/">knihovnou Pika</a>.</p>
 
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Použití explicitně specifikované fronty pro posílání i pro výběr zpráv</h2>
 
+<p>Většina demonstračních příkladů, s&nbsp;nimiž jsme se seznámili minule, používala jak pro producenta zpráv, tak i pro konzumenta zpráv shodný modul nazvaný <strong>rabbitmq_connect.py</strong> s&nbsp;funkcí pojmenovanou <strong>connect</strong>. Tato funkce je určena pro připojení k&nbsp;systému RabbitMQ, otevření komunikačního kanálu a následně pro vytvoření nové pojmenované fronty přiřazení ke zvolenému kanálu. Fronta se vytvoří pouze ve chvíli, pokud ještě neexistuje, tj.&nbsp;v&nbsp;případě, že RabbitMQ neobsahuje frontu shodného jména:</p>
+
+<pre>
+def <strong>connect</strong>(where='localhost', queue_name='test'):
+    connection = pika.BlockingConnection(pika.ConnectionParameters(where))
+    channel = connection.channel()
+&nbsp;
+    <i># pokus o nove vytvoreni fronty ve skutecnosti neovlivni jiz existujici frontu</i>
+    channel.queue_declare(queue=queue_name)
+    return connection, channel
+</pre>
+
+<p>Funkce <strong>connect</strong> sice skutečně může být v&nbsp;praxi použita, ovšem ve chvíli, kdy budeme potřebovat pracovat s&nbsp;větším množstvím front popř.&nbsp;nakonfigurovat směrování zpráv, nám již současné navázání připojení a otevření kanálu s&nbsp;konfigurací fronty nebude dostačovat a budeme vyžadovat větší flexibilitu. Z&nbsp;tohoto důvodu budeme v&nbsp;dalších demonstračních příkladech používat upravený modul <a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py">rabbitmq_connect</a>, v&nbsp;němž jsou deklarovány dvě funkce. První z&nbsp;nich slouží pouze k&nbsp;otevření připojení k&nbsp;běžícímu serveru RabbitMQ (ve výchozím nastavení se jedná o server provozovaný na stejném počítači) a druhá funkce otevře komunikační kanál a pokusí se vytvořit frontu specifikovaného jména. Opět platí, že pokud fronta již existuje, nebude mít pokus o její vytvoření žádný vliv ani na RabbitMQ, ani na producenta či konzumenta. Jedná se tedy o <a href="https://en.wikipedia.org/wiki/Idempotence">idempotentní operaci</a>. Nová podoba modulu <strong>rabbitmq_connect</strong> bude následující:</p>
+
 <pre>
 import pika
-
-
-def connect(where='localhost'):
+&nbsp;
+&nbsp;
+def <strong>connect</strong>(where='localhost'):
     connection = pika.BlockingConnection(pika.ConnectionParameters(where))
     return connection
-
-
-def open_channel(connection, queue_name='test'):
-    # pokus o nove vytvoreni fronty ve skutecnosti neovlivni jiz existujici frontu
+&nbsp;
+&nbsp;
+def <strong>open_channel</strong>(connection, queue_name='test'):
+    <i># pokus o nové vytvoření fronty ve skutečnosti neovlivní již existující frontu</i>
     channel = connection.channel()
     channel.queue_declare(queue=queue_name)
     return channel
@@ -89,74 +107,110 @@ def open_channel(connection, queue_name='test'):
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Upravené implementace producenta i konzumenta zpráv</h2>
 
-<pre>
-#!/usr/bin/env python
-from rabbitmq_connect import connect, open_channel
+<p>Producent, který bude používat novou implementaci modulu <strong>rabbitmq_connect</strong>, se změní jen minimálně. V&nbsp;následujícím <a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py">zdrojovém kódu</a>, v&nbsp;němž se posílá jediná zpráva do fronty &bdquo;test&ldquo;, se pouze musí zavolat jak funkce <strong>connect()</strong>, tak i funkce <strong>open_channel()</strong>; samozřejmě v&nbsp;tomto pořadí:</p>
 
+<pre>
+<i>#!/usr/bin/env python</i>
+from rabbitmq_connect import connect, open_channel
+&nbsp;
 connection = connect()
 channel = open_channel(connection)
-
+&nbsp;
 channel.basic_publish(exchange='',
                       routing_key='test',
                       body='Hello World!')
-
+&nbsp;
 print("Sent 'Hello World!'")
 connection.close()
 </pre>
 
-<pre>
-#!/usr/bin/env python
-from rabbitmq_connect import connect, open_channel
+<p>V&nbsp;tomto skriptu se zpráva posílá metodou <strong>channel.basic_publish</strong>. Povšimněte si, že v&nbsp;této metodě specifikujeme tři pojmenované parametry. První z&nbsp;těchto parametrů určuje strategii směrování zpráv do front. Výchozí strategií (prázdný řetězec) je směrování do fronty, jejíž název odpovídá řetězci předaného v&nbsp;parametru <strong>routing_key</strong>. Na následujícím schématu je naznačeno, že zprávy se nejprve pošlou do <i>exchange</i> a teprve na základě zvolené konfigurace se přesměrují do nějaké fronty popř.&nbsp;se rozvětví (<i>fanout</i>) do většího množsví front:</p>
 
+<a href="https://www.root.cz/obrazek/348765/"><img src="https://i.iinfo.cz/images/176/rabbitmq1-4-prev.png" class="image-348765" alt="&#160;" width="370" height="158" /></a>
+<p><i>Obrázek 4: Interní konfigurovatelná struktura systému RabbitMQ.</i></p>
+
+<p>Podobnou úpravu provedeme i <a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py">v&nbsp;producentovi deseti zpráv</a> poslaných do fronty &bdquo;test&ldquo;. Základní struktura skriptu zůstává stejná, pouze se namísto jedné zprávy pošle zpráv deset:</p>
+
+<pre>
+<i>#!/usr/bin/env python</i>
+from rabbitmq_connect import connect, open_channel
+&nbsp;
 connection = connect()
 channel = open_channel(connection)
-
+&nbsp;
 for i in range(1, 11):
     channel.basic_publish(exchange='',
                           routing_key='test',
                           body='Hello World! #{i}'.format(i=i))
-
+&nbsp;
 print("Sent 'Hello World!' ten times")
 connection.close()
 </pre>
 
-<pre>
-#!/usr/bin/env python
+<p><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py">Konzument zpráv z&nbsp;fronty &bdquo;test&ldquo;</a> je složitější než producent, a to z&nbsp;toho důvodu, že je zapotřebí naprogramovat <i>callback</i> funkci zavolanou ve chvíli, kdy je z&nbsp;fronty vyzvednuta nová zpráva. Současně budeme pomocí <strong>channel.basic_qos(prefetch_count=1)</strong> specifikovat, že si konzument nemá vyzvedávat větší množství zpráv, což by znemožnilo paralelní spuštění většího množství konzumentů (workerů), které by se o zprávy spravedlivě dělili:</p>
 
+<pre>
+<i>#!/usr/bin/env python</i>
+&nbsp;
 from time import sleep
 from rabbitmq_connect import connect, open_channel
-
+&nbsp;
 connection = connect()
 channel = open_channel(connection)
-
-def on_receive(ch, method, properties, body):
+&nbsp;
+def <strong>on_receive</strong>(ch, method, properties, body):
     print("Received %r" % body)
     sleep(5)
     print("Done processing %r" % body)
     ch.basic_ack(delivery_tag = method.delivery_tag)
-
-
+&nbsp;
+&nbsp;
 channel.basic_qos(prefetch_count=1)
 channel.basic_consume(on_receive,
                       queue='test',
                       no_ack=False)
-
+&nbsp;
 print('Waiting for messages. To exit press CTRL+C')
 print("...")
 channel.start_consuming()
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: v&nbsp;praxi je možné hodnotu <strong>prefetch_count</strong> zvýšit, protože nám nemusí záležet na tom, zda se konzumenti o zprávy dělí zcela spravedlivě (především ve chvíli, kdy je zpráv větší množství), ovšem pro naše účely jednoduchého testování se dvěma/třemi konzumenty výhodnější použít <strong>prefetch_count=1</strong>.</div></p>
+
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. Zobecnění předchozích skriptů</h2>
+<h2 id="k04">4. Zjištění aktuálně vytvořených front a směrovačů příkazem <strong>rabbitmqctl</strong></h2>
+
+<p><a href="https://www.root.cz/clanky/rabbitmq-jedna-z-nejuspesnejsich-implementaci-brokera/#k07">V&nbsp;úvodním článku</a> jsme si taktéž řekli, že RabbitMQ se většinou spouští ve funkci démona, resp. služby. Jakmile server běží, je možné použít příkaz <strong>rabbitmqctl</strong> pro změnu konfigurace serveru, pro správu clusterů a v&nbsp;neposlední řadě taktéž pro zjištění užitečných informací o tom, jaké fronty v&nbsp;daném okamžiku existují, jaké jsou k&nbsp;dispozici směrovače (<i>exchange</i>) apod. Vzhledem k&nbsp;tomu, že pro přístup k&nbsp;serveru je nutné mít příslušné oprávnění, budete (v&nbsp;tom nejjednodušším případě) muset <strong>rabbitmqctl</strong> spouštět s&nbsp;právy Roota, tedy následujícím způsobem:</p>
+
+<pre>
+</pre>
+
+<p>Pro zjištění jmen a stavu aktuálně vytvořených a používaných front se použije příkaz <strong>rabbitmqctl list_queues</strong>. Jeho výstup může vypadat následovně:</p>
+
+<pre>
+$ <strong>sudo rabbitmqctl list_queues</strong>
+&nbsp;
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;předchozích větách jsem schválně použil slovo &bdquo;aktuálně&ldquo;, protože ve výchozím nastavení se fronty odstraňují ve chvíli, kdy jsou prázdné a kdy k&nbsp;nim není připojen žádný producent (přes exchange) či konzument (přímo).</div></p>
+
+<p>Směrovače</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zobecnění předchozích skriptů</h2>
+
+<p></p>
 
 <pre>
 #!/usr/bin/env python
 from rabbitmq_connect import connect, open_channel
 &nbsp;
 &nbsp;
-def run_producer(queue_name):
+def <strong>run_producer</strong>(queue_name):
     connection = connect()
     channel = open_channel(connection, queue_name)
 &nbsp;
@@ -224,8 +278,8 @@ run_consumer('test')
 
 
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. Specifikace jména fronty použité producentem i konzumentem na příkazové řádce</h2>
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Specifikace jména fronty použité producentem i konzumentem na příkazové řádce</h2>
 
 <pre>
 #!/usr/bin/env python
@@ -315,13 +369,15 @@ run_consumer(argv[1])
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. Rozvětvení (fanout) zpráv do většího množství front</h2>
-
-
-
 <p><a name="k07"></a></p>
-<h2 id="k07">7. Konfigurace exchange s&nbsp;navázáním front</h2>
+<h2 id="k07">7. Rozvětvení (fanout) zpráv do většího množství front</h2>
+
+<p></p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Konfigurace exchange s&nbsp;navázáním front</h2>
 
 <pre>
 import pika
@@ -350,11 +406,6 @@ def bind_queue(channel, queue_name, exchange_name='fanout_exchange'):
     channel.queue_bind(exchange=exchange_name,
                        queue=queue_name)
 </pre>
-
-
-
-<p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
 
 
 
@@ -413,15 +464,20 @@ def bind_queue(channel, queue_name, exchange_name='fanout_exchange'):
 
 <table>
 <tr><th>Příklad</th><th>Skript</th><th>Popis</th><th>Cesta</th></tr>
-<tr><td>1</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py</a></td></tr>
-<tr><td>1</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py</a></td></tr>
-<tr><td>1</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py</a></td></tr>
-<tr><td>1</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py</a></td></tr>
+<tr><td>6</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/rabbitmq_connect.py</a></td></tr>
+<tr><td>6</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/consumer.py</a></td></tr>
+<tr><td>6</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_work.py</a></td></tr>
+<tr><td>6</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example06/enqueue_more_work.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>2</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/rabbitmq_connect.py</a></td></tr>
-<tr><td>2</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/consumer.py</a></td></tr>
-<tr><td>2</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_work.py</a></td></tr>
-<tr><td>2</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_more_work.py</a></td></tr>
+<tr><td>7</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/rabbitmq_connect.py</a></td></tr>
+<tr><td>7</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/consumer.py</a></td></tr>
+<tr><td>7</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_work.py</a></td></tr>
+<tr><td>7</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example07/enqueue_more_work.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>8</td><td>rabbitmq_connect.py</td><td>společná část pro producenta i konzumenta</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/rabbitmq_connect.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/rabbitmq_connect.py</a></td></tr>
+<tr><td>8</td><td>consumer.py</td><td>implementace konzumenta (workera)</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/consumer.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/consumer.py</a></td></tr>
+<tr><td>8</td><td>enqueue_work.py</td><td>skript pro vložení jedné zprávy do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/enqueue_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/enqueue_work.py</a></td></tr>
+<tr><td>8</td><td>enqueue_more_work.py</td><td>skript pro vložení deseti zpráv do fronty</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/enqueue_more_work.py">https://github.com/tisnik/message-queues-examples/blob/master/rabbit-mq/python/example08/enqueue_more_work.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 </table>
 
@@ -438,6 +494,10 @@ def bind_queue(channel, queue_name, exchange_name='fanout_exchange'):
 
 <li>Advanced Message Queuing Protocol na Wikipedii<br />
 <a href="https://en.wikipedia.org/wiki/Advanced_Message_Queuing_Protocol">https://en.wikipedia.org/wiki/Advanced_Message_Queuing_Protocol</a>
+</li>
+
+<li>Dokumentace k&nbsp;příkazu <strong>rabbitmqctl</strong><br />
+<a href="https://www.rabbitmq.com/rabbitmqctl.8.html">https://www.rabbitmq.com/rabbitmqctl.8.html</a>
 </li>
 
 <li>RabbitMQ<br />
