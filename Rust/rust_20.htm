@@ -1,0 +1,1537 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Programovací jazyk Rust: efektivní práce s prvky uloženými v kolekcích</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Programovací jazyk Rust: efektivní práce s prvky uloženými v kolekcích</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Popis datových kolekcí, které jsou implementované ve standardní knihovně programovacího jazyka Rust, dnes dokončíme. Nejdříve si řekneme, jak je možné efektivně pracovat s&nbsp;objekty uloženými v&nbsp;kolekcích a posléze si popíšeme způsob použití množin s&nbsp;uživatelsky definovanými strukturami.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Efektivní práce s&nbsp;prvky uloženými v&nbsp;kolekcích</a></p>
+<p><a href="#k02">2. Uložení komplexních čísel implementujících trait Drop do kolekce</a></p>
+<p><a href="#k03">3. Převod vektoru s&nbsp;komplexními čísly na seznam a problém klonování</a></p>
+<p><a href="#k04">4. Implementace traitu <strong>Cloned</strong></a></p>
+<p><a href="#k05">5. První varianta pro obejití nutnosti klonování prvků: &bdquo;consuming&ldquo; iterátor</a></p>
+<p><a href="#k06">6. Druhá varianta pro obejití nutnosti klonování prvků: &bdquo;draining&ldquo; iterátor</a></p>
+<p><a href="#k07">7. Uložení komplexních čísel do množiny</a></p>
+<p><a href="#k08">8. Použití množiny reprezentované hešovací tabulkou</a></p>
+<p><a href="#k09">9. Převod obsahu celého vektoru na množinu bez klonování prvků</a></p>
+<p><a href="#k10">10. Pokus o vložení stejných prvků do množiny</a></p>
+<p><a href="#k11">11. Vložení stejných prvků do množiny bez vytvoření klonů</a></p>
+<p><a href="#k12">12. Otázka k&nbsp;zamyšlení</a></p>
+<p><a href="#k13">13. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Efektivní práce s&nbsp;prvky uloženými v&nbsp;kolekcích</h2>
+
+<p>V&nbsp;předchozích třech částech <a
+href="https://www.root.cz/serialy/programovaci-jazyk-rust/">tohoto seriálu</a>
+jsme se seznámili se třemi základními typy datových kolekcí, které jsou
+dostupné ve standardní knihovně programovacího jazyka Rust. Připomeňme si, že
+se jedná o takzvané sekvence (konkrétně o <a
+href="https://www.root.cz/clanky/datove-kolekce-v-programovacim-jazyku-rust/#k07">seznamy</a>
+a <a
+href="https://www.root.cz/clanky/datove-kolekce-v-programovacim-jazyku-rust/#k04">vektory</a>),
+<a
+href="https://www.root.cz/clanky/datove-kolekce-v-programovacim-jazyku-rust-mapy/">mapy</a>
+a <a
+href="https://www.root.cz/clanky/datove-kolekce-v-programovacim-jazyku-rust-mnoziny/">množiny</a>,
+které jsou doplněny o <a
+href="https://www.root.cz/clanky/programovaci-jazyk-rust-nahrada-c-nebo-slepa-cesta/#k09">pole</a>
+(v&nbsp;Rustu se jedná o primitivní datový typ!). Víme již, jakým způsobem je
+možné kolekce vytvářet, definovat jejich kapacitu, vkládat do vytvořených
+kolekcí nové prvky či prvky naopak odstraňovat (či je pouze číst). Dozvěděli
+jsme se také, jak lze prvky modifikovat s&nbsp;využitím speciálního typu
+iterátoru.</p>
+
+<p>Ovšem ve chvíli, kdy jsou kolekce rozsáhlejší, tj.&nbsp;když obsahují větší
+množství prvků popř.&nbsp;prvky tvořené většími strukturami, je vhodné a někdy
+i nutné se zaměřit na efektivitu všech prováděných operací. To se týká zejména
+situace, kdy se například převádí prvky z&nbsp;vektoru do kolekce (to je totiž
+poměrně často prováděná operace, už jen díky existenci užitečného makra
+<strong>vec!</strong>). Musíme si totiž uvědomit, že typový systém Rustu
+s&nbsp;jeho řízením životnosti (dostupnosti) hodnot mnohdy vede k&nbsp;tomu, že
+se prvky při převodu mezi vektorem a kolekcí klonují, což není vždy nutné a
+navíc je to velmi neefektivní jak z&nbsp;časového, tak i paměťového
+hlediska.</p>
+
+<p>Podívejme se na typický příklad, v&nbsp;němž se provádí klonování prvků:</p>
+
+<pre>
+use std::collections::LinkedList;
+&nbsp;
+fn print_list(list: &amp;LinkedList&lt;&amp;str&gt;) {
+&nbsp;
+    if list.is_empty() {
+        println!("list is empty");
+    } else {
+        println!("list has {} items", list.len());
+    }
+&nbsp;
+    for item in list.iter() {
+        println!("{}", item);
+    }
+&nbsp;
+    println!("-------------------------");
+}
+&nbsp;
+fn main() {
+    let list: LinkedList&lt;&amp;str&gt; = vec!["podporucik", "inspektor", "praktikant", "tovarnik"]<strong>.iter().cloned().collect()</strong>;
+&nbsp;
+    print_list(&amp;list);
+}
+</pre>
+
+<p>Výsledek běhu příkladu:</p>
+
+<pre>
+list has 4 items
+podporucik
+inspektor
+praktikant
+tovarnik
+-------------------------
+</pre>
+
+<p>V&nbsp;tomto příkladu se nejdříve vytvoří vektor s&nbsp;řetězci (přesněji
+řečeno s&nbsp;referencemi na konstantní řetězce) a posléze se tento vektor
+převádí přes iterátor na dvojitě vázaný seznam (<strong>LinkedList</strong>).
+Zápis je to sice pochopitelný a bez problémů čitelný (najdeme ho i
+v&nbsp;příručkách k&nbsp;Rustu), ovšem ve skutečnosti se musí každý prvek
+naklonovat, což zde konkrétně znamená, že se vytvoří další čtyři reference na
+řetězce, řekněme 4&times;4 bajty či 4&times;8 bajtů v&nbsp;závislosti na
+platformě. Tento problém se ještě zhorší ve chvíli, kdy se do kolekcí ukládají
+rozsáhlejší datové struktury, což si ukážeme hned <a
+href="#k02">v&nbsp;navazující kapitole</a>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Uložení komplexních čísel implementujících trait Drop do kolekce</h2>
+
+<p>Zkusme si předchozí příklad upravit takovým způsobem, aby do větší míry
+odpovídal reálným aplikacím. V&nbsp;tomto seriálu jsme se již mnohokrát setkali
+s&nbsp;datovou strukturou představující jednu z&nbsp;možných reprezentací
+komplexních čísel:</p>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+</pre>
+
+<p>Pro tuto strukturu jsme implementovali metody <strong>new</strong> (forma
+konstruktoru) a <strong>print</strong>:</p>
+
+<pre>
+impl Complex {
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+</pre>
+
+<p>A navíc tato struktura implementuje trait <strong>Drop</strong>
+s&nbsp;metodou <strong>drop()</strong> volanou ve chvíli, kdy se má objekt
+uvolnit z&nbsp;paměti:</p>
+
+<pre>
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+</pre>
+
+<p>Vytvoření lineárně vázaného seznamu komplexních čísel je snadné:</p>
+
+<pre>
+let mut list: LinkedList&lt;Complex&gt; = LinkedList::new();
+&nbsp;
+list.push_back(Complex::new(0.0, 0.0));
+list.push_back(Complex::new(1.0, 1.0));
+list.push_back(Complex::new(2.0, 2.0));
+</pre>
+
+<p>Celý příklad může vypadat následovně:</p>
+
+<pre>
+use std::collections::LinkedList;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn print_list(list: &amp;LinkedList&lt;Complex&gt;) {
+&nbsp;
+    if list.is_empty() {
+        println!("list is empty");
+    } else {
+        println!("list has {} items", list.len());
+    }
+&nbsp;
+    for item in list.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let mut list: LinkedList&lt;Complex&gt; = LinkedList::new();
+&nbsp;
+    list.push_back(Complex::new(0.0, 0.0));
+    list.push_back(Complex::new(1.0, 1.0));
+    list.push_back(Complex::new(2.0, 2.0));
+&nbsp;
+    print_list(&amp;list);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>Po spuštění získáme na standardním výstupu následující řádky ukazující, kdy
+přesně dochází k&nbsp;dealokaci komplexních čísel:</p>
+
+<pre>
+list has 3 items
+complex number: 0+0i
+complex number: 1+1i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Převod vektoru s&nbsp;komplexními čísly na seznam a problém klonování</h2>
+
+<p><a href="#k01">V&nbsp;úvodní kapitole</a> jsme převáděli vektor řetězců
+(resp.&nbsp;vektor referencí na řetězce) na lineární seznam:</p>
+
+<pre>
+let list: LinkedList&lt;&amp;str&gt; = vec!["podporucik",
+                                  "inspektor",
+                                  "praktikant",
+                                  "tovarnik"]<strong>.iter().cloned().collect()</strong>;
+</pre>
+
+<p>Stejnou operaci si samozřejmě můžeme zkusit provést i pro vektor komplexních
+čísel:</p>
+
+<pre>
+let list: LinkedList&lt;Complex&gt; = vec![Complex::new(0.0, 0.0),
+                                     Complex::new(1.0, 1.0),
+                                     Complex::new(2.0, 2.0)]<strong>.iter().cloned().collect()</strong>;
+</pre>
+
+<p>Podívejme se nyní na úplnou implementaci. Pokuste se sami odpovědět na to,
+zda je příklad napsaný korektně či nikoli:</p>
+
+<pre>
+use std::collections::LinkedList;
+&nbsp;
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn print_list(list: &amp;LinkedList&lt;Complex&gt;) {
+&nbsp;
+    if list.is_empty() {
+        println!("list is empty");
+    } else {
+        println!("list has {} items", list.len());
+    }
+&nbsp;
+    for item in list.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let list: LinkedList&lt;Complex&gt; = vec![Complex::new(0.0, 0.0),
+                                         Complex::new(1.0, 1.0),
+                                         Complex::new(2.0, 2.0)].iter().cloned().collect();
+&nbsp;
+    print_list(&amp;list);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>Problém nastane při pokusu o překlad tohoto příkladu:</p>
+
+<pre>
+error[E0277]: the trait bound `Complex: std::clone::Clone` is not satisfied
+  --&gt; 278_sequences39_error.rs:39:73
+   |
+39 |                                          Complex::new(2.0, 2.0)].iter()<strong>.cloned()</strong>.collect();
+   |                                                                         ^^^^^^
+&nbsp;
+error[E0277]: the trait bound `Complex: std::clone::Clone` is not satisfied
+  --&gt; 278_sequences39_error.rs:39:82
+   |
+39 |                                          Complex::new(2.0, 2.0)].iter().cloned()<strong>.collect()</strong>;
+   |                                                                                  ^^^^^^^
+   |
+   = note: required because of the requirements on the impl of `std::iter::Iterator` for `std::iter::Cloned&lt;std::slice::Iter&lt;'_, Complex&gt;&gt;`
+&nbsp;
+error: aborting due to 2 previous errors
+</pre>
+
+<p>Překladač se nám snaží naznačit, že není možné volat metodu
+<strong>cloned()</strong> na prvky získané iterátorem z&nbsp;vektoru
+obsahujícího komplexní čísla. Proč to není možné? Napoví nám popis této
+metody:</p>
+
+<pre>
+Creates an iterator which [clone()]s all of its elements
+</pre>
+
+<p>Pravda je, že struktura komplexních čísel skutečně neimplementuje trait pro
+klonování, což lze ale snadno napravit.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Implementace traitu <strong>Cloned</strong></h2>
+
+<p>Implementace traitu <strong>Cloned</strong> pro komplexní čísla je ve
+skutečnosti až triviálně jednoduchá, postačuje totiž namísto této
+deklarace:</p>
+
+<pre>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+</pre>
+
+<p>Použít deklaraci:</p>
+
+<pre>
+<strong>#[derive(Clone)]</strong>
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+</pre>
+
+<p>Nejdříve se pro jistotu podívejme, jak vypadá úplný kód tohoto příkladu a
+posléze budeme analyzovat jeho výstup:</p>
+
+<pre>
+use std::collections::LinkedList;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn print_list(list: &amp;LinkedList&lt;Complex&gt;) {
+&nbsp;
+    if list.is_empty() {
+        println!("list is empty");
+    } else {
+        println!("list has {} items", list.len());
+    }
+&nbsp;
+    for item in list.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let list: LinkedList&lt;Complex&gt; = vec![Complex::new(0.0, 0.0),
+                                         Complex::new(1.0, 1.0),
+                                         Complex::new(2.0, 2.0)].iter().cloned().collect();
+&nbsp;
+    print_list(&amp;list);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>Tento příklad již půjde bez problémů přeložit, ovšem nás bude zajímat, jaké
+zprávy se vytisknou při spuštění programu:</p>
+
+<pre>
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+list has 3 items
+complex number: 0+0i
+complex number: 1+1i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+</pre>
+
+<p>Povšimněte si, že se metoda <strong>drop()</strong> volá celkem šestkrát
+&ndash; třikrát na začátku programu, ještě před vytištěním obsahu seznamu a
+třikrát na konci programu, po opuštění funkce <strong>main()</strong>. Proč
+tomu tak je? První tři komplexní čísla byla vytvořena explicitně konstruktorem
+a vložena do vektoru. Posléze byl získán iterátor vektoru a každý prvek se
+naklonoval; naklonovaný prvek se uložil do výsledného seznamu. Po zavolání
+metody <strong>collect()</strong> již vektor nebyl zapotřebí (neukládali jsme
+ho do žádné proměnné), takže došlo k&nbsp;jeho automatickému zrušení (destrukci
+:-) společně se zrušením všech jeho prvků.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. První varianta pro obejití nutnosti klonování prvků: &bdquo;consuming&ldquo; iterátor</h2>
+
+<p>Existuje hned několik možností, jak zabránit &bdquo;povinnému&ldquo;
+klonování prvků při převodu vektoru (či libovolné jiné kolekce) na seznam či do
+množiny. Namísto:</p>
+
+<pre>
+let list: LinkedList&lt;Complex&gt; = vec![Complex::new(0.0, 0.0),
+                                     Complex::new(1.0, 1.0),
+                                     Complex::new(2.0, 2.0)]<strong>.iter().cloned().collect()</strong>;
+</pre>
+
+<p>je možné použít poněkud odlišnou konstrukci, která nevytvoří iterátor
+z&nbsp;vektoru, ale převede vektor na tzv. &bdquo;consuming&ldquo; iterátor,
+který postupně získává vlastnictví prvků z&nbsp;původní kolekce (namísto
+&bdquo;copy&ldquo; strategie se použije &bdquo;move&ldquo; strategie). To
+v&nbsp;našem případě znamená, že vektor bude po provedení všech iterací
+prázdný, což nám ovšem vůbec nevadí, protože ho stejně nikam nepřiřazujeme:</p>
+
+<pre>
+let list: LinkedList&lt;Complex&gt; = vec![Complex::new(0.0, 0.0),
+                                     Complex::new(1.0, 1.0),
+                                     Complex::new(2.0, 2.0)]<strong>.into_iter().collect();</strong>
+</pre>
+
+<p>Úplný zdrojový kód upraveného příkladu vypadá takto:</p>
+
+<pre>
+use std::collections::LinkedList;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn print_list(list: &amp;LinkedList&lt;Complex&gt;) {
+&nbsp;
+    if list.is_empty() {
+        println!("list is empty");
+    } else {
+        println!("list has {} items", list.len());
+    }
+&nbsp;
+    for item in list.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let list: LinkedList&lt;Complex&gt; = vec![Complex::new(0.0, 0.0),
+                                         Complex::new(1.0, 1.0),
+                                         Complex::new(2.0, 2.0)].into_iter().collect();
+&nbsp;
+    print_list(&amp;list);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>O tom, zda se prvky klonují či ne, se snadno přesvědčíme spuštěním příkladu:</p>
+
+<pre>
+list has 3 items
+complex number: 0+0i
+complex number: 1+1i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Druhá varianta pro obejití nutnosti klonování prvků: &bdquo;draining&ldquo; iterátor</h2>
+
+<p>Druhá varianta, jak je možné zabránit klonování prvků a namísto něj provést
+jejich přesun do jiné kolekce, spočívá v&nbsp;použití takzvaného
+&bdquo;draining&ldquo; iterátoru. Ten pracuje podobným způsobem jako
+&bdquo;consuming&ldquo; iterátor, ovšem použitím objektu typu <i>Range</i> lze
+přesně určit, které prvky se budou ze zdrojové kolekce odstraňovat a přes které
+se současně bude iterovat. Pokud iterované prvky nezpracujeme (nikam je
+neuložíme), jsou jednoduše ze zdrojové kolekce odstraněny:</p>
+
+<pre>
+let mut v = vec![Complex::new(0.0, 0.0),
+                 Complex::new(1.0, 1.0),
+                 Complex::new(2.0, 2.0)];
+&nbsp;
+let list: LinkedList&lt;Complex&gt; = <strong>v.drain(0..).collect()</strong>;
+</pre>
+
+<p>V&nbsp;tomto případě není možné použít zápis na jednom řádku, protože by
+došlo k&nbsp;chybě při pokusu o překlad:</p>
+
+<pre>
+error: borrowed value does not live long enough
+ --&gt; &lt;std macros&gt;:3:1
+  |
+3 | &lt; [ _ ] &gt; :: into_vec ( box [ $ ( $ x ) , * ] ) ) ; ( $ ( $ x : expr , ) * )
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ does not live long enough
+test.rs:43:5: 45:45 note: in this expansion of vec! (defined in &lt;std macros&gt;)
+</pre>
+
+<p>Použití &bdquo;draining&ldquo; iterátoru bude vypadat takto:</p>
+
+<pre>
+use std::collections::LinkedList;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: f32,
+    imag: f32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: f32, imag: f32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+fn print_list(list: &amp;LinkedList&lt;Complex&gt;) {
+&nbsp;
+    if list.is_empty() {
+        println!("list is empty");
+    } else {
+        println!("list has {} items", list.len());
+    }
+&nbsp;
+    for item in list.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let mut v = vec![Complex::new(0.0, 0.0),
+                     Complex::new(1.0, 1.0),
+                     Complex::new(2.0, 2.0)];
+&nbsp;
+    let list: LinkedList&lt;Complex&gt; = v.drain(0..).collect();
+&nbsp;
+    print_list(&amp;list);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>Snadno se přesvědčíme, že ani v&nbsp;tomto případě nebude docházet ke
+klonování prvků z&nbsp;původního vektoru:</p>
+
+<pre>
+list has 3 items
+complex number: 0+0i
+complex number: 1+1i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Uložení komplexních čísel do množiny</h2>
+
+<p>Ve druhé části článku si ukážeme, jak lze komplexní čísla uložit do množiny
+(<i>set</i>). Připomeňme si, že množiny jsou implementovány buď hešovací
+tabulkou nebo B-stromem. V&nbsp;prvním případě, tj.&nbsp;při použití hešovací
+tabulky, je nutné, aby struktura představující komplexní čísla implementovala
+traity <strong>Eq</strong>, <strong>PartialEq</strong> a <strong>Hash</strong>,
+v&nbsp;případě druhém je navíc nutné implementovat i trait <strong>Ord</strong>
+(uspořádání), což je u komplexních čísel poměrně velký (neřešitelný?)
+problém.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Použití množiny reprezentované hešovací tabulkou</h2>
+
+<p>Podívejme se nyní na způsob uložení komplexních čísel do množiny
+reprezentované hešovací tabulkou. Kvůli poslednímu požadavku na implementaci
+traitu <strong>Hash</strong> si pro jednoduchost upravme strukturu komplexních
+čísel tak, aby byla reálná i imaginární složka reprezentována celými čísly,
+protože pro celá čísla již výpočet hešovací hodnoty existuje (na rozdíl od
+čísel reálných):</p>
+
+<pre>
+#[derive(Clone)]
+struct Complex {
+    real: i32,
+    imag: i32,
+}
+</pre>
+
+<p>Trait <strong>PartialEq</strong> může být implementován velmi jednoduše
+porovnáním reálných složek a imaginárních složek dvou komplexních čísel. Toto
+porovnání plně odpovídá požadavkům na tento trait &ndash; symetričnost a
+tranzitivitu:</p>
+
+<pre>
+impl PartialEq for Complex {
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+</pre>
+
+<p>Zatímco implementace traitu <strong>PartialEq</strong> byla jednoduchá,
+implementace traitu <strong>Eq</strong> je triviální, protože překladači stačí
+pouze oznámit, že je tento trait podporován:</p>
+
+<pre>
+impl Eq for Complex {
+}
+</pre>
+
+<p>Nejsložitější je implementace traitu <strong>Hash</strong>. V&nbsp;tomto
+traitu je předepsána metoda <strong>hash()</strong>, která kupodivu nic nevrací
+(jak jste možná zvyklí z&nbsp;jiných knihoven a jazyků), ale jen upravuje stav
+postupně počítaného otisku. Při implementaci můžeme využít faktu, že pro celá
+čísla je trait <strong>Hash</strong> plně implementován, takže například pro
+reálnou složku lze zavolat metodu <strong>self.real.hash(state)</strong>, která
+upravuje měnitelnou (mutable) hodnotu <strong>state</strong>:</p>
+
+<pre>
+impl Hash for Complex {
+    fn hash&lt;H: Hasher&gt;(&amp;self, state: &amp;mut H) {
+        self.real.hash(state);
+        self.imag.hash(state);
+    }
+}
+</pre>
+
+<p>Druhou možností je pouze specifikace #[derive(Hash)] pro naši implementaci komplexních čísel.</p>
+
+<pre>
+<strong>#[derive(Clone, Hash)]</strong>
+struct Complex {
+    real: i32,
+    imag: i32,
+}
+</pre>
+
+<p>Poznámka: současně je nutné zaručit, že pokud se komplexní číslo A rovná
+komplexnímu číslu B (což se zjišťuje přes traity <strong>PartialEq</strong> a
+<strong>Eq</strong>), musí současně platit i Hash(A)==Hash(B). To je
+v&nbsp;našem případě samozřejmě zaručeno, ovšem pokud se budete snažit
+implementovat nějaký &bdquo;zajímavější&ldquo; způsob porovnání, například
+řetězců podle jejich délky, je nutné si dávat pozor, jinak nebude práce
+s&nbsp;kolekcemi korektní.</p>
+
+<p>Podívejme se nyní, jak lze jednoduše vytvořit množinu s&nbsp;komplexními
+čísly:</p>
+
+<pre>
+use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: i32,
+    imag: i32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: i32, imag: i32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+&nbsp;
+impl Eq for Complex {
+}
+&nbsp;
+impl Hash for Complex {
+    fn hash&lt;H: Hasher&gt;(&amp;self, state: &amp;mut H) {
+        self.real.hash(state);
+        self.imag.hash(state);
+    }
+}
+&nbsp;
+fn print_set(set: &amp;HashSet&lt;Complex&gt;) {
+&nbsp;
+    if set.is_empty() {
+        println!("set is empty");
+    } else {
+        println!("set has {} items", set.len());
+    }
+&nbsp;
+    for item in set.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let set: HashSet&lt;Complex&gt; = vec![Complex::new(0, 0),
+                                     Complex::new(1, 1),
+                                     Complex::new(2, 2)].iter().cloned().collect();
+&nbsp;
+    print_set(&amp;list);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>Po spuštění tohoto příkladu se na standardní výstup vypíšou následující
+řádky:</p>
+
+<pre>
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+set has 3 items
+complex number: 1+1i
+complex number: 0+0i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 2+2i
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+</pre>
+
+<p>Proč je vytvořeno a posléze odstraněno šest komplexních čísel již víme
+&ndash; provádí se klonování prvků při převodu vektoru na množinu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Převod obsahu celého vektoru na množinu bez klonování prvků</h2>
+
+<p>Pokud potřebujeme převést celý vektor na množinu bez (zbytečného) klonování
+prvků, můžeme použít již osvědčenou metodu <strong>into_iter()</strong>
+převádějící vlastnictví prvků z&nbsp;vektoru přímo do iterátoru:</p>
+
+<pre>
+use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: i32,
+    imag: i32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: i32, imag: i32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+&nbsp;
+impl Eq for Complex {
+}
+&nbsp;
+impl Hash for Complex {
+    fn hash&lt;H: Hasher&gt;(&amp;self, state: &amp;mut H) {
+        self.real.hash(state);
+        self.imag.hash(state);
+    }
+}
+&nbsp;
+fn print_set(set: &amp;HashSet&lt;Complex&gt;) {
+&nbsp;
+    if set.is_empty() {
+        println!("set is empty");
+    } else {
+        println!("set has {} items", set.len());
+    }
+&nbsp;
+    for item in set.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let set: HashSet&lt;Complex&gt; = vec![Complex::new(0, 0),
+                                     Complex::new(1, 1),
+                                     Complex::new(2, 2)].into_iter().collect();
+&nbsp;
+    print_set(&amp;set);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+<p>O tom, že ke klonování skutečně nedochází, se snadno přesvědčíme:</p>
+
+<pre>
+set has 3 items
+complex number: 1+1i
+complex number: 0+0i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 2+2i
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Pokus o vložení stejných prvků do množiny</h2>
+
+<p>Upravme si nepatrně předchozí příklad tak, že ve vektoru (převáděného na
+množinu) budou shodné prvky, tj.&nbsp;prvky, pro něž metoda <strong>eq</strong>
+vrátí <strong>True</strong>:</p>
+
+<pre>
+let set: HashSet&lt;Complex&gt; = vec![Complex::new(0, 0),
+                                 Complex::new(1, 1),
+                                 Complex::new(0, 0),
+                                 Complex::new(1, 1),
+                                 Complex::new(2, 2),
+                                 Complex::new(2, 2)].iter().cloned().collect();
+</pre>
+
+<p>Po spuštění takto upraveného příkladu uvidíme, že na začátku došlo
+k&nbsp;vytvoření klonů všech šesti prvků. Následně se tři z&nbsp;těchto klonů
+převedly do výsledné množiny, kdežto druhá trojice klonů byla prakticky ihned
+po jejich vzniku odstraněna (zvýrazněno). To je sice korektní chování
+(v&nbsp;množině nelze mít dva shodné prvky), ovšem z&nbsp;paměťového i
+výpočetního hlediska se jedná o velmi neefektivní způsob:</p>
+
+<pre>
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 0+0i
+<strong>Dropping complex number: 1+1i</strong>
+<strong>Dropping complex number: 2+2i</strong>
+<strong>Dropping complex number: 2+2i</strong>
+set has 3 items
+complex number: 1+1i
+complex number: 2+2i
+complex number: 0+0i
+exit from main()
+Dropping complex number: 0+0i
+Dropping complex number: 2+2i
+Dropping complex number: 1+1i
+</pre>
+
+<p>Úplný zdrojový kód příkladu vypadá následovně:</p>
+
+<pre>
+use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: i32,
+    imag: i32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: i32, imag: i32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+&nbsp;
+impl Eq for Complex {
+}
+&nbsp;
+impl Hash for Complex {
+    fn hash&lt;H: Hasher&gt;(&amp;self, state: &amp;mut H) {
+        self.real.hash(state);
+        self.imag.hash(state);
+    }
+}
+&nbsp;
+fn print_set(list: &amp;HashSet&lt;Complex&gt;) {
+&nbsp;
+    if set.is_empty() {
+        println!("set is empty");
+    } else {
+        println!("set has {} items", set.len());
+    }
+&nbsp;
+    for item in set.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let set: HashSet&lt;Complex&gt; = vec![Complex::new(0, 0),
+                                     Complex::new(1, 1),
+                                     Complex::new(0, 0),
+                                     Complex::new(1, 1),
+                                     Complex::new(2, 2),
+                                     Complex::new(2, 2)].iter().cloned().collect();
+&nbsp;
+    print_set(&amp;set);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Vložení stejných prvků do množiny bez vytvoření klonů</h2>
+
+<p>Pokud provedeme převod vektoru na množinu bez klonování prvků, bude chování
+poněkud odlišné &ndash; tři prvky, které již v&nbsp;množině existují (byly do
+ní vloženy při předchozí iteraci), jsou odstraněny ještě před vytištěním obsahu
+množiny, další tři prvky převedené do množiny jsou odstraněny až při odchodu
+z&nbsp;funkce <strong>main</strong>:</p>
+
+<pre>
+Dropping complex number: 0+0i
+Dropping complex number: 1+1i
+Dropping complex number: 2+2i
+set has 3 items
+complex number: 0+0i
+complex number: 1+1i
+complex number: 2+2i
+exit from main()
+Dropping complex number: 2+2i
+Dropping complex number: 1+1i
+Dropping complex number: 0+0i
+</pre>
+
+<p>Úplný zdrojový kód příkladu vypadá následovně:</p>
+
+<pre>
+use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
+&nbsp;
+#[derive(Clone)]
+struct Complex {
+    real: i32,
+    imag: i32,
+}
+&nbsp;
+impl Complex {
+    fn new(real: i32, imag: i32) -&gt; Complex {
+        Complex{real:real, imag:imag}
+    }
+    fn print(&amp;self) {
+        println!("complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl Drop for Complex {
+    fn drop(&amp;mut self) {
+        println!("Dropping complex number: {:}+{:}i", self.real, self.imag);
+    }
+}
+&nbsp;
+impl PartialEq for Complex {
+    fn eq(&amp;self, right: &amp;Complex) -&gt; bool {
+        self.real == right.real &amp;&amp; self.imag == right.imag
+    }
+}
+&nbsp;
+impl Eq for Complex {
+}
+&nbsp;
+impl Hash for Complex {
+    fn hash&lt;H: Hasher&gt;(&amp;self, state: &amp;mut H) {
+        self.real.hash(state);
+        self.imag.hash(state);
+    }
+}
+&nbsp;
+fn print_set(set: &amp;HashSet&lt;Complex&gt;) {
+&nbsp;
+    if set.is_empty() {
+        println!("set is empty");
+    } else {
+        println!("set has {} items", set.len());
+    }
+&nbsp;
+    for item in set.iter() {
+        item.print();
+    }
+}
+&nbsp;
+fn main() {
+    let set: HashSet&lt;Complex&gt; = vec![Complex::new(0, 0),
+                                     Complex::new(1, 1),
+                                     Complex::new(0, 0),
+                                     Complex::new(1, 1),
+                                     Complex::new(2, 2),
+                                     Complex::new(2, 2)].into_iter().collect();
+&nbsp;
+    print_list(&amp;set);
+&nbsp;
+    println!("exit from main()");
+}
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Otázka k&nbsp;zamyšlení</h2>
+
+<p>Pokud by se namísto množiny reprezentované hešovací tabulkou použila množina
+reprezentovaná B-stromem, musela by naše struktura komplexních čísel
+reprezentovat trait <strong>Ord</strong>, což je kontrolováno překladačem:</p>
+
+<pre>
+impl Ord for Complex {
+    fn cmp(&amp;self, other: &amp;Complex) -&gt; Ordering {
+        ???
+        ???
+        ???
+    }
+}
+</pre>
+
+<p>Jak by bylo možné tento trait implementovat? Existuje vůbec nějaký rozumný
+způsob?</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny dnes popisované demonstrační příklady byly, podobně jako ve všech
+předchozích částech tohoto seriálu, uloženy do Git repositáře dostupného na
+adrese <a
+href="https://github.com/tisnik/presentations">https://github.com/tisnik/presentations</a>.
+Příklady si můžete v&nbsp;případě potřeby stáhnout i jednotlivě bez nutnosti
+klonovat celý repositář:</p>
+
+<table>
+<tr><th>Příklad</th><th>Odkaz</th></tr>
+<tr><td>276_sequences37.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/276_sequences37.rs">https://github.com/tisnik/presentations/blob/master/rust/276_sequences37.rs</a></td></tr>
+<tr><td>277_sequences38.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/277_sequences38.rs">https://github.com/tisnik/presentations/blob/master/rust/277_sequences38.rs</a></td></tr>
+<tr><td>278_sequences39_error.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/278_sequences39_error.rs">https://github.com/tisnik/presentations/blob/master/rust/278_sequences39_error.rs</a></td></tr>
+<tr><td>279_sequences40.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/279_sequences40.rs">https://github.com/tisnik/presentations/blob/master/rust/279_sequences40.rs</a></td></tr>
+<tr><td>280_sequences41.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/280_sequences41.rs">https://github.com/tisnik/presentations/blob/master/rust/280_sequences41.rs</a></td></tr>
+<tr><td>281_sequences42.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/281_sequences42.rs">https://github.com/tisnik/presentations/blob/master/rust/281_sequences42.rs</a></td></tr>
+<tr><td>282_sequences43.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/282_sequences43.rs">https://github.com/tisnik/presentations/blob/master/rust/282_sequences43.rs</a></td></tr>
+<tr><td>283_sequences44.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/283_sequences44.rs">https://github.com/tisnik/presentations/blob/master/rust/283_sequences44.rs</a></td></tr>
+<tr><td>284_sequences45.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/284_sequences45.rs">https://github.com/tisnik/presentations/blob/master/rust/284_sequences45.rs</a></td></tr>
+<tr><td>285_sequences46.rs</td><td><a href="https://github.com/tisnik/presentations/blob/master/rust/285_sequences46.rs">https://github.com/tisnik/presentations/blob/master/rust/285_sequences46.rs</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Struct std::collections::HashSet<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.HashSet.html">https://doc.rust-lang.org/std/collections/struct.HashSet.html</a>
+</li>
+
+<li>Struct std::collections::BTreeSet<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.BTreeSet.html">https://doc.rust-lang.org/std/collections/struct.BTreeSet.html</a>
+</li>
+
+<li>Struct std::collections::BinaryHeap<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html">https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html</a>
+</li>
+
+<li>Set (abstract data type)<br />
+<a href="https://en.wikipedia.org/wiki/Set_%28abstract_data_type%29#Language_support">https://en.wikipedia.org/wiki/Set_%28abstract_data_type%29#Language_support</a>
+</li>
+
+<li>Associative array<br />
+<a href="https://en.wikipedia.org/wiki/Associative_array">https://en.wikipedia.org/wiki/Associative_array</a>
+</li>
+
+<li>Hash Table<br />
+<a href="https://en.wikipedia.org/wiki/Hash_table">https://en.wikipedia.org/wiki/Hash_table</a>
+</li>
+
+<li>B-tree<br />
+<a href="https://en.wikipedia.org/wiki/B-tree">https://en.wikipedia.org/wiki/B-tree</a>
+</li>
+
+<li>Pedro Celis: Robin Hood Hashing (naskenované PDF!)<br />
+<a href="https://cs.uwaterloo.ca/research/tr/1986/CS-86-14.pdf">https://cs.uwaterloo.ca/research/tr/1986/CS-86-14.pdf</a>
+</li>
+
+<li>Robin Hood hashing<br />
+<a href="http://codecapsule.com/2013/11/11/robin-hood-hashing/">http://codecapsule.com/2013/11/11/robin-hood-hashing/</a>
+</li>
+
+<li>Robin Hood hashing: backward shift deletion<br />
+<a href="http://codecapsule.com/2013/11/17/robin-hood-hashing-backward-shift-deletion/">http://codecapsule.com/2013/11/17/robin-hood-hashing-backward-shift-deletion/</a>
+</li>
+
+<li>Module std::collections<br />
+<a href="https://doc.rust-lang.org/std/collections/">https://doc.rust-lang.org/std/collections/</a>
+</li>
+
+<li>Module std::vec<br />
+<a href="https://doc.rust-lang.org/nightly/std/vec/index.html">https://doc.rust-lang.org/nightly/std/vec/index.html</a>
+</li>
+
+<li>Struct std::collections::VecDeque<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.VecDeque.html">https://doc.rust-lang.org/std/collections/struct.VecDeque.html</a>
+</li>
+
+<li>Struct std::collections::LinkedList<br />
+<a href="https://doc.rust-lang.org/std/collections/struct.LinkedList.html">https://doc.rust-lang.org/std/collections/struct.LinkedList.html</a>
+</li>
+
+<li>Module std::fmt<br />
+<a href="https://doc.rust-lang.org/std/fmt/">https://doc.rust-lang.org/std/fmt/</a>
+</li>
+
+<li>Macro std::println<br />
+<a href="https://doc.rust-lang.org/std/macro.println.html">https://doc.rust-lang.org/std/macro.println.html</a>
+</li>
+
+<li>Enum std::result::Result<br />
+<a href="https://doc.rust-lang.org/std/result/enum.Result.html">https://doc.rust-lang.org/std/result/enum.Result.html</a>
+</li>
+
+<li>Module std::result<br />
+<a href="https://doc.rust-lang.org/std/result/">https://doc.rust-lang.org/std/result/</a>
+</li>
+
+<li>Result<br />
+<a href="http://rustbyexample.com/std/result.html">http://rustbyexample.com/std/result.html</a>
+</li>
+
+<li>Rust stdlib: Option<br />
+<a href="https://doc.rust-lang.org/std/option/enum.Option.html">https://doc.rust-lang.org/std/option/enum.Option.html</a>
+</li>
+
+<li>Module std::option<br />
+<a href="https://doc.rust-lang.org/std/option/index.html">https://doc.rust-lang.org/std/option/index.html</a>
+</li>
+
+<li>Rust by example: option<br />
+<a href="http://rustbyexample.com/std/option.html">http://rustbyexample.com/std/option.html</a>
+</li>
+
+<li>Rust by example: if-let<br />
+<a href="http://rustbyexample.com/flow_control/if_let.html">http://rustbyexample.com/flow_control/if_let.html</a>
+</li>
+
+<li>Rust by example: while let<br />
+<a href="http://rustbyexample.com/flow_control/while_let.html">http://rustbyexample.com/flow_control/while_let.html</a>
+</li>
+
+<li>Rust by example: Option&lt;i32&gt;<br />
+<a href="http://rustbyexample.com/std/option.html">http://rustbyexample.com/std/option.html</a>
+</li>
+
+<li>An Overview of Macros in Rust<br />
+<a href="http://words.steveklabnik.com/an-overview-of-macros-in-rust">http://words.steveklabnik.com/an-overview-of-macros-in-rust</a>
+</li>
+
+<li>A Practical Intro to Macros in Rust 1.0<br />
+<a href="https://danielkeep.github.io/practical-intro-to-macros.html">https://danielkeep.github.io/practical-intro-to-macros.html</a>
+</li>
+
+<li>The Rust Programming Language: macros<br />
+<a href="https://doc.rust-lang.org/beta/book/macros.html">https://doc.rust-lang.org/beta/book/macros.html</a>
+</li>
+
+<li>Rust by example: 15 macro_rules!<br />
+<a href="http://rustbyexample.com/macros.html">http://rustbyexample.com/macros.html</a>
+</li>
+
+<li>Primitive Type isize<br />
+<a href="https://doc.rust-lang.org/nightly/std/primitive.isize.html">https://doc.rust-lang.org/nightly/std/primitive.isize.html</a>
+</li>
+
+<li>Primitive Type usize<br />
+<a href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">https://doc.rust-lang.org/nightly/std/primitive.usize.html</a>
+</li>
+
+<li>Primitive Type array<br />
+<a href="https://doc.rust-lang.org/nightly/std/primitive.array.html">https://doc.rust-lang.org/nightly/std/primitive.array.html</a>
+</li>
+
+<li>Module std::slice<br />
+<a href="https://doc.rust-lang.org/nightly/std/slice/">https://doc.rust-lang.org/nightly/std/slice/</a>
+</li>
+
+<li>Rust by Example: 2.3 Arrays and Slices<br />
+<a href="http://rustbyexample.com/primitives/array.html">http://rustbyexample.com/primitives/array.html</a>
+</li>
+
+<li>What is the difference between Slice and Array (stackoverflow)<br />
+<a href="http://stackoverflow.com/questions/30794235/what-is-the-difference-between-slice-and-array">http://stackoverflow.com/questions/30794235/what-is-the-difference-between-slice-and-array</a>
+</li>
+
+<li>Learning Rust With Entirely Too Many Linked Lists<br />
+<a href="http://cglab.ca/~abeinges/blah/too-many-lists/book/">http://cglab.ca/~abeinges/blah/too-many-lists/book/</a>
+</li>
+
+<li>Testcase: linked list<br />
+<a href="http://rustbyexample.com/custom_types/enum/testcase_linked_list.html">http://rustbyexample.com/custom_types/enum/testcase_linked_list.html</a>
+</li>
+
+<li>Operators and Overloading<br />
+<a href="https://doc.rust-lang.org/book/operators-and-overloading.html">https://doc.rust-lang.org/book/operators-and-overloading.html</a>
+</li>
+
+<li>Module std::ops<br />
+<a href="https://doc.rust-lang.org/std/ops/index.html">https://doc.rust-lang.org/std/ops/index.html</a>
+</li>
+
+<li>Module std::cmp<br />
+<a href="https://doc.rust-lang.org/std/cmp/index.html">https://doc.rust-lang.org/std/cmp/index.html</a>
+</li>
+
+<li>Trait std::ops::Add<br />
+<a href="https://doc.rust-lang.org/stable/std/ops/trait.Add.html">https://doc.rust-lang.org/stable/std/ops/trait.Add.html</a>
+</li>
+
+<li>Trait std::ops::AddAssign<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.AddAssign.html">https://doc.rust-lang.org/std/ops/trait.AddAssign.html</a>
+</li>
+
+<li>Trait std::ops::Drop<br />
+<a href="https://doc.rust-lang.org/std/ops/trait.Drop.html">https://doc.rust-lang.org/std/ops/trait.Drop.html</a>
+</li>
+
+<li>Trait std::cmp::Eq<br />
+<a href="https://doc.rust-lang.org/std/cmp/trait.Eq.html">https://doc.rust-lang.org/std/cmp/trait.Eq.html</a>
+</li>
+
+<li>Struct std::boxed::Box<br />
+<a href="https://doc.rust-lang.org/std/boxed/struct.Box.html">https://doc.rust-lang.org/std/boxed/struct.Box.html</a>
+</li>
+
+<li>Explore the ownership system in Rust<br />
+<a href="https://nercury.github.io/rust/guide/2015/01/19/ownership.html">https://nercury.github.io/rust/guide/2015/01/19/ownership.html</a>
+</li>
+
+<li>Rust's ownership and move semantic<br/>
+<a href="http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics">http://www.slideshare.net/saneyuki/rusts-ownership-and-move-semantics</a>
+</li>
+
+<li>Trait std::marker::Copy<br/>
+<a href="https://doc.rust-lang.org/stable/std/marker/trait.Copy.html">https://doc.rust-lang.org/stable/std/marker/trait.Copy.html</a>
+</li>
+
+<li>Trait std::clone::Clone<br />
+<a href="https://doc.rust-lang.org/stable/std/clone/trait.Clone.html">https://doc.rust-lang.org/stable/std/clone/trait.Clone.html</a>
+</li>
+
+<li>The Stack and the Heap<br />
+<a href="https://doc.rust-lang.org/book/the-stack-and-the-heap.html">https://doc.rust-lang.org/book/the-stack-and-the-heap.html</a>
+</li>
+
+<li>Rust Compare: Pointers &amp; References<br />
+<a href="http://www.rust-compare.com/site/pointers.html">http://www.rust-compare.com/site/pointers.html</a>
+</li>
+
+<li>Rust Compare: Parameters<br />
+<a href="http://www.rust-compare.com/site/params.html">http://www.rust-compare.com/site/params.html</a>
+</li>
+
+<li>Why does this compile? Automatic dereferencing?<br />
+<a href="https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183">https://users.rust-lang.org/t/why-does-this-compile-automatic-dereferencing/2183</a>
+</li>
+
+<li>Understanding Pointers, Ownership, and Lifetimes in Rust<br />
+<a href="http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html">http://koerbitz.me/posts/Understanding-Pointers-Ownership-and-Lifetimes-in-Rust.html</a>
+</li>
+
+<li>Rust lang series episode #25 — pointers (#rust-series)<br />
+<a href="https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series">https://steemit.com/rust-series/@jimmco/rust-lang-series-episode-25-pointers-rust-series</a>
+</li>
+
+<li>Rust - home page<br />
+<a href="https://www.rust-lang.org/en-US/">https://www.rust-lang.org/en-US/</a>
+</li>
+
+<li>Rust - Frequently Asked Questions<br />
+<a href="https://www.rust-lang.org/en-US/faq.html">https://www.rust-lang.org/en-US/faq.html</a>
+</li>
+
+<li>Destructuring and Pattern Matching<br />
+<a href="https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/">https://pzol.github.io/getting_rusty/posts/20140417_destructuring_in_rust/</a>
+</li>
+
+<li>The Rust Programming Language<br />
+<a href="https://doc.rust-lang.org/book/">https://doc.rust-lang.org/book/</a>
+</li>
+
+<li>Rust (programming language)<br />
+<a href="https://en.wikipedia.org/wiki/Rust_%28programming_language%29">https://en.wikipedia.org/wiki/Rust_%28programming_language%29</a>
+</li>
+
+<li>Go - home page<br />
+<a href="https://golang.org/">https://golang.org/</a>
+</li>
+
+<li>Stack Overflow - Most Loved, Dreaded, and Wanted language<br />
+<a href="https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted">https://stackoverflow.com/research/developer-survey-2016#technology-most-loved-dreaded-and-wanted</a>
+</li>
+
+<li>Rust vs Go (dva roky staré hodnocení, od té doby došlo k posunům v obou jazycích)<br />
+<a href="http://jaredforsyth.com/2014/03/22/rust-vs-go/">http://jaredforsyth.com/2014/03/22/rust-vs-go/</a>
+</li>
+
+<li>Rust vs Go: My experience<br />
+<a href="https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/">https://www.reddit.com/r/golang/comments/21m6jq/rust_vs_go_my_experience/</a>
+</li>
+
+<li>Friends of Rust (Organizations running Rust in production)<br />
+<a href="https://www.rust-lang.org/en-US/friends.html">https://www.rust-lang.org/en-US/friends.html</a>
+</li>
+
+<li>Rust programs versus C++ g++<br />
+<a href="https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp">https://benchmarksgame.alioth.debian.org/u64q/compare.php?lang=rust&lang2=gpp</a>
+</li>
+
+<li>Další benchmarky (nejedná se o reálné příklady &bdquo;ze života&ldquo;)<br />
+<a href="https://github.com/kostya/benchmarks">https://github.com/kostya/benchmarks</a>
+</li>
+
+<li>Go na Redditu<br />
+<a href="https://www.reddit.com/r/golang/">https://www.reddit.com/r/golang/</a>
+</li>
+
+<li>Rust vs. Go<br />
+<a href="http://vschart.com/compare/rust/vs/go-language">http://vschart.com/compare/rust/vs/go-language</a>
+</li>
+
+<li>Abstraction without overhead: traits in Rust<br />
+<a href="https://blog.rust-lang.org/2015/05/11/traits.html">https://blog.rust-lang.org/2015/05/11/traits.html</a>
+</li>
+
+<li>Method Syntax<br />
+<a href="https://doc.rust-lang.org/book/method-syntax.html">https://doc.rust-lang.org/book/method-syntax.html</a>
+</li>
+
+<li>Traits in Rust<br />
+<a href="https://doc.rust-lang.org/book/traits.html">https://doc.rust-lang.org/book/traits.html</a>
+</li>
+
+<li>Functional Programming in Rust - Part 1 : Function Abstraction<br />
+<a href="http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/">http://blog.madhukaraphatak.com/functional-programming-in-rust-part-1/</a>
+</li>
+
+<li>Of the emerging systems languages Rust, D, Go and Nim, which is the strongest language and why?<br />
+<a href="https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why">https://www.quora.com/Of-the-emerging-systems-languages-Rust-D-Go-and-Nim-which-is-the-strongest-language-and-why</a>
+</li>
+
+<li>Chytré ukazatele (moderní verze jazyka C++) [MSDN]<br />
+<a href="https://msdn.microsoft.com/cs-cz/library/hh279674.aspx">https://msdn.microsoft.com/cs-cz/library/hh279674.aspx</a>
+</li>
+
+<li>UTF-8 Everywhere<br />
+<a href="http://utf8everywhere.org/">http://utf8everywhere.org/</a>
+</li>
+
+<li>Rust by Example<br />
+<a href="http://rustbyexample.com/">http://rustbyexample.com/</a>
+</li>
+
+<li>Rust oficiálně ve Fedoře<br />
+<a href="https://mojefedora.cz/rust-oficialne-ve-fedore/">https://mojefedora.cz/rust-oficialne-ve-fedore/</a>
+</li>
+
+<li>Resource acquisition is initialization<br />
+<a href="https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization">https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization</a>
+</li>
+
+<li>TIOBE index (October 2016)<br />
+<a href="http://www.tiobe.com/tiobe-index/">http://www.tiobe.com/tiobe-index/</a>
+</li>
+
+<li>Porovnání Go, D a Rustu na OpenHubu:<br />
+<a href="https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits">https://www.openhub.net/languages/compare?language_name[]=-1&language_name[]=-1&language_name[]=dmd&language_name[]=golang&language_name[]=rust&language_name[]=-1&measure=commits</a>
+</li>
+
+<li>String Types in Rust<br />
+<a href="http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/">http://www.suspectsemantics.com/blog/2016/03/27/string-types-in-rust/</a>
+</li>
+
+<li>Trait (computer programming)<br />
+<a href="https://en.wikipedia.org/wiki/Trait_%28computer_programming%29">https://en.wikipedia.org/wiki/Trait_%28computer_programming%29</a>
+</li>
+
+<li>Type inference<br />
+<a href="https://en.wikipedia.org/wiki/Type_inference">https://en.wikipedia.org/wiki/Type_inference</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2017</small></p>
+</body>
+</html>
+
