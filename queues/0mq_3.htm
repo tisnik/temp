@@ -40,12 +40,12 @@
 <p><a href="#k01">*** 1. </a></p>
 <p><a href="#k02">*** 2. </a></p>
 <p><a href="#k03">*** 3. Použití zařízení typu &bdquo;Queue&ldquo;</a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
-<p><a href="#k08">*** 8. </a></p>
-<p><a href="#k09">*** 9. </a></p>
+<p><a href="#k04">*** 4. Klient a server, kteří se k&nbsp;frontě připojují</a></p>
+<p><a href="#k05">*** 5. Vylepšení předchozího příkladu použitím dekorátorů</a></p>
+<p><a href="#k06">*** 6. Klasická architektura PUB-SUB a její omezení</a></p>
+<p><a href="#k07">*** 7. Připojení příjemce zpráv k&nbsp;většímu množství publisherů</a></p>
+<p><a href="#k08">*** 8. Otestování chování aplikace se dvěma publishery a jedním příjemcem zpráv</a></p>
+<p><a href="#k09">*** 9. Vylepšení architektury s&nbsp;využitím tzv.&nbsp;forwarderu</a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
 <p><a href="#k12">*** 12. </a></p>
@@ -106,35 +106,343 @@ create_queue(5556, 5557)
 <h2 id="k04">4. Klient a server, kteří se k&nbsp;frontě připojují</h2>
 
 <pre>
+import zmq
+
+PORT = 5556
+
+
+def <strong>connect</strong>(port, connection_type):
+    <i>"""Otevření socketu se specifikovaným typem spojení."""</i>
+    context = zmq.Context()
+    socket = context.socket(connection_type)
+    address = "tcp://localhost:{port}".format(port=port)
+    socket.connect(address)
+    print("Connected to {a}".format(a=address))
+    return socket
+
+
+def <strong>send_request</strong>(socket, request):
+    <i>"""Poslání požadavku."""</i>
+    print("Sending request '{r}'".format(r=request))
+    socket.send_string(request)
+
+
+def <strong>start_client</strong>():
+    <i>"""Spuštění klienta."""</i>
+    socket = connect(PORT, zmq.REQ)
+
+    send_request(socket, "1")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "10")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "xyzzy")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "-10")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "100")
+    print(socket.recv_string())
+    print()
+
+
+start_client()
 </pre>
+
+<pre>
+import zmq
+from math import factorial
+
+PORT = 5557
+
+
+def <strong>connect</strong>(port, connection_type):
+    <i>"""Otevření socketu se specifikovaným typem spojení."""</i>
+    context = zmq.Context()
+    socket = context.socket(connection_type)
+    address = "tcp://localhost:{port}".format(port=port)
+    socket.connect(address)
+    print("Connected to {a}".format(a=address))
+    return socket
+
+
+def <strong>send_response</strong>(socket, response):
+    <i>"""Odeslání odpovědi."""</i>
+    print("Sending response '{r}'".format(r=response))
+    socket.send_string(response)
+
+
+def <strong>receive_request</strong>(socket):
+    <i>"""Zpracování požadavku klienta."""</i>
+    request = socket.recv_string()
+    print("Received request from client: '{r}'".format(r=request))
+    return request
+
+
+def <strong>start_server</strong>():
+    <i>"""Spuštění serveru."""</i>
+    socket = connect(PORT, zmq.REP)
+    while True:
+        request = receive_request(socket)
+        try:
+            n = int(request)
+            fact = factorial(n)
+            send_response(socket, "{n}! = {f}".format(n=n, f=fact))
+        except Exception as e:
+            send_response(socket, "Wrong input")
+
+
+start_server()
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Vylepšení předchozího příkladu použitím dekorátorů</h2>
+
+<pre>
+import zmq
+from zmq.decorators import context, socket
+
+XREP_PORT = 5556
+XREQ_PORT = 5557
+
+
+@context()
+@socket(zmq.XREP)
+@socket(zmq.XREQ)
+def <strong>create_queue</strong>(xrep_port, xreq_port, context, frontend, backend):
+    <i>"""Vytvoření fronty."""</i>
+    context = zmq.Context()
+
+    address = "tcp://*:{port}".format(port=xrep_port)
+    frontend.bind(address)
+    print("Bound to {a} on port {p}".format(a=address, p=xrep_port))
+
+    address = "tcp://*:{port}".format(port=xreq_port)
+    backend.bind(address)
+    print("Bound to {a} on port {p}".format(a=address, p=xreq_port))
+
+    zmq.device(zmq.QUEUE, frontend, backend)
+
+
+create_queue(5556, 5557)
+</pre>
+
+<pre>
+import zmq
+from zmq.decorators import context, socket
+
+CONNECTION_TYPE = zmq.REQ
+PORT = 5556
+
+
+def <strong>connect</strong>(socket, port):
+    <i>"""Otevření socketu se specifikovaným typem spojení."""</i>
+    address = "tcp://localhost:{port}".format(port=port)
+    socket.connect(address)
+    print("Connected to {a}".format(a=address))
+
+
+def <strong>send_request</strong>(socket, request):
+    <i>"""Poslání požadavku."""</i>
+    print("Sending request '{r}'".format(r=request))
+    socket.send_string(request)
+
+
+@context()
+@socket(CONNECTION_TYPE)
+def <strong>start_client</strong>(port, context, socket):
+    <i>"""Spuštění klienta."""</i>
+    connect(socket, port)
+
+    send_request(socket, "1")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "10")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "xyzzy")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "-10")
+    print(socket.recv_string())
+    print()
+
+    send_request(socket, "100")
+    print(socket.recv_string())
+    print()
+
+
+start_client(PORT)
+</pre>
+
+<pre>
+import zmq
+from zmq.decorators import context, socket
+from math import factorial
+
+CONNECTION_TYPE = zmq.REP
+PORT = 5557
+
+
+def <strong>connect</strong>(socket, port):
+    <i>"""Otevření socketu se specifikovaným typem spojení."""</i>
+    address = "tcp://localhost:{port}".format(port=port)
+    socket.connect(address)
+    print("Connected to {a}".format(a=address))
+
+
+def <strong>send_response</strong>(socket, response):
+    <i>"""Odeslání odpovědi."""</i>
+    print("Sending response '{r}'".format(r=response))
+    socket.send_string(response)
+
+
+def <strong>receive_request</strong>(socket):
+    <i>"""Zpracování požadavku klienta."""</i>
+    request = socket.recv_string()
+    print("Received request from client: '{r}'".format(r=request))
+    return request
+
+
+@context()
+@socket(CONNECTION_TYPE)
+def <strong>start_server</strong>(port, context, socket):
+    <i>"""Spuštění serveru."""</i>
+    connect(socket, port)
+    while True:
+        request = receive_request(socket)
+        try:
+            n = int(request)
+            fact = factorial(n)
+            send_response(socket, "{n}! = {f}".format(n=n, f=fact))
+        except Exception as e:
+            send_response(socket, "Wrong input")
+
+
+start_server(PORT)
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Klasická architektura PUB-SUB a její omezení</h2>
+
+<pre>
+import zmq
+from zmq.decorators import context, socket
+
+from time import sleep
+from os import getpid
+
+
+CONNECTION_TYPE = zmq.PUB
+PORT = 5556
+
+
+def <strong>bind</strong>(socket, port):
+    <i>"""Otevření socketu se specifikovaným typem spojení."""</i>
+    address = "tcp://*:{port}".format(port=port)
+    socket.bind(address)
+    print("Bound to {a}".format(a=address))
+
+
+def <strong>publish_message</strong>(socket, message):
+    <i>"""Publikování zprávy zprávy."""</i>
+    print("Publishing message '{m}'".format(m=message))
+    socket.send_string(message)
+
+
+@context()
+@socket(CONNECTION_TYPE)
+def <strong>start_publisher</strong>(port, context, socket):
+    <i>"""Spuštění publisheru."""</i>
+    pid = getpid()
+    print("Publisher PID={pid}".format(pid=pid))
+
+    bind(socket, port)
+    for i in range(100):
+        message = "Message #{i} from {pid}".format(i=i, pid=pid)
+        publish_message(socket, message)
+        sleep(1)
+
+
+start_publisher(PORT)
+</pre>
+
+<pre>
+import zmq
+from zmq.decorators import context, socket
+
+CONNECTION_TYPE = zmq.SUB
+PORT = 5556
+
+
+def <strong>connect</strong>(socket, port):
+    <i>"""Otevření socketu se specifikovaným typem spojení."""</i>
+    address = "tcp://localhost:{port}".format(port=port)
+    socket.connect(address)
+    print("Connected to {a}".format(a=address))
+
+
+@context()
+@socket(CONNECTION_TYPE)
+def <strong>start_subscriber</strong>(port, context, socket):
+    <i>"""Spuštění příjemce."""</i>
+    connect(socket, port)
+    socket.setsockopt_string(zmq.SUBSCRIBE, "")
+
+    print("Waiting for messages...")
+
+    while True:
+        message = socket.recv_string()
+        print("Received message '{m}'".format(m=message))
+
+
+start_subscriber(PORT)
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Připojení příjemce zpráv k&nbsp;většímu množství publisherů</h2>
 
 <pre>
 </pre>
 
 
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
-
-
-
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
-
-
-
-<p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
-
-
-
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Otestování chování aplikace se dvěma publishery a jedním příjemcem zpráv</h2>
+
+<pre>
+</pre>
 
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+<h2 id="k09">9. Vylepšení architektury s&nbsp;využitím tzv.&nbsp;forwarderu</h2>
+
+<p></p>
+
+<pre>
+</pre>
+
+<pre>
+</pre>
+
+<pre>
+</pre>
 
 
 
@@ -196,13 +504,22 @@ příklady, které naleznete v&nbsp;následující tabulce.</p>
 <tr><td>1</td><td>server.py</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example16_queue_device/server.py">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example16_queue_device/server.py</a></td></tr>
 <tr><td>1</td><td>queue.py</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example16_queue_device/queue.py">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example16_queue_device/queue.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>2</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
-<tr><td>2</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
-<tr><td>2</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>2</td><td>client.py</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example17_queue_device_proper_close/client.py">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example17_queue_device_proper_close/client.py</a></td></tr>
+<tr><td>2</td><td>server.py</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example17_queue_device_proper_close/server.py">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example17_queue_device_proper_close/server.py</a></td></tr>
+<tr><td>2</td><td>queue.py</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example17_queue_device_proper_close/queue.py">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/example17_queue_device_proper_close/queue.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>3</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
 <tr><td>3</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
-<tr><td>3</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>5</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>5</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>5</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/">https://github.com/tisnik/message-queues-examples/blob/master/0mq/python/</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 </table>
 
 
@@ -210,7 +527,7 @@ příklady, které naleznete v&nbsp;následující tabulce.</p>
 <p><a name="k19"></a></p>
 <h2 id="k19">19. Odkazy na předchozí části seriálu</h2>
 
-<p>V&nbsp;této kapitole jsou uvedeny odkazy na všech šest předchozích částí
+<p>V&nbsp;této kapitole jsou uvedeny odkazy na všech sedm předchozích částí
 seriálu, v&nbsp;němž se zabýváme různými způsoby implementace front zpráv a
 k&nbsp;nim přidružených technologií:</p>
 
