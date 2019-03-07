@@ -63,14 +63,30 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Použití Apache ActiveMQ s&nbsp;protokolem AMQP, jazyk Go a message brokeři</h2>
 
+<p>Dnešní část seriálu o systémech implementujících fronty zpráv bude rozdělena do dvou částí. V&nbsp;první části si na několika demonstračních příkladech ukážeme, jakým způsobem je možné komunikovat se systémem Apache ActiveMQ s&nbsp;využitím protokolu AMQP. Příklady budou naprogramovány v&nbsp;Pythonu, přičemž vlastní realizaci komunikačního protokolu bude zajišťovat knihovna <i>Qpid Proton</i>, kterou nalezneme na adrese <a href="https://qpid.apache.org/proton/">https://qpid.apache.org/proton/</a>. Zajímavé je, že programátorské rozhraní knihovny Qpid Proton je zcela odlišné od rozhraní protokolu STOMP, které bylo realizováno v&nbsp;knihovně <i>stomp.py</i>, viz též <a href="https://www.root.cz/clanky/pouziti-apache-activemq-s-protokolem-stomp/">předchozí část tohoto seriálu</a> s&nbsp;popisem možností poskytovaných touto knihovnou.</p>
+
+<p><a href="#k13">Druhá část článku</a> je věnována nepatrně odlišnému tématu. Ukážeme si v&nbsp;ní způsob realizace klientů vyvinutých <a href="https://golang.org/">v&nbsp;programovacím jazyce Go</a>, kterému se podrobněji věnujeme <a href="https://www.root.cz/serialy/programovaci-jazyk-go/">v&nbsp;paralelně běžícím seriálu</a>. Uvidíme, že díky některým vlastnostem programovacího jazyka Go, zejména díky kanálům a gorutinám, je implementace klientů message brokera v&nbsp;mnoha ohledech velmi elegantní.</p>
+
 <p></p>
+
+conf/activemq.xml
+
+<pre>
+&lt;transportConnectors&gt;
+    &lt;transportConnector name="openwire" uri="tcp://0.0.0.0:61616?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/&gt;
+    &lt;transportConnector name="amqp" uri="amqp://0.0.0.0:5672?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/&gt;
+    &lt;transportConnector name="stomp" uri="stomp://0.0.0.0:61613?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/&gt;
+    &lt;transportConnector name="mqtt" uri="mqtt://0.0.0.0:1883?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/&gt;
+    &lt;transportConnector name="ws" uri="ws://0.0.0.0:61614?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/&gt;
+&lt;/transportConnectors&gt;
+</pre>
 
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Instalace knihovny Qpid Proton</h2>
 
-<p></p>
+<p>V&nbsp;demonstračních příkladech, které si ukážeme v&nbsp;navazujících kapitolách, použijeme pro komunikaci se systémem Apache ActiveMQ knihovnu nazvanou <i>Qpid Proton</i>, která je určena pro <a href="">programovací jazyk Python</a>. Tato knihovna je &ndash; jak je dnes již dobrým zvykem &ndash; dostupná na PyPi, ovšem před její instalací je nutné nainstalovat i Cython, a to v&nbsp;samostatném kroku. Cython, s&nbsp;nímž jsme se seznámili <a href="https://www.root.cz/clanky/rpython-vs-cython-aneb-dvoji-pristup-k-prekladu-pythonu-do-nativniho-kodu/">v&nbsp;jiném článku</a>, nainstalujeme pro právě přihlášeného uživatele následujícím příkazem:</p>
 
 <pre>
 $ <strong>pip3 install --user cython</strong>
@@ -81,6 +97,8 @@ Collecting cython
 Installing collected packages: cython
 Successfully installed cython-0.29.5
 </pre>
+
+<p>Po (doufejme že úspěšné) instalaci Cythonu již můžeme bez problémů nainstalovat i knihovnu <i>Qpid Proton</i>, a to takto:</p>
 
 <pre>
 $ <strong>pip3 install --user python-qpid-proton</strong>
@@ -93,20 +111,77 @@ Installing collected packages: python-qpid-proton
 Successfully installed python-qpid-proton-0.26.0
 </pre>
 
+<p>Základní kontrolu instalace můžeme provést přímo z&nbsp;interaktivní smyčky jazyka Python. Použijeme interpret Pythonu 3, protože i instalace byla provedena pro Python 3:</p>
+
+<pre>
+$ <strong>python3</strong>
+&nbsp;
+Python 3.6.3 (default, Oct  9 2017, 12:11:29) 
+[GCC 7.2.1 20170915 (Red Hat 7.2.1-2)] on linux
+Type "help", "copyright", "credits" or "license" for more information.
+&nbsp;
+&gt;&gt;&gt; <strong>import proton</strong>
+&gt;&gt;&gt; <strong>help("proton")</strong>
+</pre>
+
+<p>Po potvrzení posledního příkazu by se měla zobrazit nápověda:</p>
+
+<pre>
+Help on package proton:
+&nbsp;
+NAME
+    proton
+&nbsp;
+DESCRIPTION
+    The proton module defines a suite of APIs that implement the AMQP 1.0
+    protocol.
+&nbsp;
+    The proton APIs consist of the following classes:
+&nbsp;
+     - L{Message}   -- A class for creating and/or accessing AMQP message content.
+     - L{Data}      -- A class for creating and/or accessing arbitrary AMQP encoded
+                      data.
+&nbsp;
+PACKAGE CONTENTS
+</pre>
+
 
 
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Producent zpráv publikovaných pod zvoleným tématem</h2>
 
-<p></p>
+<p>Instalaci knihovny <i>Qpid Proton</i> jsme dokončili, takže si můžeme ukázat způsob implementace jednoduchého producenta zpráv, které budou posílány s&nbsp;využitím strategie <strong>PUB-SUB</strong> &ndash; zprávy tedy nebudou ukládány do fronty, ale budou přímo přeposlány všem posluchačům, kteří jsou v&nbsp;daný okamžik k&nbsp;message brokerovi připojeny.</p>
+
+<p>Ve výchozím nastavení Apache ActiveMQ je pro komunikaci s&nbsp;využitím protokolu AMQP používán port 5672, který je dokonce <a href="http://www.tcp-udp-ports.com/port-5672.htm">k&nbsp;tomuto účelu rezervován</a>. Doménové jméno serveru tedy, společně s&nbsp;portem 5672, použijeme pro určení jeho adresy ve formátu, jak ho očekává knihovna Qpid:</p>
 
 <pre>
 ADDRESS = "localhost:5672"
 </pre>
 
+<p>Určit musíme i cíl zprávy. Ten typicky začíná prefixem &bdquo;topic://&ldquo; nebo &bdquo;queue://&ldquo;. V&nbsp;prvním příkladu použijeme téma (<i>topic</i>) nazvané &bdquo;event&ldquo;, takže se cíl zapíše následovně:</p>
+
 <pre>
 TARGET = "topic://event"
 </pre>
+
+<p>Samotný producent zprávy se inicializuje a následně spustí takto:</p>
+
+<pre>
+publisher = Publisher(ADDRESS, TARGET)
+container = Container(publisher)
+container.run()
+</pre>
+
+<p>Samozřejmě nám zbývá implementovat vlastní logiku producenta, tj.&nbsp;musíme naprogramovat třídu nazvanou <strong>Publisher</strong>, která byla použita v&nbsp;předchozích programových řádcích. Tato třída je odvozena od třídy <a href="https://qpid.apache.org/releases/qpid-proton-0.27.0/proton/python/api/proton._handlers.MessagingHandler-class.html">MessagingHandler</a>, v&nbsp;níž je předepsáno několik callback metod volaných samotnou knihovnou Qpid Proton na základě různých událostí (<a href="https://qpid.apache.org/releases/qpid-proton-0.27.0/proton/python/api/proton._events.Event-class.html">Event</a>). Prozatím nás budou zajímat čtyři typy událostí:</p>
+
+<ol>
+<li>on_start</li>
+<li>on_accepted</li>
+<li>on_disconnected</li>
+<li>on_sendable</li>
+</ol>
+
+<p>V&nbsp;nejjednodušším případě &ndash; což je výchozí stav &ndash; budou handlery prázdné, ovšem povšimněte si, že se každému handleru skutečně předává objekt, který reprezentuje vzniklou událost:</p>
 
 <pre>
 class <strong>Publisher</strong>(MessagingHandler):
@@ -127,7 +202,7 @@ class <strong>Publisher</strong>(MessagingHandler):
         pass
 </pre>
 
-<p></p>
+<p>Konkrétní implementace producenta zpráv samozřemě bude složitější, což je patrné i při pohledu na <a href="">jeho úplný zdrojový kód</a>:</p>
 
 <pre>
 from proton import Message
@@ -439,6 +514,16 @@ container.run()
 
 <p></p>
 
+<table>
+<tr><th></th><th></th></tr>
+<tr><td></td><td></td></tr>
+</table>
+
+<table>
+<tr><th></th><th></th></tr>
+<tr><td></td><td></td></tr>
+</table>
+
 ActiveMQ.Advisory.Connection
 ActiveMQ.Advisory.Queue
 ActiveMQ.Advisory.Topic
@@ -607,6 +692,13 @@ Message{address="topic://ActiveMQ.Advisory.Connection", priority=0, id="ID:local
 <table>
 <tr><th></th><th></th><th></th><th></th><th></th><th></th></tr>
 <tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>
 </table>
 
 
@@ -614,10 +706,38 @@ Message{address="topic://ActiveMQ.Advisory.Connection", priority=0, id="ID:local
 <p><a name="k13"></a></p>
 <h2 id="k13">13. Použití message brokerů z&nbsp;programovacího jazyka Go s&nbsp;využitím protokolu STOMP</h2>
 
-<p></p>
+<p>Ve druhé části dnešního článku se seznámíme s&nbsp;tím, jakým způsobem je možné použít message broker Apache ActiveMQ z&nbsp;programovacího jazyka Go. Pro jednoduchost použijeme protokol STOMP (<i>Streaming Text Oriented Messaging Protocol</i>), který, jak již víme, sice nedokáže využít všechny možnosti AMQ, ovšem základní architekturu systému založeného na kombinaci AMQ+STOMP celkem bez problémů dokážeme postavit (ostatně největší problémy nás většinou čekají při návrhu subsystému pro persistenci zpráv popř.&nbsp;pro clusterování a load balancing). Implementaci knihovny s&nbsp;implementací protokolu STOMP určenou pro jazyk Go nalezneme v&nbsp;GitHub repositáři <a href="https://github.com/go-stomp/stomp">https://github.com/go-stomp/stomp</a>, takže samotná instalace bude jednoduchá. Nejdříve přejdeme do adresáře, na nějž ukazuje proměnná prostředí GOPATH; typicky se jedná o adresář <strong>~/go</strong>. Zde zadáme následující příkaz:</p>
 
 <pre>
 $ <strong>go get github.com/go-stomp/stomp</strong>
+</pre>
+
+<p>V&nbsp;adresářové struktuře by se měl objevit podadresář <strong>src/github.com/go-stomp/stomp</strong> a taktéž <strong>pkg/linux_amd64/github.com/go-stomp/stomp</strong> s&nbsp;přibližně následujícím obsahem:</p>
+
+<pre>
+.
+├── pkg
+│   └── linux_amd64
+│       └── github.com
+│           └── go-stomp
+│               └── stomp.a
+├── src
+│   ├── github.com
+│   │   └── go-stomp
+│   │       └── stomp
+│   │           ├── ack.go
+│   │           ├── breaking_changes.md
+│   │           ├── conn.go
+│   │           ├── conn_options.go
+│   │           ├── conn_test.go
+│   │           │   └── testutil.go
+...
+...
+...
+│   │           ├── transaction.go
+│   │           ├── validator.go
+│   │           ├── version.go
+│   │           └── version_test.go
 </pre>
 
 
@@ -976,6 +1096,22 @@ k&nbsp;nim přidružených technologií:</p>
 <h2 id="k20">20. Odkazy na Internetu</h2>
 
 <ol>
+
+<li>Stránka Apache Software Foundation<br />
+<a href="http://www.apache.org/">http://www.apache.org/</a>
+</li>
+
+<li>Informace o portu 5672<br />
+<a href="http://www.tcp-udp-ports.com/port-5672.htm">http://www.tcp-udp-ports.com/port-5672.htm</a>
+</li>
+
+<li>Třída MessagingHandler knihovny Qpid Proton<br />
+<a href="https://qpid.apache.org/releases/qpid-proton-0.27.0/proton/python/api/proton._handlers.MessagingHandler-class.html">https://qpid.apache.org/releases/qpid-proton-0.27.0/proton/python/api/proton._handlers.MessagingHandler-class.html</a>
+</li>
+
+<li>Třída Event knihovny Qpid Proton<br />
+<a href="https://qpid.apache.org/releases/qpid-proton-0.27.0/proton/python/api/proton._events.Event-class.html">https://qpid.apache.org/releases/qpid-proton-0.27.0/proton/python/api/proton._events.Event-class.html</a>
+</li>
 
 <li>package stomp (Go)<br />
 <a href="https://godoc.org/github.com/go-stomp/stomp">https://godoc.org/github.com/go-stomp/stomp</a>
