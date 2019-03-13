@@ -322,17 +322,213 @@ func <strong>main</strong>() {
 <pre>
 </pre>
 
+<p>Na tomto místě se můžete oprávněně zeptat, proč vlastně pro komunikaci mezi několika gorutinami, které jsou součástí jediné aplikace, vlastně používáme message brokera se všemi komplikacemi, které toto řešení přináší. Můžeme totiž namísto toho vytvořit běžný komunikační kanál, nastavit mu vysokou kapacitu bufferu a používat přímo operátor &lt;- pro přidání hodnoty (zprávy) do kanálu i pro vyjmutí a zpracování této hodnoty (zprávy) na straně druhé. To je samozřejmě pravda a toto řešení bude plně funkční a zajistí i dobrou výkonnost. Ovšem ve chvíli, kdy je zapotřebí zaručit, že zpráva bude skutečně doručena, i když dojde například k&nbsp;pádu aplikace, již může být použití message brokera užitečným řešením. A pokud se navíc přidá i požadavek na zajištění persistence zpráv, je message broker (například běžící pouze lokálně) nejenom vhodné, ale pro tuto část architektury celé aplikace vlastně i idiomatické (idiomy se totiž netýkají jen programových konstrukcí, ale i celé architektury).</p>
+
+<p><div class="rs-tip-major">Poznámka: samozřejmě je možné použít pro čekání na obě gorutiny (zdroje zpráv i příjemce) dva samostatné kanály pojmenované například <strong>stopProducer</strong> a <strong>stopConsumer</strong>, čímž se automaticky zajistí, že například producent zpráv nezapíše do kanálu omylem dvě hodnoty. Na konci funkce <strong>main</strong> je potom prakticky jedno, ze kterého kanálu bude provedeno čtení dříve. Úprava programu s&nbsp;implementací producenta i konzumenta běžících v&nbsp;samostatném vláknu by tedy vypadala následovně:</div></p>
+
+<pre>
+</pre>
+
 
 
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Jedna z&nbsp;možných implementací message brokera naprogramovaná v&nbsp;nativním Go a používající Redis jako storage</h2>
+
+<p>Hned <a href="https://www.root.cz/clanky/pouziti-nastroje-rq-redis-queue-pro-spravu-uloh-zpracovavanych-na-pozadi/">v&nbsp;úvodní části</a> <a href="https://www.root.cz/serialy/message-brokery/">seriálu o message brokerech</a> jsme se zabývali popisem nástroje nazvaného <i>Redis Queue</i>, jenž je postaven &ndash; jak již ostatně jeho název napovídá &ndash; na databázi <i>Redis</i> [<a href="https://www.root.cz/clanky/databaze-redis-nejenom-pro-vyvojare-pouzivajici-python/">1</a>] [<a href="https://www.root.cz/clanky/databaze-redis-nejenom-pro-vyvojare-pouzivajici-python-dokonceni/">2</a>], která se používá pro ukládání jednotlivých zpráv do front. Podobný koncept používá i další dnes popisovaná knihovna, která se jmenuje <i>rmq</i> a nalezneme ji na GitHubu na adrese <a href="https://github.com/adjust/rmq">https://github.com/adjust/rmq</a>. Jedná se o balíček určený pro vývojáře využívající programovací jazyk Go, kteří potřebují vytvářet klienty připojované k&nbsp;message brokerovi, přičemž cílem autorů <i>rmq</i> je dosáhnout toho, aby kód vytvořený v&nbsp;klientech byl co nejkratší a snadno pochopitelný. Samotný message broker je opět tvořen databází <i>Redis</i> a balíček <i>rmq</i> &bdquo;pouze&ldquo; zabezpečuje posílání, výběr a ukládání zpráv do Redisu.</p>
 
 
 
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Instalace a nastavení Redisu i <strong>rmq</strong></h2>
 
-<p></p>
+<p>Nejprve si řekněme, jak se vlastně <i>rmq</i> instaluje.</p>
+
+<p>V&nbsp;prvním kroku musíme nainstalovat a spustit samotný Redis, což je snadné, protože je balíček s&nbsp;Redisem součástí většiny Linuxových distribucí. Například na Fedoře může instalace vypadat následovně:</p>
+
+<pre>
+$ <strong>sudo dnf install redis</strong>
+&nbsp;
+Last metadata expiration check: 0:15:30 ago on Wed 24 Oct 2018, 22:50:11 CEST.
+Dependencies resolved.
+================================================================================
+ Package           Arch            Version               Repository        Size
+================================================================================
+Installing:
+ redis             x86_64          4.0.9-1.fc27          updates          580 k
+Installing dependencies:
+ jemalloc          x86_64          4.5.0-5.fc27          updates          210 k
+&nbsp; 
+Transaction Summary
+================================================================================
+Install  2 Packages
+&nbsp; 
+Total download size: 790 k
+Installed size: 2.0 M
+Is this ok [y/N]:
+&nbsp;
+</pre>
+
+<p>Na systémech založených na Debianu (včetně Ubuntu) lze pro instalaci použít příkaz:</p>
+
+<pre>
+$ <strong>apt-get install redis-server</strong>
+</pre>
+
+<p>V&nbsp;případě, že budete potřebovat použít nejnovější verzi Redisu, můžete si ho sami přeložit. Postup je jednoduchý (mj.&nbsp;i díky minimálním závislostem na dalších knihovnách) a je podrobně popsán na stránce <a href="https://redis.io/topics/quickstart">https://redis.io/topics/quickstart</a>.
+
+<p>Pro vlastní databázi, konfigurační soubor, žurnál a logy Redisu použijeme samostatný adresář, který vytvoříme v&nbsp;domácím adresáři připojeného uživatele:</p>
+
+<pre>
+$ <strong>mkdir redis</strong>
+$ <strong>cd redis</strong>
+</pre>
+
+<p>Po instalaci se můžeme přesvědčit, že je skutečně k dispozici spustitelný soubor s implementací serveru i řádkového klienta:</p>
+
+<pre>
+$ whereis -b redis-cli
+redis-cli: /usr/bin/redis-cli
+</pre>
+ 
+<pre>
+$ whereis -b redis-server
+redis-server: /usr/bin/redis-server
+</pre>
+
+<p>Následně přímo v&nbsp;tomto adresáři vytvoříme konfigurační soubor nazvaný <strong>redis.conf</strong>. Můžeme se přitom inspirovat souborem <strong>/etc/redis/redis.conf</strong> (Debian a systémy od něj odvozené), popř. <strong>/etc/redis.conf</strong> (Fedora, RHEL, CentOS), který je však poměrně rozsáhlý, protože kromě vlastních konfiguračních voleb obsahuje i podrobné informace o významu jednotlivých konfiguračních voleb. Tento soubor je taktéž dostupný na internetu na adrese <a href="https://raw.githubusercontent.com/antirez/redis/4.0/redis.conf">https://raw.githubusercontent.com/antirez/redis/4.0/redis.conf</a>.</p>
+
+<p>Následuje výpis obsahu konfiguračního souboru, který je připraven pro lokální spuštění Redisu, bez nebezpečí, že se k běžícímu serveru připojí případný útočník. Důležité volby jsou zvýrazněny a některé z nich budou popsány na konci kapitoly. Pokud se vám soubor nechce kopírovat, naleznete ho na adrese https://github.com/tisnik/pre­sentations/blob/master/re­dis/redis.conf:</p>
+
+<pre>
+<strong>bind 127.0.0.1</strong>
+<strong>protected-mode yes</strong>
+port 6379
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+daemonize no
+supervised no
+pidfile /var/run/redis_6379.pid
+loglevel notice
+<strong>logfile redis.log</strong>
+databases 16
+always-show-logo yes
+save 900 1
+save 300 10
+save 60 10000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+<strong>dir .</strong>
+slave-serve-stale-data yes
+slave-read-only yes
+repl-diskless-sync no
+repl-diskless-sync-delay 5
+repl-disable-tcp-nodelay no
+slave-priority 100
+lazyfree-lazy-eviction no
+lazyfree-lazy-expire no
+lazyfree-lazy-server-del no
+slave-lazy-flush no
+appendonly yes
+<strong>appendfilename "appendonly.aof"</strong>
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+aof-load-truncated yes
+aof-use-rdb-preamble no
+lua-time-limit 5000
+slowlog-log-slower-than 10000
+slowlog-max-len 128
+latency-monitor-threshold 0
+notify-keyspace-events ""
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+list-max-ziplist-size -2
+list-compress-depth 0
+set-max-intset-entries 512
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+hll-sparse-max-bytes 3000
+activerehashing yes
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit slave 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+hz 10
+aof-rewrite-incremental-fsync yes
+</pre>
+
+<p>Nyní jíž můžeme databázi Redis spustit, aniž by došlo k&nbsp;tomu, že bude její API viditelná ostatním počítačům připojeným do sítě:</p>
+
+<pre>
+$ <strong>redis-server redis.conf </strong>
+</pre>
+
+<p>Na druhém terminálu pak již můžeme spustit klienta Redisu, který uživatelům nabízí interaktivní příkazový řádek:</p>
+
+<pre>
+$ <strong>redis-cli</strong>
+127.0.0.1:6379&gt;
+</pre>
+
+<p>Příkazem &bdquo;ping&ldquo; můžeme otestovat, jestli se klient připojí k serveru a zda od něj dokáže získávat odpovědi:</p>
+
+<pre>
+127.0.0.1:6379&gt; <strong>ping</strong>
+PONG
+&nbsp;
+127.0.0.1:6379&gt; <strong>ping test</strong>
+"test"
+</pre>
+
+<p>Nyní by měl být systém Redis připraven pro připojení klientů, kteří s&nbsp;využitím balíčku <strong>rmq</strong> využijí tuto databázi ve funkci storage message brokera. Nastává tedy čas pro instalaci balíčku <strong>rmq</strong>. Nejprve přejdeme do adresáře <strong>~/go</strong> (ten již byl připraven v&nbsp;rámci instalace jazyka Go, kterou jsme si <a href="https://www.root.cz/clanky/pouziti-apache-activemq-s-protokolem-amqp-jazyk-go-a-message-brokeri/#k13">popsali minule</a>):</p>
+
+<pre>
+$ <strong>cd ~/go</strong>
+</pre>
+
+<p>Dále v&nbsp;tomto adresáři zadáme následující příkaz:</p>
+
+<pre>
+$ <strong>go get https://github.com/adjust/rmq</strong>
+</pre>
+
+<p>V&nbsp;adresáři by se měla objevit následující struktura (pod)adresářů:</p>
+
+<pre>
+.
+├── pkg
+│   └── linux_amd64
+│       └── github.com
+│           └── adjust
+└── src
+    └── github.com
+        ├── adjust
+        │   ├── <strong>rmq</strong>
+        │   │   └── example
+        │   │       ├── batch_consumer
+        │   │       ├── cleaner
+        │   │       ├── consumer
+        │   │       ├── handler
+        │   │       ├── producer
+        │   │       ├── purger
+        │   │       └── returner
+        │   └── uniuri
+        └── go-redis
+            └── <strong>redis</strong>
+                ├── internal
+                │   ├── consistenthash
+                │   ├── hashtag
+                │   ├── pool
+                │   ├── proto
+                │   └── util
+                └── testdata
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že se ve skutečnosti nainstalovaly dva balíčky nazvané <strong>rmq</strong> a taktéž <strong>redis</strong>.</div></p>
+
 
 rmq::connections množina aktivních připojení
 rmq::queues množina front
