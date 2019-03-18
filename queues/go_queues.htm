@@ -52,7 +52,7 @@
 <p><a href="#k13">*** 13. Vytvoření a poslání binární zprávy</a></p>
 <p><a href="#k14">*** 14. Příjem binární zprávy</a></p>
 <p><a href="#k15">*** 15. Systém NATS aneb implementace systému pro doručování zpráv v&nbsp;jazyku Go</a></p>
-<p><a href="#k16">*** 16. </a></p>
+<p><a href="#k16">*** 16. Komunikační strategie a protokol použitý klienty</a></p>
 <p><a href="#k17">*** 17. NATS Streaming</a></p>
 <p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k19">*** 19. Odkazy na předchozí části seriálu</a></p>
@@ -320,6 +320,106 @@ func <strong>main</strong>() {
 <h2 id="k04">4. Producent i konzument jako součást jediné aplikace se třemi paralelně běžícími gorutinami</h2>
 
 <pre>
+package main
+
+import (
+	"fmt"
+	"github.com/go-stomp/stomp"
+	"time"
+)
+
+const serverAddr = "localhost:61613"
+const queueName = "/queue/go_test"
+
+const messageCount = 10
+
+var stop = make(chan bool)
+
+func sendMessages() {
+	defer func() {
+		stop &lt;- true
+	}()
+
+	conn, err := stomp.Dial("tcp", serverAddr, nil)
+	if err != nil {
+		println("Cannot connect to server", err.Error())
+		return
+	} else {
+		println("Publisher part connected to server", serverAddr)
+	}
+	defer conn.Disconnect()
+
+	time.Sleep(5 * time.Second)
+
+	for i := 1; i &lt;= messageCount; i++ {
+		text := fmt.Sprintf("Message #%d", i)
+		err = conn.Send(queueName, "text/plain", []byte(text), nil)
+		if err != nil {
+			println("Failed to send to server", err)
+			return
+		} else {
+			println("Message sent")
+		}
+	}
+	println("Sending EXIT message")
+	err = conn.Send(queueName, "text/plain", []byte("EXIT"), nil)
+	if err != nil {
+		println("Failed to send EXIT message to server", err)
+		return
+	} else {
+		println("Message sent")
+	}
+	println("Publisher finished")
+}
+
+func receiveMessages(subscribed chan bool) {
+	defer func() {
+		stop &lt;- true
+	}()
+
+	conn, err := stomp.Dial("tcp", serverAddr, nil)
+
+	if err != nil {
+		println("Cannot connect to server", err.Error())
+		return
+	} else {
+		println("Subscriber part connected to server", serverAddr)
+	}
+
+	defer conn.Disconnect()
+
+	time.Sleep(5 * time.Second)
+
+	sub, err := conn.Subscribe(queueName, stomp.AckAuto)
+	if err != nil {
+		println("Cannot subscribe to", queueName, err.Error())
+		return
+	}
+	close(subscribed)
+
+	for {
+		msg := &lt;-sub.C
+		text := string(msg.Body)
+		if text != "EXIT" {
+			println("Received message", text)
+		} else {
+			println("Received EXIT command")
+			break
+		}
+	}
+	println("Subscriber finished")
+}
+
+func main() {
+	go sendMessages()
+	subscribed := make(chan bool)
+	go receiveMessages(subscribed)
+
+	&lt;-subscribed
+
+	&lt;-stop
+	&lt;-stop
+}
 </pre>
 
 <p>Na tomto místě se můžete oprávněně zeptat, proč vlastně pro komunikaci mezi několika gorutinami, které jsou součástí jediné aplikace, vlastně používáme message brokera se všemi komplikacemi, které toto řešení přináší. Můžeme totiž namísto toho vytvořit běžný komunikační kanál, nastavit mu vysokou kapacitu bufferu a používat přímo operátor &lt;- pro přidání hodnoty (zprávy) do kanálu i pro vyjmutí a zpracování této hodnoty (zprávy) na straně druhé. To je samozřejmě pravda a toto řešení bude plně funkční a zajistí i dobrou výkonnost. Ovšem ve chvíli, kdy je zapotřebí zaručit, že zpráva bude skutečně doručena, i když dojde například k&nbsp;pádu aplikace, již může být použití message brokera užitečným řešením. A pokud se navíc přidá i požadavek na zajištění persistence zpráv, je message broker (například běžící pouze lokálně) nejenom vhodné, ale pro tuto část architektury celé aplikace vlastně i idiomatické (idiomy se totiž netýkají jen programových konstrukcí, ale i celé architektury).</p>
@@ -327,6 +427,107 @@ func <strong>main</strong>() {
 <p><div class="rs-tip-major">Poznámka: samozřejmě je možné použít pro čekání na obě gorutiny (zdroje zpráv i příjemce) dva samostatné kanály pojmenované například <strong>stopProducer</strong> a <strong>stopConsumer</strong>, čímž se automaticky zajistí, že například producent zpráv nezapíše do kanálu omylem dvě hodnoty. Na konci funkce <strong>main</strong> je potom prakticky jedno, ze kterého kanálu bude provedeno čtení dříve. Úprava programu s&nbsp;implementací producenta i konzumenta běžících v&nbsp;samostatném vláknu by tedy vypadala následovně:</div></p>
 
 <pre>
+package main
+
+import (
+	"fmt"
+	"github.com/go-stomp/stomp"
+	"time"
+)
+
+const serverAddr = "localhost:61613"
+const queueName = "/queue/go_test"
+
+const messageCount = 10
+
+var stopProducer = make(chan bool)
+var stopConsumer = make(chan bool)
+
+func sendMessages(stop chan bool) {
+	defer func() {
+		stop &lt;- true
+	}()
+
+	conn, err := stomp.Dial("tcp", serverAddr, nil)
+	if err != nil {
+		println("Cannot connect to server", err.Error())
+		return
+	} else {
+		println("Publisher part connected to server", serverAddr)
+	}
+	defer conn.Disconnect()
+
+	time.Sleep(5 * time.Second)
+
+	for i := 1; i &lt;= messageCount; i++ {
+		text := fmt.Sprintf("Message #%d", i)
+		err = conn.Send(queueName, "text/plain", []byte(text), nil)
+		if err != nil {
+			println("Failed to send to server", err)
+			return
+		} else {
+			println("Message sent")
+		}
+	}
+	println("Sending EXIT message")
+	err = conn.Send(queueName, "text/plain", []byte("EXIT"), nil)
+	if err != nil {
+		println("Failed to send EXIT message to server", err)
+		return
+	} else {
+		println("Message sent")
+	}
+	println("Publisher finished")
+}
+
+func receiveMessages(subscribed chan bool, stop chan bool) {
+	defer func() {
+		stop &lt;- true
+	}()
+
+	conn, err := stomp.Dial("tcp", serverAddr, nil)
+
+	if err != nil {
+		println("Cannot connect to server", err.Error())
+		return
+	} else {
+		println("Subscriber part connected to server", serverAddr)
+	}
+
+	defer conn.Disconnect()
+
+	time.Sleep(5 * time.Second)
+
+	sub, err := conn.Subscribe(queueName, stomp.AckAuto)
+	if err != nil {
+		println("Cannot subscribe to", queueName, err.Error())
+		return
+	}
+	close(subscribed)
+
+	for {
+		msg := &lt;-sub.C
+		text := string(msg.Body)
+		if text != "EXIT" {
+			println("Received message", text)
+		} else {
+			println("Received EXIT command")
+			break
+		}
+	}
+	println("Subscriber finished")
+}
+
+func main() {
+	go sendMessages(stopProducer)
+	subscribed := make(chan bool)
+	go receiveMessages(subscribed, stopConsumer)
+
+	&lt;-subscribed
+
+	&lt;-stopProducer
+	&lt;-stopConsumer
+}
 </pre>
 
 
@@ -334,7 +535,9 @@ func <strong>main</strong>() {
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Jedna z&nbsp;možných implementací message brokera naprogramovaná v&nbsp;nativním Go a používající Redis jako storage</h2>
 
-<p>Hned <a href="https://www.root.cz/clanky/pouziti-nastroje-rq-redis-queue-pro-spravu-uloh-zpracovavanych-na-pozadi/">v&nbsp;úvodní části</a> <a href="https://www.root.cz/serialy/message-brokery/">seriálu o message brokerech</a> jsme se zabývali popisem nástroje nazvaného <i>Redis Queue</i>, jenž je postaven &ndash; jak již ostatně jeho název napovídá &ndash; na databázi <i>Redis</i> [<a href="https://www.root.cz/clanky/databaze-redis-nejenom-pro-vyvojare-pouzivajici-python/">1</a>] [<a href="https://www.root.cz/clanky/databaze-redis-nejenom-pro-vyvojare-pouzivajici-python-dokonceni/">2</a>], která se používá pro ukládání jednotlivých zpráv do front. Podobný koncept používá i další dnes popisovaná knihovna, která se jmenuje <i>rmq</i> a nalezneme ji na GitHubu na adrese <a href="https://github.com/adjust/rmq">https://github.com/adjust/rmq</a>. Jedná se o balíček určený pro vývojáře využívající programovací jazyk Go, kteří potřebují vytvářet klienty připojované k&nbsp;message brokerovi, přičemž cílem autorů <i>rmq</i> je dosáhnout toho, aby kód vytvořený v&nbsp;klientech byl co nejkratší a snadno pochopitelný. Samotný message broker je opět tvořen databází <i>Redis</i> a balíček <i>rmq</i> &bdquo;pouze&ldquo; zabezpečuje posílání, výběr a ukládání zpráv do Redisu.</p>
+<p>Hned <a href="https://www.root.cz/clanky/pouziti-nastroje-rq-redis-queue-pro-spravu-uloh-zpracovavanych-na-pozadi/">v&nbsp;úvodní části</a> <a href="https://www.root.cz/serialy/message-brokery/">seriálu o message brokerech</a> jsme se zabývali popisem nástroje nazvaného <i>Redis Queue</i>, jenž je postaven &ndash; jak již ostatně jeho název napovídá &ndash; na databázi <i>Redis</i> [<a href="https://www.root.cz/clanky/databaze-redis-nejenom-pro-vyvojare-pouzivajici-python/">1</a>] [<a href="https://www.root.cz/clanky/databaze-redis-nejenom-pro-vyvojare-pouzivajici-python-dokonceni/">2</a>], která se používá pro ukládání jednotlivých zpráv do front. Podobný koncept používá i další dnes popisovaná knihovna, která se jmenuje <i>rmq</i> a nalezneme ji na GitHubu na adrese <a href="https://github.com/adjust/rmq">https://github.com/adjust/rmq</a>.</p>
+
+<p>Jedná se o balíček určený pro vývojáře využívající programovací jazyk Go (ostatně i samotné <i>rmq</i> je vytvořeno v&nbsp;čistém Go), kteří potřebují vytvářet klienty připojované k&nbsp;message brokerovi, přičemž cílem autorů <i>rmq</i> je dosáhnout toho, aby kód vytvořený v&nbsp;klientech byl co nejkratší a snadno pochopitelný. Samotný message broker je opět tvořen databází <i>Redis</i> a balíček <i>rmq</i> &bdquo;pouze&ldquo; zabezpečuje posílání, výběr a ukládání zpráv do Redisu.</p>
 
 
 
@@ -878,11 +1081,18 @@ func <strong>main</strong>() {
 
 <p>V&nbsp;závěrečné části dnešního článku se zmíníme o systému pro doručování zpráv, který se jmenuje <a href="https://nats.io/">NATS</a>. Jedná se o projekt, jenž je naprogramovaný právě v&nbsp;jazyce Go, což mu do jisté míry zajišťuje stabilitu i škálovatelnost, což jsou vlastnosti, které u message brokerů většinou očekáváme.</p>
 
+<p>Původní varianta NATSu byla vytvořena Derekem Collisonem; zajímavé je, že tato varianta nebyla naprogramována v&nbsp;jazyce Go, ale v&nbsp;programovacím jazyce Ruby. Dnes se ovšem budeme zabývat moderní (a jedinou podporovanou) verzí systému NATS, která byla přeportována do jazyka Go. Celý systém NATS se skládá z&nbsp;několika komponent:</p>
+
 <ol>
-<li>Server</li>
-<li>NATS Streaming</li>
-<li>Klienti, kteří mohou být naprogramovaní v&nbsp;různých jazycích</li>
-<li>Tzv.&nbsp;connector framework</li>
+
+<li>V&nbsp;první řadě se jedná o samotný <i>server</i>, jenž se spouští příkazem <strong>gnatsd</strong>. Server je naprogramovaný v&nbsp;Go a při jeho vývoji bylo dbáno na to, aby byla zaručena vysoká dostupnost celé služby a přitom byla samotná služba s&nbsp;běžícím serverem málo náročná na systémové zdroje, především na spotřebu operační paměti (to má v&nbsp;době Dockeru a podobných nástrojů poměrně velký význam).</li>
+
+<li>Další komponentou jsou klienti, kteří v&nbsp;současnosti existují pro několik ekosystémů (což je většinou kombinace programovacího jazyka, knihoven a popř.&nbsp;jeho virtuálního stroje); viz též tabulky s&nbsp;podporovanými ekosystémy, které jsou zobrazeny pod tímto odstavcem.</li>
+
+<li>Třetí komponentou je <i>NATS Streaming Server</i>, který je opět naprogramován v&nbsp;Go a který si popíšeme v&nbsp;sedmnácté kapotole.</li>
+
+<li>Čtvrtým typem komponenty je <i>NATS Connector Framework</i> zajišťující propojení systému NAST s&nbsp;dalšími technologiemi. Ten je naprogramovaný v&nbsp;Javě a v&nbsp;současnosti je podporován například konektor pro Redis (<a href="https://github.com/nats-io/nats-connector-redis">https://github.com/nats-io/nats-connector-redis</a>).</li>
+
 </ol>
 
 <p>Oficiálně podporovaní klienti:</p>
@@ -928,12 +1138,36 @@ func <strong>main</strong>() {
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Komunikační strategie a protokol použitý klienty</h2>
+
+<p>NATS nabízí klasickou komunikační strategii <i>pub-sub</i> (zprávy jsou doručovány na základě nastaveného tématu &ndash; <i>topicu</i>), s&nbsp;níž jsme se již seznámili v&nbsp;předchozích článcích. Ovšem kromě toho je možné využít i strategie <i>request-reply</i> (ta je implementačně nejsložitější, protože vyžaduje koordinaci obou klientů) a taktéž strategii typu <i>push-pull</i> (zde se právě využívají fronty zpráv). Strategie <i>request-reply</i> se dále rozděluje na dvě podkategorie podle toho, zda se zpráva doručuje jen jedinému příjemci (<i>point-to-point</i>) nebo více příjemcům (<i>one-to-many</i>). Ve chvíli, kdy klient pošle žádost (request), vytvoří se takzvaný <i>inbox</i>, který mohou příjemci použít po odeslání odpovědi. S&nbsp;příklady použití této zajímavé strategie se seznámíme v&nbsp;navazujícím článku.</p>
+
+<p>Samotný komunikační protokol používaný klienty při přístupu k&nbsp;systému NATS, je textový a je navržen takovým způsobem, aby bylo možné samotnou komunikaci naprogramovat relativně snadno, popř.&nbsp;si komunikaci otestovat přes <strong>telnet</strong> či podobný nástroj (což může být velmi vhodné při hledání chyb v&nbsp;celém systému). V&nbsp;samotném protokolu se rozeznává jen několik typů příkazů, které jsou vypsány v&nbsp;další tabulce:</p>
+
+<table>
+<tr><th>Příkaz</th><th>Posílá</th><th>Stručný popis</th></tr>
+<tr><td>INFO   </td><td>server</td><td>posláno klientovi po jeho připojení</td></tr>
+<tr><td>CONNECT</td><td>klient</td><td>připojení se specifikací jeho parametrů</td></tr>
+<tr><td>PUB    </td><td>klient</td><td>publikace zprávy (formát si popíšeme příště)</td></tr>
+<tr><td>SUB    </td><td>klient</td><td>přihlášení k&nbsp;odebírání určitého tématu</td></tr>
+<tr><td>UNSUB  </td><td>klient</td><td>odhlášení odebírání určitého tématu</td></tr>
+<tr><td>MSG    </td><td>server</td><td>poslání zprávy odebírateli</td></tr>
+<tr><td>PING   </td><td>klient i server</td><td>klasický systém ping-pong pro ověření, zda druhá strana komunikuje</td></tr>
+<tr><td>PONG   </td><td>klient i server</td><td>klasický systém ping-pong pro ověření, zda druhá strana komunikuje</td></tr>
+<tr><td>+OK    </td><td>server</td><td>potvrzení zprávy či příkazu</td></tr>
+<tr><td>-ERR   </td><td>server</td><td>informace o tom, že poslaná zpráva nebo příkaz nemá správný formát</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: i když je samotný protokol textový, jsou těla zpráv považována za binární data, čehož se často využívá například v&nbsp;oblasti IoT, kdy čidla mohou přímo posílat naměřená data, bez nutnosti jejich převodu do JSONu či podobného formátu.</div></p>
+
+<p><div class="rs-tip-major">Poznámka: zajímavé je porovnání <a href="">s&nbsp;již popsaným</a> protokolem <i>STOMP</i>, který používá prakticky stejný přístup, i když se pochopitelně jednotlivé příkazy od sebe odlišují.</div></p>
 
 
 
 <p><a name="k17"></a></p>
 <h2 id="k17">17. NATS Streaming</h2>
+
+Jedná se o rozšíření klasického message brokera o další užitečné vlastnosti, zejména o konfigurovatelnou persistenci zpráv, systémem zaručujícím doručení zprávy (jak na message brokera, tak i ke klientovi) a především pak systémem určujícím maximální množství zpráv čekajících na doručení (<i>publisher rate limit</i>, <i>rate limiting per subscriber</i>) a taktéž možnost opětovného &bdquo;přehrátí&ldquo; zpráv podle zadaných kritérií (ke zprávám je přiřazen určitý <i>subject</i> a taktéž časové razítko, takže pořadí zpráv je možné zaručit &ndash; ostatně právě proto se také používá termín &bdquo;streaming&ldquo;). Mimochodem: časové razítko má přesnost v&nbsp;řádu nanosekund.
 
 <p>Oficiálně podporovaní klienti:</p>
 
@@ -973,15 +1207,18 @@ příklady, které naleznete v&nbsp;následující tabulce.</p>
 <tr><td>3</td><td></td><td></td><td><a href=""></a></td></tr>
 <tr><td>3</td><td></td><td></td><td><a href=""></a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>4</td><td>producer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
-<tr><td>4</td><td>consumer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
+<tr><td>4</td><td></td><td></td><td><a href=""></a></td></tr>
+<tr><td>4</td><td></td><td></td><td><a href=""></a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>5</td><td>producer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
 <tr><td>5</td><td>consumer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>6</td><td>producer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
 <tr><td>6</td><td>consumer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
-<tr><td>6</td><td>get_image</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>7</td><td>producer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
+<tr><td>7</td><td>consumer.go</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
+<tr><td>7</td><td>get_image</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/">https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/</a></td></tr>
 </table>
 
 
