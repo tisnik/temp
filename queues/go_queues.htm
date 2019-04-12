@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p>Taktéž se ve stručnosti seznámíme se systémem NATS, který je naprogramován právě v jazyce Go.</p>
+<p>Seriál o message brokerech by nebyl úplný, pokud bychom se neseznámili se způsobem implementace klientů v programovacím jazyku Go. Proto si ukážeme využití balíčků stomp a rmq. Taktéž se ve stručnosti seznámíme se systémem NATS, který je naprogramován právě v jazyce Go.</p>
 
 
 
@@ -43,11 +43,11 @@
 <p><a href="#k04">4. Producent i konzument jako součást jediné aplikace se třemi paralelně běžícími gorutinami</a></p>
 <p><a href="#k05">5. Jedna z&nbsp;možných implementací message brokera naprogramovaná v&nbsp;nativním Go a používající Redis jako storage</a></p>
 <p><a href="#k06">6. Instalace a nastavení Redisu i <strong>rmq</strong></a></p>
-<p><a href="#k07">*** 7. Jednoduchý producent posílající textové zprávy</a></p>
-<p><a href="#k08">*** 8. Konzument zpracovávající jednoduché textové zprávy</a></p>
-<p><a href="#k09">*** 9. Marshalling a unmarshalling datových struktur do formátu JSON pro posílání složitějších zpráv</a></p>
+<p><a href="#k07">7. Jednoduchý producent posílající textové zprávy</a></p>
+<p><a href="#k08">8. Konzument zpracovávající jednoduché textové zprávy</a></p>
+<p><a href="#k09">9. Marshalling a unmarshalling datových struktur do formátu JSON pro posílání složitějších zpráv</a></p>
 <p><a href="#k10">10. Úprava producenta takovým způsobem, aby posílal zprávy ve formátu JSON</a></p>
-<p><a href="#k11">*** 11. Konzument akceptující zprávy ve formátu JSON</a></p>
+<p><a href="#k11">11. Konzument akceptující zprávy ve formátu JSON</a></p>
 <p><a href="#k12">12. Přenos binárních zpráv</a></p>
 <p><a href="#k13">13. Vytvoření a poslání binární zprávy</a></p>
 <p><a href="#k14">14. Příjem binární zprávy</a></p>
@@ -874,33 +874,65 @@ nainstalovaly dva balíčky nazvané <strong>rmq</strong> a taktéž
 <p><a name="k07"></a></p>
 <h2 id="k07">7. Jednoduchý producent posílající textové zprávy</h2>
 
-<p></p>
+<p>Při implementaci producenta jednoduchých textových zpráv využijeme především
+funkci pojmenovanou <strong>OpenConnection</strong>, která se pokusí o
+připojení k&nbsp;Redisu:</p>
 
 <pre>
 func <strong>OpenConnection</strong>(tag, network, address string, db int) *redisConnection
 </pre>
 
-<p></p>
+<p>Připojení může být realizováno následovně:</p>
 
 <pre>
-type Connection interface {
+connection := rmq.OpenConnection("test_service_producer", "tcp", "localhost:6379", 1)
+</pre>
+
+<p>Získáme tak datovou strukturu, která mj.&nbsp;implementuje rozhraní nazvané
+<strong>Connection</strong>:</p>
+
+<pre>
+type <strong>Connection</strong> interface {
         OpenQueue(name string) Queue
         CollectStats(queueList []string) Stats
         GetOpenQueues() []string
 }
 </pre>
 
-<p></p>
+<p>Dnes nás bude zajímat jen jediná metoda z&nbsp;tohoto rozhraní, a to
+konkrétně metoda pro otevření (či vytvoření) fronty se zadaným jménem:</p>
 
 <pre>
-func (connection *redisConnection) OpenQueue(name string) Queue
+func (connection *redisConnection) <strong>OpenQueue</strong>(name string) Queue
 </pre>
 
-<p></p>
+<p>Konkrétní příklad použití:</p>
 
 <pre>
-func (queue *redisQueue) Publish(payload string) bool
+connection := rmq.OpenConnection("test_service_producer", "tcp", "localhost:6379", 1)
+taskQueue := connection.OpenQueue("task_queue")
 </pre>
+
+<p>Jakmile je fronta získána či vytvořena, můžeme použít její metodu
+<strong>Publish</strong> pro publikování nějaké zprávy, tj.&nbsp;pro její
+poslání do fronty:</p>
+
+<pre>
+func (queue *redisQueue) <strong>Publish</strong>(payload string) bool
+</pre>
+
+<p>Opět si ukažme praktické použití:</p>
+
+<pre>
+connection := rmq.OpenConnection("test_service_producer", "tcp", "localhost:6379", 1)
+taskQueue := connection.OpenQueue("task_queue")
+delivery := "task payload 1"
+taskQueue.Publish(delivery)
+</pre>
+
+<p><a
+href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/01-producer-consumer/producer.go">Celý
+zdrojový kód klienta</a> je nakonec velmi krátký a přehledný:</p>
 
 <pre>
 package <strong>main</strong>
@@ -922,23 +954,51 @@ func <strong>main</strong>() {
 }
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: na straně Redisu se vytvoří dva objekty
+v&nbsp;databázi:</div></p>
 
+<table>
+<tr><th>Objekt</th><th>Stručný popis</th></tr>
+<tr><td>rmq::connections</td><td>množina aktivních připojení</td></tr>
+<tr><td>rmq::queues</td><td>množina front</td></tr>
+</table>
 
-rmq::connections množina aktivních připojení
-rmq::queues množina front
 
 
 <p><a name="k08"></a></p>
 <h2 id="k08">8. Konzument zpracovávající jednoduché textové zprávy</h2>
 
+<p>Konzument zpráv je nepatrně složitější, protože se zde používá callback
+metoda nazvaná <strong>Consume</strong>. Po připojení a vytvoření fronty nám
+již známým způsobem:</p>
+
 <pre>
-type Consumer interface {
+connection := rmq.OpenConnection("test_service_consumer", "tcp", "localhost:6379", 1)
+taskQueue := connection.OpenQueue("task_queue")
+</pre>
+
+<p>je nutné se přihlásit k&nbsp;odběru zpráv a zaregistrovat objekt typu
+<i>Consumer</i>, který bude zprávy odebírat:</p>
+
+<pre>
+taskQueue.StartConsuming(10, time.Second)
+taskQueue.AddConsumer("consumer", NewConsumer())
+</pre>
+
+<p>Samotný odběratel zpráv musí implementovat toto rozhraní s&nbsp;jedinou
+metodou:</p>
+
+<pre>
+type <strong>Consumer</strong> interface {
         Consume(delivery Delivery)
 }
 </pre>
 
+<p>Přičemž <strong>Delivery</strong> je rozhraní implementované datovou
+strukturou se zprávou:</p>
+
 <pre>
-type Delivery interface {
+type <strong>Delivery</strong> interface {
         Payload() string
         Ack() bool
         Reject() bool
@@ -946,13 +1006,32 @@ type Delivery interface {
 }
 </pre>
 
+<p>Důležité jsou metody pro potvrzení zprávy či naopak pro její nepotvrzení:</p>
+
 <pre>
-func (delivery *wrapDelivery) Ack() bool
+func (delivery *wrapDelivery) <strong>Ack</strong>() bool
 </pre>
 
 <pre>
-func (delivery *wrapDelivery) Reject() bool
+func (delivery *wrapDelivery) <strong>Reject</strong>() bool
 </pre>
+
+<p>Ty využijeme v&nbsp;našem konzumentovi/příjemci zpráv:</p>
+
+<pre>
+func (consumer *Consumer) <strong>Consume</strong>(delivery rmq.Delivery) {
+        println("consume begin")
+&nbsp;
+        println(delivery.Payload())
+        delivery.Ack()
+&nbsp;
+        println("consume end")
+}
+</pre>
+
+<p><a
+href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/01-producer-consumer/consumer.go">Úplná
+implementace klienta</a> může vypadat následovně:</p>
 
 <pre>
 package <strong>main</strong>
@@ -962,14 +1041,14 @@ import (
         "time"
 )
 &nbsp;
-type Consumer struct {
+type <strong>Consumer</strong> struct {
 }
 &nbsp;
 func <strong>NewConsumer</strong>() *Consumer {
         return &amp;Consumer{}
 }
 &nbsp;
-func (consumer *Consumer) Consume(delivery rmq.Delivery) {
+func (consumer *Consumer) <strong>Consume</strong>(delivery rmq.Delivery) {
         println("consume begin")
 &nbsp;
         println(delivery.Payload())
@@ -995,6 +1074,37 @@ func <strong>main</strong>() {
 
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Marshalling a unmarshalling datových struktur do formátu JSON pro posílání složitějších zpráv</h2>
+
+<p>Často se setkáme i s&nbsp;požadavkem, aby byly zprávy posílány ve formátu
+JSON. Problematice převodu datových struktur z&nbsp;jazyka Go do JSONu
+(<i>marshalling</i>) a samozřejmě i zpětného převodu (<i>unmarshalling</i>)
+jsme se nedávno věnovali v&nbsp;samostatném článku <a
+href="https://www.root.cz/clanky/vyvoj-sitovych-aplikaci-v-programovacim-jazyku-go-prace-s-jsonem-a-rastrovymi-obrazky/">Vývoj
+síťových aplikací v programovacím jazyku Go (práce s JSONem a rastrovými
+obrázky)</a>, takže jen ve stručnosti:</p>
+
+<p>Pro převod libovolného typu (přesněji řečeno hodnoty libovolného typu) do
+JSONu se používá funkce nazvaná <strong>Marshal</strong>, kterou nalezneme
+v&nbsp;balíčku <strong>encoding/json</strong>:</p>
+
+<pre>
+func <strong>Marshal</strong>(v interface{}) ([]byte, error)
+</pre>
+
+<p>Opačná operace spočívá v&nbsp;importu dat z&nbsp;formátu JSON do interních
+datových struktur programovacího jazyka Go. Pro tuto operaci, která se nazývá
+<i>unmarshalling</i>, slouží následující funkce:</p>
+
+<pre>
+func <strong>Unmarshal</strong>(data []byte, v interface{}) error
+</pre>
+
+<p>Vstupem je v&nbsp;tomto případě pole (řez) bajtů, výstup je vrácen přes
+ukazatel předaný ve druhém parametru (což znamená, že se musíme sami postarat o
+případnou alokaci paměti pro strukturu či pro mapu). Samozřejmě, že při
+<i>unmarshallingu</i> může dojít k&nbsp;nějaké chybě, která je vrácena volající
+funkci. Pokud k&nbsp;chybě nedošlo, je návratová hodnota rovna
+<strong>nil</strong>.</p>
 
 
 
@@ -1074,6 +1184,10 @@ if err := json.Unmarshal([]byte(delivery.Payload()), &amp;task); err != nil {
 println("performing task", task.Id, "name", task.Name, "with parameters", task.Param1, task.Param2)
 delivery.Ack()
 </pre>
+
+<p>Výsledný <a
+href="https://github.com/tisnik/message-queues-examples/blob/master/go-rmq/02-producer-consumer-json/consumer.go">zdrojový
+kód</a> může vypadat následovně:</p>
 
 <pre>
 package <strong>main</strong>
