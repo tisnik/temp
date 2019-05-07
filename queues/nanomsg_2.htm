@@ -38,15 +38,15 @@
 <h2>Obsah</h2>
 
 <p><a href="#k01">1. Komunikační strategie <strong>Publish-Subscribe</strong></a></p>
-<p><a href="#k02">*** 2. Zpracování většího množství zpráv při použití strategie <strong>Publish-Subscribe</strong></a></p>
-<p><a href="#k03">*** 3. Nastavení tématu (<i>topic</i>) pro strategii <strong>Publish-Subscribe</strong></a></p>
+<p><a href="#k02">2. Zpracování většího množství zpráv při použití strategie <strong>Publish-Subscribe</strong></a></p>
+<p><a href="#k03">3. Nastavení tématu (<i>topic</i>) pro strategii <strong>Publish-Subscribe</strong></a></p>
 <p><a href="#k04">4. Implementace producenta zpráv</a></p>
-<p><a href="#k05">*** 5. Implementace různých konzumentů zpráv připojených k&nbsp;nastaveným tématům</a></p>
+<p><a href="#k05">5. Implementace různých konzumentů zpráv připojených k&nbsp;nastaveným tématům</a></p>
 <p><a href="#k06">6. Komunikační strategie <strong>Request-Response</strong></a></p>
 <p><a href="#k07">7. Implementace klienta používajícího strategii <strong>Request-Response</strong></a></p>
 <p><a href="#k08">8. Implementace serveru zpracovávajícího požadavky</a></p>
-<p><a href="#k09">*** 9. Server zpracovávající dotazy v&nbsp;jediném vláknu</a></p>
-<p><a href="#k10">*** 10. </a></p>
+<p><a href="#k09">9. Server zpracovávající dotazy v&nbsp;jediném vláknu</a></p>
+<p><a href="#k10">10. Chování serveru při zpracování velkého množství dotazů</a></p>
 <p><a href="#k11">11. Komunikační strategie <strong>Survey</strong></a></p>
 <p><a href="#k12">12. Implementace klienta</a></p>
 <p><a href="#k13">*** 13. Implementace serveru</a></p>
@@ -417,6 +417,22 @@ chvíli, kdy se mezi posláním jednotlivých zpráv vloží krátká pauza. Úp
 provedena následujícím způsobem:</p>
 
 <pre>
+void <strong>send_message</strong>(const int socket, const char *message)
+{
+    int bytes;
+&nbsp;
+    printf("Sending message '%s'\n", message);
+    if ((bytes = nn_send(socket, message, strlen(message)+1, 0)) &lt; 0) {
+        report_error("nn_send");
+    }
+    printf("Message with length %d bytes sent, flushing\n", bytes);
+    <strong>usleep(100*1000);</strong>
+}
+</pre>
+
+<p>S&nbsp;výsledkem, který je již mnohem lepší:</p>
+
+<pre>
 ...
 ...
 ...
@@ -429,7 +445,13 @@ Received message '7539 is my top secret PIN' with length 26 bytes
 Processed 99 messages so far
 </pre>
 
-<p></p>
+<p>Zbývá nám vyřešit ještě jeden problém, který spočívá v&nbsp;tom, že
+konzument nepřijme první poslanou zprávu. Je to ostatně patrné i při pohledu na
+jeho výstup zobrazený před tímto odstavcem.</p>
+
+<p>Toto chování je ve skutečnosti možné napravit, a to zcela jednoduše.
+Postačuje totiž, aby se vložila krátká pauza mezi voláním funkcí
+<strong>nn_bind()</strong> a vlastním posíláním zpráv:</p>
 
 <pre>
 if ((endpoint = nn_bind(socket, url)) &lt; 0) {
@@ -447,6 +469,8 @@ for (i=0; i &lt; MAX_MESSAGES; i++) {
 }
 </pre>
 
+<p>Výsledek je již mnohem lepší a bude odpovídat očekávanému chování:</p>
+
 <pre>
 ...
 ...
@@ -460,12 +484,36 @@ Received message '7539 is my top secret PIN' with length 26 bytes
 Processed 100 messages so far
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: zde jsme poprvé narazili na to, že
+knihovna <i>nanomsg</i> je poměrně nízkoúrovňová, takže je nutné při tvorbě
+aplikací myslet i na chování konkrétních operačních systémů. V&nbsp;knihovnách
+napsaných nad <i>nanomsg</i> by měly být tyto stavy vyřešeny takovým způsobem,
+aby se o ně již nemuseli programátoři sami starat.</div></p>
+
 
 
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Nastavení tématu (<i>topic</i>) pro strategii <strong>Publish-Subscribe</strong></h2>
 
-<p></p>
+<p>Při použití komunikační strategie <strong>PUB-SUB</strong> se velmi často
+setkáme s&nbsp;požadavkem na to, aby se zprávy filtrovaly podle nastaveného
+tématu (<i>topic</i>). V&nbsp;klasických implementacích message brokerů bývají
+zprávy rozšířeny o hlavičku a téma bývá součástí této hlavičky. Ovšem knihovna
+<i>nanomsg</i> je nízkoúrovňová, takže samotnou zprávu považuje za dále nijak
+neinterpretovaná binární data. Tématem je poté <i>libovolný prefix</i>,
+tj.&nbsp;několik prvních znaků zprávy, přičemž filtrace probíhá až u
+konzumenta, nikoli u zdroje zpráv. Samotné nastavení filtrace zpráv lze provést
+funkcí <strong>nn_setsockopt()</strong>, které se předá prefix a jeho
+délka:</p>
+
+<pre>
+if (nn_setsockopt(socket, NN_SUB, NN_SUB_SUBSCRIBE, topic, strlen(topic)) &lt; 0) {
+    report_error("nn_setsockopt");
+}
+else {
+    printf("Topic set to '%s'\n", topic);
+}
+</pre>
 
 
 
@@ -564,20 +612,20 @@ První z&nbsp;nich bude zpracovávat jen ty zprávy, které začínají znakem
 #include &lt;unistd.h&gt;
 #include &lt;nanomsg/nn.h&gt;
 #include &lt;nanomsg/pubsub.h&gt;
-
+&nbsp;
 const char *URL = "ipc:///tmp/example10";
-
-void report_error(const char *func)
+&nbsp;
+void <strong>report_error</strong>(const char *func)
 {
     fprintf(stderr, "%s: %s\n", func, nn_strerror(nn_errno()));
     exit(1);
 }
-
-void receive_message(const int socket)
+&nbsp;
+void <strong>receive_message</strong>(const int socket)
 {
     char *message = NULL;
     int bytes;
-
+&nbsp;
     if ((bytes = nn_recv(socket, &amp;message, NN_MSG, 0)) &lt; 0) {
         report_error("nn_recv");
     }
@@ -586,52 +634,152 @@ void receive_message(const int socket)
         report_error("nn_freemsg");
     }
 }
-
-void subscriber(const char *url)
+&nbsp;
+void <strong>subscriber</strong>(const char *url)
 {
     const char *topic = "0";
-
+&nbsp;
     int socket;
     int endpoint;
     int messages;
-
+&nbsp;
     if ((socket = nn_socket(AF_SP, NN_SUB)) &lt; 0) {
         report_error("nn_socket");
     }
     puts("Socket created");
-
+&nbsp;
     if (nn_setsockopt(socket, NN_SUB, NN_SUB_SUBSCRIBE, topic, strlen(topic)) &lt; 0) {
         report_error("nn_setsockopt");
     }
     else {
         printf("Topic set to '%s'\n", topic);
     }
-
+&nbsp;
     if ((endpoint = nn_connect(socket, url)) &lt; 0) {
         report_error("nn_connect");
     }
     puts("Endpoint connected to socket");
-
+&nbsp;
     puts("Waiting for messages...");
-
+&nbsp;
     while (1) {
         receive_message(socket);
         messages++;
         printf("Processed %d messages so far\n", messages);
     }
-
+&nbsp;
     if (nn_shutdown(socket, endpoint) &lt; 0) {
         report_error("nn_shutdown");
     }
     puts("Shutdown completed");
 }
-
-int main(int argc, char **argv)
+&nbsp;
+int <strong>main</strong>(int argc, char **argv)
 {
     subscriber(URL);
     return 0;
 }
 </pre>
+
+<p>Druhý konzument se odlišuje pouze v&nbsp;jinak nastaveném tématu:</p>
+
+<pre>
+const char *topic = "1";
+</pre>
+
+<p>A konečně třetí konzument akceptuje všechny zprávy.</p>
+
+<p>Chování jednotlivých konzumentů:</p>
+
+<pre>
+$ <strong>make run_subscriber_0</strong>
+&nbsp;
+LD_LIBRARY_PATH=/usr/local/lib64/ ./subscriber_0
+Socket created
+Topic set to '0'
+Endpoint connected to socket
+Waiting for messages...
+Received message '0886 is my top secret PIN' with length 26 bytes
+Processed 1 messages so far
+Received message '0492 is my top secret PIN' with length 26 bytes
+Processed 2 messages so far
+Received message '0027 is my top secret PIN' with length 26 bytes
+Processed 3 messages so far
+Received message '0059 is my top secret PIN' with length 26 bytes
+Processed 4 messages so far
+Received message '0540 is my top secret PIN' with length 26 bytes
+Processed 5 messages so far
+Received message '0925 is my top secret PIN' with length 26 bytes
+Processed 6 messages so far
+Received message '0336 is my top secret PIN' with length 26 bytes
+Processed 7 messages so far
+Received message '0846 is my top secret PIN' with length 26 bytes
+Processed 8 messages so far
+Received message '0545 is my top secret PIN' with length 26 bytes
+Processed 9 messages so far
+Received message '0364 is my top secret PIN' with length 26 bytes
+Processed 10 messages so far
+Received message '0012 is my top secret PIN' with length 26 bytes
+Processed 11 messages so far
+</pre>
+
+<pre>
+$ <strong>make run_subscriber_1</strong>
+&nbsp;
+LD_LIBRARY_PATH=/usr/local/lib64/ ./subscriber_1
+Socket created
+Topic set to '1'
+Endpoint connected to socket
+Waiting for messages...
+Received message '1421 is my top secret PIN' with length 26 bytes
+Processed 1 messages so far
+Received message '1530 is my top secret PIN' with length 26 bytes
+Processed 2 messages so far
+Received message '1393 is my top secret PIN' with length 26 bytes
+Processed 3 messages so far
+Received message '1873 is my top secret PIN' with length 26 bytes
+Processed 4 messages so far
+Received message '1729 is my top secret PIN' with length 26 bytes
+Processed 5 messages so far
+Received message '1313 is my top secret PIN' with length 26 bytes
+Processed 6 messages so far
+Received message '1087 is my top secret PIN' with length 26 bytes
+Processed 7 messages so far
+</pre>
+
+<pre>
+$ <strong>make run_subscriber_all</strong>
+&nbsp;
+LD_LIBRARY_PATH=/usr/local/lib64/ ./subscriber_all
+Socket created
+Endpoint connected to socket
+Waiting for messages...
+Received message '0886 is my top secret PIN' with length 26 bytes
+Processed 1 messages so far
+Received message '2777 is my top secret PIN' with length 26 bytes
+Processed 2 messages so far
+Received message '6915 is my top secret PIN' with length 26 bytes
+Processed 3 messages so far
+Received message '7793 is my top secret PIN' with length 26 bytes
+Processed 4 messages so far
+Received message '8335 is my top secret PIN' with length 26 bytes
+Processed 5 messages so far
+Received message '5386 is my top secret PIN' with length 26 bytes
+Processed 6 messages so far
+Received message '0492 is my top secret PIN' with length 26 bytes
+Processed 7 messages so far
+Received message '6649 is my top secret PIN' with length 26 bytes
+Processed 8 messages so far
+Received message '1421 is my top secret PIN' with length 26 bytes
+Processed 9 messages so far
+Received message '2362 is my top secret PIN' with length 26 bytes
+Processed 10 messages so far
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: můžeme vidět, že první konzument
+skutečně akceptuje pouze zprávy začínající na řetězec &bdquo;0&ldquo;, druhý
+konzument zprávy začínající řetězcem &bdquo;1&ldquo; a třetí konzument čte
+všechny zprávy bez ohledu na jejich prefix.</div></p>
 
 
 
@@ -935,7 +1083,14 @@ int <strong>main</strong>(int argc, char **argv)
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Server zpracovávající dotazy v&nbsp;jediném vláknu</h2>
 
-<p></p>
+<p>Pochopitelně nám nic nebrání ve vytvoření serveru, který bude jednotlivé
+dotazy zpracovávat postupně a v&nbsp;takovém pořadí, v&nbsp;jakém je bude
+přijímat. Prozatím nepoužijeme žádnou formu multitaskingu ani multithreadingu,
+protože toto řešení není ideální &ndash; výhodnější je použít takzvaná
+<i>zařízení</i> (<i>device</i>).</p>
+
+<p>Zdrojový kód takto upraveného serveru naleznete na adrese <a
+href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/server.c">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/server.c</a>:</p>
 
 <pre>
 #include &lt;stdlib.h&gt;
@@ -952,12 +1107,12 @@ void <strong>report_error</strong>(const char *func)
     fprintf(stderr, "%s: %s\n", func, nn_strerror(nn_errno()));
     exit(1);
 }
-
+&nbsp;
 void <strong>receive_request</strong>(socket)
 {
     char *message = NULL;
     int bytes;
-
+&nbsp;
     if ((bytes = nn_recv(socket, &amp;message, NN_MSG, 0)) &lt; 0) {
         report_error("nn_recv");
     }
@@ -966,11 +1121,11 @@ void <strong>receive_request</strong>(socket)
         report_error("nn_freemsg");
     }
 }
-
+&nbsp;
 void <strong>send_response</strong>(const int socket, const char *response)
 {
     int bytes;
-
+&nbsp;
     printf("Sending response '%s'\n", response);
     if ((bytes = nn_send(socket, response, strlen(response)+1, 0)) &lt; 0) {
         report_error("nn_send");
@@ -978,34 +1133,34 @@ void <strong>send_response</strong>(const int socket, const char *response)
     printf("Response with length %d bytes sent, flushing\n", bytes);
     sleep(1);
 }
-
+&nbsp;
 void server(const char *url)
 {
     int socket;
     int endpoint;
-
+&nbsp;
     if ((socket = nn_socket(AF_SP, NN_REP)) &lt; 0) {
         report_error("nn_socket");
     }
     puts("Socket created");
-
+&nbsp;
     if ((endpoint = nn_bind(socket, url)) &lt; 0) {
         report_error("nn_bind");
     }
     puts("Endpoint bound to socket");
-
+&nbsp;
     puts("Waiting for messages...");
     while (1) {
         receive_request(socket);
         send_response(socket, "ACK!");
     }
-
+&nbsp;
     if (nn_shutdown(socket, endpoint) &lt; 0) {
         report_error("nn_shutdown");
     }
     puts("Shutdown completed");
 }
-
+&nbsp;
 int main(int argc, char **argv)
 {
     server(URL);
@@ -1016,9 +1171,15 @@ int main(int argc, char **argv)
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Chování serveru při zpracování velkého množství dotazů</h2>
 
-<p></p>
+<p>Na rozdíl od strategie <i>PUB-SUB</i> by se při použití strategie
+<i>REQ-REP</i> neměly žádné zprávy ztrácet. Můžeme se o tom snadno přesvědčit
+úpravou klienta i serveru.</p>
+
+<p>Klient, jehož zdrojový kód je možné nalézt na adrese <a
+href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/client.c">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/client.c</a>,
+je nakonfigurován tak, aby poslal celkem 100 zpráv:</p>
 
 <pre>
 #include &lt;stdlib.h&gt;
@@ -1026,35 +1187,35 @@ int main(int argc, char **argv)
 #include &lt;string.h&gt;
 #include &lt;unistd.h&gt;
 #include &lt;nanomsg/nn.h&gt;
-#include <nanomsg/reqrep.h>
-
+#include &lt;nanomsg/reqrep.h&gt;
+&nbsp;
 const int MESSAGES = 100;
-
+&nbsp;
 const char *URL = "ipc:///tmp/example13";
-
-void report_error(const char *func)
+&nbsp;
+void <strong>report_error</strong>(const char *func)
 {
     fprintf(stderr, "%s: %s\n", func, nn_strerror(nn_errno()));
     exit(1);
 }
-
-void send_request(const int socket, const char *message)
+&nbsp;
+void <strong>send_request</strong>(const int socket, const char *message)
 {
     int bytes;
-
+&nbsp;
     printf("Sending message '%s'\n", message);
     if ((bytes = nn_send(socket, message, strlen(message)+1, 0)) &lt; 0) {
         report_error("nn_send");
     }
     printf("Message with length %d bytes sent, flushing\n", bytes);
 }
-
-void receive_response(socket)
+&nbsp;
+void <strong>receive_response</strong>(socket)
 {
     char *response = NULL;
     int bytes;
-
-    if ((bytes = nn_recv(socket, &response, NN_MSG, 0)) &lt; 0) {
+&nbsp;
+    if ((bytes = nn_recv(socket, &amp;response, NN_MSG, 0)) &lt; 0) {
         report_error("nn_recv");
     }
     printf("Received response '%s' with length %d bytes\n", response, bytes); 
@@ -1062,42 +1223,47 @@ void receive_response(socket)
         report_error("nn_freemsg");
     }
 }
-
-void client(const char *url)
+&nbsp;
+void <strong>client</strong>(const char *url)
 {
     int socket;
     int endpoint;
     int i;
-
+&nbsp;
     if ((socket = nn_socket(AF_SP, NN_REQ)) &lt; 0) {
         report_error("nn_socket");
     }
     puts("Socket created");
-
+&nbsp;
     if ((endpoint = nn_connect(socket, url)) &lt; 0) {
         report_error("nn_connect");
     }
     puts("Remote endpoint added to the socket");
-
-    for (i=0; i < MESSAGES; i++) {
+&nbsp;
+    for (i=0; i &lt; MESSAGES; i++) {
         send_request(socket, "Hello from 'first'!");
-
+&nbsp;
         puts("Waiting for response...");
         receive_response(socket);
     }
-
+&nbsp;
     if (nn_shutdown(socket, endpoint) &lt; 0) {
         report_error("nn_shutdown");
     }
     puts("Shutdown completed");
 }
-
-int main(const int argc, const char **argv)
+&nbsp;
+int <strong>main</strong>(const int argc, const char **argv)
 {
     client(URL);
     return 0;
 }
 </pre>
+
+<p><a
+href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_req_resp_fast/server.c">Server</a>
+tyto zprávy bude přijímat a současně vypíše, kolik zpráv již dokázal
+zpracovat:</p>
 
 <pre>
 #include &lt;stdlib.h&gt;
@@ -1105,21 +1271,21 @@ int main(const int argc, const char **argv)
 #include &lt;string.h&gt;
 #include &lt;unistd.h&gt;
 #include &lt;nanomsg/nn.h&gt;
-#include <nanomsg/reqrep.h>
-
+#include &lt;nanomsg/reqrep.h&gt;
+&nbsp;
 const char *URL = "ipc:///tmp/example13";
-
-void report_error(const char *func)
+&nbsp;
+void <strong>report_error</strong>(const char *func)
 {
     fprintf(stderr, "%s: %s\n", func, nn_strerror(nn_errno()));
     exit(1);
 }
-
-void receive_request(socket)
+&nbsp;
+void <strong>receive_request</strong>(socket)
 {
     char *message = NULL;
     int bytes;
-
+&nbsp;
     if ((bytes = nn_recv(socket, &amp;message, NN_MSG, 0)) &lt; 0) {
         report_error("nn_recv");
     }
@@ -1128,34 +1294,34 @@ void receive_request(socket)
         report_error("nn_freemsg");
     }
 }
-
-void send_response(const int socket, const char *response)
+&nbsp;
+void <strong>send_response</strong>(const int socket, const char *response)
 {
     int bytes;
-
+&nbsp;
     printf("Sending response '%s'\n", response);
     if ((bytes = nn_send(socket, response, strlen(response)+1, 0)) &lt; 0) {
         report_error("nn_send");
     }
     printf("Response with length %d bytes sent, flushing\n", bytes);
 }
-
-void server(const char *url)
+&nbsp;
+void <strong>server</strong>(const char *url)
 {
     int socket;
     int endpoint;
     int messages;
-
+&nbsp;
     if ((socket = nn_socket(AF_SP, NN_REP)) &lt; 0) {
         report_error("nn_socket");
     }
     puts("Socket created");
-
+&nbsp;
     if ((endpoint = nn_bind(socket, url)) &lt; 0) {
         report_error("nn_bind");
     }
     puts("Endpoint bound to socket");
-
+&nbsp;
     puts("Waiting for messages...");
     while (1) {
         receive_request(socket);
@@ -1163,19 +1329,82 @@ void server(const char *url)
         messages++;
         printf("Processed %d messages so far\n", messages);
     }
-
+&nbsp;
     if (nn_shutdown(socket, endpoint) &lt; 0) {
         report_error("nn_shutdown");
     }
     puts("Shutdown completed");
 }
-
-int main(int argc, char **argv)
+&nbsp;
+int <strong>main</strong>(int argc, char **argv)
 {
     server(URL);
     return 0;
 }
 </pre>
+
+<p>Chování klienta:</p>
+
+<pre>
+</pre>
+
+<p>Chování serveru:</p>
+
+<pre>
+$ <strong>make run_server</strong>
+&nbsp;
+LD_LIBRARY_PATH=/usr/local/lib64/ ./server
+Socket created
+Endpoint bound to socket
+Waiting for messages...
+Received message 'Hello from 'first'!' with length 20 bytes
+Sending response 'ACK!'
+Response with length 5 bytes sent, flushing
+Processed 1 messages so far
+Received message 'Hello from 'first'!' with length 20 bytes
+Sending response 'ACK!'
+...
+...
+...
+Processed 97 messages so far
+Received message 'Hello from 'first'!' with length 20 bytes
+Sending response 'ACK!'
+Response with length 5 bytes sent, flushing
+Processed 98 messages so far
+Received message 'Hello from 'first'!' with length 20 bytes
+Sending response 'ACK!'
+Response with length 5 bytes sent, flushing
+Processed 99 messages so far
+Received message 'Hello from 'first'!' with length 20 bytes
+Sending response 'ACK!'
+Response with length 5 bytes sent, flushing
+Processed 100 messages so far
+</pre>
+
+<p>Chování klienta:</p>
+
+<pre>
+$ <strong>make run_client </strong>
+&nbsp;
+LD_LIBRARY_PATH=/usr/local/lib64/ ./client
+Socket created
+Remote endpoint added to the socket
+Sending message 'Hello from 'first'!'
+Message with length 20 bytes sent, flushing
+Waiting for response...
+Received response 'ACK!' with length 5 bytes
+Sending message 'Hello from 'first'!'
+Message with length 20 bytes sent, flushing
+Waiting for response...
+...
+...
+...
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: při komunikaci tímto způsobem nedochází
+ke ztrátám zpráv, klient ovšem v&nbsp;některých případech musí déle čekat na
+akceptaci zprávy a poslání odpovědi.</div></p>
+
 
 
 <p><a name="k11"></a></p>
@@ -1465,20 +1694,20 @@ pokračoval v&nbsp;další činnosti.</div></p>
 #include &lt;unistd.h&gt;
 #include &lt;nanomsg/nn.h&gt;
 #include <nanomsg/bus.h>
-
+&nbsp;
 const char *URL = "ipc:///tmp/example14";
-
+&nbsp;
 void report_error(const char *func)
 {
     fprintf(stderr, "%s: %s\n", func, nn_strerror(nn_errno()));
     exit(1);
 }
-
+&nbsp;
 void receive_message(const int socket)
 {
     char *message = NULL;
     int bytes;
-
+&nbsp;
     if ((bytes = nn_recv(socket, &message, NN_MSG, 0)) < 0) {
         report_error("nn_recv");
     }
@@ -1487,37 +1716,37 @@ void receive_message(const int socket)
         report_error("nn_freemsg");
     }
 }
-
+&nbsp;
 void node1(const char *url)
 {
     int socket;
     int endpoint;
     int messages = 0;
-
+&nbsp;
     if ((socket = nn_socket(AF_SP, NN_BUS)) < 0) {
         report_error("nn_socket");
     }
     puts("Socket created");
-
+&nbsp;
     if ((endpoint = nn_bind(socket, url)) < 0) {
         report_error("nn_bind");
     }
     printf("Remote endpoint %s bound to the socket\n", url);
-
+&nbsp;
     puts("Waiting for messages...");
-
+&nbsp;
     while (1) {
         receive_message(socket);
         messages++;
         printf("Processed %d messages so far\n", messages);
     }
-
+&nbsp;
     if (nn_shutdown(socket, endpoint) < 0) {
         report_error("nn_shutdown");
     }
     puts("Shutdown completed");
 }
-
+&nbsp;
 int main(const int argc, const char **argv)
 {
     node1(URL);
@@ -1539,19 +1768,19 @@ int main(const int argc, const char **argv)
 #include &lt;unistd.h&gt;
 #include &lt;nanomsg/nn.h&gt;
 #include <nanomsg/bus.h>
-
+&nbsp;
 const char *URL = "ipc:///tmp/example14";
-
+&nbsp;
 void report_error(const char *func)
 {
     fprintf(stderr, "%s: %s\n", func, nn_strerror(nn_errno()));
     exit(1);
 }
-
+&nbsp;
 void send_message(const int socket, const char *message)
 {
     int bytes;
-
+&nbsp;
     printf("Sending message '%s'\n", message);
     if ((bytes = nn_send(socket, message, strlen(message)+1, 0)) < 0) {
         report_error("nn_send");
@@ -1559,39 +1788,39 @@ void send_message(const int socket, const char *message)
     printf("Message with length %d bytes sent, flushing\n", bytes);
     sleep(1);
 }
-
+&nbsp;
 #define BUF_LEN 100
-
+&nbsp;
 void node2(const char *url)
 {
     int socket;
     int endpoint;
     char buffer[BUF_LEN];
     int i;
-
+&nbsp;
     if ((socket = nn_socket(AF_SP, NN_BUS)) < 0) {
         report_error("nn_socket");
     }
     puts("Socket created");
-
+&nbsp;
     endpoint = nn_connect(socket, url);
     if (endpoint < 0) {
         report_error("nn_connect");
     }
     printf("Connected to the remote %s endpoint\n", url);
     sleep(1);
-
+&nbsp;
     for (i=0; i<10; i++) {
         sprintf(buffer, "Message #%d from node2", i);
         send_message(socket, buffer);
     }
-
+&nbsp;
     if (nn_shutdown(socket, endpoint) < 0) {
         report_error("nn_shutdown");
     }
     puts("Shutdown completed");
 }
-
+&nbsp;
 int main(const int argc, const char **argv)
 {
     node2(URL);
@@ -1619,43 +1848,43 @@ a konzumenta zpráv:</p>
 <tr><th>Příklad</th><th>Skript/kód</th><th>Popis</th><th>Cesta</th></tr>
 <tr><td>1</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/</a></td></tr>
 <tr><td>1</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/</a></td></tr>
-<tr><td>1</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/</a></td></tr>
+<tr><td>1</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/07_publisher_subscriber_1000_messages/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>2</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/</a></td></tr>
 <tr><td>2</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/</a></td></tr>
-<tr><td>2</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/</a></td></tr>
+<tr><td>2</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/08_publisher_subscriber_no_sleep/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>3</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/</a></td></tr>
 <tr><td>3</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/</a></td></tr>
-<tr><td>3</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/</a></td></tr>
+<tr><td>3</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep_proper_init/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_tiny_sleep_proper_init/</a></td></tr>
 <tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep_proper_init/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_tiny_sleep_proper_init/</a></td></tr>
-<tr><td>4</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep_proper_init/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_tiny_sleep_proper_init/</a></td></tr>
+<tr><td>4</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/09_pub_sub_tiny_sleep_proper_init/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_tiny_sleep_proper_init/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>5</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_topics/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_pub_sub_topics/</a></td></tr>
 <tr><td>5</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_topics/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_pub_sub_topics/</a></td></tr>
-<tr><td>5</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_topics/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_pub_sub_topics/</a></td></tr>
+<tr><td>5</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/10_pub_sub_topics/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_pub_sub_topics/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>6</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_req_res/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res/</a></td></tr>
 <tr><td>6</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_req_res/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res/</a></td></tr>
-<tr><td>6</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_req_res/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res/</a></td></tr>
+<tr><td>6</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/11_req_res/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>7</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res_single_thread/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/</a></td></tr>
 <tr><td>7</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res_single_thread/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/</a></td></tr>
-<tr><td>7</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res_single_thread/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/</a></td></tr>
+<tr><td>7</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/12_req_res_single_thread/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_res_single_thread/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>8</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_resp_fast/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_req_resp_fast/</a></td></tr>
 <tr><td>8</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_resp_fast/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_req_resp_fast/</a></td></tr>
-<tr><td>8</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_resp_fast/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_req_resp_fast/</a></td></tr>
+<tr><td>8</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/13_req_resp_fast/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_req_resp_fast/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>9</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_survey/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/15_survey/</a></td></tr>
 <tr><td>9</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_survey/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/15_survey/</a></td></tr>
-<tr><td>9</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_survey/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/15_survey/</a></td></tr>
+<tr><td>9</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/14_survey/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/15_survey/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>10</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/</a></td></tr>
-<tr><td>10</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/</a></td></tr>
-<tr><td>10</td><td></td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/</a></td></tr>
+<tr><td>10</td><td>node1.c</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/node1.c">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/node1.c</a></td></tr>
+<tr><td>10</td><td>node2.c</td><td></td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/node2.c">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/node2.c</a></td></tr>
+<tr><td>10</td><td>Makefile</td><td>soubor pro překlad i spuštění jednotlivých částí aplikace</td><td><a href="https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/Makefile">https://github.com/tisnik/message-queues-examples/blob/master/nanomsg/16_bus/Makefile</a></td></tr>
 </table>
 
 
