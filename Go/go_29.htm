@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Trasování a profilování aplikací naprogramovaných v Go</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Trasování a profilování aplikací naprogramovaných v Go</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -31,13 +31,13 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Ve dvacáté deváté části seriálu o programovacím jazyku Go si ukážeme základní způsoby trasování aplikací, pochopitelně i s vyhodnocením výsledků trasování.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
+<p><a href="#k01">*** 1. Trasování a profilování aplikací naprogramovaných v&nbsp;Go</a></p>
 <p><a href="#k02">*** 2. </a></p>
 <p><a href="#k03">*** 3. </a></p>
 <p><a href="#k04">*** 4. </a></p>
@@ -61,7 +61,7 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Trasování a profilování aplikací naprogramovaných v&nbsp;Go</h2>
 
 
 
@@ -73,10 +73,207 @@
 <p><a name="k03"></a></p>
 <h2 id="k03">3. </h2>
 
+<pre>
+mandelbrot
+├── mandelbrot.go
+├── mandelbrot_test.go
+└── renderer
+    ├── mandelbrot.go
+    └── palettes.go
+</pre>
+
+<pre>
+package main
+
+import (
+        "fmt"
+        "mandelbrot/renderer"
+        "os"
+        "strconv"
+)
+
+func main() {
+        if len(os.Args) < 4 {
+                println("usage: ./mandelbrot width height maxiter")
+                os.Exit(1)
+        }
+
+        width, err := strconv.Atoi(os.Args[1])
+        if err != nil {
+                fmt.Printf("Improper width parameter: '%s'\n", os.Args[1])
+                os.Exit(1)
+        }
+
+        height, err := strconv.Atoi(os.Args[2])
+        if err != nil {
+                fmt.Printf("Improper height parameter: '%s'\n", os.Args[2])
+                os.Exit(1)
+        }
+
+        maxiter, err := strconv.Atoi(os.Args[3])
+        if err != nil {
+                fmt.Printf("Improper maxiter parameter: '%s'\n", os.Args[3])
+                os.Exit(1)
+        }
+
+        renderer.Start(width, height, maxiter)
+}
+</pre>
+
+<pre>
+package renderer_test
+
+import (
+        "mandelbrot/renderer"
+        "testing"
+)
+
+func TestRenderer(t *testing.T) {
+        renderer.Start(256, 256, 255)
+}
+</pre>
+
+<pre>
+package renderer
+
+import (
+        "image"
+        "image/png"
+        "log"
+        "os"
+)
+
+func writeImage(width uint, height uint, pixels []byte) {
+        img := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
+        pixel := 0
+
+        for y := 0; y < int(height); y++ {
+                offset := img.PixOffset(0, y)
+                for x := uint(0); x < width; x++ {
+                        img.Pix[offset] = pixels[pixel]
+                        img.Pix[offset+1] = pixels[pixel+1]
+                        img.Pix[offset+2] = pixels[pixel+2]
+                        img.Pix[offset+3] = 0xff
+                        pixel += 3
+                        offset += 4
+                }
+        }
+
+        outputFile, err := os.Create("mandelbrot.png")
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer outputFile.Close()
+
+        png.Encode(outputFile, img)
+}
+
+func iterCount(cx float64, cy float64, maxiter uint) uint {
+        var zx float64 = 0.0
+        var zy float64 = 0.0
+        var i uint = 0
+        for i < maxiter {
+                zx2 := zx * zx
+                zy2 := zy * zy
+                if zx2+zy2 > 4.0 {
+                        break
+                }
+                zy = 2.0*zx*zy + cy
+                zx = zx2 - zy2 + cx
+                i++
+        }
+        return i
+}
+
+func calcMandelbrot(width uint, height uint, maxiter uint, palette [][3]byte, image []byte, cy float64, done chan bool) {
+        var cx float64 = -2.0
+        for x := uint(0); x < width; x++ {
+                i := iterCount(cx, cy, maxiter)
+                color := palette[i]
+                image[3*x] = color[0]
+                image[3*x+1] = color[1]
+                image[3*x+2] = color[2]
+                cx += 3.0 / float64(width)
+        }
+        done <- true
+}
+
+func Start(width int, height int, maxiter int) {
+        done := make(chan bool, height)
+
+        pixels := make([]byte, width*height*3)
+        offset := 0
+        delta := width * 3
+
+        var cy float64 = -1.5
+        for y := 0; y < height; y++ {
+                go calcMandelbrot(uint(width), uint(height), uint(maxiter), mandmap[:], pixels[offset:offset+delta], cy, done)
+                offset += delta
+                cy += 3.0 / float64(height)
+        }
+        for i := 0; i < height; i++ {
+                <-done
+        }
+        writeImage(uint(width), uint(height), pixels)
+}
+</pre>
+
+<pre>
+package renderer
+
+/* taken from Fractint */
+
+var mandmap = [...][3]byte{
+        {255, 255, 255}, {224, 224, 224}, {216, 216, 216}, {208, 208, 208},
+        {200, 200, 200}, {192, 192, 192}, {184, 184, 184}, {176, 176, 176},
+        {168, 168, 168}, {160, 160, 160}, {152, 152, 152}, {144, 144, 144},
+        ...
+        ...
+        ...
+        {240, 240, 140}, {244, 244, 152}, {244, 244, 168}, {244, 244, 180},
+        {244, 244, 196}, {248, 248, 208}, {248, 248, 224}, {248, 248, 236},
+        {252, 252, 252}, {248, 248, 248}, {240, 240, 240}, {232, 232, 232}}
+</pre>
+
 
 
 <p><a name="k04"></a></p>
 <h2 id="k04">4. </h2>
+
+<pre>
+$ <strong>go test mandelbrot_test.go -cpuprofile=cprof</strong>
+</pre>
+
+<pre>
+$ <strong>go tool pprof -text cprof</strong>
+</pre>
+
+<pre>
+File: renderer.test
+Type: cpu
+Time: Jun 7, 2019 at 9:14pm (CEST)
+Duration: 201.36ms, Total samples = 60ms (29.80%)
+Showing nodes accounting for 60ms, 100% of 60ms total
+      flat  flat%   sum%        cum   cum%
+      40ms 66.67% 66.67%       40ms 66.67%  mandelbrot/renderer.iterCount
+      10ms 16.67% 83.33%       10ms 16.67%  compress/flate.(*compressor).findMatch
+      10ms 16.67%   100%       10ms 16.67%  image/png.abs (inline)
+         0     0%   100%       20ms 33.33%  command-line-arguments_test.TestRenderer
+         0     0%   100%       10ms 16.67%  compress/flate.(*Writer).Write
+         0     0%   100%       10ms 16.67%  compress/flate.(*compressor).deflate
+         0     0%   100%       10ms 16.67%  compress/flate.(*compressor).write
+         0     0%   100%       10ms 16.67%  compress/zlib.(*Writer).Write
+         0     0%   100%       20ms 33.33%  image/png.(*Encoder).Encode
+         0     0%   100%       20ms 33.33%  image/png.(*encoder).writeIDATs
+         0     0%   100%       20ms 33.33%  image/png.(*encoder).writeImage
+         0     0%   100%       20ms 33.33%  image/png.Encode
+         0     0%   100%       10ms 16.67%  image/png.filter
+         0     0%   100%       10ms 16.67%  image/png.paeth
+         0     0%   100%       20ms 33.33%  mandelbrot/renderer.Start
+         0     0%   100%       40ms 66.67%  mandelbrot/renderer.calcMandelbrot
+         0     0%   100%       20ms 33.33%  mandelbrot/renderer.writeImage
+         0     0%   100%       20ms 33.33%  testing.tRunner
+</pre>
 
 
 
@@ -153,12 +350,38 @@
 <p><a name="k19"></a></p>
 <h2 id="k19">19. Repositář s&nbsp;demonstračními příklady</h2>
 
+<p>Zdrojové kódy všech dnes použitých demonstračních příkladů byly uloženy do
+Git repositáře, který je dostupný na adrese <a
+href="https://github.com/tisnik/go-root">https://github.com/tisnik/go-root</a>
+(stále na GitHubu :-). V&nbsp;případě, že nebudete chtít klonovat celý
+repositář (ten je ovšem &ndash; alespoň prozatím &ndash; velmi malý, dnes má
+přibližně dva megabajty), můžete namísto toho použít odkazy na jednotlivé
+příklady, které naleznete v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th> #</th><th>Soubor</th><th>Popis</th><th>Cesta</th></tr>
+<tr><td> 1</td><td>mandelbrot</td><td>program pro vykreslení Mandelbrotovy množiny<td><a href="https://github.com/tisnik/go-root/blob/master/article_29/mandelbrot/">https://github.com/tisnik/go-root/blob/master/article_29/mandelbrot/</a></td></tr>
+<tr><td> 2</td><td></td><td><td><a href="https://github.com/tisnik/go-root/blob/master/article_29/">https://github.com/tisnik/go-root/blob/master/article_29/</a></td></tr>
+</table>
+
 
 
 <p><a name="k20"></a></p>
 <h2 id="k20">20. Odkazy na Internetu</h2>
 
 <ol>
+
+<li>Package trace<br />
+<a href="https://golang.org/pkg/runtime/trace/">https://golang.org/pkg/runtime/trace/</a>
+</li>
+
+<li>Introducing HTTP Tracing<br />
+<a href="https://blog.golang.org/http-tracing">https://blog.golang.org/http-tracing</a>
+</li>
+
+<li>Command trace<br />
+<a href="https://golang.org/cmd/trace/">https://golang.org/cmd/trace/</a>
+</li>
 
 <li>A StreamLike, Immutable, Lazy Loading and smart Golang Library to deal with slices<br />
 <a href="https://github.com/wesovilabs/koazee">https://github.com/wesovilabs/koazee</a>
@@ -1022,6 +1245,54 @@
 
 <li>Control structures - Go for loop, break, continue, range<br />
 <a href="http://golangtutorials.blogspot.com/2011/06/control-structures-go-for-loop-break.html">http://golangtutorials.blogspot.com/2011/06/control-structures-go-for-loop-break.html</a>
+</li>
+
+<li>Goroutine IDs<br />
+<a href="https://blog.sgmansfield.com/2015/12/goroutine-ids/">https://blog.sgmansfield.com/2015/12/goroutine-ids/</a>
+</li>
+
+<li>Different ways to pass channels as arguments in function in go (golang)<br />
+<a href="https://stackoverflow.com/questions/24868859/different-ways-to-pass-channels-as-arguments-in-function-in-go-golang">https://stackoverflow.com/questions/24868859/different-ways-to-pass-channels-as-arguments-in-function-in-go-golang</a>
+</li>
+
+<li>justforfunc #22: using the Go execution tracer<br />
+<a href="https://www.youtube.com/watch?v=ySy3sR1LFCQ">https://www.youtube.com/watch?v=ySy3sR1LFCQ</a>
+</li>
+
+<li>Single Function Exit Point<br />
+<a href="http://wiki.c2.com/?SingleFunctionExitPoint">http://wiki.c2.com/?SingleFunctionExitPoint</a>
+</li>
+
+<li>Entry point<br />
+<a href="https://en.wikipedia.org/wiki/Entry_point">https://en.wikipedia.org/wiki/Entry_point</a>
+</li>
+
+<li>Why does Go have a GOTO statement?!<br />
+<a href="https://www.reddit.com/r/golang/comments/kag5q/why_does_go_have_a_goto_statement/">https://www.reddit.com/r/golang/comments/kag5q/why_does_go_have_a_goto_statement/</a>
+</li>
+
+<li>Effective Go<br />
+<a href="https://golang.org/doc/effective_go.html">https://golang.org/doc/effective_go.html</a>
+</li>
+
+<li>GoClipse: an Eclipse IDE for the Go programming language<br />
+<a href="http://goclipse.github.io/">http://goclipse.github.io/</a>
+</li>
+
+<li>GoClipse Installation<br />
+<a href="https://github.com/GoClipse/goclipse/blob/latest/documentation/Installation.md#installation">https://github.com/GoClipse/goclipse/blob/latest/documentation/Installation.md#installation</a>
+</li>
+
+<li>The zero value of a slice is not nil<br />
+<a href="https://stackoverflow.com/questions/30806931/the-zero-value-of-a-slice-is-not-nil">https://stackoverflow.com/questions/30806931/the-zero-value-of-a-slice-is-not-nil</a>
+</li>
+
+<li>Go-tcha: When nil != nil<br />
+<a href="https://dev.to/pauljlucas/go-tcha-when-nil--nil-hic">https://dev.to/pauljlucas/go-tcha-when-nil--nil-hic</a>
+</li>
+
+<li>Nils in Go<br />
+<a href="https://www.doxsey.net/blog/nils-in-go">https://www.doxsey.net/blog/nils-in-go</a>
 </li>
 
 </ol>
