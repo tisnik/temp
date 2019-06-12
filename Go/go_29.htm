@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p>Ve dvacáté deváté části seriálu o programovacím jazyku Go si ukážeme základní způsoby trasování aplikací, pochopitelně i s vyhodnocením výsledků trasování.</p>
+<p>Ve dvacáté deváté části seriálu o programovacím jazyku Go si ukážeme základní způsoby trasování a profilování aplikací, pochopitelně i s vyhodnocením výsledků. Použijeme přitom ty nástroje, které jsou již součástí standardní instalace programovacího jazyka Go.</p>
 
 
 
@@ -62,6 +62,172 @@
 
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Trasování a profilování aplikací naprogramovaných v&nbsp;Go</h2>
+
+<p>Při tvorbě a především při ladění a optimalizacích aplikací se kromě debuggeru (a pochopitelně i logování) mnohdy používají i další nástroje. Typicky se jedná o profiler a někdy též o nástroj umožňující trasování kódu. Tyto nástroje (především profiler) jsou pochopitelně dostupné i vývojářům používajícím programovací jazyk Go; dokonce oba zmíněné nástroje nalezneme v&nbsp;sadě základních nástrojů dodávaných přímo s&nbsp;tímto programovacím jazykem.</p>
+
+<p>Na začátek si připomeňme, že existují i další (dnes de facto již standardní) nástroje využívané pro ladění jádra popř.&nbsp;pro ladění a/nebo sledování použití základních knihoven. Jak může vypadat použití jednotlivých nástrojů na celém &bdquo;stacku&ldquo;, tj.&nbsp;od trasování/ladění samotné uživatelské aplikace až přes řešení problémů přímo v&nbsp;jádře operačního systému, je naznačeno na následujícím schématu, s&nbsp;nímž jsme se již seznámili v&nbsp;souvislosti s&nbsp;popisem debuggerů.:</p>
+
+<pre>
++----------+
+|          |..... gdb
+| aplikace |
+|          |..... SystemTap
++----------+
+     |
+     |
+     |...... ltrace
+     |
+     v
++----------+
+|          |..... gdb
+|  glibc   |
+|          |..... SystemTap
++----------+
+     |
+     |
+     |...... strace
+     |
+     v
++----------+
+|          |..... SystemTap
+|  jádro   |
+|          |..... KGDB
++----------+
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Utilita <strong>ltrace</strong> &ndash; výpis informací o volaných knihovních funkcích</h2>
+
+<p>Prvním nástrojem, s&nbsp;nímž se v&nbsp;dnešním článku ve stručnosti seznámíme, je utilitka nazvaná jednoduše <strong>ltrace</strong>. Tento nástroj je možné použít ve chvíli, kdy potřebujeme zjistit, které knihovní funkce se volají popř.&nbsp;jak často se tyto funkce volají a kolik času v&nbsp;nich některá aplikace tráví. Takto zjištěné statistické informace lze použít různým způsobem, například pro vyhledání problémových či pomalých částí kódu, zjištění, ve kterých místech dokází k&nbsp;chybě, zjištění způsobů alokace a dealokace paměti (funkce <strong>malloc</strong>, <strong>free</strong> a příbuzné), popř.&nbsp;k&nbsp;jednoduchému trasování (což je asi nejběžnější).</p>
+
+<p>Tato utilitka má v&nbsp;případě programovacího jazyka Go relativně malé možnosti využití, a to z&nbsp;toho důvodu, že aplikace psané v&nbsp;Go jsou typicky staticky linkované a mnohdy žádné další funkce z&nbsp;dynamicky linkovaných knihoven nepoužívají, což si ostatně můžete snadno ověřit na nějaké přeložené aplikaci:</p>
+
+<pre>
+$ <strong>go build chessboard.go</strong>
+&nbsp;
+$ <strong>ldd chessboard</strong>
+&nbsp;
+        not a dynamic executable
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: pokud ovšem použijete například balíček <strong>net/http</strong>, bude se linkovat minimálně standardní céčková knihovna.</div></p>
+
+<p>Ovšem pro ověření, jak <strong>ltrace</strong> pracuje si ukážeme jednoduchý program naprogramovaný v&nbsp;Go, který volá céčkovou knihovní funkci <strong>random</strong> a taktéž funkci <strong>srand</strong> (stdlib.h). Tento program používá poměrně obskurní způsob zajišťující základní interoperabilitu mezi jazykem Go a nativními (typicky céčkovými) knihovnami:</p>
+
+<pre>
+package main
+&nbsp;
+// #include &lt;stdlib.h&gt;
+import "C"
+&nbsp;
+func main() {
+        C.srand(C.uint(42))
+&nbsp;
+        for i := 1; i &lt;= 10; i++ {
+                x := C.random()
+                println(x)
+        }
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si komentáře nad příkazem <strong>import "C"</strong>. Tento komentář je rozeznáván nástrojem <strong>cgo</strong> [<a href="https://golang.org/cmd/cgo/">1</a>] a použije se při transpilaci našeho zdrojového kódu do jazyka C (celý překlad přes <strong>cgo</strong> je relativně komplikovaný a jeho popis vydá na samostatný článek). Dále stojí za zmínku i vlastní import <strong>import "C"</strong>, protože žádný balíček nazvaný &bdquo;C&ldquo; ve skutečnosti neexistuje. Jedná se totiž o takzvaný pseudobalíček, který je opět zpracováván překladačem <strong>cgo</strong>. Všechny céčkovské funkce z&nbsp;nativní knihovny se v&nbsp;tomto případě volají s&nbsp;uvedením jména pseudobalíčku.</div></p>
+
+<p>Samotný překlad aplikace zajistí (alespoň v&nbsp;tomto jednoduchém případě) známý příkaz:</p>
+
+<pre>
+$ <strong>go build clibs.go</strong>
+</pre>
+
+<p>Interně se ovšem v&nbsp;tomto případě bude volat výše zmíněný nástroj <strong>cgo</strong>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Příklad použití utility <strong>ltrace</strong></h2>
+
+<p>Nejprve si ověřme, že překladem programu <strong>clibs.go</strong> vznikl spustitelný binární soubor, který používá dynamicky linkované knihovny:</p>
+
+<pre>
+$ <strong>ldd --verbose clibs </strong>
+&nbsp;
+        linux-vdso.so.1 =&gt;  (0x00007ffc7bf0d000)
+        libpthread.so.0 =&gt; /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f6b31bbf000)
+        libc.so.6 =&gt; /lib/x86_64-linux-gnu/libc.so.6 (0x00007f6b317f6000)
+        /lib64/ld-linux-x86-64.so.2 (0x00007f6b31ddd000)
+
+        Version information:
+        ./clibs:
+                libpthread.so.0 (GLIBC_2.3.2) =&gt; /lib/x86_64-linux-gnu/libpthread.so.0
+                libpthread.so.0 (GLIBC_2.2.5) =&gt; /lib/x86_64-linux-gnu/libpthread.so.0
+                libc.so.6 (GLIBC_2.2.5) =&gt; /lib/x86_64-linux-gnu/libc.so.6
+        /lib/x86_64-linux-gnu/libpthread.so.0:
+                ld-linux-x86-64.so.2 (GLIBC_2.2.5) =&gt; /lib64/ld-linux-x86-64.so.2
+                ld-linux-x86-64.so.2 (GLIBC_2.3) =&gt; /lib64/ld-linux-x86-64.so.2
+                ld-linux-x86-64.so.2 (GLIBC_PRIVATE) =&gt; /lib64/ld-linux-x86-64.so.2
+                libc.so.6 (GLIBC_2.14) =&gt; /lib/x86_64-linux-gnu/libc.so.6
+                libc.so.6 (GLIBC_2.3.2) =&gt; /lib/x86_64-linux-gnu/libc.so.6
+                libc.so.6 (GLIBC_PRIVATE) =&gt; /lib/x86_64-linux-gnu/libc.so.6
+                libc.so.6 (GLIBC_2.2.5) =&gt; /lib/x86_64-linux-gnu/libc.so.6
+        /lib/x86_64-linux-gnu/libc.so.6:
+                ld-linux-x86-64.so.2 (GLIBC_2.3) =&gt; /lib64/ld-linux-x86-64.so.2
+                ld-linux-x86-64.so.2 (GLIBC_PRIVATE) =&gt; /lib64/ld-linux-x86-64.so.2
+</pre>
+
+<pre>
+$ <strong>ltrace ./clibs</strong>
+</pre>
+
+<pre>
+__libc_start_main(0x447ac0, 1, 0x7ffd7174df58, 0x4511b0 <unfinished ...>
+malloc(56)                                                       = 0xd88010
+pthread_attr_init(0xd88010, 0xd88040, 0xd88010, 0x7f8fb562b760)  = 0
+pthread_attr_getstacksize(0xd88010, 0x7ffd7174de28, 0xd88010, 0) = 0
+pthread_attr_destroy(0xd88010, 1, 0x800000, 0)                   = 0
+free(0xd88010)                                                   = <void>
+mmap(0, 0x40000, 3, 34)                                          = 0x7f8fb5a0d000
+mmap(0xc000000000, 0x4000000, 0, 34)                             = 0xc000000000
+mmap(0xc000000000, 0x4000000, 3, 50)                             = 0xc000000000
+mmap(0, 0x2000000, 3, 34)                                        = 0x7f8fb3269000
+mmap(0, 0x210000, 3, 34)                                         = 0x7f8fb3059000
+mmap(0, 0x10000, 3, 34)                                          = 0x7f8fb5a62000
+mmap(0, 0x10000, 3, 34)                                          = 0x7f8fb5a52000
+sigaction(SIGHUP, nil, { 0, &lt;&gt;, 0x1, 0 })                        = 0
+sigismember(&lt;&gt;, SIGHUP)                                          = 0
+...
+...
+...
+</pre>
+
+<p>Nejzajímavější informace nalezneme až na konci výpisu. Jsou zde informace o volání funkce <strong>srand()</strong> a dále informace o tom, že se desetkrát zavolala funkce <strong>random</strong>, společně s&nbsp;výslednou (návratovou) hodnotou této funkce. Tyto informace jsou proloženy zprávami vypisované přímo z&nbsp;Go kódu funkcí <strong>println()</strong>, takže si můžete snadno ověřit, že <strong>ltrace</strong> skutečně vypisuje relevantní informace:</p>
+
+<pre>
+srand(42, 0x6c08a0, 0xc0000386f8, 0xc000038770)                  = 0
+random()                                                         = 71876166
+71876166
+random()                                                         = 708592740
+708592740
+random()                                                         = 1483128881
+1483128881
+random()                                                         = 907283241
+907283241
+random()                                                         = 442951012
+442951012
+random()                                                         = 537146758
+537146758
+random()                                                         = 1366999021
+1366999021
+random()                                                         = 1854614940
+1854614940
+random()                                                         = 647800535
+647800535
+random()                                                         = 53523743
+53523743
++++ exited (status 0) +++
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: nenechte se zmást tím, že <strong>ltrace</strong> zobrazuje čtyři parametry funkce <strong>srand()</strong>. Nástroj <strong>ltrace</strong> totiž musí znát počet parametrů funkcí (potom je zobrazuje korektně); pokud tuto informaci nemá k&nbsp;dispozici, zobrazí buď část zásobníkového rámce nebo obsah registrů používaných pro přenos parametrů do volaných funkcí (podle použité ABI).</div></p>
 
 
 
@@ -628,6 +794,14 @@ příklady, které naleznete v&nbsp;následující tabulce:</p>
 <h2 id="k20">20. Odkazy na Internetu</h2>
 
 <ol>
+
+<li>Go &amp; cgo: integrating existing C code with Go<br />
+<a href="http://akrennmair.github.io/golang-cgo-slides/#1">http://akrennmair.github.io/golang-cgo-slides/#1</a>
+</li>
+
+<li>Using cgo to call C code from within Go code<br />
+<a href="https://wenzr.wordpress.com/2018/06/07/using-cgo-to-call-c-code-from-within-go-code/">https://wenzr.wordpress.com/2018/06/07/using-cgo-to-call-c-code-from-within-go-code/</a>
+</li>
 
 <li>Package trace<br />
 <a href="https://golang.org/pkg/runtime/trace/">https://golang.org/pkg/runtime/trace/</a>
