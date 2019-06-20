@@ -623,15 +623,392 @@ func <strong>main</strong>() {
 <p><a name="k16"></a></p>
 <h2 id="k16">16. Úprava projektu pro vykreslení Mandelbrotovy množiny pro přímou podporu trasování</h2>
 
+<pre>
+package main
+
+import (
+        "fmt"
+        "log"
+        "mandelbrot3/renderer"
+        "os"
+        "runtime/trace"
+        "strconv"
+)
+
+func main() {
+        f, err := os.Create("mandelbrot3.trace")
+        if err != nil {
+                log.Fatalf("failed to create trace output file: %v", err)
+        }
+        defer func() {
+                if err := f.Close(); err != nil {
+                        log.Fatalf("failed to close trace file: %v", err)
+                }
+        }()
+
+        if err := trace.Start(f); err != nil {
+                log.Fatalf("failed to start trace: %v", err)
+        }
+        defer trace.Stop()
+
+        if len(os.Args) < 4 {
+                println("usage: ./mandelbrot width height maxiter")
+                os.Exit(1)
+        }
+
+        width, err := strconv.Atoi(os.Args[1])
+        if err != nil {
+                fmt.Printf("Improper width parameter: '%s'\n", os.Args[1])
+                os.Exit(1)
+        }
+
+        height, err := strconv.Atoi(os.Args[2])
+        if err != nil {
+                fmt.Printf("Improper height parameter: '%s'\n", os.Args[2])
+                os.Exit(1)
+        }
+
+        maxiter, err := strconv.Atoi(os.Args[3])
+        if err != nil {
+                fmt.Printf("Improper maxiter parameter: '%s'\n", os.Args[3])
+                os.Exit(1)
+        }
+
+        renderer.Start(width, height, maxiter)
+}
+</pre>
+
 
 
 <p><a name="k17"></a></p>
 <h2 id="k17">17. </h2>
 
+<pre>
+package main
+
+import (
+        "context"
+        "fmt"
+        "log"
+        "mandelbrot4/renderer"
+        "os"
+        "runtime/trace"
+        "strconv"
+)
+
+func main() {
+        f, err := os.Create("mandelbrot4.trace")
+        if err != nil {
+                log.Fatalf("failed to create trace output file: %v", err)
+        }
+        defer func() {
+                if err := f.Close(); err != nil {
+                        log.Fatalf("failed to close trace file: %v", err)
+                }
+        }()
+
+        if err := trace.Start(f); err != nil {
+                log.Fatalf("failed to start trace: %v", err)
+        }
+        defer trace.Stop()
+
+        if len(os.Args) < 4 {
+                println("usage: ./mandelbrot width height maxiter")
+                os.Exit(1)
+        }
+
+        width, err := strconv.Atoi(os.Args[1])
+        if err != nil {
+                fmt.Printf("Improper width parameter: '%s'\n", os.Args[1])
+                os.Exit(1)
+        }
+
+        height, err := strconv.Atoi(os.Args[2])
+        if err != nil {
+                fmt.Printf("Improper height parameter: '%s'\n", os.Args[2])
+                os.Exit(1)
+        }
+
+        maxiter, err := strconv.Atoi(os.Args[3])
+        if err != nil {
+                fmt.Printf("Improper maxiter parameter: '%s'\n", os.Args[3])
+                os.Exit(1)
+        }
+
+        ctx := context.Background()
+        ctx, task := trace.NewTask(ctx, "renderFractal")
+        defer task.End()
+        renderer.Start(ctx, width, height, maxiter)
+}
+</pre>
+
+<pre>
+package renderer
+
+import (
+        "context"
+        "image"
+        "image/png"
+        "log"
+        "os"
+        "runtime/trace"
+)
+
+func writeImage(width uint, height uint, pixels []byte) {
+        img := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
+        pixel := 0
+
+        for y := 0; y < int(height); y++ {
+                offset := img.PixOffset(0, y)
+                for x := uint(0); x < width; x++ {
+                        img.Pix[offset] = pixels[pixel]
+                        img.Pix[offset+1] = pixels[pixel+1]
+                        img.Pix[offset+2] = pixels[pixel+2]
+                        img.Pix[offset+3] = 0xff
+                        pixel += 3
+                        offset += 4
+                }
+        }
+
+        outputFile, err := os.Create("mandelbrot.png")
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer outputFile.Close()
+
+        png.Encode(outputFile, img)
+}
+
+func iterCount(cx float64, cy float64, maxiter uint) uint {
+        var zx float64 = 0.0
+        var zy float64 = 0.0
+        var i uint = 0
+        for i < maxiter {
+                zx2 := zx * zx
+                zy2 := zy * zy
+                if zx2+zy2 > 4.0 {
+                        break
+                }
+                zy = 2.0*zx*zy + cy
+                zx = zx2 - zy2 + cx
+                i++
+        }
+        return i
+}
+
+func calcMandelbrot(width uint, height uint, maxiter uint, palette [][3]byte, image []byte, cy float64, done chan bool) {
+        var cx float64 = -2.0
+        for x := uint(0); x < width; x++ {
+                i := iterCount(cx, cy, maxiter)
+                color := palette[i]
+                image[3*x] = color[0]
+                image[3*x+1] = color[1]
+                image[3*x+2] = color[2]
+                cx += 3.0 / float64(width)
+        }
+        done <- true
+}
+
+func Start(ctx context.Context, width int, height int, maxiter int) {
+        trace.Logf(ctx, "settings", "width %i", width)
+        trace.Logf(ctx, "settings", "height %i", height)
+        trace.Logf(ctx, "settings", "maxiter %i", maxiter)
+
+        done := make(chan bool, height)
+
+        pixels := make([]byte, width*height*3)
+        offset := 0
+        delta := width * 3
+
+        var cy float64 = -1.5
+
+        region := trace.StartRegion(ctx, "startGoroutines")
+        for y := 0; y < height; y++ {
+                trace.Logf(ctx, "y (scanline)", "%i", y)
+                go calcMandelbrot(uint(width), uint(height), uint(maxiter), mandmap[:], pixels[offset:offset+delta], cy, done)
+                offset += delta
+                cy += 3.0 / float64(height)
+        }
+        region.End()
+
+        region2 := trace.StartRegion(ctx, "waitForGoroutines")
+        for i := 0; i < height; i++ {
+                <-done
+        }
+        region2.End()
+
+        region3 := trace.StartRegion(ctx, "writeImage")
+        writeImage(uint(width), uint(height), pixels)
+        region3.End()
+}
+</pre>
+
 
 
 <p><a name="k18"></a></p>
 <h2 id="k18">18. </h2>
+
+<pre>
+package main
+
+import (
+        "context"
+        "fmt"
+        "log"
+        "mandelbrot5/renderer"
+        "os"
+        "runtime/trace"
+        "strconv"
+)
+
+func main() {
+        f, err := os.Create("mandelbrot5.trace")
+        if err != nil {
+                log.Fatalf("failed to create trace output file: %v", err)
+        }
+        defer func() {
+                if err := f.Close(); err != nil {
+                        log.Fatalf("failed to close trace file: %v", err)
+                }
+        }()
+
+        if err := trace.Start(f); err != nil {
+                log.Fatalf("failed to start trace: %v", err)
+        }
+        defer trace.Stop()
+
+        if len(os.Args) < 4 {
+                println("usage: ./mandelbrot width height maxiter")
+                os.Exit(1)
+        }
+
+        width, err := strconv.Atoi(os.Args[1])
+        if err != nil {
+                fmt.Printf("Improper width parameter: '%s'\n", os.Args[1])
+                os.Exit(1)
+        }
+
+        height, err := strconv.Atoi(os.Args[2])
+        if err != nil {
+                fmt.Printf("Improper height parameter: '%s'\n", os.Args[2])
+                os.Exit(1)
+        }
+
+        maxiter, err := strconv.Atoi(os.Args[3])
+        if err != nil {
+                fmt.Printf("Improper maxiter parameter: '%s'\n", os.Args[3])
+                os.Exit(1)
+        }
+
+        ctx := context.Background()
+        ctx, task := trace.NewTask(ctx, "renderFractal")
+        defer task.End()
+        renderer.Start(ctx, width, height, maxiter)
+}
+</pre>
+
+<pre>
+package renderer
+
+import (
+        "context"
+        "image"
+        "image/png"
+        "log"
+        "os"
+        "runtime/trace"
+)
+
+func writeImage(width uint, height uint, pixels []byte) {
+        img := image.NewNRGBA(image.Rect(0, 0, int(width), int(height)))
+        pixel := 0
+
+        for y := 0; y < int(height); y++ {
+                offset := img.PixOffset(0, y)
+                for x := uint(0); x < width; x++ {
+                        img.Pix[offset] = pixels[pixel]
+                        img.Pix[offset+1] = pixels[pixel+1]
+                        img.Pix[offset+2] = pixels[pixel+2]
+                        img.Pix[offset+3] = 0xff
+                        pixel += 3
+                        offset += 4
+                }
+        }
+
+        outputFile, err := os.Create("mandelbrot.png")
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer outputFile.Close()
+
+        png.Encode(outputFile, img)
+}
+
+func iterCount(cx float64, cy float64, maxiter uint) uint {
+        var zx float64 = 0.0
+        var zy float64 = 0.0
+        var i uint = 0
+        for i < maxiter {
+                zx2 := zx * zx
+                zy2 := zy * zy
+                if zx2+zy2 > 4.0 {
+                        break
+                }
+                zy = 2.0*zx*zy + cy
+                zx = zx2 - zy2 + cx
+                i++
+        }
+        return i
+}
+
+func calcMandelbrot(ctx context.Context, width uint, height uint, maxiter uint, palette [][3]byte, image []byte, cy float64, done chan bool) {
+        var cx float64 = -2.0
+        for x := uint(0); x < width; x++ {
+                region := trace.StartRegion(ctx, "iterCount")
+                i := iterCount(cx, cy, maxiter)
+                region.End()
+                color := palette[i]
+                image[3*x] = color[0]
+                image[3*x+1] = color[1]
+                image[3*x+2] = color[2]
+                cx += 3.0 / float64(width)
+        }
+        done <- true
+}
+
+func Start(ctx context.Context, width int, height int, maxiter int) {
+        trace.Logf(ctx, "settings", "width %i", width)
+        trace.Logf(ctx, "settings", "height %i", height)
+        trace.Logf(ctx, "settings", "maxiter %i", maxiter)
+
+        done := make(chan bool, height)
+
+        pixels := make([]byte, width*height*3)
+        offset := 0
+        delta := width * 3
+
+        var cy float64 = -1.5
+
+        region := trace.StartRegion(ctx, "startGoroutines")
+        for y := 0; y < height; y++ {
+                trace.Logf(ctx, "y (scanline)", "%i", y)
+                go calcMandelbrot(ctx, uint(width), uint(height), uint(maxiter), mandmap[:], pixels[offset:offset+delta], cy, done)
+                offset += delta
+                cy += 3.0 / float64(height)
+        }
+        region.End()
+
+        region2 := trace.StartRegion(ctx, "waitForGoroutines")
+        for i := 0; i < height; i++ {
+                <-done
+        }
+        region2.End()
+
+        region3 := trace.StartRegion(ctx, "writeImage")
+        writeImage(uint(width), uint(height), pixels)
+        region3.End()
+}
+</pre>
 
 
 
