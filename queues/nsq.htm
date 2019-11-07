@@ -31,16 +31,16 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>V další části seriálu o message brokerech se seznámíme se systémem zpráv nazvaným NSQ. Tento nástroj, který je mimochodem vytvořen v jazyce Go, je založen na myšlence decentralizace a navíc takovým způsobem, aby neobsahoval takový uzel, jehož pádem by přestalo doručování zpráv fungovat.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
+<p><a href="#k01">*** 1. Systém nsq se představuje</a></p>
+<p><a href="#k02">*** 2. Architektura systému nsq</a></p>
+<p><a href="#k03">*** 3. Doručení zprávy konzumentům</a></p>
+<p><a href="#k04">*** 4. Překlad  a instalace systému <i>nsq</i></a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
 <p><a href="#k07">*** 7. </a></p>
@@ -61,25 +61,54 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Systém nsq se představuje</h2>
+
+<p>V&nbsp;seriálu o message brokerech jsme se seznámili již s&nbsp;mnoha typy message brokerů, front  zpráv, komunikačních strategií PUB-SUB atd. Popisované systémy byly vytvořeny v&nbsp;různých programovacích jazycích, například RQ (Redi Queue) v&nbsp;Pythonu, ZeroMQ v&nbsp;C++, nanomsg v&nbsp;C, AMQ a Artemis v&nbsp;Javě, a systém NATS <a href="">v&nbsp;programovacím jazyce Go</a>. V&nbsp;Go je vytvořen i dnes popisovaný nástroj <i>nsq</i>, který se skládá z&nbsp;několika samostatně spouštěných uzlů, které mezi sebou vhodným způsobem komunikují. Výhodou <i>nsq</i> je fakt, že způsob jeho návrhu počítá s&nbsp;tím, že jednotlivé uzly mohou být po nějakou dobu nedostupné a přitom systém jako celek by měl být stále použitelný. Jedná se tedy o architekturu vhodnou pro nasazení do dnešního hybridní prostředí se systémy běžícími v&nbsp;cloudu, lokálně v&nbsp;kontejneru, na dedikovaných serverech atd.</p>
+
+<p>Za vývojem systému <i>nsq</i> stojí vývojáři z&nbsp;<i>bitly</i>, kteří mají s&nbsp;podobnými systémy dlouholeté zkušenosti. Za zmínku stojí například <a href="">knihovna Tornado</a> pro jazyk Python nebo projekt <a href="https://github.com/bitly/simplehttp">simplehttp</a>, v&nbsp;němž jsou fronty zpráv i komunikační strategie PUB-SUB implementovány, konkrétně ve zdrojových souborech <a href="https://github.com/bitly/simplehttp/blob/master/simplequeue/simplequeue.c">simplequeue.c</a> a <a href="https://github.com/bitly/simplehttp/blob/master/pubsub/pubsub.c">pubsub.c</a>. Zkušenosti s&nbsp;programováním v&nbsp;Go mají poměrně dlouhodobé, například známý blog post <a href="https://word.bitly.com/post/29550171827/go-go-gadget">Go Go Gadget</a> byl publikován již před pěti lety.</p>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Architektura systému nsq</h2>
+
+<p>Základním úkolem systému <i>nsq</i> je zajištění doručení zpráv od producentů ke konzumentům, a to pochopitelně bez toho, aby spolu producenti a konzumenti museli komunikovat přímo (popř.&nbsp;aniž by o sobě vůbec věděli &ndash; takové pevné spojení částí systému bývá příliš rigidní a více náchylné k&nbsp;poruchám). Systém má taktéž umožnit škálování, tj.&nbsp;typicky použití většího množství konzumentů pro určité typy zpráv (rozlišených podle svého tématu &ndash; <i>topic</i>). Navíc musí systém umožnit, aby byly zprávy uchovány (ve frontách) ve chvíli, kdy není žádný konzument schopný zprávy přečíst a zpracovat. Tradičně jsou tyto požadavky vyřešeny klasickým message brokerem, což bývá (jediný) proces s&nbsp;několika frontami zpráv, přičemž každá fronta je určena pro přeposílání zpráv patřících k&nbsp;jednomu tématu. Message broker navíc bývá doplněn i o možnost posílat zprávy s&nbsp;využitím komunikační strategie PUB-SUB, tedy všem konzumentům, kteří dané téma odebírají a současně jsou v&nbsp;daný okamžik připojeni a schopni přijmu zpráv.</p>
+
+<p>Systém <i>nsq</i> je navržen nepatrně odlišným způsobem, protože obsahuje tři základní typy uzlů, přičemž každý uzel je představován samostatným procesem (ten typicky běží na pozadí). Tyto procesy mohou běžet na jediném počítači nebo mohou být distribuovány a škálovány na větší množství strojů, a to pochopitelně i geograficky oddělených. Jedná se o tyto uzly:</p>
+
+<ol>
+
+<li><i>nsqlookupd</i> &ndash; jedná se o takzvanou <i>direcory service</i>, tj.&nbsp;o službu, do které se registrují všechny ostatní uzly a která tak má přehled o umístění (adresa+číslo portu) i o stavu jednotlivých uzlů. Konzumenti se typicky nejprve připojují právě k&nbsp;<i>nsqlookupd</i>, aby zjistili, které brokery jsou schopny jim dodávat zprávy požadovaných témat (<i>topic</i>).</li>
+
+<li><i>nsqd</i> &ndash; tyto uzly, jichž může běžet libovolné množství, zajišťují vlastní příjem zpráv, jejich ukládání do front a následné doručení konzumentům. Zprávy jsou perzistentní, tj.&nbsp;ve chvíli, kdy je uzel <i>nsqd</i> zastavován, jsou uloženy do souboru a po znovuspuštění jsou ze souboru načteny do paměti a popř.&nbsp;zaslány konzumentům.</li>
+
+<li><i>nsqadmin</i> &ndash; tato služba poskytuje (webové) uživatelské rozhraní, ze kterého je možné sledovat činnost celého systému. Samotné sledování je primárně založeno na komunikaci s&nbsp;prvním typem uzlu &ndash; <i>nsqlookupd</i> a sekundárně s&nbsp;uzly <i>nsqd</i>.</li>
+
+</ol>
+
+<p><div class="rs-tip-major">Poznámka: celá architektura sice může na první pohled vypadat zbytečně složitě, ovšem v&nbsp;tom nejjednodušší možné konfiguraci postačuje na stejném počítači pustit jedinou instanci každé výše zmíněné služby; dokonce je možné použít implicitní přednastavené porty, o nichž se zmíníme v&nbsp;navazujících kapitolách.</div></p>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Doručení zprávy konzumentům</h2>
+
+<p>Podívejme se nyní na způsob, jakým je zpráva doručena od producenta ke konzumentovi (či k&nbsp;více konzumentům). Zprávou je v&nbsp;systému <i>nsq</i> myšlena prakticky libovolně dlouhá sekvence bajtů označená časovým razítkem. Každá zpráva má navíc přiřazeno téma (<i>topic</i>), což je libovolný řetězec. Samotná témata není zapotřebí dopředu vytvářet, protože první poslaná zpráva s&nbsp;daným tématem toto téma založí automaticky. Zpráva je poslána určitému <i>nsqd</i>, popř.&nbsp;většímu množství <i>nsqd</i> &ndash; záleží, které <i>nsqd</i> dokážou zpracovat správu se zvoleným tématem. Po přijetí zprávy systémem je tato zpráva rozeslána do všech kanálů (<i>topic</i>), které pracují se zvoleným tématem. Toto je důležité chování &ndash; díky rozeslání do více kanálů je umožněn <i>multicast</i>, ovšem navíc to znamená, že jedna zpráva může být zpracována vícekrát, s&nbsp;čímž musí konzumenti počítat (měli by být <i>idempotentní</i>).</p>
+
+<p>Konzumenti se připojují k&nbsp;určitým kanálům (a tématům), přičemž je možné, aby se k&nbsp;jednomu kanálu připojilo větší množství konzumentů. V&nbsp;takovém případě jsou zprávy distribuovány mezi konzumenti na základě jejich dostupnosti a rychlosti zpracování zpráv.</p>
+
+<p><div class="rs-tip-major">Poznámka: na kanál (<i>channel</i>) se můžeme dívat jako na samostatně pracujícího message brokera v&nbsp;klasickém slova smyslu. Důležité je, že producenti s&nbsp;kanály vůbec nepracují a ani o nich nemusí vědět. Producent pouze musí zjistit, které <i>nsqd</i> akceptují zprávy s&nbsp;daným tématem, což zajišťuje <i>nsqlookupd</i>, který tyto informace dostává od jednotlivých <i>nsqd</i> (ti mu je posílají přes dlouhodobé TCP). Naproti tomu konzument si volí jak kanál, tak i téma akceptovaných zpráv. Navíc může být konzument připojen k&nbsp;většímu množství <i>nsqd</i>, což vede k&nbsp;tomu, že může jednu zprávu dostat vícekrát.</div></p>
+
+<p>Toto schéma do značné míry odstraňuje problém <i>SPOF &ndash; Single Point of Failure</i>. Sice může nastat situace, kdy je <i>nsqlookupd</i> jakožto centrální prvek nedostupný, ovšem stávající klienty to neovlivní (ti jsou již připojení ke konkrétním <i>nsqd</i>) a po znovuzprovoznění této služby se po chvíli obnoví kýžený stav celého systému.</p>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Překlad  a instalace systému <i>nsq</i></h2>
 
 <pre>
-$ git clone https://github.com/nsqio/nsq
+$ <strong>git clone https://github.com/nsqio/nsq</strong>
+&nbsp;
 Cloning into 'nsq'...
 remote: Enumerating objects: 18, done.
 remote: Counting objects: 100% (18/18), done.
@@ -91,7 +120,8 @@ Checking connectivity... done.
 </pre>
 
 <pre>
-$ make
+$ <strong>make</strong>
+&nbsp;
 go build  -o build/nsqd ./apps/nsqd
 go: finding github.com/nsqio/go-nsq v1.0.7
 go: finding github.com/bitly/timer_metrics v0.0.0-20170606164300-b1c65ca7ae62
@@ -127,6 +157,11 @@ go build  -o build/nsq_to_http ./apps/nsq_to_http
 go build  -o build/nsq_tail ./apps/nsq_tail
 go build  -o build/nsq_stat ./apps/nsq_stat
 go build  -o build/to_nsq ./apps/to_nsq
+</pre>
+
+<p>Po relativně krátkém překladu by měl být výsledek tohoto procesu uložen do podadresáře <strong>build/</strong>. Povšimněte si, že vzniklo hned několik binárních spustitelných souborů, z&nbsp;nichž některé budou popsány a použity v&nbsp;navazujících kapitolách:</p>
+
+<pre>
 </pre>
 
 
@@ -342,10 +377,54 @@ nsq.run()
 <p><a name="k11"></a></p>
 <h2 id="k11">11. </h2>
 
+func NewProducer(addr string, config *Config) (*Producer, error)
+func (r *Consumer) ConnectToNSQLookupd(addr string) error
+func (r *Consumer) ConnectToNSQLookupds(addresses []string) error
+
+func (r *Consumer) DisconnectFromNSQD(addr string) error
+func (r *Consumer) DisconnectFromNSQLookupd(addr string) error
+
+type Message struct {
+    ID        MessageID
+    Body      []byte
+    Timestamp int64
+    Attempts  uint16
+
+    NSQDAddress string
+
+    Delegate MessageDelegate
+    // contains filtered or unexported fields
+}
+
 
 
 <p><a name="k12"></a></p>
 <h2 id="k12">12. </h2>
+
+<pre>
+package main
+&nbsp;
+import (
+        "github.com/nsqio/go-nsq"
+        "log"
+)
+&nbsp;
+func main() {
+        config := nsq.NewConfig()
+&nbsp;
+        producer, err := nsq.NewProducer("127.0.0.1:4150", config)
+        if err != nil {
+                log.Panic("Producer can't be constructed")
+        }
+&nbsp;
+        err = producer.Publish("test", []byte("zprava z Go"))
+        if err != nil {
+                log.Panic("Could not connect")
+        }
+&nbsp;
+        producer.Stop()
+}
+</pre>
 
 
 
@@ -437,6 +516,22 @@ jednotlivé příklady, které naleznete v&nbsp;následující tabulce:</p>
 
 <li>Klient pro Python<br />
 <a href="https://github.com/nsqio/pynsq">https://github.com/nsqio/pynsq</a>
+</li>
+
+<li>An Example of Using NSQ From Go<br />
+<a href="http://tleyden.github.io/blog/2014/11/12/an-example-of-using-nsq-from-go/">http://tleyden.github.io/blog/2014/11/12/an-example-of-using-nsq-from-go/</a>
+</li>
+
+<li>Go Go Gadget<br />
+<a href="https://word.bitly.com/post/29550171827/go-go-gadget">https://word.bitly.com/post/29550171827/go-go-gadget</a>
+</li>
+
+<li>Simplehttp<br />
+<a href="https://github.com/bitly/simplehttp">https://github.com/bitly/simplehttp</a>
+</li>
+
+<li>Dramatiq: simple task processing<br />
+<a href="https://dramatiq.io/">https://dramatiq.io/</a>
 </li>
 
 <li>nanomsg na GitHubu<br />
