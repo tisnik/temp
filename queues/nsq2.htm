@@ -49,12 +49,12 @@
 <p><a href="#k10">10. Důvody vedoucí k&nbsp;využití více služeb <i>nsqd</i></a></p>
 <p><a href="#k11">11. Paralelně a nezávisle na sobě běžící služby <i>nsqd</i></a></p>
 <p><a href="#k12">12. Chování dvou nezávislých služeb <i>nsqd</i></a></p>
-<p><a href="#k13">*** 13. Konzument zpráv připojený k&nbsp;více službám <i>nsqd</i></a></p>
-<p><a href="#k14">*** 14. Chování dvou nezávislých služeb <i>nsqd</i> s&nbsp;konzumentem připojeným k&nbsp;oběma službám</a></p>
-<p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. </a></p>
+<p><a href="#k13">13. Konzument zpráv připojený k&nbsp;více službám <i>nsqd</i></a></p>
+<p><a href="#k14">14. Chování dvou nezávislých služeb <i>nsqd</i> s&nbsp;konzumentem připojeným k&nbsp;oběma službám</a></p>
+<p><a href="#k15">15. Využití adresářové služby <i>nsqlookupd</i></a></p>
+<p><a href="#k16">16. Úprava klienta (konzumenta) pro použití <i>nsqlookupd</i></a></p>
+<p><a href="#k17">17. Otestování chování klienta</a></p>
+<p><a href="#k18">*** 18. Konzument současně přijímající zprávy z&nbsp;více služeb <i>nsqd</i></a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -1021,12 +1021,77 @@ $ <strong>killall producer4</strong>
 <p><a name="k13"></a></p>
 <h2 id="k13">13. Konzument zpráv připojený k&nbsp;více službám <i>nsqd</i></h2>
 
-<p></p>
+<p>Nyní se můžeme pokusit vytvořit konzumenta, který se dokáže připojit
+k&nbsp;více službám <i>nsqd</i> podle obrázku číslo 9. Je to snadné, protože
+namísto volání:</p>
+
+<pre>
+consumer.ConnectToNSQD(jedna_adresa)
+</pre>
+
+<p>můžeme použít funkci:</p>
+
+<pre>
+consumer.ConnectToNSQDs([]string{adresa1, adresa2, adresa3...})
+</pre>
+
+<p>Zdrojový kód klienta se nepatrně změní, protože se budeme připojovat ke
+dvojici služeb <i>nsqd</i>, jejichž adresy se zadávají na příkazovém řádku:</p>
+
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "github.com/nsqio/go-nsq"
+        "log"
+        "os"
+)
+&nbsp;
+const Topic = "test"
+&nbsp;
+const Channel = "A"
+&nbsp;
+func <strong>main</strong>() {
+        if len(os.Args) &lt; 3 {
+                log.Panic("two nsqd addresses needs to be specified on CLI")
+        }
+&nbsp;
+        address1 := os.Args[1]
+        address2 := os.Args[2]
+        config := nsq.NewConfig()
+&nbsp;
+        consumer, err := nsq.NewConsumer(Topic, Channel, config)
+        if err != nil {
+                log.Panic("Consumer can't be constructed")
+        }
+&nbsp;
+        done := make(chan bool)
+
+        consumer.AddHandler(nsq.HandlerFunc(func(message *nsq.Message) error {
+                log.Printf("Received a message: %s", string(message.Body))
+                <i>// done &lt;- true</i>
+                return nil
+        }))
+&nbsp;
+        err = consumer.ConnectToNSQDs([]string{address1, address2})
+        if err != nil {
+                log.Panic("Could not connect")
+        }
+&nbsp;
+        log.Println("Waiting for message")
+        &lt;-done
+}
+</pre>
 
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. Chování dvou nezávislých služeb <i>nsqd</i> s&nbsp;konzumentem připojeným k&nbsp;oběma službám</h2>
+
+<p>Chování klienta (konzumenta zpráv) připojeného ke dvěma službám bude
+záviset na tom, zda obě služby běží či nikoli. Na začátku si klient vybere
+(například) první službu a bude zpracovávat zprávy, které z&nbsp;této služby
+přichází:</p>
 
 <pre>
 $ <strong>./consumer6 localhost:4150 localhost:5150</strong>
@@ -1048,33 +1113,252 @@ $ <strong>./consumer6 localhost:4150 localhost:5150</strong>
 ...
 </pre>
 
+<p>Pokud ovšem první službu restartujeme popř.&nbsp;ji ukončíme
+(<strong>kill</strong> atd.), připojí se klient ke službě druhé a začne
+zpracovávat zprávy, které do ní přichází:</p>
+
+<pre>
+2019/11/12 22:58:29 Received a message: Zprava z Go #26
+2019/11/12 22:58:30 Received a message: Zprava z Go #27
+2019/11/12 22:58:36 ERR    1 [test/A] (localhost:4150) IO error - EOF
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) beginning close
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) readLoop exiting
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) breaking out of writeLoop
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) writeLoop exiting
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) finished draining, cleanup exiting
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) clean close complete
+2019/11/12 22:58:36 WRN    1 [test/A] there are 1 connections left alive
+2019/11/12 22:58:36 INF    1 [test/A] (localhost:4150) re-connecting in 1m0s
+2019/11/12 22:58:40 Received a message: Zprava z Go #0
+2019/11/12 22:58:40 Received a message: Zprava z Go #1
+2019/11/12 22:58:40 Received a message: Zprava z Go #2
+2019/11/12 22:58:40 Received a message: Zprava z Go #3
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si zpráv typu
+<strong>ERR</strong>or a <strong>INF</strong>o, které nám oznamují přepnutí na
+službu druhou.</div></p>
 
 
 
 <p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<h2 id="k15">15. Využití adresářové služby <i>nsqlookupd</i></h2>
 
-<p>Předchozí konfiguraci můžeme ještě upravit, a to spuštěním služby <i>nsqlookupd</i>, která dokáže sledovat jednotlivé služby <i>nsqd</i> a poskytovat tyto informace klientům. Tuto službu (běžící na odlišném portu, než jednotlivé <i>nsqd</i>) spustíme jako první a necháme <i>nsqd</i>, aby se k&nbsp;ní přihlásily:</p>
+<p>Předchozí konfiguraci můžeme ještě upravit, a to spuštěním služby
+<i>nsqlookupd</i>, která dokáže sledovat jednotlivé služby <i>nsqd</i> a
+poskytovat tyto informace klientům. Tuto službu (běžící na odlišném portu, než
+jednotlivé <i>nsqd</i>) spustíme jako první a necháme <i>nsqd</i>, aby se
+k&nbsp;ní přihlásily:</p>
 
 <pre>
+$ <strong>./nsqlookupd </strong>
+&nbsp;
+[nsqlookupd] 2019/11/13 20:25:10.392683 INFO: nsqlookupd v1.2.1-alpha (built w/go1.11.2)
+[nsqlookupd] 2019/11/13 20:25:10.394993 INFO: TCP: listening on [::]:4160
+[nsqlookupd] 2019/11/13 20:25:10.395000 INFO: HTTP: listening on [::]:4161
 </pre>
 
-<p>Jak se tato změna dotkne klientů, kteří spolu potřebují komunikovat pomocí zpráv? Klienty je možné upravit takovým způsobem, aby se zeptaly služby <i>nsqlookupd</i>, na kterou konkrétní službu <i>nsqd</i> se mají připojit. Pokud by došlo k&nbsp;restartu či dokonce k&nbsp;pádu (odpojení) některé <i>nsqd</i>, mohou se klienti připojit k&nbsp;jiné službě (což ovšem neznamená, že nemůže dojít k&nbsp;tomu, že některé zprávy dojdou až po opětovném spuštění dané <i>nsqd</i>).</p>
+<p>První služba:</p>
+
+<pre>
+$ <strong>./nsqd -tcp-address localhost:4150 -http-address localhost:4151 --lookupd-tcp-address=127.0.0.1:4160 -broadcast-address=127.0.0.1</strong>
+</pre>
+
+<p>Druhá služba:</p>
+
+<pre>
+$ <strong>./nsqd -tcp-address localhost:5150 -http-address localhost:5151 --lookupd-tcp-address=127.0.0.1:4160 -broadcast-address=127.0.0.1 --data-path=/tmp/</strong>
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: volbu
+<strong>-broadcast-address</strong> je v&nbsp;tomto případě nutné použít, jinak
+se klient (konzument) nedokáže k&nbsp;<i>nsqd</i> připojit.</div></p>
+
+<p>Otestujeme, zda obě služby nahlašují svůj stav do adresářové služby:</p>
+
+<pre>
+$ <strong>alias pp='python -mjson.tool'</strong>
+&nbsp;
+$ <strong>curl -s localhost:4161/nodes |pp</strong>
+{
+    "producers": [
+        {
+            "broadcast_address": "tester-ThinkPad-T410",
+            "hostname": "tester-ThinkPad-T410",
+            "http_port": 5151,
+            "remote_address": "127.0.0.1:43230",
+            "tcp_port": 5150,
+            "tombstones": [],
+            "topics": [],
+            "version": "1.2.1-alpha"
+        },
+        {
+            "broadcast_address": "tester-ThinkPad-T410",
+            "hostname": "tester-ThinkPad-T410",
+            "http_port": 4151,
+            "remote_address": "127.0.0.1:43231",
+            "tcp_port": 4150,
+            "tombstones": [],
+            "topics": [],
+            "version": "1.2.1-alpha"
+        }
+    ]
+}
+</pre>
 
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Úprava klienta (konzumenta) pro použití <i>nsqlookupd</i></h2>
+
+<p>Jak se tato změna dotkne klientů, kteří spolu potřebují komunikovat pomocí
+zpráv? Klienty je možné upravit takovým způsobem, aby se zeptaly služby
+<i>nsqlookupd</i>, na kterou konkrétní službu <i>nsqd</i> se mají připojit.
+Pokud by došlo k&nbsp;restartu či dokonce k&nbsp;pádu (odpojení) některé
+<i>nsqd</i>, mohou se klienti připojit k&nbsp;jiné službě (což ovšem neznamená,
+že nemůže dojít k&nbsp;tomu, že některé zprávy dojdou až po opětovném spuštění
+dané <i>nsqd</i>). Konzumenta upravíme snadno, ostatně podobný zdrojový kód
+jsme již viděli v&nbsp;předchozí části tohoto seriálu:</p>
+
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "github.com/nsqio/go-nsq"
+        "log"
+)
+&nbsp;
+const Topic = "test"
+&nbsp;
+const Channel = "A"
+&nbsp;
+func <strong>main</strong>() {
+        config := nsq.NewConfig()
+&nbsp;
+        consumer, err := nsq.NewConsumer(Topic, Channel, config)
+        if err != nil {
+                log.Panic("Consumer can't be constructed")
+        }
+&nbsp;
+        done := make(chan bool)
+&nbsp;
+        consumer.AddHandler(nsq.HandlerFunc(func(message *nsq.Message) error {
+                log.Printf("Received a message: %s", string(message.Body))
+                return nil
+        }))
+&nbsp;
+        err = <strong>consumer.ConnectToNSQLookupd("127.0.0.1:4161")</strong>
+        if err != nil {
+                log.Panic("Could not connect")
+        }
+        defer <strong>consumer.DisconnectFromNSQLookupd("127.0.0.1:4160")</strong>
+&nbsp;
+        log.Println("Waiting for message")
+        &lt;-done
+}
+</pre>
 
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<h2 id="k17">17. Otestování chování klienta</h2>
+
+<p>Nového klienta můžeme otestovat velmi snadno. V&nbsp;dalším výpisu je
+ukázána situace, kdy se první služba odpoví (havaruje) a namísto ní se začnou
+zpracovávat zprávy ze služby druhé:</p>
+
+<pre>
+2019/11/13 20:43:00 Received a message: Zprava z Go #17
+2019/11/13 20:43:01 Received a message: Zprava z Go #18
+2019/11/13 20:43:02 Received a message: Zprava z Go #19
+2019/11/13 20:43:03 Received a message: Zprava z Go #20
+2019/11/13 20:43:04 Received a message: Zprava z Go #21
+2019/11/13 20:43:04 ERR    1 [test/A] (127.0.0.1:4150) IO error - EOF
+2019/11/13 20:43:04 INF    1 [test/A] (127.0.0.1:4150) beginning close
+2019/11/13 20:43:04 INF    1 [test/A] (127.0.0.1:4150) readLoop exiting
+2019/11/13 20:43:04 INF    1 [test/A] (127.0.0.1:4150) breaking out of writeLoop
+2019/11/13 20:43:04 INF    1 [test/A] (127.0.0.1:4150) writeLoop exiting
+2019/11/13 20:43:04 INF    1 [test/A] (127.0.0.1:4150) finished draining, cleanup exiting
+2019/11/13 20:43:04 INF    1 [test/A] (127.0.0.1:4150) clean close complete
+2019/11/13 20:43:04 WRN    1 [test/A] there are 1 connections left alive
+2019/11/13 20:43:04 INF    1 [test/A] querying nsqlookupd http://127.0.0.1:4161/lookup?topic=test
+2019/11/13 20:43:05 Received a message: Zprava z Go #0
+2019/11/13 20:43:05 Received a message: Zprava z Go #1
+2019/11/13 20:43:05 Received a message: Zprava z Go #2
+2019/11/13 20:43:05 Received a message: Zprava z Go #3
+2019/11/13 20:43:05 Received a message: Zprava z Go #4
+2019/11/13 20:43:05 Received a message: Zprava z Go #5
+</pre>
 
 
 
 <p><a name="k18"></a></p>
-<h2 id="k18">18. </h2>
+<h2 id="k18">18. Konzument současně přijímající zprávy z&nbsp;více služeb <i>nsqd</i></h2>
+
+<p>V&nbsp;případě, že je nutné přijímat zprávy (a to současně) z&nbsp;více služeb <i>nsqd</i>, musí se kód konzumenta nepatrně upravit takovým způsobem, </p>
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "github.com/nsqio/go-nsq"
+        "log"
+        "os"
+)
+&nbsp;
+const Topic = "test"
+&nbsp;
+const Channel = "A"
+&nbsp;
+func <strong>main</strong>() {
+        if len(os.Args) &lt; 3 {
+                log.Panic("two nsqd addresses needs to be specified on CLI")
+        }
+&nbsp;
+        config := nsq.NewConfig()
+&nbsp;
+        for i := 0; i &lt;= 1; i++ {
+                consumer, err := nsq.NewConsumer(Topic, Channel, config)
+                if err != nil {
+                        log.Panic("Consumer can't be constructed")
+                }
+                consumer.AddHandler(nsq.HandlerFunc(func(message *nsq.Message) error {
+                        log.Printf("Received a message from nsqd #%d: %s", i+1, string(message.Body))
+                        return nil
+                }))
+                err = consumer.ConnectToNSQD(os.Args[i+1])
+                if err != nil {
+                        log.Panicf("Could not connect to nsqd #%d", i)
+                }
+        }
+&nbsp;
+        log.Println("Waiting for message")
+        done := make(chan bool)
+&nbsp;
+        &lt;-done
+}
+</pre>
+
+<p>Po spuštění konzumenta (a dvou producentů) lze snadno zjistit, že konzument
+skutečně přijímá zprávy z&nbsp;obou služeb <i>nsqd</i>:</p>
+
+<pre>
+$ <strong>./consumer7 localhost:4150 localhost:5150</strong>
+&nbsp;
+2019/11/13 20:55:34 INF    1 [test/A] (localhost:4150) connecting to nsqd
+2019/11/13 20:55:34 INF    2 [test/A] (localhost:5150) connecting to nsqd
+2019/11/13 20:55:34 Waiting for message
+2019/11/13 20:55:36 Received a message from nsqd #3: Zprava z Go #0
+2019/11/13 20:55:37 Received a message from nsqd #3: Zprava z Go #1
+2019/11/13 20:55:37 Received a message from nsqd #3: Zprava z Go #0
+2019/11/13 20:55:38 Received a message from nsqd #3: Zprava z Go #2
+2019/11/13 20:55:38 Received a message from nsqd #3: Zprava z Go #1
+2019/11/13 20:55:39 Received a message from nsqd #3: Zprava z Go #3
+2019/11/13 20:55:39 Received a message from nsqd #3: Zprava z Go #2
+2019/11/13 20:55:40 Received a message from nsqd #3: Zprava z Go #4
+2019/11/13 20:55:40 Received a message from nsqd #3: Zprava z Go #3
+2019/11/13 20:55:41 Received a message from nsqd #3: Zprava z Go #5
+2019/11/13 20:55:41 Received a message from nsqd #3: Zprava z Go #4
+</pre>
 
 
 
