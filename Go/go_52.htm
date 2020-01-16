@@ -31,18 +31,18 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>V padesáté druhé části seriálu o programovacím jazyce Go se budeme zabývat dvěma souvisejícími tématy, které se obě týkají testování aplikací. Ukážeme si, jakým způsobem lze zachytávat zápisy do standardního výstupu a následně si popíšeme možnosti standardní knihovny httptest.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
+<p><a href="#k01">*** 1. Testování aplikací zapisujících informace na standardní výstup</a></p>
+<p><a href="#k02">*** 2. Princip zachycení standardního výstupu</a></p>
+<p><a href="#k03">*** 3. Postup při zachycení standardního výstupu</a></p>
+<p><a href="#k04">*** 4. Implementace jednotlivých bodů z&nbsp;popsaného postupu</a></p>
+<p><a href="#k05">*** 5. Úplný zdrojový kód funkce pro zachycení standardního výstupu</a></p>
+<p><a href="#k06">*** 6. Otestování funkce pro zachycení standardního výstupu</a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
@@ -61,32 +61,207 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Testování aplikací zapisujících informace na standardní výstup</h2>
+
+<p>Při tvorbě testů pro aplikace, které zapisují informace na standardní (popř.&nbsp;chybový) výstup se můžeme setkat s&nbsp;požadavkem, aby se zjistilo, zda aplikace skutečně na standardní nebo chybový výstup zapsala očekávané zprávy. K&nbsp;této problematice je možné přistoupit několika způsoby. Jedno z&nbsp;řešení spočívá v&nbsp;použití některé ze specializovaných knihoven, s&nbsp;nimiž jsme se již v&nbsp;tomto seriálu setkali. Jedná se o knihovny s&nbsp;podobnými názvy <i>go-expect</i>, <i>goexpect</i> a <i>gexpect</i>, které byly popsány v&nbsp;následujících článcích:</p>
+
+<ol>
+</ol>
+
+<p>Příklad použití těchto knihoven (který jsme si již v&nbsp;tomto seriálu uvedli):</p>
+
+<p>Tyto knihovny jsou však primárně určeny pro psaní testů popř.&nbsp;automatizačních skriptů, které s&nbsp;aplikací pracují jako s&nbsp;<i>black boxem</i>. Ovšem mnohdy potřebujeme zjistit, jaké informace se na výstup zapsaly přímo v&nbsp;jednotkových testech. A právě v&nbsp;takových případech lze využít postupu, jenž je popsán v&nbsp;navazujících kapitolách.</p>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Princip zachycení standardního výstupu</h2>
+
+<p>Vzhledem k&nbsp;tomu, že všechny funkce ze standardní knihovny, které jsou určeny pro výpis informací na standardní výstup, jsou skutečně implementovány jako běžné funkce a nikoli metody, je v&nbsp;tomto případě relativně obtížné při psaní jednotkových testů použít <i>mockování</i>. Můžeme však namísto toho změnit obsah proměnné <strong>os.Stdout</strong> a nahradit ho za jiným vhodným objektem. Ve zdrojových kódech balíčku <strong>os</strong> lze najít, jakého typu (a hodnoty) je proměnná <strong>os.Stdout</strong>:</p>
+
+<pre>
+var (
+        Stdin  = NewFile(uintptr(syscall.Stdin), "/dev/stdin")
+        Stdout = NewFile(uintptr(syscall.Stdout), "/dev/stdout")
+        Stderr = NewFile(uintptr(syscall.Stderr), "/dev/stderr")
+)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: obsah této proměnné je možné změnit z&nbsp;toho důvodu, že se jedná o globálně viditelnou proměnnou &ndash; její název začíná velkým písmenem.</div></p>
+
+<p>Jakmile se obsah této proměnné změní, například když do ní přiřadíme jiný otevřený soubor, budou všechny standardní funkce pro tisk používat nový cíl. Je tomu tak z&nbsp;toho důvodu, že tyto funkce vypadají následovně:</p>
+
+<pre>
+func <strong>Print</strong>(a ...interface{}) (n int, err error) {
+        return Fprint(os.Stdout, a...)
+}
+&nbsp;
+func <strong>Println</strong>(a ...interface{}) (n int, err error) {
+        return Fprintln(os.Stdout, a...)
+}
+&nbsp;
+func <strong>Printf</strong>(format string, a ...interface{}) (n int, err error) {
+        return Fprintf(os.Stdout, format, a...)
+}
+</pre>
+
+<p>Ovšem řešení založené na tom, že se namísto standardního výstupu použije výstup do souboru, pochopitelně není ideální. Výhodnější by bylo, aby se tisk zprávy či zpráv provedl do k&nbsp;tomu alokované paměťové oblasti, tedy do nějakého bufferu, jehož obsah by bylo možné následně zkontrolovat a zjistit tak, jaké zprávy aplikace v&nbsp;dané (testované) funkci vytiskla. Právě pro tento účel lze použít strukturu, s&nbsp;níž jsme se již v&nbsp;tomto seriálu dobře seznámili &ndash; <strong>pipe</strong>.</p>
+
+<p>Díky tomu, že do <strong>pipe</strong> může aplikace zapisovat (jakoby se jednalo o standardní výstup) a současně je možné data z&nbsp;druhé strany přečíst a zpracovat, může pipe posloužit právě ve funkci bufferu pro zapamatování zpráv, která aplikace zapsala na standardní výstup.</p>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Postup při zachycení standardního výstupu</h2>
+
+<p>Celý postup při zachycování standardního výstupu může ve zkrácené podobě vypadat následovně:</p>
+
+<ol>
+
+<li>Zapamatujeme si původní obsah proměnné <strong>os.Stdout</strong>, protože ho budeme chtít po testování obnovit.</li>
+
+<li>Vytvoříme nový objekt typu <strong>Pipe</strong>, což mj.&nbsp;znamená, že získáme i implementace <i>readeru</i> a <i>writeru</i>.</li>
+
+<li>Do proměnné <strong>os.Stdout</strong> přiřadíme <i>writer</i>, tj.&nbsp;vstupní část objektu typu <strong>Pipe</strong> (část, do které se provádí zápis).</li>
+
+<li>V&nbsp;gorutině použijeme nějakou funkci, která přečte obsah <strong>pipe</strong> (použije výstupní část, tedy <i>reader</i>) a převede ji na řetězec.</li>
+
+<li>Dále se zavolá testovaná funkce, která může provádět zápisy zpráv (tedy tisk) na standardní výstup.</li>
+
+<li>Na konci již pouze stačí <strong>pipe</strong> uzavřít, obnovit obsah proměnné <strong>os.Stdout</strong> a vrátit řetězec, který byl zachycen.</li>
+
+</ol>
+
+<p>Vlastní implementace je nepatrně složitější, a to zejména kvůli tomu, že gorutina pro zpracování zpráv zapisovaných na standardní výstup musí komunikovat s&nbsp;původní gorutinou, ve které (mj.) běží i testovaná funkce. A nakonec je vhodné počkat na to, až se nově vytvořená gorutina spustí. K&nbsp;tomuto účelu lze použít například nějakou formu synchronizačního objektu.</p>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Implementace jednotlivých bodů z&nbsp;popsaného postupu</h2>
+
+<p>Pomocná funkce, která vrátí řetězec vytisknutý na standardní výstup libovolnou předanou funkcí, může mít tuto hlavičku:</p>
+
+<pre>
+func <strong>StandardOutput</strong>(function func()) (string, error) {
+</pre>
+
+<p>Výše popsaný postup, přesněji řečeno jeho jednotlivé body, lze realizovat například následujícím způsobem. </p>
+
+<h4>1. Zapamatování původního obsahu proměnné <strong>os.Stdout</strong></h4>
+
+<p>Toto je velmi jednoduše implementovatelný bod:</p>
+
+<pre>
+stdout := os.Stdout
+</pre>
+
+<h4>2. Vytvoření objektu typu <strong>Pipe</strong></h4>
+
+<p>Vytvoření objektu typu <strong>Pipe</strong> již známe, neboť jsme se tímto tématem již zabývali v&nbsp;předchozích částech tohoto seriálu. Pochopitelně nesmíme zapomenout na otestování chybového stavu, který (teoreticky) může nastat:</p>
+
+<pre>
+reader, writer, err := os.Pipe()
+if err != nil {
+        return "", err
+}
+</pre>
+
+<h4>3. Nový obsah proměnné <strong>os.Stdout</strong></h4>
+
+<p>Opět se jedná o snadno realizovatelný bod, neboť pouze nastavíme novou hodnotu proměnné <strong>os.Stdout</strong> a navíc zajistíme, aby se při ukončení celé funkce pro zachycení standardního výstupu obnovil původní obsah této proměnné. To je důležité, protože v&nbsp;opačném případě by přestaly pracovat všechny další tisky na standardní výstup (ovšem k&nbsp;chybě by nedošlo):</p>
+
+<pre>
+defer func() {
+        os.Stdout = stdout
+}()
+os.Stdout = writer
+</pre>
+
+<h4>4. Gorutina, která obsah <strong>Pipe</strong> přečte a převede na řetězec</h4>
+
+<p>V&nbsp;nejjednodušším případě tato asynchronně běžící gorutina přečte obsah <strong>Pipe</strong>, převede ho na řetězec a následně tento řetězec zapíše do kanálu, který je použit pro komunikaci s&nbsp;touto gorutinou:</p>
+
+<pre>
+captured := make(chan string)
+go func() {
+        var buf bytes.Buffer
+        io.Copy(&amp;buf, reader)
+        captured &lt;- buf.String()
+}()
+</pre>
+
+<h4>5. Zavolání testované funkce provádějící tisk na standardní výstup</h4>
+
+<p>Toto je jednoduchý bod &ndash; zavoláme jakoukoli funkce, která může (ale nutně nemusí) provádět tisk na standardní výstup:</p>
+
+<pre>
+function()
+</pre>
+
+<h4>6. Obnovení obsahu proměnné <strong>os.Stdout</strong>, vrácení zachyceného řetězce</h4>
+
+<p>Po zavolání testované funkce uzavřeme <strong>Pipe</strong> a vrátíme obsah kanálu, do kterého zapsala řetězec (i prázdný) asynchronně běžící gorutina. Současně se čtení kanálu používá pro čekání na dokončení této gorutiny:</p>
+
+<pre>
+writer.Close()
+return &lt;-captured, nil
+</pre>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Úplný zdrojový kód funkce pro zachycení standardního výstupu</h2>
+
+<p></p>
+
+<pre>
+package <strong>capture</strong>
+&nbsp;
+import (
+        "bytes"
+        "io"
+        "os"
+        "sync"
+)
+&nbsp;
+func <strong>StandardOutput</strong>(function func()) (string, error) {
+        <i>// backup of the real stdout</i>
+        stdout := os.Stdout
+&nbsp;
+        <i>// temporary replacement for stdout</i>
+        reader, writer, err := os.Pipe()
+        if err != nil {
+                return "", err
+        }
+&nbsp;
+        <i>// temporarily replace real Stdout by the mocked one</i>
+        defer func() {
+                os.Stdout = stdout
+        }()
+        os.Stdout = writer
+&nbsp;
+        <i>// channel with captured standard output</i>
+        captured := make(chan string)
+        wg := new(sync.WaitGroup)
+        wg.Add(1)
+        go func() {
+                var buf bytes.Buffer
+                wg.Done()
+                io.Copy(&amp;buf, reader)
+                captured &lt;- buf.String()
+        }()
+        wg.Wait()
+        <i>// provided function that (probably) prints something to standard output</i>
+        function()
+        writer.Close()
+        return &lt;-captured, nil
+}
+</pre>
 
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Otestování funkce pro zachycení standardního výstupu</h2>
 
 
 
