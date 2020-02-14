@@ -443,7 +443,7 @@ výpočet lze totiž ve skutečnosti provést jen pěti instrukcemi
 mikroprocesoru):</p>
 
 <pre>
-func AddFloat64(x float64, y float64, z float64) float64 {
+func <strong>AddFloat64</strong>(x float64, y float64, z float64) float64 {
   0x808ddd0             658b0d00000000          MOVL GS:0, CX
   0x808ddd7             8b89fcffffff            MOVL 0xfffffffc(CX), CX
   0x808dddd             3b6108                  CMPL 0x8(CX), SP
@@ -463,23 +463,110 @@ func AddFloat64(x float64, y float64, z float64) float64 {
   0x808de02             c3                      RET
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: z&nbsp;nějakého důvodu je výsledek
+překladu pro i387 prakticky vždy velmi špatný, takže volbu
+<strong>GO386=387</strong> používejte skutečně jen tehdy, pokud je to
+nezbytné.</div></p>
+
 
 
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Technologie SSE/SSE2 a její využití překladačem programovacího jazyka Go</h2>
 
+<p>U procesorů řady x86 se prakticky kontinuálně provádí rozšiřování instrukční
+sady. Po úspěšném a relativně bezproblémovém zavedení rozšíření <i>MMX</i> i
+<i>3DNow!</i> do praxe není divu, že obě nejvýznamnější společnosti podnikající
+v&nbsp;oblasti návrhu a prodeje mikroprocesorů patřících do rodiny <i>x86</i>,
+tj.&nbsp;firmy <i>Intel</i> a <i>AMD</i>, začaly pro tyto typy mikroprocesorů
+navrhovat i další rozšiřující instrukční sady s&nbsp;&bdquo;vektorovými&ldquo;
+instrukcemi typu <i>SIMD</i>. V&nbsp;následující tabulce jsou tyto rozšiřující
+instrukční sady vypsány, včetně roku vzniku dané technologie i informace o tom,
+v&nbsp;jakém mikroprocesoru byla ta která technologie zpočátku využita:</p>
+
+<table>
+<tr><th>Název technologie</th><th>Společnost</th><th>Rok uvedení</th><th>Poprvé použito v&nbsp;čipu</th></tr>
+<tr><td>MMX   </td><td>Intel    </td><td>1996 </td><td>Intel Pentium P5</td></tr>
+<tr><td>3DNow!</td><td>AMD      </td><td>1998 </td><td>AMD K6-2</td></tr>
+<tr><td>SSE   </td><td>Intel    </td><td>1999 </td><td>Intel Pentium III (mikroarchitektura P6)</td></tr>
+<tr><td>SSE2  </td><td>Intel    </td><td>2001 </td><td>Intel Pentium 4 (mikroarchitektura NetBurst)</td></tr>
+<tr><td>SSE3  </td><td>Intel    </td><td>2004 </td><td>Intel Pentium 4 (Prescott)</td></tr>
+<tr><td>SSSE3 </td><td>Intel    </td><td>2006 </td><td>mikroarchitektura Intel Core</td></tr>
+<tr><td>SSE4  </td><td>Intel+AMD</td><td>2006 </td><td>AMD K10 (SSE4a) , mikroarchitektura Intel Core</td></tr>
+<tr><td>XOP   </td><td>AMD      </td><td>2011?</td><td>založeno na SSE5</td></tr>
+<tr><td>CVT16 </td><td>AMD      </td><td>2011?</td><td>založeno na SSE5</td></tr>
+<tr><td>AVX   </td><td>Intel+AMD</td><td>2013?</td><td>rozšíření SSE registrů na 256 bitů, celkem 32 registrů</td></tr>
+</table>
+
+<img src="http://i.iinfo.cz/images/503/pc160-1.jpg" width="400" height="365" alt="&#160;" />
+<p><i>Obrázek 1: Intel Xeon 5600 je zástupcem mikroprocesorů určených pro
+oblast serverů. Samozřejmě taktéž podporuje SIMD operace: MMX, SSE, SSE2, SSE3,
+SSSE3, SSE4.1, SSE4.2</i></p>
+
+<p>Překladač i assembler jazyka Go podporuje prakticky všechny instrukce SSE i
+SSE2. Další způsoby a ruční (!) optimalizace budou popsány příště.</p>
+
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. Základní instrukce použité při práci s&nbsp;typy <i>float32</i> a <i>float64</i></h2>
+<h2 id="k06">6. Nové registry SSE</h2>
+
+<p>Nejprve se zaměřme na registry využívané v&nbsp;technologii <i>SSE</i>. U
+mikroprocesorů implementujících instrukční sadu <i>SSE</i> je využita nová sada
+registrů pojmenovaných <strong>XMM0</strong> až <strong>XMM7</strong>. Na
+64bitové platformě (architektura AMD 64) navíc došlo k&nbsp;přidání dalších
+osmi registrů se jmény <strong>XMM8</strong> až <strong>XMM15</strong>
+využitelných pouze v&nbsp;64bitovém režimu. Všechny nové registry mají šířku
+128 bitů, tj.&nbsp;jsou dvakrát širší, než registry používané v&nbsp;<i>MMX</i>
+i <i>3DNow!</i> a čtyřikrát širší, než běžné pracovní registry na platformě
+<i>x86</i> (bavíme se o 32bitovém režimu). Do každého registru je možné uložit
+čtveřici reálných numerických hodnot reprezentovaných v&nbsp;systému plovoucí
+řádové tečky podle normy <i>IEEE 754</i>, přičemž tato norma je dodržována
+přesněji, než v&nbsp;případě <i>3DNow!</i> (různé zaokrouhlovací režimy či
+práce s&nbsp;denormalizovanými čísly sice mohou vypadat trošku jako černá
+magie, ovšem například v&nbsp;knihovnách pro numerické výpočty, které musí vždy
+za specifikovaných okolností dát stejný výsledek, se jedná o velmi důležitou
+vlastnost). K&nbsp;osmi či šestnácti novým registrům <strong>XMM*</strong> byl
+ještě přidán jeden 32bitový registr nazvaný <strong>MXCSR</strong>, jenž byl
+určený pro nastavení (řízení) režimů výpočtu.</p>
+
+<img src="http://i.iinfo.cz/images/503/pc160-3.jpg" width="220" height="194" alt="&#160;" />
+<p><i>Obrázek 2: Sada nových pracovních registrů přidaných v&nbsp;rámci
+SSE.</i></p>
 
 
 
 <p><a name="k07"></a></p>
 <h2 id="k07">7. Příklad využití SSE</h2>
 
+<p>Zajímavá je podpora jak skalárních operací, tak i operací vektorových
+v&nbsp;instrukční sadě <i>SSE</i>. Příkladem může být například skalární
+instrukce součtu <strong>ADDSS</strong> (SS=single scalar), která může mít
+dvojí podobu:</p>
+
 <pre>
-func AddFloat32(x float32, y float32, z float32) float32 {
+ADDSS xmm1, xmm2     ; instrukce pracující s dvojicí registrů SSE
+ADDSS xmm1, mem32    ; instrukce pracující s registrem SSE a paměťovým místem (32 bitů)
+</pre>
+
+<p>Vraťme se nyní k&nbsp;dvojici funkcí pro součet trojice hodnot
+s&nbsp;plovoucí řádovou čárkou:</p>
+
+<pre>
+func <strong>AddFloat32</strong>(x float32, y float32, z float32) float32 {
+        return x + y + z
+}
+&nbsp;
+func <strong>AddFloat64</strong>(x float64, y float64, z float64) float64 {
+        return x + y + z
+}
+</pre>
+
+<p>Překlad založený na instrukcích SSE (ovšem nutno podotknout instrukcích
+&bdquo;nevektorových&ldquo;) je již oproti variantě určené pro i387 mnohem
+čitelnější, kratší a ve výsledku i rychlejší:</p>
+
+<pre>
+func <strong>AddFloat32</strong>(x float32, y float32, z float32) float32 {
   0x44ea70              0f57c0                  XORPS X0, X0
   0x44ea73              f30f11442418            MOVSS X0, 0x18(SP)
   0x44ea79              f30f10442408            MOVSS 0x8(SP), X0
@@ -487,8 +574,8 @@ func AddFloat32(x float32, y float32, z float32) float32 {
   0x44ea85              f30f58442410            ADDSS 0x10(SP), X0
   0x44ea8b              f30f11442418            MOVSS X0, 0x18(SP)
   0x44ea91              c3                      RET
-
-func AddFloat64(x float64, y float64, z float64) float64 {
+&nbsp;
+func <strong>AddFloat64</strong>(x float64, y float64, z float64) float64 {
   0x44eaa0              0f57c0                  XORPS X0, X0
   0x44eaa3              f20f11442420            MOVSD_XMM X0, 0x20(SP)
   0x44eaa9              f20f10442408            MOVSD_XMM 0x8(SP), X0
@@ -498,28 +585,23 @@ func AddFloat64(x float64, y float64, z float64) float64 {
   0x44eac1              c3                      RET
 </pre>
 
-<pre>
-f30f11442418
-f30f10442408
-f30f5844240c
-f30f58442410
-f30f11442418
-</pre>
+<p>Obě varianty, jak pro typ <i>float32/float</i>, tak i pro typ
+<i>float64/double</i> jsou sémanticky totožné. Odlišují se pochopitelně offsety
+parametrů ukládaných na zásobníkový rámec a taktéž tím, že v&nbsp;64bitové
+variantě se používají funkce _XMM. Zajímavé taktéž je, že si zde překladač
+vystačil s&nbsp;jediným 32bitovým popř.&nbsp;64bitovým registrem
+<strong>X0</strong>.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Práce s&nbsp;poli a řezy (slices)</h2>
+
+<p>Do funkcí je pochopitelně možné předávat i další parametry, například (což
+je zcela typické) řezy. Příklad použití řezů může vypadat následovně:</p>
 
 <pre>
-0:  f3 0f 11 44 24 18       movss  DWORD PTR [rsp+0x18],xmm0
-6:  f3 0f 10 44 24 08       movss  xmm0,DWORD PTR [rsp+0x8]
-c:  f3 0f 58 44 24 0c       addss  xmm0,DWORD PTR [rsp+0xc]
-12: f3 0f 58 44 24 10       addss  xmm0,DWORD PTR [rsp+0x10]
-18: f3 0f 11 44 24 18       movss  DWORD PTR [rsp+0x18],xmm0 
-</pre>
-
-<pre>
-func Sum(values []int) int {
-  0x44ea70              4883ec48                SUBQ $0x48, SP          
-  0x44ea74              48896c2440              MOVQ BP, 0x40(SP)       
-  0x44ea79              488d6c2440              LEAQ 0x40(SP), BP       
-  0x44ea7e              48c744246800000000      MOVQ $0x0, 0x68(SP)     
+func <strong>Sum</strong>(values []int) int {
         sum := 0
   0x44ea87              48c744240800000000      MOVQ $0x0, 0x8(SP)      
         for _, v := range values {
@@ -561,6 +643,9 @@ func Sum(values []int) int {
   0x44eb1c              c3                      RET                     
 </pre>
 
+<p>Připomeňme si, že řez je tvořen trojicí &ndash; ukazatel, délka a kapacita
+řezu. Používá se takto:</p>
+
 <pre>
         for _, v := range values {
   0x44ea70              488b442408              MOVQ 0x8(SP), AX        
@@ -580,15 +665,18 @@ func Sum(values []int) int {
   0x44ea94              c3                      RET                     
 </pre>
 
-
-
-<p><a name="k08"></a></p>
-<h2 id="k08">8. Práce s&nbsp;poli a řezy (slices)</h2>
+<p><div class="rs-tip-major">Poznámka: práce s&nbsp;řezy je tak důležitá, že se
+jimi budeme podrobněji zabývat příště.</div></p>
 
 
 
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Podpora 32bitových mikroprocesorů ARM</h2>
+
+<p>Ve druhé části dnešního článku se ve stručnosti seznámíme s&nbsp;podporou
+32bitových mikroprocesorů ARM překladačem a assemblerem programovacího jazyka
+Go. V&nbsp;následující tabulce jsou vypsány kombinace proměnných prostředí
+<strong>GOARCH</strong> a <strong>GOARM</strong>:</p>
 
 <table>
 <tr><th>Architektura</th><th>Stav</th><th>GOARM</th><th>GOARCH</th></tr>
@@ -598,6 +686,16 @@ func Sum(values []int) int {
 <tr><td>ARMv7</td><td>podporováno</td><td>GOARM=7</td><td>GOARCH=arm</td></tr>
 <tr><td>ARMv8</td><td>podporováno</td><td>n/a</td><td>GOARCH=arm64</td></tr>
 </table>
+
+<p>Z&nbsp;tabulky je patrné, že rozhodnutí mezi 32bitovými ARMy a 64bitovou
+architekturou AArch64 je provedeno na základě proměnné prostředí
+<strong>GOARCH</strong>. Obsahem proměnné <strong>GOARM</strong> se specifikuje
+verze 32bitových mikroprocesorů a mikrořadičů ARM.</p>
+
+<p><div class="rs-tip-major">Poznámka: existuje i alternativní projekt nazvaný
+<a href="https://github.com/tinygo-org/tinygo">tinygo</a>, který podporuje
+další typy mikroprocesorů a především mikrořadičů postavených nad různými jádry
+ARM. Tímto projektem se budeme zabývat v&nbsp;samostatném článku.</div></p>
 
 
 
@@ -798,21 +896,78 @@ TEXT main.Sign(SB) /home/tester/temp/go-root/article_54/asm08.go
   0x5e7c4               e28ef000                ADD $0, R14, R15
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: povšimněte si instrukce
+<strong>MVN</strong> pro získání hodnoty -1.</div></p>
 
 
-<p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+
+<p><a name="k18"></a></p>
+<h2 id="k18">18. AArch64: od podmínkových bitů k&nbsp;podmíněným skokům</h2>
+
+<p>Procesory s&nbsp;architekturou AArch64 sice používají shodné podmínkové
+bity, ty jsou ovšem použity jen v&nbsp;několika instrukcích. Příznak přetečení
+je, podobně jako u mnoha dalších typů procesorů, používán při aritmetických
+operacích a testy podmínkových bitů lze provádět především u podmíněných skoků,
+tj.&nbsp;u instrukcí, jejichž mnemotechnická zkratka začíná znakem
+&bdquo;B&ldquo; od slova &bdquo;Branch&ldquo;. Rozeznáváme následující typy
+nepodmíněných podmíněných skoků:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Alternativní zápis</th></tr>
+<tr><td>1</td><td>B</td><td>BAL</td></tr>
+<tr><td>2</td><td>B.EQ</td><td>BEQ</td></tr>
+<tr><td>3</td><td>B.NE</td><td>BNE</td></tr>
+<tr><td>4</td><td>B.MI</td><td>BMI</td></tr>
+<tr><td>5</td><td>B.PL</td><td>BPL</td></tr>
+<tr><td>6</td><td>B.VS</td><td>BVS</td></tr>
+<tr><td>7</td><td>B.VC</td><td>BVC</td></tr>
+<tr><td>8</td><td>B.CS</td><td>BCS</td></tr>
+<tr><td>9</td><td>B.CC</td><td>BCC</td></tr>
+<tr><td>10</td><td>B.HI</td><td>BHI</td></tr>
+<tr><td>11</td><td>B.LS</td><td>BLS</td></tr>
+<tr><td>12</td><td>B.GE</td><td>BGE</td></tr>
+<tr><td>13</td><td>B.LT</td><td>BLT</td></tr>
+<tr><td>14</td><td>B.GT</td><td>BGT</td></tr>
+<tr><td>15</td><td>B.LE</td><td>BLE</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: alternativní zápis je podporován
+například GNU Assemblerem.</div></p>
+
+<p>Nastavení příznakových bitů a podmíněné skoky si otestujeme na demonstračním
+příkladu, v&nbsp;němž je implementována počítaná programová smyčka, ve které se
+naplňuje řetězec (resp.&nbsp;přesněji řečeno předem zvolená oblast paměti)
+znakem &bdquo;*&ldquo;. První varianta tohoto příkladu vypadá na architektuře
+AArch64 takto: používá se sekvence tří instrukcí určených pro snížení hodnoty
+počitadla smyčky o jedničku, testu, zda již počitadlo dosáhlo nuly a
+podmíněného skoku provedeného za předpokladu, že se nuly nedosáhlo:</p>
 
 <pre>
-$ GOARCH=arm64 go build -gcflags '-l' asm08.go
-$ go tool objdump -S -s main.Sign asm08
+loop:
+        strb  w3, [x1]               <i>// zapis znaku do bufferu</i>
+        add   x1, x1, #1             <i>// uprava ukazatele do bufferu</i>
+        sub   x2, x2, #1             <i>// zmenseni pocitadla</i>
+        cmp   x2, #0                 <i>// otestovani, zda jsme jiz nedosahli nuly</i>
+        bne   loop                   <i>// pokud jsme se nedostali k nule, skok na zacatek smycky</i>
+</pre>
 
-TEXT main.Sign(SB) /home/tester/temp/go-root/article_54/asm08.go
-        if value < 0 {
+<p>Vraťme se nyní k&nbsp;funkci <i>Sign</i>, kterou přeložíme pro AArch64
+takto:</p>
+
+<pre>
+$ <strong>GOARCH=arm64 go build -gcflags '-l' asm08.go</strong>
+$ <strong>go tool objdump -S -s main.Sign asm08</strong>
+</pre>
+
+<p>Výsledek:</p>
+
+<pre>
+TEXT main.Sign(SB) /home/tester/go-root/article_54/asm08.go
+        if value &lt; 0 {
   0x58f30               f94007e0                MOVD 8(RSP), R0
   0x58f34               b7f80100                TBNZ $63, R0, 8(PC)
   0x58f38               eb1f001f                CMP ZR, R0
-        } else if value > 0 {
+        } else if value &gt; 0 {
   0x58f3c               5400008d                BLE 4(PC)
                 return 1
   0x58f40               b24003e0                ORR $1, ZR, R0
@@ -827,26 +982,31 @@ TEXT main.Sign(SB) /home/tester/temp/go-root/article_54/asm08.go
   0x58f5c               d65f03c0                RET
 </pre>
 
-
-
-<p><a name="k18"></a></p>
-<h2 id="k18">18. Seznam dnes použitých instrukcí</h2>
-
-<p>V&nbsp;tabulce umístěné pod tímto odstavcem jsou vypsány všechny instrukce
-64bitových procesorů s&nbsp;architekturou x86-64 (AMD64), které jsme explicitně
-použili v&nbsp;dnešních demonstračních příkladech:</p>
-
-<table>
-<tr><th>#</th><th>Mnemotechnická zkratka</th><th>Stručný popis instrukce</th></tr>
-<tr><td>1</td><td>MOVQ</td><td>přesun obsahu prvního 64bitového operandu do operandu druhého (naopak, než jste možná zvyklí)</td></tr>
-<tr><td>2</td><td>ADDQ</td><td>přičtení prvního 64bitového operandu k&nbsp;obsahu operandu druhého</td></tr>
-<tr><td>3</td><td>RET</td><td>návrat z&nbsp;podprogramu, návratový kód je uložen v&nbsp;paměti na adrese adresované obsahem registru <strong>SP</strong> (<strong>ESP</strong>)</td></tr>
-</table>
+<p><div class="rs-tip-major">Poznámka: <strong>ZR</strong> je registr
+obsahující konstantní nulu, trikem s&nbsp;instrukcí <strong>ORR</strong> tedy
+získáme konstantu 1, 0 atd.</div></p>
 
 
 
 <p><a name="k19"></a></p>
 <h2 id="k19">19. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Zdrojové kódy všech dnes použitých demonstračních příkladů byly uloženy do
+Git repositáře, který je dostupný na adrese <a
+href="https://github.com/tisnik/go-root">https://github.com/tisnik/go-root</a>
+(stále na GitHubu :-). V&nbsp;případě, že nebudete chtít klonovat celý
+repositář (ten je ovšem &ndash; alespoň prozatím &ndash; velmi malý, dnes má
+přibližně pět až šest megabajtů), můžete namísto toho použít odkazy na
+jednotlivé příklady, které naleznete v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Příklad</th><th>Stručný popis</th><th>Cesta</th></tr>
+<tr><td>1</td><td>asm04.go</td><td>funkce pro součet tří operandů</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_54/asm04.go">https://github.com/tisnik/go-root/blob/master/article_54/asm04.go</a></td></tr>
+<tr><td>2</td><td>asm05.go</td><td>funkce vracející své parametry v&nbsp;opačném pořadí</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_54/asm05.go">https://github.com/tisnik/go-root/blob/master/article_54/asm05.go</a></td></tr>
+<tr><td>3</td><td>asm06.go</td><td>funkce pro součet tří operandů (typ <i>float32</i> a <i>float64</i>)</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_54/asm06.go">https://github.com/tisnik/go-root/blob/master/article_54/asm06.go</a></td></tr>
+<tr><td>4</td><td>asm07.go</td><td>funkce pro součet položek v&nbsp;řezu</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_54/asm07.go">https://github.com/tisnik/go-root/blob/master/article_54/asm07.go</a></td></tr>
+<tr><td>5</td><td>asm08.go</td><td>funkce typu <strong>Sing/Sgn</strong></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_54/asm08.go">https://github.com/tisnik/go-root/blob/master/article_54/asm08.go</a></td></tr>
+</table>
 
 
 
