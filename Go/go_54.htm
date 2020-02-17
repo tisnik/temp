@@ -702,12 +702,100 @@ ARM. Tímto projektem se budeme zabývat v&nbsp;samostatném článku.</div></p>
 <p><a name="k10"></a></p>
 <h2 id="k10">10. Specifika architektury ARM</h2>
 
+<p>V&nbsp;klasické architektuře ARM se používá 16 pracovních registrů, každý o
+šířce 32bitů, přičemž poslední tři registry mívají speciální význam: ukazatel
+na vrchol zásobníku, link register (návratová adresa z&nbsp;procedury) a
+programový čítač. Kvůli konstantní šířce všech instrukcí může být problematické
+uložení konstanty či adresy do některého pracovního registru. Problém je to
+logický a vlastně shodný pro všechny &bdquo;klasické&ldquo; RISCové
+mikroprocesory: šířka pracovních registrů je 32 bitů a současně je šířka
+instrukcí taktéž 32 bitů, tudíž není možné, aby se v&nbsp;instrukci vedle
+operačního kódu nacházela i 32 bitová konstanta. Tvůrci dalších RISCových
+mikroprocesorů se s&nbsp;touto problematikou snažili vypořádat různým způsobem,
+například zavedli speciální instrukci pro naplnění horních šestnácti bitů
+registru, zatímco pro naplnění spodních šestnácti bitů bylo možné použít
+například instrukci <strong>ADD</strong> s&nbsp;konstantou a nulovým registrem
+<i>R0</i> (zhruba takovýmto způsobem je tato problematika řešena na
+mikroprocesorech <i>MIPS</i>). U mikroprocesorů ARM se zdá, že jeho
+konstruktéři nechtěli &bdquo;obětovat&ldquo; další tranzistory na podobné typy
+instrukcí, takže se pro načtení konstanty používá dvojice instrukcí se stejným
+formátem, jako mají ostatní aritmetické a logické instrukce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Význam</th></tr>
+<tr><td>1</td><td>MOV</td><td>načtení osmibitové konstanty 0..255</td></tr>
+<tr><td>2</td><td>MVN</td><td>načtení osmibitové konstanty s&nbsp;negací -1..-256</td></tr>
+</table>
+
+<p>To je samozřejmě pro mnoho účelů zcela nedostatečné, ovšem ve skutečnosti je
+možné tuto konstantu pomocí <i>barrel shifteru</i> posunout o sudý počet míst
+0, 2, 4, .. 30, takže se ve skutečnosti celkový počet konstant zvyšuje na
+hodnotu 8192 z&nbsp;celkového množství kombinací 2<sup>32</sup>. Aby
+programátoři mohli relativně snadno načíst <strong>libovolnou</strong>
+konstantu do zvoleného registru, nabízí většina assemblerů pro mikroprocesory
+<i>ARM</i> pseudoinstrukci <strong>LDR</strong> ve tvaru:</p>
+
+<pre>
+LDR Rx, =konstanta
+</pre>
+
+<p>Podle hodnoty použité konstanty se tato instrukce buď převede na instrukci
+<strong>MOV</strong>, alternativně <strong>MVN</strong>, nebo na instrukci
+<strong>LDR</strong> načítající konstantu uloženou někde v&nbsp;programovém
+kódu (například za tělem subrutiny, kde lze vyhradit prostor pomocí direktivy
+LTORG). Tato konstanta je potom adresována relativně k&nbsp;hodnotě registru
+<i>PC</i>, pouze je nutné dát pozor na to, že offset pro relativní adresování
+má pouze dvanáct bitů, takže tato konstanta nemůže být uložena příliš
+&bdquo;daleko&ldquo; (na to ostatně upozorní assembler).</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Překlad funkcí pro součet svých operandů</h2>
+
+<p>Otestujme si tedy způsob překladu funkcí pro součet svých parametrů do
+strojového kódu 32bitových mikroprocesorů ARM:</p>
+
+<pre>
+package <strong>main</strong>
+&nbsp;
+func <strong>Add8</strong>(x int8, y int8, z int8) int8 {
+        return x + y + z
+}
+&nbsp;
+func <strong>Add16</strong>(x int16, y int16, z int16) int16 {
+        return x + y + z
+}
+&nbsp;
+func <strong>Add32</strong>(x int32, y int32, z int32) int32 {
+        return x + y + z
+}
+&nbsp;
+func <strong>Add64</strong>(x int64, y int64, z int64) int64 {
+        return x + y + z
+}
+</pre>
+
+<p>Překlad bude proveden tímto příkazem:</p>
+
 <pre>
 $ <strong>GOARCH=arm GOARM=5 go build -gcflags '-l' asm04.go</strong>
+</pre>
+
+<p>Disasembling zajistí příkaz:</p>
+
+<pre>
 $ <strong>go tool objdump -S -s main.Add asm04</strong>
 </pre>
 
-TEXT main.Add8(SB) /home/tester/temp/go-root/article_54/asm04.go
+<p>V&nbsp;osmibitové variantě můžeme vidět, že operandy leží na offsetech +4,
++5 a +6, protože návratová adresa má šířku jen čtyři bajty. O načtení bajtu
+s&nbsp;jeho rozšířením na celých 32bitů se stará instrukce
+<strong>MOVBS</strong>:</p>
+
+<pre>
+TEXT main.Add8(SB) /home/tester/go-root/article_54/asm04.go
+func <strong>Add8</strong>(x int8, y int8, z int8) int8 {
   0x5e794               e1dd00d5                MOVBS 0x5(R13), R0
   0x5e798               e1dd10d4                MOVBS 0x4(R13), R1
   0x5e79c               e0800001                ADD R1, R0, R0
@@ -715,8 +803,19 @@ TEXT main.Add8(SB) /home/tester/temp/go-root/article_54/asm04.go
   0x5e7a4               e0810000                ADD R0, R1, R0
   0x5e7a8               e5cd0008                MOVB R0, 0x8(R13)
   0x5e7ac               e28ef000                ADD $0, R14, R15
+</pre>
 
-TEXT main.Add16(SB) /home/tester/temp/go-root/article_54/asm04.go
+<p><div class="rs-tip-major">Poznámka: poslední instrukce je obdobou instrukce
+<strong>RET</strong>, protože se zde přenáší hodnota z&nbsp;registru R14
+(<i>link register</i>) do registru R15 (<i>program counter</i>).</div></p>
+
+<p>Šestnáctibitová varianta používá offsety parametrů +4, +6 a +8 a znaménkové
+rozšíření ze šestnácti bitů na plných 32bitů se stará instrukce
+<strong>MOVHS</strong>:</p>
+
+<pre>
+TEXT main.Add16(SB) /home/tester/go-root/article_54/asm04.go
+func <strong>Add16</strong>(x int16, y int16, z int16) int16 {
   0x5e7b0               e1dd00f6                MOVHS 0x6(R13), R0
   0x5e7b4               e1dd10f4                MOVHS 0x4(R13), R1
   0x5e7b8               e0800001                ADD R1, R0, R0
@@ -724,9 +823,15 @@ TEXT main.Add16(SB) /home/tester/temp/go-root/article_54/asm04.go
   0x5e7c0               e0810000                ADD R0, R1, R0
   0x5e7c4               e1cd00bc                MOVH R0, 0xc(R13)
   0x5e7c8               e28ef000                ADD $0, R14, R15
+</pre>
 
-TEXT main.Add32(SB) /home/tester/temp/go-root/article_54/asm04.go
-        return x + y + z
+<p>Následuje 32bitová varianta, v&nbsp;níž se (podle očekávání) neprovádí
+znaménkové rozšíření parametrů, neboť všechny výpočty probíhají přímo
+v&nbsp;32bitovém režimu, tedy nativním režimu těchto mikroprocesorů:</p>
+
+<pre>
+TEXT main.Add32(SB) /home/tester/go-root/article_54/asm04.go
+func <strong>Add32</strong>(x int32, y int32, z int32) int32 {
   0x5e7cc               e59d0008                MOVW 0x8(R13), R0
   0x5e7d0               e59d1004                MOVW 0x4(R13), R1
   0x5e7d4               e0800001                ADD R1, R0, R0
@@ -734,9 +839,17 @@ TEXT main.Add32(SB) /home/tester/temp/go-root/article_54/asm04.go
   0x5e7dc               e0810000                ADD R0, R1, R0
   0x5e7e0               e58d0010                MOVW R0, 0x10(R13)
   0x5e7e4               e28ef000                ADD $0, R14, R15
+</pre>
 
-TEXT main.Add64(SB) /home/tester/temp/go-root/article_54/asm04.go
-        return x + y + z
+<p>A konečně se podívejme na variantu 64bitovou. Ta je (na rozdíl od
+architektury x86-64) složitější, z&nbsp;toho prostého důvodů, že 64bitový
+součet je nutné na 32bitové architektuře provádět postupně &ndash; od nižší
+poloviny operandů k&nbsp;vyšší polovině (zde je nutné brát v&nbsp;potaz i
+přenos uložený do příznaku <i>carry</i>):</p>
+
+<pre>
+TEXT main.Add64(SB) /home/tester/go-root/article_54/asm04.go
+func <strong>Add64</strong>(x int64, y int64, z int64) int64 {
   0x5e7e8               e59d0004                MOVW 0x4(R13), R0
   0x5e7ec               e59d100c                MOVW 0xc(R13), R1
   0x5e7f0               e0902001                ADD.S R1, R0, R2
@@ -752,27 +865,55 @@ TEXT main.Add64(SB) /home/tester/temp/go-root/article_54/asm04.go
   0x5e818               e0a10000                ADC R0, R1, R0
   0x5e81c               e58d0020                MOVW R0, 0x20(R13)
   0x5e820               e28ef000                ADD $0, R14, R15
+</pre>
 
+<p><div class="rs-tip-major">Poznámka: varianta instrukce
+<strong>ADD.S</strong> nastavuje příznakové bity.</div></p>
 
+<p>Výše uvedenou sekvenci instrukcí bude vhodné okomentovat:</p>
 
-<p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<pre>
+MOVW     x.low, R0
+MOVW     y.low, R1
+ADD.S    R1, R0, R2       <i>// R2=mezisoučet x.low + y.low</i>
+MOVW     z.low, R3
+ADD.S    R3, R2, R4       <i>// R4=mezisoučet x.low + y.low + z.low</i>
+MOVW     R4, result.low   <i>// uložení spodních 32bitů výsledku</i>
+&nbsp;
+ADD.S    R1, R0, R0       <i>// nastavení příznaků při mezisoučtu x.low + y.low</i>
+MOVW     x.high, R0
+MOVW     y.high, R1
+ADC      R1, R0, R0       <i>// R0=mezisoučet x.high + y.high + přetečení z x.low + y.low</i>
+ADD.S    R3, R2, R1       <i>// nastavení příznaků při mezisoučtu všech nižších slov</i>
+MOVW     z.high, R1
+ADC      R0, R1, R0       <i>// přičtení z.high k mezivýsledku + carry</i>
+MOVW     R0, result.high  <i>// uložení horních 32bitů výsledku</i>
+</pre>
 
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Podpora výpočtů s&nbsp;typy <i>float32</i> a <i>float64</i> na mikroprocesorech ARM</h2>
 
+<p>Některé čipy ARM nemají matematický koprocesor. V&nbsp;takovém případě se
+výpočty s&nbsp;typy <i>float32</i> a <i>float64</i> provádí softwarově
+(&bdquo;armel&ldquo;). Čipy, které mají matematický koprocesor, se někdy
+označují &bdquo;armhf&ldquo; (typicky ARMv6 a vyšší). Podívejme se na překlad
+funkcí <strong>AddFloat32</strong> a <strong>AddFloat64</strong> pro ty čipy
+ARM, které matematický koprocesor mají:</p>
 
 <pre>
-$ GOARCH=arm GOARM=6 go build -gcflags '-l' asm06.go
+$ <strong>GOARCH=arm GOARM=6 go build -gcflags '-l' asm06.go</strong>
+</pre>
+
+<p>Získání vygenerované sekvence instrukcí:</p>
+
+<pre>
+$ <strong>go tool objdump -S -s main.Add asm06</strong>
 </pre>
 
 <pre>
-$ go tool objdump -S -s main.Add asm06
-</pre>
-
-TEXT main.AddFloat32(SB) /home/tester/temp/go-root/article_54/asm06.go
+TEXT main.<strong>AddFloat32</strong>(SB) /home/tester/go-root/article_54/asm06.go
         return x + y + z
   0x5b854               ed9d0a02                MOVF 0x8(R13), F0
   0x5b858               ed9d1a01                MOVF 0x4(R13), F1
@@ -781,8 +922,8 @@ TEXT main.AddFloat32(SB) /home/tester/temp/go-root/article_54/asm06.go
   0x5b864               ee310a00                ADDF F0, F1, F0
   0x5b868               ed8d0a04                MOVF F0, 0x10(R13)
   0x5b86c               e28ef000                ADD $0, R14, R15
-
-TEXT main.AddFloat64(SB) /home/tester/temp/go-root/article_54/asm06.go
+&nbsp;
+TEXT main.<strong>AddFloat64</strong>(SB) /home/tester/go-root/article_54/asm06.go
         return x + y + z
   0x5b870               ed9d0b03                MOVD 0xc(R13), F0
   0x5b874               ed9d1b01                MOVD 0x4(R13), F1
@@ -793,35 +934,61 @@ TEXT main.AddFloat64(SB) /home/tester/temp/go-root/article_54/asm06.go
   0x5b888               e28ef000                ADD $0, R14, R15
 </pre>
 
+<p>Překlad je v&nbsp;tomto případě přímočarý &ndash; používají se FPU registry
+F0 a F1, instrukce mají koncovku &bdquo;F&ldquo; pro typ <i>float32</i> a
+&bdquo;D&ldquo; pro typ <i>float64</i>.</p>
+
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Podmíněné a nepodmíněné skoky jako základ pro realizaci rozvětvení a programových smyček</h2>
 
+<p>Velmi důležitým typem strojových instrukcí, které v&nbsp;různé podobě
+najdeme prakticky u všech modelů mikroprocesorů (resp.&nbsp;přesněji řečeno u
+mikroprocesorů všech dnes rozšířených mikroprocesorových architektur), jsou
+instrukce provádějící skoky na nějakou adresu v&nbsp;operační paměti.
+Implementace skoku není, alespoň na první pohled a u jednodušších architektur
+bez instrukční pipeline, vlastně nijak složitá, protože se v&nbsp;případě
+použití <i>absolutní adresy</i> dosadí hodnota z&nbsp;operačního kódu instrukce
+do registru <i>PC</i> a v&nbsp;případě použití <i>relativní adresy</i> se tato
+hodnota (nazývaná někdy poněkud nepřesně <i>offset</i>) přičte k&nbsp;aktuální
+hodnotě registru <i>PC</i>. Relativní adresa je v&nbsp;tomto případě
+v&nbsp;kódu instrukce uložena se znaménkem, proto se skok může provést dozadu i
+dopředu (ostatně právě použití relativní adresy uvidíme v&nbsp;dále
+popisovaných demonstračních příkladech).</p>
 
+<p>Skoky většinou dělíme podle jednoho kritéria (formy zápisu adresy) na
+<i>absolutní</i> a <i>relativní</i> a podle kritéria druhého (za jakým
+okolností se skok provede) na skoky <i>podmíněné</i> a <i>nepodmíněné</i>.
+V&nbsp;závislosti na použité instrukční sadě jsou možné různé kombinace,
+typicky však u většiny mikroprocesorů nalezneme kombinace nepodmíněný absolutní
+skok, nepodmíněný relativní skok a podmíněný relativní skok. Skoky nepodmíněné
+jsou jednodušší a svou podstatou odpovídají příkazu <strong>goto</strong>
+známého z&nbsp;některých programovacích jazyků (včetně Go!) a také z&nbsp;mnoha
+článků, ve kterých autoři mnohdy bez hlubšího zamyšlení se nad původní
+myšlenkou opakují, že by se <strong>goto</strong> nemělo při strukturovaném
+programování používat :-). V&nbsp;assembleru se však skoky vesele používají,
+neboť právě pomocí nich se vytváří základní konstrukce strukturovaného
+programování &ndash; podmínky a programové smyčky.</p>
 
-<p><a name="k14"></a></p>
-<h2 id="k14">14. Podmíněné a nepodmíněné skoky jako základ pro realizaci rozvětvení a programových smyček</h2>
-
-<p>Velmi důležitým typem strojových instrukcí, které v&nbsp;různé podobě najdeme prakticky u všech modelů mikroprocesorů (resp.&nbsp;přesněji řečeno u mikroprocesorů všech dnes rozšířených mikroprocesorových architektur), jsou instrukce provádějící skoky na nějakou adresu v&nbsp;operační paměti. Implementace skoku není, alespoň na první pohled a u jednodušších architektur bez instrukční pipeline, vlastně nijak složitá, protože se v&nbsp;případě použití <i>absolutní adresy</i> dosadí hodnota z&nbsp;operačního kódu instrukce do registru <i>PC</i> a v&nbsp;případě použití <i>relativní adresy</i> se tato hodnota (nazývaná někdy poněkud nepřesně <i>offset</i>) přičte k&nbsp;aktuální hodnotě registru <i>PC</i>. Relativní adresa je v&nbsp;tomto případě v&nbsp;kódu instrukce uložena se znaménkem, proto se skok může provést dozadu i dopředu (ostatně právě použití relativní adresy uvidíme v&nbsp;dále popisovaných demonstračních příkladech).</p>
-
-<p>Skoky většinou dělíme podle jednoho kritéria (formy zápisu adresy) na <i>absolutní</i> a <i>relativní</i> a podle kritéria druhého (za jakým okolností se skok provede) na skoky <i>podmíněné</i> a <i>nepodmíněné</i>. V&nbsp;závislosti na použité instrukční sadě jsou možné různé kombinace, typicky však u většiny mikroprocesorů nalezneme kombinace nepodmíněný absolutní skok, nepodmíněný relativní skok a podmíněný relativní skok. Skoky nepodmíněné jsou jednodušší a svou podstatou odpovídají příkazu <strong>goto</strong> známého z&nbsp;některých programovacích jazyků a také z&nbsp;mnoha článků, ve kterých autoři mnohdy bez hlubšího zamyšlení se nad původní myšlenkou opakují, že by se <strong>goto</strong> nemělo při strukturovaném programování používat :-). V&nbsp;assembleru se však skoky vesele používají, neboť právě pomocí nich se vytváří základní konstrukce strukturovaného programování &ndash; podmínky a programové smyčky.</p>
+<p>Využití podmínek a podmíněných skoků budeme testovat na následujícím kódu
+&ndash; implementaci funkce typu <i>Sign/Sgn</i>:</p>
 
 <pre>
-package main
-
-func Sign(value int) int {
-        if value < 0 {
+package <strong>main</strong>
+&nbsp;
+func <strong>Sign</strong>(value int) int {
+        if value &lt; 0 {
                 return -1
-        } else if value > 0 {
+        } else if value &gt; 0 {
                 return 1
         } else {
                 return 0
         }
 
 }
-
-func main() {
+&nbsp;
+func <strong>main</strong>() {
         println(Sign(-100))
         println(Sign(100))
         println(Sign(0))
@@ -830,14 +997,43 @@ func main() {
 
 
 
-<p><a name="k15"></a></p>
-<h2 id="k15">15. Strojové instrukce určené pro provedení skoku na architekturách i386 a x86_64</h2>
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Strojové instrukce určené pro provedení skoku na architekturách i386 a x86_64</h2>
 
-<p>U architektury mikroprocesorů 32bitové řady i386 a taktéž 64bitové řady x86-64 je základní strojovou instrukcí určenou pro provedení <i>nepodmíněného skoku</i> instrukce nazvaná jednoduše a přímočaře <strong>JMP</strong> (což je, jak jste zajisté zjistili, mnemotechnická zkratka slova <i>jump</i>). V&nbsp;assembleru většinou za mnemotechnickou zkratkou jména instrukce následuje návěští (<i>label</i>), z&nbsp;něhož assembler odvodí reálnou adresu.</p>
+<p>U architektury mikroprocesorů 32bitové řady i386 a taktéž 64bitové řady
+x86-64 je základní strojovou instrukcí určenou pro provedení <i>nepodmíněného
+skoku</i> instrukce nazvaná jednoduše a přímočaře <strong>JMP</strong> (což je,
+jak jste zajisté zjistili, mnemotechnická zkratka slova <i>jump</i>).
+V&nbsp;assembleru většinou za mnemotechnickou zkratkou jména instrukce
+následuje návěští (<i>label</i>), z&nbsp;něhož assembler odvodí reálnou
+adresu.</p>
 
-<p>Alternativně je možné použít i další způsoby adresování, čímž se například implementuje tabulka skoků (jedna z&nbsp;možných realizací stavového automatu) atd., ovšem tyto techniky pro účely dnešního článku prozatím nepotřebujeme znát. Mnohem zajímavější jsou <i>podmíněné skoky</i>, které se při programování v&nbsp;assembleru či ve strojovém kódu používají pro implementaci programových smyček <strong>while</strong>, <strong>do-while</strong>, <strong>for</strong> a taktéž konstrukcí typu <strong>if-then-else</strong> atd. Podmíněný skok je proveden či naopak neproveden na základě nějaké podmínky. Vzhledem k&nbsp;tomu, že pracujeme na té nejnižší programové úrovni, tj.&nbsp;na úrovni strojových instrukcí, není samozřejmě možné podmínku definovat nějakým složitým a sofistikovaným způsobem &ndash; musí se jednat o operaci, kterou mikroprocesor dokáže jednoduše a především dostatečně rychle zpracovat (i přesto představují skoky úzké místo v&nbsp;programech).</p>
+<p>Alternativně je možné použít i další způsoby adresování, čímž se například
+implementuje tabulka skoků (jedna z&nbsp;možných realizací stavového automatu)
+atd., ovšem tyto techniky pro účely dnešního článku prozatím nepotřebujeme
+znát. Mnohem zajímavější jsou <i>podmíněné skoky</i>, které se při programování
+v&nbsp;assembleru či ve strojovém kódu používají pro implementaci programových
+smyček <strong>while</strong>, <strong>do-while</strong>, <strong>for</strong>
+a taktéž konstrukcí typu <strong>if-then-else</strong> atd. Podmíněný skok je
+proveden či naopak neproveden na základě nějaké podmínky. Vzhledem k&nbsp;tomu,
+že pracujeme na té nejnižší programové úrovni, tj.&nbsp;na úrovni strojových
+instrukcí, není samozřejmě možné podmínku definovat nějakým složitým a
+sofistikovaným způsobem &ndash; musí se jednat o operaci, kterou mikroprocesor
+dokáže jednoduše a především dostatečně rychle zpracovat (i přesto představují
+skoky úzké místo v&nbsp;programech).</p>
 
-<p>Z&nbsp;tohoto prostého důvodu &ndash; podmínky musí být realizovány dostatečně jednoduchým způsobem pro snadnou implementaci na čipu &ndash; jsou na mikroprocesorových architekturách i386 a x86-64 podmínky založeny na testování jednoho z&nbsp;takzvaných příznakových bitů, negací těchto bitů či dokonce jejich kombinací. Pokud z&nbsp;důvodu zjednodušení výkladu celé relativně rozsáhlé problematiky budeme ignorovat některé speciálnější příznaky a především pak rozdíly mezi hodnotami bez znaménka (unsigned) a se znaménkem (signed), můžeme zpočátku použít především příznaky nazvané <strong>Carry flag</strong>, <strong>Sign flag</strong> a <strong>Zero flag</strong>, tj.&nbsp;<i>příznak přenosu</i>, <i>příznak záporného výsledku</i> a <i>příznak nulovosti</i>. Význam těchto příznakových bitů se shrnut v&nbsp;následující tabulce:</p>
+<p>Z&nbsp;tohoto prostého důvodu &ndash; podmínky musí být realizovány
+dostatečně jednoduchým způsobem pro snadnou implementaci na čipu &ndash; jsou
+na mikroprocesorových architekturách i386 a x86-64 podmínky založeny na
+testování jednoho z&nbsp;takzvaných příznakových bitů, negací těchto bitů či
+dokonce jejich kombinací. Pokud z&nbsp;důvodu zjednodušení výkladu celé
+relativně rozsáhlé problematiky budeme ignorovat některé speciálnější příznaky
+a především pak rozdíly mezi hodnotami bez znaménka (unsigned) a se znaménkem
+(signed), můžeme zpočátku použít především příznaky nazvané <strong>Carry
+flag</strong>, <strong>Sign flag</strong> a <strong>Zero flag</strong>,
+tj.&nbsp;<i>příznak přenosu</i>, <i>příznak záporného výsledku</i> a <i>příznak
+nulovosti</i>. Význam těchto příznakových bitů se shrnut v&nbsp;následující
+tabulce:</p>
 
 <table>
 <tr><th>Příznak</th><th>Význam zkratky</th><th>Poznámka</th></tr>
@@ -845,6 +1041,56 @@ func main() {
 <tr><td>CF</td><td>carry flag</td><td>přenos (bezznaménková aritmetika)</td></tr>
 <tr><td>SF</td><td>sign flag</td><td>výsledek je záporný (nastaven nejvyšší bit bajtu či slova)</td></tr>
 </table>
+
+<p>Strojové instrukce určené pro provedení podmíněných skoků jsou ve své
+základní variantě (existují pro ně totiž i jmenné aliasy zmíněné níže)
+pojmenovány jednoduše a přímočaře &ndash; začínají písmenem <strong>J</strong>
+(jump), za nímž následuje volitelné písmeno <strong>N</strong> (negace) a
+jednoznaková zkratka příznaku. Instrukce <strong>JNC</strong> tedy znamená
+&bdquo;proveď skok, pokud příznak Carry není nastaven&ldquo;, zatímco instrukce
+<strong>JZ</strong> znamená &bdquo;proveď skok pouze při nastavení příznaku
+Zero&ldquo;:</p>
+
+<table>
+<tr><th>Mnemotechnická zkratka instrukce</th><th>Význam instrukce podmíněného skoku</th></tr>
+<tr><td>JC </td><td>podmíněný skok za předpokladu, že je nastaven příznak přenosu (<strong>Carry flag</strong>)</td></tr>
+<tr><td>JNC</td><td>podmíněný skok za předpokladu, že je vynulován příznak přenosu (<strong>Carry flag</strong>)</td></tr>
+<tr><td>JZ </td><td>podmíněný skok za předpokladu, že je nastaven příznak nulovosti (<strong>Zero flag</strong>)</td></tr>
+<tr><td>JNZ</td><td>podmíněný skok za předpokladu, že je vynulován příznak nulovosti (<strong>Zero flag</strong>)</td></tr>
+<tr><td>JS </td><td>podmíněný skok za předpokladu, že je nastaven příznak záporného výsledku (<strong>Sign flag</strong>)</td></tr>
+<tr><td>JNS</td><td>podmíněný skok za předpokladu, že je vynulován příznak záporného výsledku (<strong>Sign flag</strong>)</td></tr>
+</table>
+
+<p>Jmenné aliasy podporované většinou assemblerů:</p>
+
+<table>
+<tr><th>Instrukce</th><th>Alias</th></tr>
+<tr><td>JZ </td><td>JE </td></tr>
+<tr><td>JNZ</td><td>JNE</td></tr>
+<tr><td>JC </td><td>JB, JNAE</td></tr>
+<tr><td>JNC</td><td>JNB, JAE</td></tr>
+<tr><td>JS </td><td>nemá alias</td></tr>
+<tr><td>JNS</td><td>nemá alias</td></tr>
+</table>
+
+
+
+<p><a name="k15"></a></p>
+<h2 id="k15">15. Překlad funkce <strong>Sign</strong> pro architekturu x86-64</h2>
+
+<p>Podívejme se nyní na způsob překladu funkce <i>Sign</i> pro 64bitovou
+architekturu x86-64. Překlad se provede příkazem:</p>
+
+<pre>
+$ <strong>go build -gcflags '-l' asm08.go</strong>
+</pre>
+
+<p>Výpis strojových instrukcí pro funkci <i>Sign</i> příkazem:</p>
+<pre>
+$ <strong>go tool objdump -S -s main.Sign asm08</strong>
+</pre>
+
+<p>Výsledek:</p>
 
 <pre>
 $ go build -gcflags '-l' asm08.go
@@ -880,7 +1126,7 @@ TEXT main.Sign(SB) /home/tester/temp/go-root/article_54/asm08.go
   0x5e794               e59d0004                MOVW 0x4(R13), R0
   0x5e798               e3500000                CMP $0, R0
   0x5e79c               ba000006                B.LT 0x5e7bc
-        } else if value > 0 {
+        } else if value &gt; 0 {
   0x5e7a0               da000002                B.LE 0x5e7b0
                 return 1
   0x5e7a4               e3a00001                MOVW $1, R0
