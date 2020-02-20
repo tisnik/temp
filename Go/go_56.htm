@@ -31,17 +31,17 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>V dnešní části seriálu o programovacím jazyce Go se již potřetí budeme zabývat použitím assembleru v aplikacích, které jsou z větší části psané právě v Go. Ukážeme si využití programových smyček, ale i moderních instrukcí použitelných pro urychlení vybraných algoritmů.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Programovací jazyk Go a assembler (3.část)</a></p>
-<p><a href="#k02">*** 2. Malá rozcvička: interní reprezentace řezů (slices)</a></p>
-<p><a href="#k03">*** 3. Předávání řezů v&nbsp;zásobníkovém rámci do volaných funkcí</a></p>
-<p><a href="#k04">*** 4. Vyplnění obrázku konstantní barvou</a></p>
-<p><a href="#k05">*** 5. Benchmark pro funkci vyplňující rastrový obrázek</a></p>
+<p><a href="#k01">1. Programovací jazyk Go a assembler (3.část)</a></p>
+<p><a href="#k02">2. Malá rozcvička: interní reprezentace řezů (slices)</a></p>
+<p><a href="#k03">3. Předávání řezů v&nbsp;zásobníkovém rámci do volaných funkcí</a></p>
+<p><a href="#k04">4. Vyplnění obrázku konstantní barvou</a></p>
+<p><a href="#k05">5. Benchmark pro funkci vyplňující rastrový obrázek</a></p>
 <p><a href="#k06">*** 6. Naivní implementace vyplňování v&nbsp;assembleru</a></p>
 <p><a href="#k07">*** 7. Výsledky benchmarků</a></p>
 <p><a href="#k08">*** 8. Reorganizace vnitřní smyčky naprogramované v&nbsp;assembleru</a></p>
@@ -55,30 +55,89 @@
 <p><a href="#k16">*** 16. Zázrak se ovšem nekoná neboli opět benchmarky</a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. </a></p>
-<p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Programovací jazyk Go a assembler (3.část)</h2>
 
+<p>Na předchozí články, v&nbsp;nichž jsme si popsali některé vlastnosti poněkud
+specifického assembleru dodávaného společně se základními nástroji Go, dnes
+navážeme. Ukážeme si totiž, jak lze urychlit některé základní manipulace
+s&nbsp;rastrovými obrázky. Z&nbsp;dále popsaných demonstračních příkladů bude
+patrné, že použití assembleru skutečně může vést k&nbsp;mnohdy velmi výraznému
+urychlení některých operací, pochopitelně ovšem za cenu zkomplikování a
+zpomalení vývoje. Je tomu tak z&nbsp;toho důvodu, že překladač programovacího
+jazyka Go nedokáže (alespoň v&nbsp;jeho současné verzi) aplikovat některé
+optimalizace a současně samotný jazyk Go v&nbsp;mnoha případech nenabízí
+vhodnou sémantiku pro popis některých operací (resp.&nbsp;přesněji řečeno to
+někdy možné je, ovšem za předpokladu použití balíčku <i>unsafe</i> a podobných
+spíše nízkoúrovňových a potenciálně nebezpečných postupů).</p>
+
+<p><div class="rs-tip-major">Poznámka: nutno poznamenat, že je dosti
+nepravděpodobné, že by překladač jazyka Go v&nbsp;dohledné době prováděl
+některé časově náročné optimalizace (ty jsou mnohdy založeny na trasování
+spuštěného kódu). Jde to proti filozofii, které se Go drží, tj.&nbsp;snažit se,
+aby se Go, což je překládaný jazyk, používalo stejně snadno a rychle, jako
+jazyky interpretované.</div></p>
+
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Malá rozcvička: interní reprezentace řezů (slices)</h2>
 
+<p>Nejdříve si povězme, jakým způsobem se v&nbsp;programovacím jazyce Go
+pracuje s&nbsp;takzvanými <i>řezy</i> (<i>slices</i>). S&nbsp;řezy jsme se již
+pochopitelně seznámili, protože se jedná o významný prvek jazyka Go, bez něhož
+by nebylo možné elegantně pracovat s&nbsp;kolekcemi s&nbsp;měnitelnou kapacitou
+a počtem uložených prvků.</p>
+
+<p>Interně se jedná o referenci na automaticky vytvořené pole nebo na pole,
+které je explicitně &bdquo;nasalámováno&ldquo; operací řezu [od:do]. Každý řez
+je v&nbsp;operační paměti uložen ve formě trojice hodnot (jde o záznam &ndash;
+struct či record):</p>
+
+<ol>
+<li>Ukazatele (reference) na zvolený prvek pole s&nbsp;daty, ke kterým přes řez přistupujeme.</li>
+<li>Délky řezu, tj.&nbsp;počtu prvků.</li>
+<li>Kapacity řezu (do jaké míry může řez narůstat v&nbsp;důsledku přidávání dalších prvků).</li>
+</ol>
+
+<p>Tato interní struktura řezů s&nbsp;sebou přináší několik zajímavých
+důsledků. Je totiž možné, aby existovalo větší množství řezů ukazujících na
+obecně různé prvky jediného pole. Pokud nyní změníme prvek v&nbsp;jednom řezu,
+znamená to, že se vlastně modifikuje obsah původního pole a i ostatní řezy nový
+prvek uvidí. Co je však užitečnější &ndash; s&nbsp;řezy jako s&nbsp;datovým
+typem se velmi snadno pracuje; řezy mohou být předávány do funkcí, vráceny
+z&nbsp;funkcí atd.</p>
+
+<p>Podívejme se ovšem na řezy z&nbsp;pohledu programátora, který by řezy
+používal v&nbsp;assembleru. Řez je i při tomto pohledu stále tvořen trojicí
+hodnot &ndash; ukazatele na první pohled, kapacity a aktuálně využité kapacity
+řezu (tedy jeho délky). Tyto hodnoty jsou do volané funkce předány jako
+trojice, protože se řez předává hodnotou, ostatně podobně, jako další datové
+typy jazyka Go. V&nbsp;případě, že se používá 64bitová platforma (tedy
+x86-64/AMD64 či AArch64), má ukazatel šířku 64 bitů, kapacita je uložena
+v&nbsp;32 bitech a délka taktéž v&nbsp;32 bitech.</p>
+
+<p>Způsob předání zmíněných tří hodnot si otestujeme na následujícím velmi
+jednoduchém demonstračním příkladu, v&nbsp;němž je implementována dvojice
+funkcí, z&nbsp;nichž jedna vrací kapacitu řezu a druhá počet skutečně
+obsazených prvků. Zdrojový kód tohoto příkladu vypadá následovně:</p>
+
 <pre>
 package <strong>main</strong>
-
+&nbsp;
 func <strong>GetLen</strong>(b []byte) int {
         return len(b)
 }
-
+&nbsp;
 func <strong>GetCap</strong>(b []byte) int {
         return cap(b)
 }
-
+&nbsp;
 func <strong>main</strong>() {
         var x []byte = []byte{1, 2, 3}
         println(GetLen(x))
@@ -91,9 +150,18 @@ func <strong>main</strong>() {
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Předávání řezů v&nbsp;zásobníkovém rámci do volaných funkcí</h2>
 
+<p>Zajímat nás nyní bude způsob volání těchto funkcí i princip předávání tří
+hodnot popisujících řez. Demonstrační příklad tedy přeložíme, ovšem takovým
+způsobem, aby nedošlo k&nbsp;inliningu volaných funkcí:</p>
+
 <pre>
 $ <strong>go build -gcflags '-l' slices.go</strong>
 </pre>
+
+<p>Nyní se již můžeme podívat na sekvenci instrukcí, do nichž se přeložily
+zdrojové kódy funkcí <strong>GetLen</strong> a <strong>GetCap</strong>. Pro
+získání sekvence instrukcí v&nbsp;lidsky čitelné podobě použijeme známý a již
+popsaný nástroj nazvaný <strong>objdump</strong>:</p>
 
 <pre>
 $ <strong>go tool objdump -S -s GetLen ./slices </strong>
@@ -105,6 +173,8 @@ TEXT main.GetLen(SB) /home/ptisnovs/src/go-root/article_56/slices.go
   0x45233a              c3                      RET
 </pre>
 
+<p>a:</p>
+
 <pre>
 $ <strong>go tool objdump -S -s GetCap ./slices </strong>
 TEXT main.GetCap(SB) /home/ptisnovs/src/go-root/article_56/slices.go
@@ -114,45 +184,135 @@ TEXT main.GetCap(SB) /home/ptisnovs/src/go-root/article_56/slices.go
   0x45234a              c3                      RET
 </pre>
 
+<p>Z&nbsp;disassemblovaného kódu obou funkcí lze vydedukovat způsob předávání
+struktury popisující řez:</p>
+
+<ol>
+
+<li>Ukazatel na první prvek v&nbsp;řezu má šířku 64 bitů a je předán na
+zásobníkovém rámci na offsetu 8 (osm bajtů zabírá návratová adresa).</li>
+
+<li>Aktuálně zapsaný počet prvků řezu má šířku 32 bitů a je předán na
+zásobníkovém rámci na offsetu 16 (8+8).</li>
+
+<li>Využitelná kapacita řezu má šířku taktéž 32 bitů a je předán na
+zásobníkovém rámci na offsetu 24 (8+8+4+4 align).</li>
+
+</ol>
+
+<p><div class="rs-tip-major">Poznámka: znovu zopakujme, že výše uvedené
+informace platí pro 64bitovou platformu x86-64. Na jiných platformách bude
+předávání vypadat odlišně (například se nepoužije zásobníkový rámec) nebo bude
+ukazatel pouze 32bitový.</div></p>
+
 
 
 <p><a name="k04"></a></p>
 <h2 id="k04">4. Vyplnění obrázku konstantní barvou</h2>
 
+<p>Nyní, když již víme, jak se pracuje s&nbsp;řezy, se můžeme podívat na další
+demonstrační příklad. Ten slouží k&nbsp;vytvoření plnobarevného rastrového
+obrázku o rozlišení 256&times;256 pixelů, který je následně vyplněn bílou
+neprůhlednou barvou a uložen do externího souboru ve formátu <a
+href="https://www.root.cz/clanky/png-is-not-gif/">PNG</a>. Připomeňme si, že u
+plnobarevných obrázků (RGBA) je barva tvořena čtveřicí hodnot red, green, blue
+a alpha, přičemž u alfa kanálu (alpha) značí 0 plnou průhlednost zatímco 255
+úplnou neprůhlednost (ovšem v&nbsp;jiných jazycích a knihovnách je tomu přesně
+naopak).</p>
+
+<p>Rastrový obrázek se vytvoří konstruktorem:</p>
+
+<pre>
+destinationImage := image.NewRGBA(image.Rect(0, 0, 256, 256))
+</pre>
+
+<p>Ve výchozím stavu má obrázek všechny pixely černé a současně průhledné.
+Budeme ho tedy muset vyplnit. Využijeme přitom toho faktu, že hodnoty všech
+pixelů jsou uloženy v&nbsp;kontinuálním řezu typu <strong>[]byte</strong>,
+tj.&nbsp;k&nbsp;pixelům a jejich barvám je možné přistupovat na dosti nízké
+úrovni (což je ostatně pro mnoho algoritmů jen dobře). Vyplnění celého obrázku
+tedy můžeme realizovat následující funkcí:</p>
+
+<pre>
+func <strong>fillPixels</strong>(pixels []uint8) {
+        for i := 0; i &lt; len(pixels); i++ {
+                pixels[i] = 255
+        }
+}
+</pre>
+
+<p>U této funkce se na chvíli zastavme a zjistěme, jestli je skutečně legální
+takto k&nbsp;pixelům přistupovat. Struktura popisující celobarevný obrázek
+totiž vypadá následovně:</p>
+
+<pre>
+<i>// RGBA64 is an in-memory image whose At method returns color.RGBA64 values.</i>
+type RGBA64 struct {
+        <i>// Pix holds the image's pixels, in R, G, B, A order and big-endian format. The pixel at</i>
+        <i>// (x, y) starts at Pix[(y-Rect.Min.Y)*Stride + (x-Rect.Min.X)*8].</i>
+        Pix []uint8
+        <i>// Stride is the Pix stride (in bytes) between vertically adjacent pixels.</i>
+        Stride int
+        <i>// Rect is the image's bounds.</i>
+        Rect Rectangle
+}
+</pre>
+
+<p>Pokud znáte nějaké další (nízkoúrovňové) knihovny pro práci
+s&nbsp;rastrovými obrázky, například původní SDL verze 1, možná budete
+předpokládat, že existence atributu <strong>Stride</strong> znamená, že
+jednotlivé obrazové řádky nemusí být uloženy ihned za sebou. Jinými slovy
+&ndash; mezi posledním pixelem na jednom řádku a prvním pixelem na následujícím
+řádku může být nevyužité místo. Ve skutečnosti tomu však v&nbsp;tomto případě
+není, o čemž se snadno přesvědčíme pohledem do zdrojového kódu samotného
+balíčku <strong>image</strong>:</p>
+
+<pre>
+<i>// NewRGBA returns a new RGBA image with the given bounds.</i>
+func NewRGBA(r Rectangle) *RGBA {
+        w, h := r.Dx(), r.Dy()
+        buf := make([]uint8, 4*w*h)
+        return &amp;RGBA{buf, 4 * w, r}
+}
+</pre>
+
+<p>Úplný zdrojový kód dnešního druhého demonstračního příkladu vypadá
+takto:</p>
+
 <pre>
 package <strong>main</strong>
-  
+&nbsp;  
 import (
         "image"
         "image/png"
         "log"
         "os"
 )
-
+&nbsp;  
 const DestinationImageFileName = "empty.png"
-
+&nbsp;  
 func <strong>saveImage</strong>(filename string, img image.Image) error {
         outfile, err := os.Create(filename)
         if err != nil {
                 return err
         }
         defer outfile.Close()
-
+&nbsp;  
         png.Encode(outfile, img)
         return nil
 }
-
+&nbsp;  
 func <strong>fillPixels</strong>(pixels []uint8) {
-        for i := 0; i < len(pixels); i++ {
+        for i := 0; i &lt; len(pixels); i++ {
                 pixels[i] = 255
         }
 }
-
+&nbsp;  
 func <strong>main</strong>() {
         destinationImage := image.NewRGBA(image.Rect(0, 0, 256, 256))
-
+&nbsp;  
         fillPixels(destinationImage.Pix)
-
+&nbsp;  
         err := saveImage(DestinationImageFileName, destinationImage)
         if err != nil {
                 log.Fatal(err)
@@ -160,47 +320,72 @@ func <strong>main</strong>() {
 }
 </pre>
 
+<p>Funkci pro vyplnění všech pixelů rastrového obrázku tedy máme
+naprogramovanou a díky tomu, že je v&nbsp;ní použit (relativně) nízkoúrovňový
+výstup je možné předpokládat, že bude přeložena poměrně rozumným způsobem.
+Můžeme si to ostatně ověřit na optimalizované variantě:</p>
+
 <pre>
 TEXT main.fillPixels(SB) /home/ptisnovs/src/go-root/article_56/01_no_op_filter.go
-        for i := 0; i < len(pixels); i++ {
+        for i := 0; i &lt; len(pixels); i++ {
   0x4b87b0              488b442410              MOVQ 0x10(SP), AX
   0x4b87b5              488b4c2408              MOVQ 0x8(SP), CX
   0x4b87ba              31d2                    XORL DX, DX
   0x4b87bc              eb07                    JMP 0x4b87c5
                 pixels[i] = 255
   0x4b87be              c60411ff                MOVB $0xff, 0(CX)(DX*1)
-        for i := 0; i < len(pixels); i++ {
+        for i := 0; i &lt; len(pixels); i++ {
   0x4b87c2              48ffc2                  INCQ DX
   0x4b87c5              4839c2                  CMPQ AX, DX
   0x4b87c8              7cf4                    JL 0x4b87be
   0x4b87ca              c3                      RET
 </pre>
 
+<p>Z&nbsp;předchozího kódu je patrné, že se pixely vyplňují po jednotlivých
+bajtech, což pravděpodobně nebude nejrychlejší řešení.</p>
+
+<p><div class="rs-tip-major">Poznámka: zajímavé je, že pokud bychom řez
+vyplňovali nulami, použil by překladač velmi rychlou variantu, k&nbsp;níž se
+dostaneme v&nbsp;dalším textu.</div></p>
+
 
 
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Benchmark pro funkci vyplňující rastrový obrázek</h2>
 
+<p>O tom, jak rychlé či naopak pomalé je vyplňování obrázku realizované
+v&nbsp;dnešním druhém demonstračním příkladu, se přesvědčíme prakticky, a to
+konkrétně vytvořením vhodného <i>benchmarku</i>. Podporou benchmarků jsme se
+prozatím v&nbsp;tomto seriálu nezabývali do větší hloubky, ovšem pro účely
+dnešního článku postačuje vědět, že se jedná o součást standardního testovacího
+frameworku programovacího jazyka Go a že v&nbsp;implementaci benchmarku (funkce
+<strong>Run</strong>) typicky používáme smyčku prováděnou od 0 do b.N, přičemž
+ono N je do benchmarku předáváno samotným testovacím frameworkem.</p>
+
+<p>Náš benchmark bude relativně jednoduchý &ndash; postupně zkonstruuje obrázky
+se zvětšujícím se rozlišením a bude měřit, jak dlouho trvá jejich vyplnění
+konstantní barvou:</p>
+
 <pre>
 package <strong>main</strong>
-  
+&nbsp;  
 import (
         "fmt"
         "image"
         "testing"
 )
-
+&nbsp;  
 var sizes = []int{32, 128, 256, 512, 1024, 2048}
-
+&nbsp;  
 func <strong>BenchmarkFillPixels</strong>(b *testing.B) {
         for _, size := range sizes {
                 sizeStr := fmt.Sprintf("%dx%d", size, size)
                 b.Run(sizeStr, func(b *testing.B) {
                         destinationImage := image.NewRGBA(image.Rect(0, 0, size, size))
-
+&nbsp;  
                         b.ResetTimer()
-
-                        for i := 0; i < b.N; i++ {
+&nbsp;  
+                        for i := 0; i &lt; b.N; i++ {
                                 fillPixels(destinationImage.Pix)
                         }
                 })
@@ -208,8 +393,17 @@ func <strong>BenchmarkFillPixels</strong>(b *testing.B) {
 }
 </pre>
 
+<p>Takto vytvořený benchmark se spustí příkazem:</p>
+
 <pre>
-20:20 $ go test -bench=.
+20:20 $ <strong>go test -bench=.</strong>
+</pre>
+
+<p>Z&nbsp;výsledků benchmarku je patrné, jak dlouho trvá jedno vyplnění pro
+obrázek zvolené velikosti i kolik vyplnění bylo za zvolený časový rámec
+provedeno:</p>
+
+<pre>
 goos: linux
 goarch: amd64
 BenchmarkFillPixels/32x32-8               985530              1194 ns/op
@@ -222,8 +416,12 @@ PASS
 ok      _/home/ptisnovs/src/go-root/article_56/01_empty_image_go        9.810s
 </pre>
 
+<p>Pro zajímavost ještě spustíme benchmark pro kód, který nebyl
+optimalizován:</p>
+
 <pre>
-20:22 $ go test -gcflags '-l' -bench=.
+20:22 $ <strong>go test -gcflags '-l' -bench=.</strong>
+&nbsp;
 goos: linux
 goarch: amd64
 BenchmarkFillPixels/32x32-8               493587              2390 ns/op
