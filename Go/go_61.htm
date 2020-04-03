@@ -63,6 +63,10 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Programovací jazyk Go a 2D grafika</h2>
 
+<p>Programovací jazyk Go se v&nbsp;současnosti používá převážně pro tvorbu různých typů služeb popř.&nbsp;démonů, tj.&nbsp;pro takové aplikace, u nichž není vyžadován přímý grafický výstup.</p>
+
+<p>Navíc vždycky existuje možnost použít překladač do WASM (<i>Web Assembly</i>) a provádět vykreslování přímo do <i>canvasu</i> v&nbsp;okně prohlížeče, což je téma, kterému jsme se v&nbsp;tomto seriálu <a href="">ve stručnosti věnovali</a>. Pro některé typy aplikací se nemusí jednat o špatné řešení, ovšem systémové nároky jsou vyšší, než v&nbsp;případě použití nativního kódu a nějaké nativní knihovny.</p>
+
 
 
 <p><a name="k02"></a></p>
@@ -501,6 +505,332 @@ int <strong>main</strong>(int argc, char** args) {
 <h2 id="k11">11. </h2>
 
 <p></p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;math.h&gt;
+#include &lt;SDL2/SDL.h&gt;
+&nbsp;
+#define WIDTH 320
+#define HEIGHT 240
+&nbsp;
+#define nil NULL
+&nbsp;
+#define MAX(a,b) ((a)&gt;(b) ? (a) : (b))
+#define MIN(a,b) ((a)&lt;(b) ? (a) : (b))
+&nbsp;
+SDL_Surface *pixmap;
+SDL_Surface *screen_surface = NULL;
+SDL_Surface *bitmap_font_surface = NULL;
+SDL_Window *window = NULL;
+&nbsp;
+double xpos = -0.75;
+double ypos = 0.0;
+double scale = 150.0;
+double  uhel = 45.0;
+&nbsp;
+int <strong>gfx_initialize</strong>(int fullscreen, int width, int height, int bpp) {
+    window = NULL;
+    if (SDL_Init(SDL_INIT_VIDEO) &lt; 0) {
+        fprintf(stderr, "Error initializing SDL: %s\n", SDL_GetError());
+        return 1;
+    } else {
+        puts("SDL_Init ok");
+    }
+&nbsp;
+    window = SDL_CreateWindow( "Example", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width, height, SDL_WINDOW_SHOWN );
+    if (!window) {
+        puts("Error creating window");
+        puts(SDL_GetError());
+        return 1;
+    } else {
+        puts("SDL_CreateWindow ok");
+    }
+&nbsp;
+    screen_surface = SDL_GetWindowSurface(window);
+&nbsp;
+    if (!screen_surface) {
+        fprintf(stderr, "Error setting video mode: %s\n", SDL_GetError());
+        return 1;
+    } else {
+        puts("SDL_GetWindowSurface ok");
+    }
+    return 0;
+}
+&nbsp;
+void <strong>gfx_finalize</strong>(void) {
+    SDL_FreeSurface(screen_surface);
+    SDL_DestroyWindow(window);
+}
+&nbsp;
+SDL_Surface* <strong>gfx_create_surface</strong>(int width, int height) {
+    return SDL_CreateRGBSurface(SDL_SWSURFACE, width, height, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0x00000000);
+}
+&nbsp;
+void <strong>putpixel</strong>(SDL_Surface *surface, int x, int y, unsigned char r, unsigned char g, unsigned char b)
+{
+    if (x&gt;=0 &amp;&amp; x&lt; surface-&gt;w &amp;&amp; y&gt;=0 &amp;&amp; y &lt; surface-&gt;h) {
+        if (surface-&gt;format-&gt;BitsPerPixel == 24) {
+            Uint8 *pixel = (Uint8 *)surface-&gt;pixels;
+            pixel += x*3;
+            pixel += y*surface-&gt;pitch;
+            *pixel++ = b;
+            *pixel++ = g;
+            *pixel   = r;
+        }
+        if (surface-&gt;format-&gt;BitsPerPixel == 32) {
+            Uint8 *pixel = (Uint8 *)surface-&gt;pixels;
+            pixel += x*4;
+            pixel += y*surface-&gt;pitch;
+            *pixel++ = b;
+            *pixel++ = g;
+            *pixel   = r;
+        }
+    }
+}
+&nbsp;
+void <strong>hline</strong>(SDL_Surface *surface, int x1, int x2, int y, unsigned char r, unsigned char g, unsigned char b) {
+    int x;
+    int fromX = MIN(x1, x2);
+    int toX = MAX(x1, x2);
+    for (x = fromX; x &lt;= toX; x++) {
+        putpixel(surface, x, y, r, g, b);
+    }
+}
+&nbsp;
+void <strong>vline</strong>(SDL_Surface *surface, int x,  int y1, int y2, unsigned char r, unsigned char g, unsigned char b) {
+    int y;
+    int fromY = MIN(y1, y2);
+    int toY = MAX(y1, y2);
+    for (y = fromY; y &lt;= toY; y++) {
+        putpixel(surface, x, y, r, g, b);
+    }
+}
+&nbsp;
+static void <strong>show_fractal</strong>(SDL_Surface *surface) {
+    SDL_BlitSurface(surface, NULL, screen_surface, NULL);
+    SDL_UpdateWindowSurface(window);
+}
+&nbsp;
+void <strong>calcCorner</strong>(double xpos, double ypos, double scale,
+                double *xmin,  double *ymin,  double *xmax, double *ymax) {
+    *xmin=xpos-WIDTH/scale;
+    *ymin=ypos-HEIGHT/scale;
+    *xmax=xpos+WIDTH/scale;
+    *ymax=ypos+HEIGHT/scale;
+}
+&nbsp;
+void <strong>draw_grid</strong>(SDL_Surface *surface) {
+    int width = surface-&gt;w;
+    int height = surface-&gt;h;
+    int x, y;
+    SDL_FillRect(surface, NULL, 0xffffffff);
+&nbsp;
+    for (x=0; x&lt;width; x+=20) {
+        vline(surface, x, 0, height-1, 191, 191, 255);
+    }
+    for (y=0; y&lt;height; y+=20) {
+        hline(surface, 0, width-1, y, 191, 191, 255);
+    }
+}
+&nbsp;
+void <strong>draw_mandeljulia</strong>(SDL_Surface *surface) {
+    double  zx,zy,zx2,zy2,cx,cy;
+    double  cosu,sinu,ccxc,ccyc;
+    int     x,y,i;
+    Uint8 *pixel = nil;
+&nbsp;
+    double ccx = 0.0;
+    double ccy = 0.0;
+&nbsp;
+    double xmin, ymin, xmax, ymax;
+    double u;
+&nbsp;
+    calcCorner(xpos, ypos, scale, &amp;xmin, &amp;ymin, &amp;xmax, &amp;ymax);
+&nbsp;
+    u=uhel*3.1415/180.0;
+    cosu=cos(u);
+    sinu=sin(u);
+    ccxc=ccx*cosu;
+    ccyc=ccy*cosu;
+&nbsp;
+    cy = ymin;
+&nbsp;
+    for (y=0;y&lt;240;y++) {
+        cx=xmin;
+        pixel = (Uint8 *)surface-&gt;pixels + (y + 128) * surface-&gt;pitch + 160*4;
+        for (x=0;x&lt;320;x++) {
+            i=0;
+            zx=cx*cosu;
+            zy=cy*cosu;
+            do {
+                zx2=zx*zx;
+                zy2=zy*zy;
+                zy=2.0*zx*zy+ccyc+cy*sinu;
+                zx=zx2-zy2+ccxc+cx*sinu;
+                i++;
+            } while (i&lt;64 &amp;&amp; zx2+zy2&lt;4.0);
+            {
+                int r = i*2;
+                int g = i*3;
+                int b = i*5;
+&nbsp;
+                *pixel++ = r;
+                *pixel++ = g;
+                *pixel++ = b;
+                pixel++;
+            }
+            cx += (xmax-xmin)/WIDTH;
+        }
+        cy += (ymax-ymin)/HEIGHT;
+    }
+}
+&nbsp;
+void <strong>redraw</strong>(SDL_Surface *pixmap) {
+    draw_grid(pixmap);
+    draw_mandeljulia(pixmap);
+    show_fractal(pixmap);
+}
+&nbsp;
+static void <strong>main_event_loop</strong>(void) {
+    SDL_Event event;
+    int done = 0;
+    int left = 0, right = 0, up = 0, down = 0;
+    int zoomin = 0, zoomout = 0;
+    int perform_redraw;
+    int angle_1 = 0, angle_2 = 0;
+&nbsp;
+    do {
+        /*SDL_WaitEvent(&amp;event);*/
+        while (SDL_PollEvent(&amp;event)) {
+            switch (event.type) {
+                case SDL_QUIT:
+                    done = 1;
+                    break;
+                case SDL_KEYDOWN:
+                    switch (event.key.keysym.sym) {
+                        case SDLK_ESCAPE:
+                        case SDLK_q:
+                            done = 1;
+                            break;
+                        case SDLK_LEFT:
+                            left = 1;
+                            break;
+                        case SDLK_RIGHT:
+                            right = 1;
+                            break;
+                        case SDLK_UP:
+                            up = 1;
+                            break;
+                        case SDLK_DOWN:
+                            down = 1;
+                            break;
+                        case SDLK_PAGEDOWN:
+                            zoomin = 1;
+                            break;
+                        case SDLK_PAGEUP:
+                            zoomout = 1;
+                            break;
+                        case SDLK_z:
+                            angle_1 = 1;
+                            break;
+                        case SDLK_x:
+                            angle_2 = 1;
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                case SDL_KEYUP:
+                    switch (event.key.keysym.sym) {
+                        case SDLK_LEFT:
+                            left = 0;
+                            break;
+                        case SDLK_RIGHT:
+                            right = 0;
+                            break;
+                        case SDLK_UP:
+                            up = 0;
+                            break;
+                        case SDLK_DOWN:
+                            down = 0;
+                            break;
+                        case SDLK_PAGEDOWN:
+                            zoomin = 0;
+                            break;
+                        case SDLK_PAGEUP:
+                            zoomout = 0;
+                            break;
+                        case SDLK_z:
+                            angle_1 = 0;
+                            break;
+                        case SDLK_x:
+                            angle_2 = 0;
+                            break;
+                        default:
+                            break;
+                    }
+                default:
+                    break;
+            }
+        }
+        perform_redraw = 0;
+        if (left) {
+            xpos -= 10.0/scale;
+            perform_redraw=1;
+        }
+        if (right) {
+            xpos += 10.0/scale;
+            perform_redraw=1;
+        }
+        if (up) {
+            ypos -= 10.0/scale;
+            perform_redraw=1;
+        }
+        if (down) {
+            ypos += 10.0/scale;
+            perform_redraw=1;
+        }
+        if (zoomin) {
+            scale *= 0.9;
+            perform_redraw=1;
+        }
+        if (zoomout) {
+            scale *= 1.1;
+            perform_redraw=1;
+        }
+        if (angle_1) {
+            uhel--;
+            perform_redraw=1;
+        }
+        if (angle_2) {
+            uhel++;
+            perform_redraw=1;
+        }
+        if (perform_redraw) {
+            redraw(pixmap);
+        }
+    } while (!done);
+}
+&nbsp;
+int <strong>main</strong>(int argc, char **argv) {
+    if (gfx_initialize(0, 640, 480, 32)) {
+        return 1;
+    }
+&nbsp;
+    pixmap = gfx_create_surface(screen_surface-&gt;w, screen_surface-&gt;h);
+&nbsp;
+    draw_grid(pixmap);
+    draw_mandeljulia(pixmap);
+    show_fractal(pixmap);
+    main_event_loop();
+&nbsp;
+    gfx_finalize();
+    SDL_Quit();
+    return 0;
+}
+</pre>
 
 
 
