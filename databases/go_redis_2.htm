@@ -31,42 +31,190 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Ve druhé části článku o způsobech využití databáze Redis v aplikacích vyvinutých v programovacím jazyku Go si ukážeme některé pokročilejší vlastnosti Redisu. Zejména bude vysvětlena implementace základních komunikačních strategií, použití kanálů, pipeline a skriptů.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Použití databáze Redis v&nbsp;aplikacích naprogramovaných v&nbsp;Go (2)</a></p>
-<p><a href="#k02">*** 2. Dokončení příkladu z&nbsp;předchozího článku: jednoduchý message broker</a></p>
-<p><a href="#k03">*** 3. Otestování činnosti message brokera</a></p>
-<p><a href="#k04">*** 4. Vylepšení příkladu: použití session se všemi informacemi o připojení k&nbsp;Redisu</a></p>
-<p><a href="#k05">*** 5. Komunikační strategie PUB-SUB</a></p>
-<p><a href="#k06">*** 6. Implementace zdroje zpráv</a></p>
-<p><a href="#k07">*** 7. Implementace příjemce zpráv</a></p>
-<p><a href="#k08">*** 8. Úplný zdrojový kód příkladu se zdrojem i příjemcem zpráv</a></p>
-<p><a href="#k09">*** 9. Chování systému ve chvíli, kdy je připojeno větší množství příjemců</a></p>
-<p><a href="#k10">*** 10. Příjemce používající kanál jazyka Go</a></p>
-<p><a href="#k11">*** 11. Využití pipeline nabízené Redisem</a></p>
-<p><a href="#k12">*** 12. Zdrojový kód příkladu používajícího pipeline</a></p>
-<p><a href="#k13">*** 13. </a></p>
-<p><a href="#k14">*** 14. </a></p>
-<p><a href="#k15">*** 15. </a></p>
+<p><a href="#k01">1. Posílání zpráv v&nbsp;aplikacích založených na mikroslužbách</a></p>
+<p><a href="#k02">2. Zpráva požadující provedení úlohy: <strong>COMMAND</strong></a></p>
+<p><a href="#k03">3. Zpráva poslaná ve chvíli, kdy došlo k&nbsp;nějaké události &ndash; <strong>EVENT</strong></a></p>
+<p><a href="#k04">4. Implementace komunikačních strategií <strong>PUSH-PULL</strong> a <strong>PUBLISH-SUBSCRIBE</strong></a></p>
+<p><a href="#k05">*** 5. Jednoduchý message broker implementující strategii <strong>PUSH-PULL</strong></a></p>
+<p><a href="#k06">*** 6. Otestování činnosti message brokera</a></p>
+<p><a href="#k07">*** 7. Vylepšení příkladu: použití session se všemi informacemi o připojení k&nbsp;Redisu</a></p>
+<p><a href="#k08">*** 8. Komunikační strategie <strong>PUBLISH-SUBSCRIBE</strong></a></p>
+<p><a href="#k09">*** 9. Implementace zdroje zpráv</a></p>
+<p><a href="#k10">*** 10. Implementace příjemce zpráv</a></p>
+<p><a href="#k11">*** 11. Úplný zdrojový kód příkladu se zdrojem i příjemcem zpráv</a></p>
+<p><a href="#k12">*** 12. Chování systému ve chvíli, kdy je připojeno větší množství příjemců</a></p>
+<p><a href="#k13">*** 13. Příjemce používající kanál jazyka Go</a></p>
+<p><a href="#k14">*** 14. Využití pipeline nabízené Redisem</a></p>
+<p><a href="#k15">*** 15. Zdrojový kód příkladu používajícího pipeline</a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. </a></p>
 <p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. Použití databáze Redis v&nbsp;aplikacích naprogramovaných v&nbsp;Go (2)</h2>
+<h2 id="k01">1. Posílání zpráv v&nbsp;aplikacích založených na mikroslužbách</h2>
+
+<p><i>&bdquo;It's hard to get messaging right&ldquo;</i></p>
+
+<p>Programovací jazyk Go se používá v&nbsp;několika oblastech a jednou
+z&nbsp;těchto oblastí jsou i mikroslužby. Ty spolu musí vhodným způsobem
+komunikovat &ndash; a to s&nbsp;využitím nějakých zpráv, které typicky nebývají
+posílané přímo mezi jednotlivými mikroslužbami, ale využívá se nějaký
+centralizovaný či decentralizovaný message broker. Namísto specializovaného
+message brokeru si však mnohdy vystačíme i s&nbsp;jednodušším a přitom dobře
+škálovatelným řešením založeným na <i>Redisu</i>. A právě z&nbsp;tohoto důvodu
+je kombinace <i>Go+Redis</i> velmi často využívaná v&nbsp;praxi.
+V&nbsp;úvodních kapitolách si připomeneme, jaké dva typy komunikace se používá,
+ovšem s&nbsp;tím, že třetí typ (<strong>QUERY</strong>) není zmíněn, protože
+pro něj nepotřebujeme použít Redis. Ovšem pro komunikace typu
+<strong>PUSH-PULL</strong> a <strong>PUBLISH-SUBSCRIBE</strong> je Redis
+v&nbsp;mnoha případech poměrně dobrým řešením.</p>
+
+<a href="https://www.root.cz/obrazek/361674/"><img src="https://i.iinfo.cz/images/447/microservices2-7-prev.png" class="image-361674" alt="&#160;" width="279" height="270" /></a>
+<p><i>Obrázek 1: Příklad aplikace používající architekturu kappa. Teoreticky je
+možné i zde použít Redis, ovšem častěji se setkáme se specializovaným řešením
+založeným na projektu Apache Kafka (méně často s&nbsp;NATS).</i></p>
+
+<p>V&nbsp;souvislosti se zprávami i s&nbsp;celým návrhem architektury aplikace
+založené na mikroslužbách se často setkáme s&nbsp;termíny <strong>CQS</strong>
+a <strong>CQRS</strong>. Termín <strong>CQS</strong> znamená <i>Command–query
+separation</i> a <strong>CQRS</strong> je zkratkou vzniklou
+z&nbsp;<i>Command-query responsibility segregation</i> (nebo
+<i>separation</i>). <strong>CQR</strong> se používá při vývoji a znamená takový
+návrh aplikace (typicky založené na OOP, ale není to nutné), kdy každá funkce
+či metoda provádí buď nějaký příkaz (<i>command</i>) nebo slouží k&nbsp;získání
+dat (<i>query</i>); žádná z&nbsp;metod by neměla provádět obě akce. Zatímco se
+metodika <strong>CQR</strong> typicky aplikuje na jednotlivé třídy, tedy na
+relativně malou a izolovanou část aplikace, je druhá z&nbsp;metodik
+<strong>CQRS</strong> aplikována na celou architekturu služeb a mikroslužeb,
+přičemž <i>command</i> je ta část modelu aplikace, která slouží ke změně stavu
+a <i>query</i> druhá část modelu používaná pro agregaci dat.</p>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. Dokončení příkladu z&nbsp;předchozího článku: jednoduchý message broker</h2>
+<h2 id="k02">2. Zpráva požadující provedení úlohy: <strong>COMMAND</strong></h2>
+
+<p><i>&bdquo;Microservice &ndash; “small autonomous services modelled around
+business domain that work together“&ldquo;<br />
+Sam Newman, jeden z&nbsp;původních autorů myšlenky mikroslužeb</i></p>
+
+<p>Zprávy typu <strong>COMMAND</strong> obecně slouží ke změně stavu aplikace a
+obecně tedy provádí nějaký <i>side-effect</i>, typicky modifikaci dat (kromě
+odpovědi se změní i nějaká další část aplikace, například se zapíše záznam do
+databáze atd.). Můžeme se ale setkat i s&nbsp;takovými zprávami typu
+<strong>COMMAND</strong>, které stav aplikace nezmění. Poměrně dobrým příkladem
+může být žádost o poslání e-mailu uživateli &ndash; zde se tedy mění spíše stav
+okolního systému (mailboxu příjemce).</p>
+
+<p>Zprávy typu <strong>COMMAND</strong> jsou typické tím, že většinou existuje
+pouze jediná komponenta, která může daný příkaz provést. To, o kterou
+komponentu ve funkci příjemce zprávy se konkrétně jedná, však nemusí zdrojová
+komponenta (tj.&nbsp;komponenta, která příkaz posílá) řešit,
+resp.&nbsp;přesněji řečeno by to ani ve správně navržené aplikaci neměla řešit,
+protože by se jednalo o zbytečně těsné svázání obou komponent
+(mikroslužeb).</p>
+
+<p>Většinou taktéž požadujeme, aby přijímající komponenta poslala odpověď na
+zprávu typu <strong>COMMAND</strong>. V&nbsp;naprosté většině případů se jedná
+o jednoduchou stavovou informaci typu <strong>OK</strong>/<strong>Not
+OK</strong> popř.&nbsp;<strong>ACK</strong>/<strong>NACK</strong>, jen
+výjimečně s&nbsp;dalšími daty (například s&nbsp;ID vytvořeného požadavku);
+v&nbsp;případě, že by v&nbsp;odpovědi byla další data, jednalo by se
+pravděpodobně o porušení <strong>CQRS</strong>. Tento typ odpovědi může být
+poslán synchronně či asynchronně.</p>
+
+<p>Existuje několik způsobů směrování (<i>routing</i>) používaných pro zprávy
+typu <strong>COMMAND</strong>. Typicky je možné rozhodnout přímo na základě
+příslušného příkazu, která komponenta má příkaz zpracovat (příklady příkazů:
+<strong>create_new_user</strong>, <strong>send_notification_email</strong>
+atd.). V&nbsp;tom nejjednodušším případě se příkaz ihned přepošle cílové
+komponentě, ovšem většinou se setkáme s&nbsp;využitím <i>front zpráv</i>
+(<i>message queue</i>), které slouží jak pro zajištění persistence zpráv
+v&nbsp;případě, že přijímající komponenta není spuštěna či pokud je přetížena,
+tak i případně pro <i>load balancin</i>. Použitou komunikační strategií je tedy
+strategie <strong>PUSH-PULL</strong>.</p>
+
+<img src="https://i.iinfo.cz/images/248/zmq-2-5.png" class="image-350900" alt="&#160;" width="570" height="116" />
+<p><i>Obrázek 2: Komunikační strategie typu <strong>PUSH-PULL</strong> bez
+použití fronty.</i></p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Zpráva poslaná ve chvíli, kdy došlo k&nbsp;nějaké události &ndash; <strong>EVENT</strong></h2>
+
+<p>Druhý typ zpráv nazvaný <strong>EVENT</strong> je prakticky libovolnými
+komponentami posílán ve chvíli, kdy dojde k&nbsp;určité události, o nichž chce
+komponenta informovat okolní systém. Může se jednat o prakticky libovolnou
+událost (tedy nikoli pouze o událost na GUI). Příkladem může být detekce změny
+některých dat, zjištění, že došlo k&nbsp;překročení nějakého časového limitu,
+informace o přetížení určitého uzlu v&nbsp;clusteru, informace o překročení
+nastaveného limitu databáze, opakované pokusy o přihlášení atd. Můžeme sem
+řadit i komponenty/mikroslužby typu <strong>cron</strong>, které slouží právě
+k&nbsp;posílání informací o naplánovaných událostech, ať již periodických
+(zaslání e-mailu se žádostí o změnu hesla, pravidelná kontrola jiné služby přes
+její API), tak i neperiodických (ad-hoc události). Typicky komponenta pouze
+oznámí, že došlo k&nbsp;nějaké události a neočekává žádné odpovědi.
+Z&nbsp;implementačního hlediska je posílání a zpracování těchto zpráv
+nejjednodušší.</p>
+
+<p>Zprávy typu <strong>EVENT</strong> se většinou směrují odlišným způsobem,
+než zprávy typu <strong>COMMAND</strong>. Je tomu tak z&nbsp;toho důvodu, že na
+události může reagovat obecně větší množství komponent, nikoli jediný typ
+komponenty. Z&nbsp;tohoto důvodu se používá komunikační strategie
+<strong>PUBLISH-SUBSCRIBE</strong> neboli <strong>PUB-SUB</strong>, která je
+podporována většinou message brokerů. Ovšem můžeme se setkat i s&nbsp;dalšími
+konfiguracemi, například s&nbsp;takzvanými soupeřícími konzumenty (<i>competing
+consumers</i>) nebo s&nbsp;<i>balanced consumers</i>.</p>
+
+<img src="https://i.iinfo.cz/images/248/zmq-2-4.png" class="image-350899" alt="&#160;" width="570" height="200" />
+<p><i>Obrázek 3: Komunikační strategie typu <strong>PUBLISH-SUBSCRIBE</strong>
+používaná při vzniku událostí.</i></p>
+
+<p><div class="rs-tip-major">Poznámka: stále častěji se ovšem setkáme
+s&nbsp;tím, že se namísto klasické komunikační strategie
+<strong>PUBLISH-SUBSCRIBE</strong> použije technologie <i>streamingu</i>
+událostí implementovaná v&nbsp;již zmíněném NATS Streaming Serveru nebo
+v&nbsp;Apache Kafka. V&nbsp;takovém případě se záznam o události neztratí
+(pokud ho komponenty nestihnou přijmout), ale je uložen do rostoucího
+<i>logu</i> s&nbsp;neměnitelnými záznamy předchozích událostí. Toto řešení je
+pro některé typy problémů takřka ideální, ovšem u některých aplikací můžeme
+vidět i opačný problém &ndash; nasazování <i>streamingu</i> i tam, kde by neměl
+být použit resp.&nbsp;tam, kde jeho použití pouze přináší větší nároky na
+systémové zdroje.</div></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Implementace komunikačních strategií <strong>PUSH-PULL</strong> a <strong>PUBLISH-SUBSCRIBE</strong></h2>
+
+<p>Obě výše zmíněné komunikační strategie lze v&nbsp;Go (ale samozřejmě i
+v&nbsp;dalších jazycích) relativně snadno implementovat s&nbsp;využitím Redisu,
+přičemž se využijí jak jeho základní podporované datové typy (zejména seznamy),
+tak i možnosti poskytované knihovnou pro jazyk Go, která nabízí realizaci
+komunikační strategie <i>PubSub</i> (přesněji
+<strong>PUBLISH-SUBSCRIBE</strong>) takovým způsobem, že lze snadno využít
+kanály. Dále uvedené demonstrační příklady jsou vždy realizovány jediným
+zdrojovým kódem, v&nbsp;němž je naprogramován jak producent (<i>producer</i>)
+či zdroj (<i>publisher</i>) zpráv, tak i jejich konzument (<i>consumer</i>) či
+příjemce (<i>subscriber</i>). V&nbsp;praxi jsou však tyto role většinou
+odděleny, což lze v&nbsp;případě dále popsaných demonstračních příkladů
+realizovat poměrně snadným způsobem.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Jednoduchý message broker implementující strategii <strong>PUSH-PULL</strong></h2>
 
 <pre>
 package <strong>main</strong>
@@ -871,16 +1019,6 @@ func <strong>main</strong>() {
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. </h2>
-
-
-
-<p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
-
-
-
-<p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
 
 
 
