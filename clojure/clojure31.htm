@@ -1,0 +1,1613 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Asynchronní programování v Clojure s využitím knihovny core.async (pokračování)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Asynchronní programování v Clojure s využitím knihovny core.async (pokračování)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Před týdnem představená knihovna core.async nabízí i další možnosti využitelné při asynchronním programování. Jedná se o kanály s bufferem, podporu pro neblokující čtení a zápis dat do kanálů atd. Dnes se s těmito vlastnostmi seznámíme.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Asynchronní programování v&nbsp;Clojure s&nbsp;využitím knihovny core.async (pokračování)</a></p>
+<p><a href="#k02">2. Určení priorit při použití funkce <strong>alts!</strong></a></p>
+<p><a href="#k03">3. První demonstrační příklad: použití funkce <strong>alts!</strong> s&nbsp;určením priorit</a></p>
+<p><a href="#k04">4. Vytvoření kanálu s&nbsp;vlastnostmi bufferu (fronty)</a></p>
+<p><a href="#k05">5. Druhý demonstrační příklad: práce s&nbsp;kanálem s&nbsp;nenulovou kapacitou</a></p>
+<p><a href="#k06">6. Kanál s&nbsp;&bdquo;dropping bufferem&ldquo;</a></p>
+<p><a href="#k07">7. Třetí demonstrační příklad: práce s&nbsp;kanálem s&nbsp;&bdquo;dropping bufferem&ldquo;</a></p>
+<p><a href="#k08">8. Kanál se &bdquo;sliding bufferem&ldquo;</a></p>
+<p><a href="#k09">9. Čtvrtý demonstrační příklad: práce s&nbsp;kanálem se &bdquo;sliding bufferem&ldquo;</a></p>
+<p><a href="#k10">10. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k11">11. Odkazy na předchozí části tohoto seriálu</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Asynchronní programování v&nbsp;Clojure s&nbsp;využitím knihovny core.async (pokračování)</h2>
+
+<p>Knihovna <strong>core.async</strong>, s&nbsp;níž jsme se seznámili <a
+href="http://www.root.cz/clanky/asynchronni-programovani-v-clojure-s-vyuzitim-knihovny-core-async/">v&nbsp;předchozí
+části</a> seriálu o programovacím jazyku Clojure, nabízí programátorům kromě
+takzvaných kanálů a &bdquo;go bloků&ldquo; i další funkce a makra, s&nbsp;nimiž
+se seznámíme dnes. Nejprve si řekneme více informací o funkci nazvané
+<strong>alts!</strong>, o níž jsme se již ve stručnosti zmínili minule.
+Připomeňme si, že této funkci se předá vektor kanálů a ve výchozím nastavení
+tato funkce <i>náhodně</i> vybere kanál, ze kterého bude číst. Bude se jednat o
+první kanál nabízející hodnotu, takže tato funkce &bdquo;zaparkuje&ldquo;
+(zastaví) provádění go bloku jen tehdy, pokud jsou všechny kanály prázdné.
+Náhodný výběr neprázdného kanálu je zde důležitý, protože pokud by se kanály
+neustále vybíraly podle uvedeného pořadí, mohlo by docházet k&nbsp;efektu,
+který je znám pod termínem &bdquo;vyhladovění&ldquo; (starvation) u těch
+kanálů, které se ve vektoru nachází na posledních pozicích.</p>
+
+<p>Díky existenci funkce <strong>alts!</strong> je možné implementovat
+následující topologii propojení různých go bloků s&nbsp;využitím několika
+kanálů. Samozřejmě je možné v&nbsp;případě potřeby vytvořit i složitější
+topologii, k&nbsp;čemuž může dopomoci i funkce <strong>pipe</strong>:</p>
+
+<pre>
++-----------+ 
+| producent |           +------+
+|     #1    |... &gt;!.....|kanál1}.......
+| go block  |           +------+      :
++-----------+                         :
+                                      :
++-----------+                         :        +-----------+
+| producent |           +------+      :        | konzument |
+|     #2    |... &gt;! ... |kanál2} ... alts! ... |           |
+| go block  |           +------+      :        | go block  |
++-----------+                         :        +-----------+
+                                      :
++-----------+                         :
+| producent |           +------+      :
+|     #3    |... &gt;!.....|kanál3}......:
+| go block  |           +------+
++-----------+
+</pre>
+
+<p>Poznámka: termínem &bdquo;zaparkování&ldquo; se v&nbsp;kontextu knihovny
+<strong>clojure.async</strong> myslí stav, kdy je běh nějakého go bloku
+pozastaven a příslušné vlákno je uvolněno pro další použití. Jednou
+z&nbsp;předností této knihovny je totiž fakt, že se pro go bloky používá pouze
+určitý počet vláken, které se mezi bloky sdílí a dochází tak
+k&nbsp;efektivnějšímu využití vláken. Připomene nám to diagram z&nbsp;předchozí
+části ukazující rozdíl mezi klasickým multivláknovým přístupem a přístupem
+použitým v&nbsp;knihovně <strong>core.async</strong>:</p>
+
+<p>Klasický přístup:</p>
+
+<pre>
+Vlákno 1........worker1........worker1........worker1........worker1
+Vlákno 2........worker2........worker2........worker2........worker2
+Vlákno 3........worker3........worker3........worker3........worker3
+Vlákno 4........worker4........worker4........worker4........worker4
+</pre>
+
+<p><strong>core.async</strong>:</p>
+
+<pre>
+Vlákno 1.worker1.worker4.worker1.worker3...worker1.worker3.worker2.worker4
+Vlákno 2..worker2.worker3..worker1...worker4.worker2......worker1.worker3
+</pre>
+
+<p>Pojďme si nyní vyzkoušet, zda je tvrzení o náhodném výběru kanálu pravdivé.
+Napoví nám příklad se třemi producenty, z&nbsp;nichž každý ve svém go bloku
+zapisuje prvky do svého kanálu <strong>channel1</strong>,
+<strong>channel2</strong> či <strong>channel3</strong> (zápis se teoreticky
+nikdy nezastaví, protože prvky se generují nekonečnými lazy sekvencemi).
+Konzument je zde jeden &ndash; náhodně vybírá kanál, ze kterého se má prvek
+přečíst a počítá si statistiku, ze kterého kanálu bylo čtení provedeno.
+Konzumenta jsem napsal schválně poměrně rozvláčným způsobem, v&nbsp;praxi by
+ale šel naprogramovat lépe (například s&nbsp;použitím map, kde by klíči byly
+právě kanály):</p>
+
+<pre>
+<i>; z kanalu se celkem precte 1000 hodnot</i>
+(<strong>go</strong>
+    <i>; citace pouzite pro vyhodnoceni statistiky cteni</i>
+    (<strong>let</strong> [counter1 (atom 0)
+          counter2 (atom 0)
+          counter3 (atom 0)]
+        <i>; precteme 1000 hodnot</i>
+        (<strong>dotimes</strong> [n 1000]
+            ;(&lt;! (timeout 1)) <i>; zkuste odkomentovat</i>
+            (<strong>let</strong> [[item channel] (alts! [channel1 channel2 channel3])]
+                <i>; vyhodnoceni, ze ktereho kanalu se cteni provedlo</i>
+                (<strong>condp</strong> = channel
+                    channel1 (swap! counter1 inc)
+                    channel2 (swap! counter2 inc)
+                    channel3 (swap! counter3 inc))))
+        <i>; vypis ziskane statistiky</i>
+        (println "Channel #1 read " @counter1 "times")
+        (println "Channel #2 read " @counter2 "times")
+        (println "Channel #3 read " @counter3 "times")))
+</pre>
+
+<p>Úplný zdrojový kód celého příkladu pak vypadá následovně:</p>
+
+<pre>
+(<strong>ns</strong> async6.core
+    (:gen-class))
+&nbsp;
+<i>; nacteme vsechny potrebne funkce, makra a symboly z knihovny</i>
+<i>; (schvalne se nenacitaji vsechny funkce, protoze by jejich jmena</i>
+<i>;  prepsala takove zakladni funkce, jako je map apod.)</i>
+(<strong>require</strong> '[clojure.core.async :refer (go chan &gt;! &lt;! timeout alts!)])
+&nbsp;
+(<strong>defn</strong> wait
+    "Pozastaveni hlavniho vlakna - simulace interaktivni prace."
+    []
+    (Thread/sleep 5000))
+&nbsp;
+(<strong>defn</strong> -main
+    "Tato funkce se spusti automaticky nastrojem Leiningen."
+    [&amp; args]
+    (println "Start")
+    <i>; vytvorime kanaly</i>
+    (<strong>let</strong> [channel1 (chan)
+          channel2 (chan)
+          channel3 (chan)]
+&nbsp;
+        <i>; kontinualni posilani zprav do trech kanalu v trojici asynchronnich bloku</i>
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel1 i)))
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel2 i)))
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel3 i)))
+&nbsp;
+        (println "producers started")
+&nbsp;
+        <i>; z kanalu se celkem precte 1000 hodnot</i>
+        (<strong>go</strong>
+            <i>; citace pouzite pro vyhodnoceni statistiky cteni</i>
+            (<strong>let</strong> [counter1 (atom 0)
+                  counter2 (atom 0)
+                  counter3 (atom 0)]
+                <i>; precteme 1000 hodnot</i>
+                (<strong>dotimes</strong> [n 1000]
+                    ;(&lt;! (timeout 1)) <i>; zkuste odkomentovat</i>
+                    (<strong>let</strong> [[item channel] (alts! [channel1 channel2 channel3])]
+                        <i>; vyhodnoceni, ze ktereho kanalu se cteni provedlo</i>
+                        (<strong>condp</strong> = channel
+                            channel1 (swap! counter1 inc)
+                            channel2 (swap! counter2 inc)
+                            channel3 (swap! counter3 inc))))
+                <i>; vypis ziskane statistiky</i>
+                (println "Channel #1 read " @counter1 "times")
+                (println "Channel #2 read " @counter2 "times")
+                (println "Channel #3 read " @counter3 "times")))
+&nbsp;
+    <i>; chvili pockame</i>
+    (wait)
+    (println "Finish")
+    (System/exit 0)))
+</pre>
+
+<p>Pokud vás zajímá statistika pro tisíc prvků, podívejme se na výstup ze tří
+běhů:</p>
+
+<pre>
+Start
+producers started
+Channel #1 read  300 times
+Channel #2 read  350 times
+Channel #3 read  350 times
+Finish
+</pre>
+
+<pre>
+Start
+producers started
+Channel #1 read  341 times
+Channel #2 read  331 times
+Channel #3 read  328 times
+Finish
+</pre>
+
+<pre>
+Start
+producers started
+Channel #1 read  322 times
+Channel #2 read  327 times
+Channel #3 read  351 times
+Finish
+</pre>
+
+<p>Z&nbsp;výsledků je patrné, že se skutečně kanály vybíraly náhodně, protože
+počet výběrů každého kanálu se blíží k&nbsp;hodnotě 1000/3.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Určení priorit při použití funkce <strong>alts!</strong></h2>
+
+<p>Ve skutečnosti jsou však možnosti funkce <strong>alts!</strong> ještě větší.
+Pokud se přidá nepovinný parametr <strong>:priority</strong> s&nbsp;hodnotou
+nastavenou na <strong>true</strong> (či na libovolnou hodnotu, která není
+nepravdivá), bude se kanál pro čtení vybírat v&nbsp;tom pořadí, v&nbsp;jakém je
+zadán ve vektoru. Pokud tedy bude první kanál neustále plný, bude se využívat
+pouze ten a u ostatních kanálů dojde k&nbsp;jevu známému pod termínem
+&bdquo;starvation&ldquo; (hladovění). Podívejme se na druhou verzi
+konzumenta:</p>
+
+<pre>
+<i>; z kanalu se celkem precte 1000 hodnot</i>
+(<strong>go</strong>
+    <i>; citace pouzite pro vyhodnoceni statistiky cteni</i>
+    (<strong>let</strong> [counter1 (atom 0)
+          counter2 (atom 0)
+          counter3 (atom 0)]
+        <i>; precteme 1000 hodnot</i>
+        (<strong>dotimes</strong> [n 1000]
+            ;(&lt;! (timeout 1)) <i>; zkuste odkomentovat</i>
+            ; --------------------------------------------------------------------------
+            (<strong>let</strong> [[item channel] (alts! [channel1 channel2 channel3] :priority true)]
+            ; --------------------------------------------------------------------------
+                <i>; vyhodnoceni, ze ktereho kanalu se cteni provedlo</i>
+                (<strong>condp</strong> = channel
+                    channel1 (swap! counter1 inc)
+                    channel2 (swap! counter2 inc)
+                    channel3 (swap! counter3 inc))))
+        <i>; vypis ziskane statistiky</i>
+        (println "Channel #1 read " @counter1 "times")
+        (println "Channel #2 read " @counter2 "times")
+        (println "Channel #3 read " @counter3 "times")))
+</pre>
+
+<p>Výsledky běhu pro takto změněného konzumenta ukazují, že první kanál je
+skutečně využívám mnohem častěji, než kanál druhý a ten je využíván častěji,
+než kanál třetí (vzhledem k&nbsp;tomu, že je konzument velmi rychlý, nemusí být
+v&nbsp;prvním kanále žádný prvek a proto také se v&nbsp;některých případech
+provádí čtení ze druhého a přinejhorším i ze třetího kanálu):</p>
+
+<pre>
+Start
+producers started
+Channel #1 read  647 times
+Channel #2 read  243 times
+Channel #3 read  110 times
+Finish
+</pre>
+
+<pre>
+Start
+producers started
+Channel #1 read  623 times
+Channel #2 read  299 times
+Channel #3 read  78 times
+Finish
+</pre>
+
+<pre>
+Start
+producers started
+Channel #1 read  728 times
+Channel #2 read  217 times
+Channel #3 read  55 times
+Finish
+</pre>
+
+<p>Můžeme si položit otázku, co se stane ve chvíli, kdy je producent
+používající první kanál rychlejší než konzument. Bude se vůbec provádět čtení
+z&nbsp;dalších kanálů? To lze snadno zajistit zpomalením konzumenta
+(odkomentováním vyznačeného řádku kódu):</p>
+
+<pre>
+<i>; z kanalu se celkem precte 1000 hodnot</i>
+(<strong>go</strong>
+    <i>; citace pouzite pro vyhodnoceni statistiky cteni</i>
+    (<strong>let</strong> [counter1 (atom 0)
+          counter2 (atom 0)
+          counter3 (atom 0)]
+        <i>; precteme 1000 hodnot</i>
+        (<strong>dotimes</strong> [n 1000]
+            (&lt;! (timeout 1)) <i>; pozdrzeni konzumenta</i>
+            ; --------------------------------------------------------------------------
+            (<strong>let</strong> [[item channel] (alts! [channel1 channel2 channel3] :priority true)]
+            ; --------------------------------------------------------------------------
+                <i>; vyhodnoceni, ze ktereho kanalu se cteni provedlo</i>
+                (<strong>condp</strong> = channel
+                    channel1 (swap! counter1 inc)
+                    channel2 (swap! counter2 inc)
+                    channel3 (swap! counter3 inc))))
+        <i>; vypis ziskane statistiky</i>
+        (println "Channel #1 read " @counter1 "times")
+        (println "Channel #2 read " @counter2 "times")
+        (println "Channel #3 read " @counter3 "times")))
+</pre>
+
+<p>Výsledek mluví za vše, proto ho nemá cenu široce komentovat (aneb &ndash;
+starvation v&nbsp;praxi):</p>
+
+<pre>
+Start
+producers started
+Channel #1 read  1000 times
+Channel #2 read  0 times
+Channel #3 read  0 times
+Finish
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. První demonstrační příklad: použití funkce <strong>alts!</strong> s&nbsp;určením priorit</h2>
+
+<p>Následuje výpis úplného zdrojového kódu dnešního prvního demonstračního
+příkladu (celý projekt naleznete na GitHubu, konkrétně na adrese <a
+href="https://github.com/tisnik/clojure-examples/tree/master/async6">https://github.com/tisnik/clojure-examples/tree/master/async6</a>):</p>
+
+<pre>
+(<strong>ns</strong> async6.core
+    (:gen-class))
+&nbsp;
+<i>; nacteme vsechny potrebne funkce, makra a symboly z knihovny</i>
+<i>; (schvalne se nenacitaji vsechny funkce, protoze by jejich jmena</i>
+<i>;  prepsala takove zakladni funkce, jako je map apod.)</i>
+(<strong>require</strong> '[clojure.core.async :refer (go chan &gt;! &lt;! timeout alts!)])
+&nbsp;
+(<strong>defn</strong> wait
+    "Pozastaveni hlavniho vlakna - simulace interaktivni prace."
+    []
+    (Thread/sleep 5000))
+&nbsp;
+(<strong>defn</strong> -main
+    "Tato funkce se spusti automaticky nastrojem Leiningen."
+    [&amp; args]
+    (println "Start")
+    <i>; vytvorime kanaly</i>
+    (<strong>let</strong> [channel1 (chan)
+          channel2 (chan)
+          channel3 (chan)]
+&nbsp;
+        <i>; kontinualni posilani zprav do trech kanalu v trojici asynchronnich bloku</i>
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel1 i)))
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel2 i)))
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel3 i)))
+&nbsp;
+        (println "producers started")
+&nbsp;
+        <i>; z kanalu se celkem precte 1000 hodnot</i>
+        (<strong>go</strong>
+            <i>; citace pouzite pro vyhodnoceni statistiky cteni</i>
+            (<strong>let</strong> [counter1 (atom 0)
+                  counter2 (atom 0)
+                  counter3 (atom 0)]
+                <i>; precteme 1000 hodnot</i>
+                (<strong>dotimes</strong> [n 1000]
+                    ;(&lt;! (timeout 1)) <i>; zkuste odkomentovat</i>
+                    (<strong>let</strong> [[item channel] (alts! [channel1 channel2 channel3] :priority true)]
+                        <i>; vyhodnoceni, ze ktereho kanalu se cteni provedlo</i>
+                        (<strong>condp</strong> = channel
+                            channel1 (swap! counter1 inc)
+                            channel2 (swap! counter2 inc)
+                            channel3 (swap! counter3 inc))))
+                <i>; vypis ziskane statistiky</i>
+                (println "Channel #1 read " @counter1 "times")
+                (println "Channel #2 read " @counter2 "times")
+                (println "Channel #3 read " @counter3 "times")))
+&nbsp;
+    <i>; chvili pockame</i>
+    (wait)
+    (println "Finish")
+    (System/exit 0)))
+</pre>
+
+<p>Projektový soubor:</p>
+
+<pre>
+(<strong>defproject</strong> async6 "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :license {:name "Eclipse Public License"
+            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :dependencies [[org.clojure/clojure "<strong>1.7.0</strong>"]
+                 <strong>[org.clojure/core.async "0.2.374"]</strong>]
+  :main ^:skip-aot async6.core
+  :target-path "target/%s"
+  :profiles {:uberjar {:aot :all}})
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Vytvoření kanálu s&nbsp;vlastnostmi bufferu (fronty)</h2>
+
+<p>Kanály, které jsme až doposud pro komunikaci mezi go bloky používali, mohly
+obsahovat pouze jediný prvek, takže se jejich chování dá shrnout takto:</p>
+
+<ul>
+
+<li>Zápis do prázdného kanálu je neblokující operace (kanál se zápisem zaplní,
+další zápis již tedy bude blokující, pokud nedojde ke čtení).</li>
+
+<li>Zápis do neprázdného kanálu je blokující operace.</li>
+
+<li>Čtení z&nbsp;prázdného kanálu je blokující operace (počká se na další
+zápis).</li>
+
+<li>Čtení z&nbsp;neprázdného kanálu je neblokující operace (kanál se
+vyprázdní).</li>
+</ul>
+
+<p>Docházíme tedy k&nbsp;již známému schématu:</p>
+
+<pre>
++-----------+                              +-----------+
+| producent |           +-----+            | konzument |
+|           |... &gt;! ... |kanál} ... &lt;! ... |           |
+| go block  |           +-----+            | go block  |
++-----------+                              +-----------+
+</pre>
+
+<p>Kanál však může mít i větší kapacitu &ndash; potom vlastně pracuje jako
+buffer či fronta, což znamená, že i větší počet zápisů nemusí být nutně
+blokující operace:</p>
+
+<pre>
++-----------+                                     +-----------+
+| producent |           +------------+            | konzument |
+|           |... &gt;! ... |kanál+fronta} ... &lt;! ... |           |
+| go block  |           +------------+            | go block  |
++-----------+                                     +-----------+
+</pre>
+
+<p>Jak se takový kanál vytvoří? Ve skutečnosti velmi snadno, protože stačí jeho
+kapacitu uvést už při konstrukci kanálu nepovinným parametrem předaným do
+funkce <strong>chan</strong>:</p>
+
+<pre>
+(let [channelX (chan 42)]
+    ...
+    ...
+    ...
+)
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Druhý demonstrační příklad: práce s&nbsp;kanálem s&nbsp;nenulovou kapacitou</h2>
+
+<p>V&nbsp;dalším demonstračním příkladu budeme stále používat tři producenty,
+podobně jako v&nbsp;příkladu prvním, ovšem jeden producent bude zapisovat do
+kanálu s&nbsp;větší kapacitou, zatímco ostatní dva producenti se budou muset
+spokojit s&nbsp;normálním kanálem bez bufferu:</p>
+
+<pre>
+<i>; vytvorime kanaly</i>
+(<strong>let</strong> [channel1 (chan)
+      channel2 (chan 100) <i>; tento kanal ma prirazen buffer o velikosti 100 prvku</i>
+      channel3 (chan)]
+      ...
+      ...
+      ...
+)
+</pre>
+
+<p>Co to bude znamenat v&nbsp;praxi? Velmi pravděpodobně dojde k&nbsp;tomu, že
+právě tento kanál bude při čtení konzumentem v&nbsp;daný okamžik
+<strong>ne</strong>prázdný a bude tak vybírán častěji. Můžeme se o tom
+přesvědčit (konzument nepoužívá priority):</p>
+
+<pre>
+Start
+producers started
+Channel #1 read  206 times
+Channel #2 read  573 times
+Channel #3 read  221 times
+Finish
+</pre>
+
+<pre>
+Start
+producers started
+Channel #1 read  140 times
+Channel #2 read  728 times
+Channel #3 read  132 times
+Finish
+</pre>
+
+<pre>
+Start
+producers started
+Channel #1 read  191 times
+Channel #2 read  599 times
+Channel #3 read  210 times
+Finish
+</pre>
+
+<p>Skutečně &ndash; ze druhého kanálu je čtení prováděno výrazně častěji, než
+z&nbsp;prvního či třetího kanálu.</p>
+
+<p>Podívejme se nyní na úplný zdrojový kód tohoto demonstračního příkladu:</p>
+
+<pre>
+(<strong>ns</strong> async7.core
+    (:gen-class))
+&nbsp;
+<i>; nacteme vsechny potrebne funkce, makra a symboly z knihovny</i>
+<i>; (schvalne se nenacitaji vsechny funkce, protoze by jejich jmena</i>
+<i>;  prepsala takove zakladni funkce, jako je map apod.)</i>
+(<strong>require</strong> '[clojure.core.async :refer (go chan &gt;! &lt;! timeout alts!)])
+&nbsp;
+(<strong>defn</strong> wait
+    "Pozastaveni hlavniho vlakna - simulace interaktivni prace."
+    []
+    (Thread/sleep 5000))
+&nbsp;
+(<strong>defn</strong> -main
+    "Tato funkce se spusti automaticky nastrojem Leiningen."
+    [&amp; args]
+    (println "Start")
+    <i>; vytvorime kanaly</i>
+    (<strong>let</strong> [channel1 (chan)
+          channel2 (chan 100) <i>; tento kanal ma prirazen buffer o velikosti 100 prvku</i>
+          channel3 (chan)]
+&nbsp;
+        <i>; kontinualni posilani zprav do trech kanalu v trojici asynchronnich bloku</i>
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel1 i)))
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel2 i)))
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range)]
+                (&gt;! channel3 i)))
+&nbsp;
+        (println "producers started")
+&nbsp;
+        <i>; z kanalu se celkem precte 1000 hodnot</i>
+        (<strong>go</strong>
+            <i>; citace pouzite pro vyhodnoceni statistiky cteni</i>
+            (<strong>let</strong> [counter1 (atom 0)
+                  counter2 (atom 0)
+                  counter3 (atom 0)]
+                <i>; precteme 1000 hodnot</i>
+                (<strong>dotimes</strong> [n 1000]
+                    ;(&lt;! (timeout 1)) <i>; zkuste odkomentovat</i>
+                    (<strong>let</strong> [[item channel] (alts! [channel1 channel2 channel3])]
+                        <i>; vyhodnoceni, ze ktereho kanalu se cteni provedlo</i>
+                        (<strong>condp</strong> = channel
+                            channel1 (swap! counter1 inc)
+                            <i>; s velkou pravdepodobnosti se prvek precte z tohoto kanalu</i>
+                            <i>; (protoze ma data 'predpripravena')</i>
+                            channel2 (swap! counter2 inc)
+                            channel3 (swap! counter3 inc))))
+                <i>; vypis ziskane statistiky</i>
+                (println "Channel #1 read " @counter1 "times")
+                (println "Channel #2 read " @counter2 "times")
+                (println "Channel #3 read " @counter3 "times")))
+&nbsp;
+    <i>; chvili pockame</i>
+    (wait)
+    (println "Finish")
+    (System/exit 0)))
+</pre>
+
+<p>Projektový soubor:</p>
+
+<pre>
+(<strong>defproject</strong> async7 "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :license {:name "Eclipse Public License"
+            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :dependencies [[org.clojure/clojure "<strong>1.7.0</strong>"]
+                 <strong>[org.clojure/core.async "0.2.374"]</strong>]
+  :main ^:skip-aot async7.core
+  :target-path "target/%s"
+  :profiles {:uberjar {:aot :all}})
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Kanál s&nbsp;&bdquo;dropping bufferem&ldquo;</h2>
+
+<p>V&nbsp;některých případech může být výhodné používat kanál s&nbsp;nastavenou
+(nenulovou) kapacitou, ovšem s&nbsp;modifikovaným chováním &ndash; ve chvíli,
+kdy je již buffer kanálu zaplněn, bude další zápis do něj ignorován (a bude
+tedy za všech okolností neblokující, ovšem na úkor ztráty dat). Příkladem může
+být kanál naplňovaný událostmi z&nbsp;GUI &ndash; většinou nemá smysl se snažit
+provést naprosto všechny operace, které uživatel zadal (například nervózním
+poklepáváním na tlačítko OK). V&nbsp;tomto případě pomůže použití kanálu
+s&nbsp;bufferem typu <i>dropping buffer</i>. Název tohoto bufferu naznačuje
+jeho funkci: pokud je kanál plný, další zápisy do něj budou ignorovány, o čemž
+se producent samozřejmě dozví (přes návratovou hodnotu funkce typu
+&bdquo;put&ldquo;).</p>
+
+<pre>
++-----------+                                     +-----------+
+| producent |           +------------+            | konzument |
+|           |... &gt;!.....|kanál+fronta} ... &lt;! ... |           |
+| go block  |        :  +------------+            | go block  |
++-----------+        :                            +-----------+
+                     : 
+                     : 
+                     v /dev/null
+</pre>
+
+<p>Kanál s&nbsp;takovýmto chováním se nastavuje následujícím způsobem:</p>
+
+<pre>
+<i>; vytvorime kanal s dropping bufferem o zadane kapacite</i>
+(<strong>let</strong> [channel (chan (dropping-buffer 10))]
+      ...
+      ...
+      ...
+)
+</pre>
+
+<p>Poznámka: povšimněte si, že funkce <strong>dropping-buffer</strong> je
+parametrem funkce <strong>chan</strong>. Je častou chybou se pokoušet vytvořit
+kanál takto:</p>
+
+<pre>
+<i>; ŠPATNĚ!!! vytvorime kanal s dropping bufferem o zadane kapacite</i>
+(<strong>let</strong> [channel (dropping-buffer 10)]
+      ...
+      ...
+      ...
+)
+</pre>
+
+<p>Poznámka 2: vyzkoušejte si ve smyčce REPL rozdíl mezi posledními dvěma
+příkazy (druhý příkaz vytváří buffer použitý v&nbsp;běžné frontě):</p>
+
+<pre>
+(require '[clojure.core.async :refer (buffer dropping-buffer unblocking-buffer?)])
+&nbsp;
+(unblocking-buffer? (buffer 10))
+&nbsp;
+(unblocking-buffer? (dropping-buffer 10))
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Třetí demonstrační příklad: práce s&nbsp;kanálem s&nbsp;&bdquo;dropping bufferem&ldquo;</h2>
+
+<p>Předchozí demonstrační příklad nyní přepíšeme tak, že se v&nbsp;něm bude
+nacházet jediný producent a jediný konzument. Pro komunikaci mezi producentem a
+konzumentem se bude používat kanál s&nbsp;přidruženým <i>dropping bufferem</i>.
+Producent vypadá takto:</p>
+
+<pre>
+<i>; poslani zprav do kanalu, celkem 1000 hodnot od 0 do 999</i>
+(<strong>go</strong>
+    (<strong>doseq</strong> [i (range 0 1000)]
+        (&gt;! channel i))
+    (close! channel)))
+</pre>
+
+<p>Konzument je implementován takovým způsobem, že si ve smyčce vytváří vektor
+s&nbsp;přečtenými daty (smyčka je představována dvojicí
+<strong>loop-recur</strong>):</p>
+
+<pre>
+<i>; cteni zprav z kanalu (to zahajime drive, at je jistota</i>
+<i>; ze zapisy neskonci moc brzo)</i>
+(<strong>go</strong>
+    (<strong>loop</strong> [result []]
+        (&lt;! (timeout 1))
+        (<strong>let</strong> [item (&lt;! channel)] <i>; pokud je kanal zavreny, vrati se nil</i>
+            (<strong>if</strong> item             <i>; v pripade, ze se prvek precetl</i>
+               (recur (conj result item)) <i>; prida se do kolekce</i>
+               (println result)))))       <i>; jinak koncime</i>
+</pre>
+
+<p>Podívejme se na výstup tohoto příkladu, na němž se přesně ukazuje chování
+<i>dropping bufferu</i> ve chvíli, kdy producent generuje větší množství dat,
+než může konzument zpracovat. Prvních deset položek (jde o kapacitu bufferu) se
+zapíše a zpracuje, potom však konzument nebude dostatečně rychle číst data a
+tudíž dojde k&nbsp;jejich ztrátě (&bdquo;drop&ldquo;). Výsledek může vypadat
+takto (jedenáctou položku konzument ještě zpracoval, dvanáctou už nestihl, dále
+je situace jen horší):</p>
+
+<pre>
+Start
+consumer started
+producer started
+[<strong>0 1 2 3 4 5 6 7 8 9 10</strong> 15 32 67 102 129 139 200 260 318 378 448 510 576 658 749 839 852 943]
+Finish
+</pre>
+
+<pre>
+Start
+consumer started
+producer started
+[<strong>0 1 2 3 4 5 6 7 8 9 10</strong> 25 126 207 305 386 516 607 718 857 993]
+Finish
+</pre>
+
+<pre>
+Start
+consumer started
+producer started
+[<strong>0 1 2 3 4 5 6 7 8 9 10</strong> 39 84 118 136 217 274 352 407 484 536 603 667 742 821 912]
+Finish
+</pre>
+
+<p>Úplný zdrojový kód tohoto &ndash; v&nbsp;pořadí již třetího &ndash;
+demonstračního příkladu vypadá následovně:</p>
+
+<pre>
+(<strong>ns</strong> async8.core
+    (:gen-class))
+&nbsp;
+<i>; nacteme vsechny potrebne funkce, makra a symboly z knihovny</i>
+<i>; (schvalne se nenacitaji vsechny funkce, protoze by jejich jmena</i>
+<i>;  prepsala takove zakladni funkce, jako je map apod.)</i>
+(<strong>require</strong> '[clojure.core.async :refer (go chan &gt;! &lt;! timeout dropping-buffer close!)])
+&nbsp;
+(<strong>defn</strong> wait
+    "Pozastaveni hlavniho vlakna - simulace interaktivni prace."
+    []
+    (Thread/sleep 5000))
+&nbsp;
+(<strong>defn</strong> -main
+    "Tato funkce se spusti automaticky nastrojem Leiningen."
+    [&amp; args]
+    (println "Start")
+    <i>; vytvorime kanal s dropping bufferem o zadane kapacite</i>
+    (<strong>let</strong> [channel (chan (dropping-buffer 10))]
+&nbsp;
+        <i>; cteni zprav z kanalu (to zahajime drive, at je jistota</i>
+        <i>; ze zapisy neskonci moc brzo)</i>
+        (<strong>go</strong>
+            (<strong>loop</strong> [result []]
+                (&lt;! (timeout 1))
+                (<strong>let</strong> [item (&lt;! channel)] <i>; pokud je kanal zavreny, vrati se nil</i>
+                    (<strong>if</strong> item             <i>; v pripade, ze se prvek precetl</i>
+                       (recur (conj result item)) <i>; prida se do kolekce</i>
+                       (println result)))))       <i>; jinak koncime</i>
+&nbsp;
+        (println "consumer started")
+&nbsp;
+        <i>; poslani zprav do kanalu, celkem 1000 hodnot od 0 do 999</i>
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range 0 1000)]
+                (&gt;! channel i))
+            (close! channel)))
+&nbsp;
+        (println "producer started")
+&nbsp;
+    <i>; chvili pockame</i>
+    (wait)
+    (println "Finish")
+    (System/exit 0))
+</pre>
+
+<p>Projektový soubor:</p>
+
+<pre>
+(<strong>defproject</strong> async8 "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :license {:name "Eclipse Public License"
+            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :dependencies [[org.clojure/clojure "<strong>1.7.0</strong>"]
+                 <strong>[org.clojure/core.async "0.2.374"]</strong>]
+  :main ^:skip-aot async8.core
+  :target-path "target/%s"
+  :profiles {:uberjar {:aot :all}})
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Kanál se &bdquo;sliding bufferem&ldquo;</h2>
+
+<p>Chování dropping bufferu popsaného v&nbsp;předchozích dvou kapitolách je
+charakterizováno tím, že v&nbsp;případě zaplněného kanálu dochází na straně
+producenta (tj.&nbsp;kódu, který do kanálu zapisuje) ke ztrátě dat &ndash; nová
+data prostě budou ignorována. V&nbsp;knihovně <strong>clojure.core</strong>
+však ještě existuje jeden typ kanálu, jehož chování je vlastně zcela opačné, i
+když se opět jedná o jednu z&nbsp;možných variant fronty. Tento alternativní
+typ kanálu používá takzvaný &bdquo;sliding buffer&ldquo;, který se vyznačuje
+tím, že v&nbsp;případě zaplnění kanálu dochází při dalším zápisu
+k&nbsp;postupnému přepisu již uložených prvků, přičemž se z&nbsp;kanálu vymaže
+nejdříve zapsaný prvek (prvky tedy z&nbsp;bufferu &bdquo;přepadávají&ldquo;).
+Skutečně se tedy jedná o jednu z&nbsp;variant fronty, ovšem s&nbsp;tím, že
+z&nbsp;fronty vedou dva výstupy: jeden je čtený konzumentem a druhý vede
+(eufemicky řečeno) do /dev/null:</p>
+
+<pre>
++-----------+                                     +-----------+
+| producent |           +------------+            | konzument |
+|           |... &gt;! ... |kanál+fronta} ... &lt;! ... |           |
+| go block  |           +------------+...         | go block  |
++-----------+                           :         +-----------+
+                                        :
+                                        :
+                                        v /dev/null
+</pre>
+
+<p>Kanál s&nbsp;těmito charakteristikami se vytvoří následovně:</p>
+
+<pre>
+<i>; vytvorime kanal se sliding bufferem o zadane kapacite</i>
+(<strong>let</strong> [channel (chan (sliding-buffer 10))]
+      ...
+      ...
+      ...
+)
+</pre>
+
+<p>Poznámka: povšimněte si, že funkce <strong>sliding-buffer</strong> je
+parametrem funkce <strong>chan</strong>. Je častou chybou se pokoušet vytvořit
+kanál takto:</p>
+
+<pre>
+<i>; ŠPATNĚ!!! vytvorime kanal se sliding bufferem o zadane kapacite</i>
+(<strong>let</strong> [channel (sliding-buffer 10)]
+      ...
+      ...
+      ...
+)
+</pre>
+
+<p>Poznámka 2: vyzkoušejte si ve smyčce REPL rozdíl mezi posledními dvěma
+příkazy (druhý příkaz vytváří buffer použitý v&nbsp;běžné frontě):</p>
+
+<pre>
+(require '[clojure.core.async :refer (buffer dropping-buffer sliding-buffer?)])
+&nbsp;
+(unblocking-buffer? (buffer 10))
+&nbsp;
+(unblocking-buffer? (sliding-buffer 10))
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Čtvrtý demonstrační příklad: práce s&nbsp;kanálem se &bdquo;sliding bufferem&ldquo;</h2>
+
+<p>Opět provedeme úpravu předchozího demonstračního příkladu, a to přepisem
+typu bufferu z&nbsp;<i>dropping bufferu</i> na <i>sliding buffer</i>:</p>
+
+<pre>
+<i>; vytvorime kanal s sliding bufferem o zadane kapacite</i>
+(<strong>let</strong> [channel (chan (sliding-buffer 10))]
+</pre>
+
+<p>Úprava je sice jednoduchá, ovšem chování producenta a konzumenta se zcela
+změní, což si ihned ověříme (konzument je opět výrazně pomalejší než producent,
+takže nutně dojde ke ztrátě dat, protože zápis je nyní neblokující
+operace):</p>
+
+<pre>
+Start
+consumer started
+producer started
+[0 5 33 73 117 167 212 256 305 350 409 477 537 561 622 699 786 870 951 <strong>990 991 992 993 994 995 996 997 998 999</strong>]
+Finish
+</pre>
+
+<pre>
+Start
+consumer started
+producer started
+[0 9 16 39 63 103 145 187 223 268 315 363 415 476 529 602 674 750 818 898 976 989 <strong>990 991 992 993 994 995 996 997 998 999</strong>]
+Finish
+</pre>
+
+<pre>
+Start
+consumer started
+producer started
+[0 8 41 117 164 206 252 341 400 480 607 674 730 893 983 <strong>990 991 992 993 994 995 996 997 998 999</strong>]
+Finish
+</pre>
+
+<p>Povšimněte si, že posledních deset hodnot se přečetlo korektně a ve správném
+pořadí, a to právě z&nbsp;toho důvodu, že se jedná o poslední hodnoty zapsané
+do kanálu.</p>
+
+<p>Úplný zdrojový kód dnešního v&nbsp;pořadí již třetího demonstračního
+příkladu vypadá následovně:</p>
+
+<pre>
+(<strong>ns</strong> async9.core
+    (:gen-class))
+&nbsp;
+<i>; nacteme vsechny potrebne funkce, makra a symboly z knihovny</i>
+<i>; (schvalne se nenacitaji vsechny funkce, protoze by jejich jmena</i>
+<i>;  prepsala takove zakladni funkce, jako je map apod.)</i>
+(<strong>require</strong> '[clojure.core.async :refer (go chan &gt;! &lt;! timeout sliding-buffer close!)])
+&nbsp;
+(<strong>defn</strong> wait
+    "Pozastaveni hlavniho vlakna - simulace interaktivni prace."
+    []
+    (Thread/sleep 5000))
+&nbsp;
+(<strong>defn</strong> -main
+    "Tato funkce se spusti automaticky nastrojem Leiningen."
+    [&amp; args]
+    (println "Start")
+    <i>; vytvorime kanal s sliding bufferem o zadane kapacite</i>
+    (<strong>let</strong> [channel (chan (sliding-buffer 10))]
+&nbsp;
+        <i>; cteni zprav z kanalu (to zahajime drive, at je jistota</i>
+        <i>; ze zapisy neskonci moc brzo)</i>
+        (<strong>go</strong>
+            (<strong>loop</strong> [result []]
+                (&lt;! (timeout 1))
+                (<strong>let</strong> [item (&lt;! channel)] <i>; pokud je kanal zavreny, vrati se nil</i>
+                    (<strong>if</strong> item             <i>; v pripade, ze se prvek precetl</i>
+                       (recur (conj result item)) <i>; prida se do kolekce</i>
+                       (println result)))))       <i>; jinak koncime</i>
+&nbsp;
+        (println "consumer started")
+&nbsp;
+        <i>; poslani zprav do kanalu, celkem 1000 hodnot od 0 do 999</i>
+        (<strong>go</strong>
+            (<strong>doseq</strong> [i (range 0 1000)]
+                (&gt;! channel i))
+            (close! channel)))
+&nbsp;
+        (println "producer started")
+&nbsp;
+    <i>; chvili pockame</i>
+    (wait)
+    (println "Finish")
+    (System/exit 0))
+</pre>
+
+<p>Projektový soubor:</p>
+
+<pre>
+(<strong>defproject</strong> async9 "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :license {:name "Eclipse Public License"
+            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :dependencies [[org.clojure/clojure "<strong>1.7.0</strong>"]
+                 <strong>[org.clojure/core.async "0.2.374"]</strong>]
+  :main ^:skip-aot async9.core
+  :target-path "target/%s"
+  :profiles {:uberjar {:aot :all}})
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny čtyři demonstrační příklady, které jsme si v&nbsp;dnešním článku
+popsali, byly uloženo do Git repositáře dostupného na adrese <a
+href="https://github.com/tisnik/clojure-examples">https://github.com/tisnik/clojure-examples</a>.
+V&nbsp;tabulce zobrazené pod tímto odstavcem naleznete na zdrojové kódy
+demonstračních příkladů přímé odkazy:</p>
+
+<table>
+<tr><th>#</th><th>Příklad/knihovna</th><th>Github</th></tr>
+<tr><td>1</td><td>async6</td><td><a href="https://github.com/tisnik/clojure-examples/tree/master/async6">https://github.com/tisnik/clojure-examples/tree/master/async6</a></td></tr>
+<tr><td>2</td><td>async7</td><td><a href="https://github.com/tisnik/clojure-examples/tree/master/async7">https://github.com/tisnik/clojure-examples/tree/master/async7</a></td></tr>
+<tr><td>3</td><td>async8</td><td><a href="https://github.com/tisnik/clojure-examples/tree/master/async8">https://github.com/tisnik/clojure-examples/tree/master/async8</a></td></tr>
+<tr><td>4</td><td>async9</td><td><a href="https://github.com/tisnik/clojure-examples/tree/master/async9">https://github.com/tisnik/clojure-examples/tree/master/async9</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na předchozí části tohoto seriálu</h2>
+
+<ol>
+
+<li>Clojure  1: Úvod<br />
+<a href="http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm/">http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm/</a>
+</li>
+
+<li>Clojure  2: Symboly, kolekce atd.<br />
+<a href="http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm-2-cast/">http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm-2-cast/</a>
+</li>
+
+<li>Clojure  3: Funkcionální programování<br />
+<a href="http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm-3-cast-funkcionalni-programovani/">http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm-3-cast-funkcionalni-programovani/</a>
+</li>
+
+<li>Clojure  4: Kolekce, sekvence a lazy sekvence<br />
+<a href="http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm-4-cast-kolekce-sekvence-a-lazy-sekvence/">http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm-4-cast-kolekce-sekvence-a-lazy-sekvence/</a>
+</li>
+
+<li>Clojure  5: Sekvence, lazy sekvence a paralelní programy<br />
+<a href="http://www.root.cz/clanky/clojure-a-bezpecne-aplikace-pro-jvm-sekvence-lazy-sekvence-a-paralelni-programy/">http://www.root.cz/clanky/clojure-a-bezpecne-aplikace-pro-jvm-sekvence-lazy-sekvence-a-paralelni-programy/</a>
+</li>
+
+<li>Clojure  6: Podpora pro paralelní programování<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-6-futures-nejsou-jen-financni-derivaty/">http://www.root.cz/clanky/programovaci-jazyk-clojure-6-futures-nejsou-jen-financni-derivaty/</a>
+</li>
+
+<li>Clojure  7: Další funkce pro paralelní programování<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-7-dalsi-podpurne-prostredky-pro-paralelni-programovani/">http://www.root.cz/clanky/programovaci-jazyk-clojure-7-dalsi-podpurne-prostredky-pro-paralelni-programovani/</a>
+</li>
+
+<li>Clojure  8: Identity, stavy, neměnné hodnoty a reference<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-8-identity-stavy-nemenne-hodnoty-a-referencni-typy/">http://www.root.cz/clanky/programovaci-jazyk-clojure-8-identity-stavy-nemenne-hodnoty-a-referencni-typy/</a>
+</li>
+
+<li>Clojure  9: Validátory, pozorovatelé a kooperace s Javou<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-9-validatory-pozorovatele-a-kooperace-mezi-clojure-a-javou/">http://www.root.cz/clanky/programovaci-jazyk-clojure-9-validatory-pozorovatele-a-kooperace-mezi-clojure-a-javou/</a>
+</li>
+
+<li>Clojure 10: Kooperace mezi Clojure a Javou<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-10-kooperace-mezi-clojure-a-javou-pokracovani/">http://www.root.cz/clanky/programovaci-jazyk-clojure-10-kooperace-mezi-clojure-a-javou-pokracovani/</a>
+</li>
+
+<li>Clojure 11: Generátorová notace seznamu/list comprehension<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-11-generatorova-notace-seznamu-list-comprehension/">http://www.root.cz/clanky/programovaci-jazyk-clojure-11-generatorova-notace-seznamu-list-comprehension/</a>
+</li>
+
+<li>Clojure 12: Překlad programů z Clojure do bajtkódu JVM I:<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-12-preklad-programu-z-clojure-do-bajtkodu-jvm/">http://www.root.cz/clanky/programovaci-jazyk-clojure-12-preklad-programu-z-clojure-do-bajtkodu-jvm/</a>
+</li>
+
+<li>Clojure 13: Překlad programů z Clojure do bajtkódu JVM II:<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-13-preklad-programu-z-clojure-do-bajtkodu-jvm-pokracovani/">http://www.root.cz/clanky/programovaci-jazyk-clojure-13-preklad-programu-z-clojure-do-bajtkodu-jvm-pokracovani/</a>
+</li>
+
+<li>Clojure 14: Základy práce se systémem maker<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-14-zaklady-prace-se-systemem-maker/">http://www.root.cz/clanky/programovaci-jazyk-clojure-14-zaklady-prace-se-systemem-maker/</a>
+</li>
+
+<li>Clojure 15: Tvorba uživatelských maker<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-15-tvorba-uzivatelskych-maker/">http://www.root.cz/clanky/programovaci-jazyk-clojure-15-tvorba-uzivatelskych-maker/</a>
+</li>
+
+<li>Clojure 16: Složitější uživatelská makra<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-16-slozitejsi-uzivatelska-makra/">http://www.root.cz/clanky/programovaci-jazyk-clojure-16-slozitejsi-uzivatelska-makra/</a>
+</li>
+
+<li>Clojure 17: Využití standardních maker v praxi<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-17-vyuziti-standardnich-maker-v-praxi/">http://www.root.cz/clanky/programovaci-jazyk-clojure-17-vyuziti-standardnich-maker-v-praxi/</a>
+</li>
+
+<li>Clojure 18: Základní techniky optimalizace aplikací<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-18-zakladni-techniky-optimalizace-aplikaci/">http://www.root.cz/clanky/programovaci-jazyk-clojure-18-zakladni-techniky-optimalizace-aplikaci/</a>
+</li>
+
+<li>Clojure 19: Vývojová prostředí pro Clojure<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-19-vyvojova-prostredi-pro-clojure/">http://www.root.cz/clanky/programovaci-jazyk-clojure-19-vyvojova-prostredi-pro-clojure/</a>
+</li>
+
+<li>Clojure 20: Vývojová prostředí pro Clojure (Vimu s REPL)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-20-vyvojova-prostredi-pro-clojure-integrace-vimu-s-repl/">http://www.root.cz/clanky/programovaci-jazyk-clojure-20-vyvojova-prostredi-pro-clojure-integrace-vimu-s-repl/</a>
+</li>
+
+<li>Clojure 21: ClojureScript aneb překlad Clojure do JS<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-21-clojurescript-aneb-preklad-clojure-do-javascriptu/">http://www.root.cz/clanky/programovaci-jazyk-clojure-21-clojurescript-aneb-preklad-clojure-do-javascriptu/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (2)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-2/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-2/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (3)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-3/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-3/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (4)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-4/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-4/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (5)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-5/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-5/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (6)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-6/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-6/</a>
+</li>
+
+<li>Programovací jazyk Clojure a databáze (1.část)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-databaze-1-cast/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-databaze-1-cast/</a>
+</li>
+
+<li>Pluginy pro Leiningen<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-pluginy-pro-leiningen/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-pluginy-pro-leiningen/</a>
+</li>
+
+<li>Programovací jazyk Clojure a knihovny pro práci s vektory a maticemi<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi/</a>
+</li>
+
+<li>Programovací jazyk Clojure a knihovny pro práci s vektory a maticemi (2)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi-2/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi-2/</a>
+</li>
+
+<li>Programovací jazyk Clojure: syntéza procedurálních textur s využitím knihovny Clisk<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk/">http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk/</a>
+</li>
+
+<li>Programovací jazyk Clojure: syntéza procedurálních textur s využitím knihovny Clisk (2)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-2/">http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-2/</a>
+</li>
+
+<li>Programovací jazyk Clojure: syntéza procedurálních textur s využitím knihovny Clisk (dokončení)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-dokonceni/">http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-dokonceni/</a>
+</li>
+
+<li>Seesaw: knihovna pro snadnou tvorbu GUI v jazyce Clojure<br />
+<a href="http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure/">http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure/</a>
+</li>
+
+<li>Seesaw: knihovna pro snadnou tvorbu GUI v jazyce Clojure (2)<br />
+<a href="http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-2/">http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-2/</a>
+</li>
+
+<li>Seesaw: knihovna pro snadnou tvorbu GUI v jazyce Clojure (3)<br />
+<a href="http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-3/">http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-3/</a>
+</li>
+
+<li>Programovací jazyk Clojure a práce s Gitem<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem/</a>
+</li>
+
+<li>Programovací jazyk Clojure a práce s Gitem (2)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem-2/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem-2/</a>
+</li>
+
+<li>Programovací jazyk Clojure – triky při práci s řetězci<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-retezci/">http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-retezci/</a>
+</li>
+
+<li>Programovací jazyk Clojure – triky při práci s kolekcemi<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-kolekcemi/">http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-kolekcemi/</a>
+</li>
+
+<li>Programovací jazyk Clojure – práce s mapami a množinami<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-prace-s-mapami-a-mnozinami/">http://www.root.cz/clanky/programovaci-jazyk-clojure-prace-s-mapami-a-mnozinami/</a>
+</li>
+
+<li>Programovací jazyk Clojure – základy zpracování XML<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-zaklady-zpracovani-xml/">http://www.root.cz/clanky/programovaci-jazyk-clojure-zaklady-zpracovani-xml/</a>
+</li>
+
+<li>Programovací jazyk Clojure – testování s využitím knihovny Expectations<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-testovani-s-vyuzitim-knihovny-expectations/">http://www.root.cz/clanky/programovaci-jazyk-clojure-testovani-s-vyuzitim-knihovny-expectations/</a>
+</li>
+
+<li>Programovací jazyk Clojure – některé užitečné triky použitelné (nejenom) v&nbsp;testech<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-nektere-uzitecne-triky-pouzitelne-nejenom-v-testech/">http://www.root.cz/clanky/programovaci-jazyk-clojure-nektere-uzitecne-triky-pouzitelne-nejenom-v-testech/</a>
+</li>
+
+<li>Enlive – výkonný šablonovací systém pro jazyk Clojure<br/>
+<a href="http://www.root.cz/clanky/enlive-vykonny-sablonovaci-system-pro-jazyk-clojure/">http://www.root.cz/clanky/enlive-vykonny-sablonovaci-system-pro-jazyk-clojure/</a>
+</li>
+
+<li>Nástroj Leiningen a programovací jazyk Clojure: tvorba vlastních knihoven pro veřejný repositář Clojars<br />
+<a href="http://www.root.cz/clanky/nastroj-leiningen-a-programovaci-jazyk-clojure-tvorba-vlastnich-knihoven-pro-verejny-repositar-clojars/">http://www.root.cz/clanky/nastroj-leiningen-a-programovaci-jazyk-clojure-tvorba-vlastnich-knihoven-pro-verejny-repositar-clojars/</a>
+</li>
+
+<li>Novinky v Clojure verze 1.8.0<br />
+<a href="http://www.root.cz/clanky/novinky-v-clojure-verze-1-8-0/">http://www.root.cz/clanky/novinky-v-clojure-verze-1-8-0/</a>
+</li>
+
+<li>Asynchronní programování v&nbsp;Clojure s&nbsp;využitím knihovny core.async<br />
+<a href="http://www.root.cz/clanky/asynchronni-programovani-v-clojure-s-vyuzitim-knihovny-core-async/">http://www.root.cz/clanky/asynchronni-programovani-v-clojure-s-vyuzitim-knihovny-core-async/</a>
+</li>
+
+</ol>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Communicating sequential processes<br />
+<a href="https://en.wikipedia.org/wiki/Communicating_sequential_processes">https://en.wikipedia.org/wiki/Communicating_sequential_processes</a>
+</li>
+
+<li>Clojure core.async<br />
+<a href="http://www.infoq.com/presentations/clojure-core-async">http://www.infoq.com/presentations/clojure-core-async</a>
+</li>
+
+<li>core.async API Reference<br />
+<a href="https://clojure.github.io/core.async/">https://clojure.github.io/core.async/</a>
+</li>
+
+<li>Clojure core.async Channels<br />
+<a href="http://clojure.com/blog/2013/06/28/clojure-core-async-channels.html">http://clojure.com/blog/2013/06/28/clojure-core-async-channels.html</a>
+</li>
+
+<li>core.async examples<br />
+<a href="https://github.com/clojure/core.async/blob/master/examples/walkthrough.clj">https://github.com/clojure/core.async/blob/master/examples/walkthrough.clj</a>
+</li>
+
+<li>Timothy Baldridge - Core.Async<br />
+<a href="https://www.youtube.com/watch?v=enwIIGzhahw">https://www.youtube.com/watch?v=enwIIGzhahw</a>
+</li>
+
+<li>Designing Front End Applications with core.async<br />
+<a href="http://go.cognitect.com/core_async_webinar_recording">http://go.cognitect.com/core_async_webinar_recording</a>
+</li>
+
+<li>Mastering Concurrent Processes with core.async<br />
+<a href="http://www.braveclojure.com/core-async/">http://www.braveclojure.com/core-async/</a>
+</li>
+
+<li>LispCast: Clojure core.async<br />
+<a href="https://www.youtube.com/watch?v=msv8Fvtd6YQ">https://www.youtube.com/watch?v=msv8Fvtd6YQ</a>
+</li>
+
+<li>Julian Gamble - Applying the paradigms of core.async in ClojureScript<br />
+<a href="https://www.youtube.com/watch?v=JUrOebC5HmA">https://www.youtube.com/watch?v=JUrOebC5HmA</a>
+</li>
+
+<li>Zip archiv s&nbsp;Clojure 1.8.0<br />
+<a href="http://repo1.maven.org/maven2/org/clojure/clojure/1.8.0/clojure-1.8.0.zip">http://repo1.maven.org/maven2/org/clojure/clojure/1.8.0/clojure-1.8.0.zip</a>
+</li>
+
+<li>Clojure 1.8 is now available<br />
+<a href="http://clojure.org/news/2016/01/19/clojure18">http://clojure.org/news/2016/01/19/clojure18</a>
+</li>
+
+<li>Changes to Clojure in Version 1.8<br />
+<a href="https://github.com/clojure/clojure/blob/master/changes.md">https://github.com/clojure/clojure/blob/master/changes.md</a>
+</li>
+
+<li>Socket Server REPL<br />
+<a href="http://dev.clojure.org/display/design/Socket+Server+REPL">http://dev.clojure.org/display/design/Socket+Server+REPL</a>
+</li>
+
+<li>CLJ-1671: Clojure socket server<br />
+<a href="http://dev.clojure.org/jira/browse/CLJ-1671">http://dev.clojure.org/jira/browse/CLJ-1671</a>
+</li>
+
+<li>CLJ-1449: Add clojure.string functions for portability to ClojureScript<br />
+<a href="http://dev.clojure.org/jira/browse/CLJ-1449">http://dev.clojure.org/jira/browse/CLJ-1449</a>
+</li>
+
+<li>Launching a Socket Server<br />
+<a href="http://clojure.org/reference/repl_and_main#_launching_a_socket_server">http://clojure.org/reference/repl_and_main#_launching_a_socket_server</a>
+</li>
+
+<li>API for clojure.string<br />
+<a href="http://clojure.github.io/clojure/branch-master/clojure.string-api.html">http://clojure.github.io/clojure/branch-master/clojure.string-api.html</a>
+</li>
+
+<li>Clojars:<br />
+<a href="https://clojars.org/">https://clojars.org/</a>
+</li>
+
+<li>Seznam knihoven na Clojars:<br />
+<a href="https://clojars.org/projects">https://clojars.org/projects</a>
+</li>
+
+<li>Clojure Cookbook: Templating HTML with Enlive<br />
+<a href="https://github.com/clojure-cookbook/clojure-cookbook/blob/master/07_webapps/7-11_enlive.asciidoc">https://github.com/clojure-cookbook/clojure-cookbook/blob/master/07_webapps/7-11_enlive.asciidoc</a>
+</li>
+
+<li>An Introduction to Enlive<br />
+<a href="https://github.com/swannodette/enlive-tutorial/">https://github.com/swannodette/enlive-tutorial/</a>
+</li>
+
+<li>Enlive na GitHubu<br />
+<a href="https://github.com/cgrand/enlive">https://github.com/cgrand/enlive</a>
+</li>
+
+<li>Expectations: příklady atd.<br />
+<a href="http://jayfields.com/expectations/">http://jayfields.com/expectations/</a>
+</li>
+
+<li>Expectations na GitHubu<br />
+<a href="https://github.com/jaycfields/expectations">https://github.com/jaycfields/expectations</a>
+</li>
+
+<li>Lein-expectations na GitHubu<br />
+<a href="https://github.com/gar3thjon3s/lein-expectations">https://github.com/gar3thjon3s/lein-expectations</a>
+</li>
+
+<li>Testing Clojure With Expectations<br />
+<a href="https://semaphoreci.com/blog/2014/09/23/testing-clojure-with-expectations.html">https://semaphoreci.com/blog/2014/09/23/testing-clojure-with-expectations.html</a>
+</li>
+
+<li>Clojure testing TDD/BDD libraries: clojure.test vs Midje vs Expectations vs Speclj<br />
+<a href="https://www.reddit.com/r/Clojure/comments/1viilt/clojure_testing_tddbdd_libraries_clojuretest_vs/">https://www.reddit.com/r/Clojure/comments/1viilt/clojure_testing_tddbdd_libraries_clojuretest_vs/</a>
+</li>
+
+<li>Testing: One assertion per test<br />
+<a href="http://blog.jayfields.com/2007/06/testing-one-assertion-per-test.html">http://blog.jayfields.com/2007/06/testing-one-assertion-per-test.html</a>
+</li>
+
+<li>Rewriting Your Test Suite in Clojure in 24 hours<br />
+<a href="http://blog.circleci.com/rewriting-your-test-suite-in-clojure-in-24-hours/">http://blog.circleci.com/rewriting-your-test-suite-in-clojure-in-24-hours/</a>
+</li>
+
+<li>Clojure doc: zipper<br />
+<a href="http://clojuredocs.org/clojure.zip/zipper">http://clojuredocs.org/clojure.zip/zipper</a>
+</li>
+
+<li>Clojure doc: parse<br />
+<a href="http://clojuredocs.org/clojure.xml/parse">http://clojuredocs.org/clojure.xml/parse</a>
+</li>
+
+<li>Clojure doc: xml-zip<br />
+<a href="http://clojuredocs.org/clojure.zip/xml-zip">http://clojuredocs.org/clojure.zip/xml-zip</a>
+</li>
+
+<li>Clojure doc: xml-seq<br />
+<a href="http://clojuredocs.org/clojure.core/xml-seq">http://clojuredocs.org/clojure.core/xml-seq</a>
+</li>
+
+<li>Parsing XML in Clojure<br />
+<a href="https://github.com/clojuredocs/guides">https://github.com/clojuredocs/guides</a>
+</li>
+
+<li>Clojure Zipper Over Nested Vector<br />
+<a href="https://vitalyper.wordpress.com/2010/11/23/clojure-zipper-over-nested-vector/">https://vitalyper.wordpress.com/2010/11/23/clojure-zipper-over-nested-vector/</a>
+</li>
+
+<li>Understanding Clojure's PersistentVector implementation<br />
+<a href="http://blog.higher-order.net/2009/02/01/understanding-clojures-persistentvector-implementation">http://blog.higher-order.net/2009/02/01/understanding-clojures-persistentvector-implementation</a>
+</li>
+
+<li>Understanding Clojure's PersistentHashMap (deftwice...)<br />
+<a href="http://blog.higher-order.net/2009/09/08/understanding-clojures-persistenthashmap-deftwice.html">http://blog.higher-order.net/2009/09/08/understanding-clojures-persistenthashmap-deftwice.html</a>
+</li>
+
+<li>Assoc and Clojure's PersistentHashMap: part ii<br />
+<a href="http://blog.higher-order.net/2010/08/16/assoc-and-clojures-persistenthashmap-part-ii.html">http://blog.higher-order.net/2010/08/16/assoc-and-clojures-persistenthashmap-part-ii.html</a>
+</li>
+
+<li>Ideal Hashtrees (paper)<br />
+<a href="http://lampwww.epfl.ch/papers/idealhashtrees.pdf">http://lampwww.epfl.ch/papers/idealhashtrees.pdf</a>
+</li>
+
+<li>Clojure home page<br />
+<a href="http://clojure.org/">http://clojure.org/</a>
+</li>
+
+<li>Clojure (downloads)<br />
+<a href="http://clojure.org/downloads">http://clojure.org/downloads</a>
+</li>
+
+<li>Clojure Sequences<br />
+<a href="http://clojure.org/sequences">http://clojure.org/sequences</a>
+</li>
+
+<li>Clojure Data Structures<br />
+<a href="http://clojure.org/data_structures">http://clojure.org/data_structures</a>
+</li>
+
+<li>The Structure and Interpretation of Computer Programs: 2.2.1  Representing Sequences<br />
+<a href="http://mitpress.mit.edu/sicp/full-text/book/book-Z-H-15.html#%_sec_2.2.1">http://mitpress.mit.edu/sicp/full-text/book/book-Z-H-15.html#%_sec_2.2.1</a>
+</li>
+
+<li>The Structure and Interpretation of Computer Programs: 3.3.1  Mutable List Structure<br />
+<a href="http://mitpress.mit.edu/sicp/full-text/book/book-Z-H-22.html#%_sec_3.3.1">http://mitpress.mit.edu/sicp/full-text/book/book-Z-H-22.html#%_sec_3.3.1</a>
+</li>
+
+<li>Clojure - Functional Programming for the JVM<br />
+<a href="http://java.ociweb.com/mark/clojure/article.html">http://java.ociweb.com/mark/clojure/article.html</a>
+</li>
+
+<li>Clojure quick reference<br />
+<a href="http://faustus.webatu.com/clj-quick-ref.html">http://faustus.webatu.com/clj-quick-ref.html</a>
+</li>
+
+<li>4Clojure<br />
+<a href="http://www.4clojure.com/">http://www.4clojure.com/</a>
+</li>
+
+<li>ClojureDoc (rozcestník s&nbsp;dokumentací jazyka Clojure)<br />
+<a href="http://clojuredocs.org/">http://clojuredocs.org/</a>
+</li>
+
+<li>Clojure (na Wikipedia EN)<br />
+<a href="http://en.wikipedia.org/wiki/Clojure">http://en.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Clojure (na Wikipedia CS)<br />
+<a href="http://cs.wikipedia.org/wiki/Clojure">http://cs.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>SICP (The Structure and Interpretation of Computer Programs)<br />
+<a href="http://mitpress.mit.edu/sicp/">http://mitpress.mit.edu/sicp/</a>
+</li>
+
+<li>Pure function<br />
+<a href="http://en.wikipedia.org/wiki/Pure_function">http://en.wikipedia.org/wiki/Pure_function</a>
+</li>
+
+<li>Funkcionální programování<br />
+<a href="http://cs.wikipedia.org/wiki/Funkcionální_programování">http://cs.wikipedia.org/wiki/Funkcionální_programování</a>
+</li>
+
+<li>Čistě funkcionální (datové struktury, jazyky, programování)<br />
+<a href="http://cs.wikipedia.org/wiki/Čistě_funkcionální">http://cs.wikipedia.org/wiki/Čistě_funkcionální</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part I, Getting the Compiler to Write Your Code For You)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part II: The Compiler Strikes Back)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part III: Syntax Quote)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html</a>
+</li>
+
+<li>Tech behind Tech: Clojure Macros Simplified<br />
+<a href="http://techbehindtech.com/2010/09/28/clojure-macros-simplified/">http://techbehindtech.com/2010/09/28/clojure-macros-simplified/</a>
+</li>
+
+<li>Fatvat - Exploring functional programming: Clojure Macros<br />
+<a href="http://www.fatvat.co.uk/2009/02/clojure-macros.html">http://www.fatvat.co.uk/2009/02/clojure-macros.html</a>
+</li>
+
+<li>Eulerovo číslo<br />
+<a href="http://cs.wikipedia.org/wiki/Eulerovo_číslo">http://cs.wikipedia.org/wiki/Eulerovo_číslo</a>
+</li>
+
+<li>List comprehension<br />
+<a href="http://en.wikipedia.org/wiki/List_comprehension">http://en.wikipedia.org/wiki/List_comprehension</a>
+</li>
+
+<li>List Comprehensions in Clojure<br />
+<a href="http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html">http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html</a>
+</li>
+
+<li>Clojure Programming Concepts: List Comprehension<br />
+<a href="http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension">http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension</a>
+</li>
+
+<li>Clojure core API: for macro<br />
+<a href="http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for">http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for</a>
+</li>
+
+<li>cirrus machina - The Clojure for macro<br />
+<a href="http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/">http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/</a>
+</li>
+
+<li>Riastradh's Lisp Style Rules<br />
+<a href="http://mumble.net/~campbell/scheme/style.txt">http://mumble.net/~campbell/scheme/style.txt</a>
+</li>
+
+<li>Dynamic Languages Strike Back<br />
+<a href="http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html">http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html</a>
+</li>
+
+<li>Scripting: Higher Level Programming for the 21st Century<br />
+<a href="http://www.tcl.tk/doc/scripting.html">http://www.tcl.tk/doc/scripting.html</a>
+</li>
+
+<li>Java Virtual Machine Support for Non-Java Languages<br />
+<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html">http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html</a>
+</li>
+
+<li>Třída java.lang.String<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/lang/String.html">http://docs.oracle.com/javase/7/docs/api/java/lang/String.html</a>
+</li>
+
+<li>Třída java.lang.StringBuffer<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/lang/StringBuffer.html">http://docs.oracle.com/javase/7/docs/api/java/lang/StringBuffer.html</a>
+</li>
+
+<li>Třída java.lang.StringBuilder<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/lang/StringBuilder.html">http://docs.oracle.com/javase/7/docs/api/java/lang/StringBuilder.html</a>
+</li>
+
+<li>StringBuffer versus String<br />
+<a href="http://www.javaworld.com/article/2076072/build-ci-sdlc/stringbuffer-versus-string.html">http://www.javaworld.com/article/2076072/build-ci-sdlc/stringbuffer-versus-string.html</a>
+</li>
+
+<li>Threading macro (dokumentace k&nbsp;jazyku Clojure)<br />
+<a href="https://clojure.github.io/clojure/clojure.core-api.html#clojure.core/-&gt;">https://clojure.github.io/clojure/clojure.core-api.html#clojure.core/-&gt;</a>
+</li>
+
+<li>Understanding the Clojure -&gt; macro<br />
+<a href="http://blog.fogus.me/2009/09/04/understanding-the-clojure-macro/">http://blog.fogus.me/2009/09/04/understanding-the-clojure-macro/</a>
+</li>
+
+<li>clojure.inspector<br />
+<a href="http://clojure.github.io/clojure/clojure.inspector-api.html">http://clojure.github.io/clojure/clojure.inspector-api.html</a>
+</li>
+
+<li>The Clojure Toolbox<br />
+<a href="http://www.clojure-toolbox.com/">http://www.clojure-toolbox.com/</a>
+</li>
+
+<li>Unit Testing in Clojure<br />
+<a href="http://nakkaya.com/2009/11/18/unit-testing-in-clojure/">http://nakkaya.com/2009/11/18/unit-testing-in-clojure/</a>
+</li>
+
+<li>Testing in Clojure (Part-1: Unit testing)<br />
+<a href="http://blog.knoldus.com/2014/03/22/testing-in-clojure-part-1-unit-testing/">http://blog.knoldus.com/2014/03/22/testing-in-clojure-part-1-unit-testing/</a>
+</li>
+
+<li>API for clojure.test - Clojure v1.6 (stable)<br />
+<a href="https://clojure.github.io/clojure/clojure.test-api.html">https://clojure.github.io/clojure/clojure.test-api.html</a>
+</li>
+
+<li>Leiningen: úvodní stránka<br />
+<a href="http://leiningen.org/">http://leiningen.org/</a>
+</li>
+
+<li>Leiningen: Git repository<br />
+<a href="https://github.com/technomancy/leiningen">https://github.com/technomancy/leiningen</a>
+</li>
+
+<li>leiningen-win-installer<br />
+<a href="http://leiningen-win-installer.djpowell.net/">http://leiningen-win-installer.djpowell.net/</a>
+</li>
+
+<li>Clojure.org: Vars and the Global Environment<br />
+<a href="http://clojure.org/Vars">http://clojure.org/Vars</a>
+</li>
+
+<li>Clojure.org: Refs and Transactions<br />
+<a href="http://clojure.org/Refs">http://clojure.org/Refs</a>
+</li>
+
+<li>Clojure.org: Atoms<br />
+<a href="http://clojure.org/Atoms">http://clojure.org/Atoms</a>
+</li>
+
+<li>Clojure.org: Agents as Asynchronous Actions<br />
+<a href="http://clojure.org/agents">http://clojure.org/agents</a>
+</li>
+
+<li>Transient Data Structures
+<a href="http://clojure.org/transients">http://clojure.org/transients</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
