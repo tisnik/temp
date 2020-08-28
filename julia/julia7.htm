@@ -1,0 +1,1283 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Programovací jazyk Julia: metaprogramování, makra a AST</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Programovací jazyk Julia: metaprogramování, makra a AST</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Sedmá část seriálu o programovacím jazyce Julia je věnována konceptu metaprogramování a tvorbě maker. V&nbsp;jazyku Julia je totiž možné pracovat přímo z&nbsp;parsovaným kódem, modifikovat tento kód či si dokonce s&nbsp;využitím maker nechat kód vygenerovat. Tato myšlenka byla převzata z&nbsp;LISPovských jazyků, které se svým mocným makrosystémem proslavily.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Programovací jazyk Julia: metaprogramování a, makra a AST</a></p>
+<p><a href="#k02">2. Parsing zdrojového kódu, použití funkce <strong>parse()</strong></a></p>
+<p><a href="#k03">3. Interní reprezentace výrazů</a></p>
+<p><a href="#k04">4. Použití funkce <strong>dump()</strong></a></p>
+<p><a href="#k05">5. Složitější výrazy a rekurzivní podoba AST</a></p>
+<p><a href="#k06">6. Zobrazení S-výrazu parsované části zdrojového kódu</a></p>
+<p><a href="#k07">7. Vyhodnocení výrazů s&nbsp;využitím funkce <strong>eval()</strong></a></p>
+<p><a href="#k08">8. Programová či &bdquo;ruční&ldquo; konstrukce výrazů</a></p>
+<p><a href="#k09">9. Použití znaku : namísto konstruktoru <strong>Expr</strong></a></p>
+<p><a href="#k10">10. Tvorba výrazů a použití interpolace</a></p>
+<p><a href="#k11">11. Makrosystém programovacího jazyka Julia</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Programovací jazyk Julia: metaprogramování, makra a AST</h2>
+
+<p>Programovací jazyk Julia byl navržen takovým způsobem, aby byl snadno
+pochopitelný, čitelný a taktéž s&nbsp;ohledem na jeho případnou rozšiřitelnost
+v&nbsp;budoucnosti. Ovšem fakt, že tvorba krátkých skriptů i rozsáhlejších
+programů v&nbsp;jazyku Julia je poměrně jednoduchá, nemusí nutně znamenat, že
+v&nbsp;Julii není možné v&nbsp;případě potřeby vytvářet i složitější konstrukce
+popř.&nbsp;si ušetřit práci a nechat si část programového kódu (nikoli nutně
+<i>zdrojového kódu</i>) vygenerovat. Je to umožněno především díky existenci
+makrosystému, který je založen na manipulaci se symboly, které vzniknou po
+<i>parsingu</i> zdrojového kódu a které tvoří AST (<i>Abstract Syntax
+Tree</i>). Ovšem na tomto místě je vhodné poznamenat, že makra používaná
+v&nbsp;jazyku Julia nemají prakticky nic společného s&nbsp;makry, které známe
+například z&nbsp;jazyků C či C++, popř.&nbsp;s&nbsp;makry, na jejichž
+zpracování je založen jazyk <i>m4</i>.</p>
+
+<p>V&nbsp;jazycích C, C++ i m4 se totiž makra používají pro &bdquo;pouhé&ldquo;
+provádění textových substitucí, zatímco makrosystém implementovaný
+v&nbsp;jazyku Julia je založen na modifikaci AST, což umožňuje mnohem hlubší
+zásahy do kódu (například přidání nových operátorů). V&nbsp;tomto ohledu má
+jazyk Julia velmi blízko k&nbsp;LISPovským jazykům, v&nbsp;nichž je většinou
+makrosystém prakticky nedílnou součástí programovacího jazyka, protože jsou
+v&nbsp;něm realizovány mnohdy i základní programové konstrukce (navíc je LISP
+homoikonickým jazykem, což situaci dále zjednodušuje). Asi nejtypičtějším
+příkladem použití maker v&nbsp;LISPu je makro <strong>loop</strong> použité
+v&nbsp;Common Lispu (na druhou stranu někteří vývojáři soudí, že podobná makra
+zbytečně do Common Lispu přidávají imperativní kód). Některé vlastnosti tohoto
+makra jsou popsány na stránce <a
+href="http://www.ai.sri.com/pkarp/loop.html">http://www.ai.sri.com/pkarp/loop.html</a>.</p>
+
+<p>Poznámka: <a href="#k12">v&nbsp;odkazech na další zdroje</a> naleznete i
+několik článků o makrech v&nbsp;jazyku Clojure. Není to náhoda, protože způsob
+tvorby maker i použitou terminologii nalezneme právě v&nbsp;jazyku Julia.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Parsing zdrojového kódu, použití funkce <strong>parse()</strong></h2>
+
+<p>Ještě předtím, než si popíšeme způsob tvorby maker v&nbsp;jazyku Julia, je
+vhodné se zmínit o tom, jakým způsobem je vlastně zpracováván zdrojový kód
+zapisovaný uživatelem do interaktivní smyčky REPL či kód delších programů a
+knihoven načítaný z&nbsp;externích souborů. Jednotlivé výrazy a z&nbsp;nich
+tvořené ucelené bloky kódu (například programové smyčky) jsou předány do funkce
+nazvané <strong>parse()</strong>. Tato funkce analyzuje text (s&nbsp;použitím
+lexikální a syntaktické analýzy), zkonstruuje z&nbsp;něho AST a nakonec vrátí
+objekt typu <strong>Expr</strong>, který vlastně (poněkud zjednodušeně řečeno)
+reprezentuje AST daného výrazu či bloku kódu. Funkce <strong>parse()</strong>
+ve své základní podobě akceptuje řetězec, v&nbsp;němž nalezne a analyzuje první
+ucelený výraz, ovšem lze ji volat i s&nbsp;dalšími parametry, které ovlivní
+její činnost. To je ostatně patrné i při pohledu do dokumentace:</p>
+
+<pre>
+help?&gt; <strong>parse</strong>
+search: parse parseip parseint parsefloat ParseError sparse sparsevec
+&nbsp;
+  parse(str, start; greedy=true, raise=true)
+&nbsp;
+  Parse the expression string and return an expression (which could later be
+  passed to eval for execution). start is the index of the first character to
+  start parsing. If greedy is true (default), parse will try to consume as
+  much input as it can; otherwise, it will stop as soon as it has parsed a
+  valid expression. Incomplete but otherwise syntactically valid expressions
+  will return Expr(:incomplete, "(error message)"). If raise is true
+  (default), syntax errors other than incomplete expressions will raise an
+  error. If raise is false, parse will return an expression that will raise an
+  error upon evaluation.
+&nbsp;
+  parse(str; raise=true)
+&nbsp;
+  Parse the expression string greedily, returning a single expression. An
+  error is thrown if there are additional characters after the first
+  expression. If raise is true (default), syntax errors will raise an error;
+  otherwise, parse will return an expression that will raise an error upon
+  evaluation.
+&nbsp;
+  parse(type, str, [base])
+&nbsp;
+  Parse a string as a number. If the type is an integer type, then a base can
+  be specified (the default is 10). If the type is a floating point type, the
+  string is parsed as a decimal floating point number. If the string does not
+  contain a valid number, an error is raised.
+</pre>
+
+<p>Podívejme se, jak vypadá výsledek volání funkce <strong>parse()</strong>.
+Zdánlivě a minimálně na první pohled se nejedná o žádnou &bdquo;velkou
+vědu&ldquo;, neboť výsledkem volání je opticky prakticky stejný text, který je
+akorát umístěn do závorek, před nimiž je znak : (dvojtečky). Jak však uvidíme
+dále, jedná se pouze o zkrácený zápis obsahu objektu typu
+<strong>Expr</strong>:</p>
+
+<pre>
+julia&amp; <strong>parse("1+2")</strong>
+:(1 + 2)
+</pre>
+
+<pre>
+julia&amp; <strong>parse("a+b")</strong>
+:(a + b)
+</pre>
+
+<pre>
+julia&amp; <strong>parse("a+b*2")</strong>
+:(a + b * 2)
+</pre>
+
+<pre>
+julia&amp; <strong>parse("1+2*3")</strong>
+:(1 + 2 * 3)
+</pre>
+
+<pre>
+julia&amp; <strong>parse("1&lt;2 &amp;&amp; 3&lt;=4")</strong>
+:(1 &lt; 2 &amp;&amp; 3 &lt;= 4)
+</pre>
+
+<pre>
+julia&amp; <strong>parse("while i&amp;0; println(i); i=i-1; end")</strong>
+:(while i &amp; 0 # none, line 1:
+        println(i) # none, line 1:
+        i = i - 1
+    end)
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Interní reprezentace výrazů</h2>
+
+<p>Každý objekt typu <strong>Expr</strong> obsahuje tři atributy pojmenované
+<strong>head</strong>, <strong>args</strong> a <strong>typ</strong>. Atribut
+<strong>head</strong> obsahuje symbol popisující typ výrazu, atribut
+<strong>args</strong> jeho argumenty (mohou se zde nacházet symboly, rekurzivně
+vnořené výrazy popř.&nbsp;konstanty a literály) a konečně atribut
+<strong>typ</strong> obsahuje typ výsledku. V&nbsp;případě jednoduchých výrazů
+obsahuje atribut <strong>args</strong> pouze pole symbolů a konstant. Podívejme
+se nejprve, jak k&nbsp;atributům parsovaného výrazu přistupovat. Nejprve si
+uložíme objekt typu <strong>Expr</strong> do proměnné:</p>
+
+<pre>
+julia&amp; <strong>expression1=parse("1+2")</strong>
+:(1 + 2)
+</pre>
+
+<p>Posléze si již můžeme jednoduše vypsat typ výrazu:</p>
+
+<pre>
+julia&amp; <strong>expression1.head</strong>
+:call
+</pre>
+
+<p>Vidíme, že typ výrazu je symbol <strong>call</strong> značící, že se jedná o
+volání nějaké funkce (již víme, že operátory se dají volat i jako běžné
+funkce).</p>
+
+<p>Dále si můžeme vypsat návratový typ. Zde se neděje nic překvapivého:</p>
+
+<pre>
+julia&amp; <strong>expression1.typ</strong>
+Any
+</pre>
+
+<p>Podle očekávání je nejzajímavějším atributem atribut <strong>args</strong>
+obsahující argumenty volání. Předávají se tři parametry &ndash; symbol
+představující volanou funkci (+) a její dva parametry:</p>
+
+<pre>
+julia&amp; <strong>expression1.args</strong>
+3-element Array{Any,1}:
+  :+
+ 1  
+ 2  
+</pre>
+
+<p>Podobně si lze zobrazit i argumenty nepatrně složitější funkce se třemi
+parametry:</p>
+
+<pre>
+julia&amp; <strong>expression2=parse("1+2+3")</strong>
+:(1 + 2 + 3)
+&nbsp;
+julia&amp; <strong>expression2.args</strong>
+4-element Array{Any,1}:
+  :+
+ 1  
+ 2  
+ 3  
+</pre>
+
+<p>Nebo volání &bdquo;obyčejné&ldquo; funkce:</p>
+
+<pre>
+julia&amp; <strong>expression3=parse("sin(3.1415)")</strong>
+:(sin(3.1415))
+&nbsp;
+julia&amp; <strong>expression3.args</strong>
+2-element Array{Any,1}:
+  :sin 
+ 3.1415
+</pre>
+
+<pre>
+julia&amp; <strong>expression4=parse("length(\"asd\")")</strong>
+:(length("asd"))
+&nbsp;
+julia&amp; <strong>expression4.args</strong>
+2-element Array{Any,1}:
+ :length
+ "asd"  
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Použití funkce <strong>dump()</strong></h2>
+
+<p>Přímý přístup k&nbsp;atributům objektu typu <strong>Expr</strong> je mnohdy
+zbytečně zdlouhavý. Pokud je nutné častěji zkoumat AST vygenerovaný <a
+href="#k02">výše popsanou</a> funkcí <strong>parse()</strong>, může být
+výhodnější použít další užitečnou funkci nazvanou jednoduše
+<strong>dump()</strong>. Této funkci lze předat prakticky jakýkoli objekt,
+samozřejmě včetně objektů typu <strong>Expr</strong>. Výsledkem je textová
+podoba interní struktury objektu (v&nbsp;případě objektu <strong>Expr</strong>
+tedy atributy <strong>head</strong>, <strong>args</strong> i
+<strong>typ</strong>):</p>
+
+<pre>
+help?&amp; <strong>dump</strong>
+search: dump xdump randjump reducedim mapreducedim module_name
+&nbsp;
+  dump(x)
+&nbsp;
+  Show all user-visible structure of a value.
+</pre>
+
+<p>Výše zmíněné výrazy si tedy můžeme přímo v&nbsp;REPLu analyzovat i
+následujícím způsobem:</p>
+
+<pre>
+julia&amp; <strong>expression1=parse("1+2")</strong>
+:(1 + 2)
+&nbsp;
+julia&amp; <strong>dump(expression1)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Int64 2
+  typ: Any
+</pre>
+
+<pre>
+julia&amp; <strong>expression2=parse("1+2+3")</strong>
+:(1 + 2 + 3)
+&nbsp;
+julia&amp; <strong>dump(expression2)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(4,))
+    1: Symbol +
+    2: Int64 1
+    3: Int64 2
+    4: Int64 3
+  typ: Any
+</pre>
+
+<pre>
+julia&amp; <strong>expression3=parse("sin(3.1415)")</strong>
+:(sin(3.1415))
+&nbsp;
+julia&amp; <strong>dump(expression3)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(2,))
+    1: Symbol sin
+    2: Float64 3.1415
+  typ: Any
+</pre>
+
+<pre>
+julia&amp; <strong>expression4=parse("length(\"asd\")")</strong>
+:(length("asd"))
+&nbsp;
+julia&amp; <strong>dump(expression4)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(2,))
+    1: Symbol length
+    2: ASCIIString "asd"
+  typ: Any
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Složitější výrazy a rekurzivní podoba AST</h2>
+
+<p>Při pohledu na výsledky vypisované funkcí <strong>dump()</strong> si možná
+čtenář pokládá otázku, proč se vlastně bavíme o AST (<i>Abstract Syntax
+Tree</i>), když je výsledkem parsingu jednoduchá datová struktura popisující
+volání nějaké funkce s&nbsp;parametry. Prozatím jsme si totiž ukazovali velmi
+jednoduché příklady výrazů, které skutečně vedly k&nbsp;takto jednoduchým
+výsledkům. Ovšem programovací jazyk Julia podle očekávání musí umět zpracovat i
+složitější výrazy a programové konstrukce. Podívejme se například, co se stane,
+když namísto výrazu "1+2+3" použijeme výraz "1+(2+3)":</p>
+
+<pre>
+julia&amp; <strong>expression2=parse("1+2+3")</strong>
+:(1 + 2 + 3)
+&nbsp;
+julia&amp; <strong>dump(expression2)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(4,))
+    1: Symbol +
+    2: Int64 1
+    3: Int64 2
+    4: Int64 3
+  typ: Any
+</pre>
+
+<pre>
+julia&amp; <strong>expression5=parse("1+(2+3)")</strong>
+:(1 + (2 + 3))
+&nbsp;
+julia&amp; <strong>dump(expression5)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol +
+        2: Int64 2
+        3: Int64 3
+      typ: Any
+  typ: Any
+</pre>
+
+<p>Vidíme, že se zde volá funkce specifikovaná symbolem <strong>+</strong>,
+prvním parametrem této funkce je konstanta 1 a druhý parametr je rekurzivně
+vyjádřen dalším objektem typu <strong>Expr</strong>. Zde již tedy začíná být
+patrné, že se skutečně jedná o rekurzivní datovou strukturu.</p>
+
+<p>I následující výraz bude převeden na strom, přesněji řečeno na dva objekty
+<strong>Expr</strong> zanořené do kořenového <strong>Expr</strong>:</p>
+
+<pre>
+julia&amp; <strong>expression6=parse("1&lt;2 &amp;&amp; 4&gt;=3")</strong>
+:(1 &lt; 2 &amp;&amp; 4 &gt;= 3)
+&nbsp;
+julia&amp; <strong>dump(expression6)</strong>
+Expr 
+  head: Symbol &amp;&amp;
+  args: Array(Any,(2,))
+    1: Expr 
+      head: Symbol comparison
+      args: Array(Any,(3,))
+        1: Int64 1
+        2: Symbol &lt;
+        3: Int64 2
+      typ: Any
+    2: Expr 
+      head: Symbol comparison
+      args: Array(Any,(3,))
+        1: Int64 4
+        2: Symbol &gt;=
+        3: Int64 3
+      typ: Any
+  typ: Any
+</pre>
+
+<p>Podobně vypadá AST pro konstrukci podmínky:</p>
+
+<pre>
+julia&amp; <strong>expression7=parse("if 2&gt;1 then; println(\"vetsi\"); end")</strong>
+:(if 2 &gt; 1 # none, line 1:
+        then # none, line 1:
+        println("vetsi")
+    end)
+&nbsp;
+julia&amp; <strong>dump(expression7)</strong>
+Expr 
+  head: Symbol if
+  args: Array(Any,(2,))
+    1: Expr 
+      head: Symbol comparison
+      args: Array(Any,(3,))
+        1: Int64 2
+        2: Symbol &gt;
+        3: Int64 1
+      typ: Any
+    2: Expr 
+      head: Symbol block
+      args: Array(Any,(4,))
+        1: LineNumberNode 
+          file: Symbol none
+          line: Int64 1
+        2: Symbol then
+        3: LineNumberNode 
+          file: Symbol none
+          line: Int64 1
+        4: Expr 
+          head: Symbol call
+          args: Array(Any,(2,))
+          typ: Any
+      typ: Any
+  typ: Any
+</pre>
+
+<p>Posledním příkladem, který si ukážeme, je parsing nekonečné smyčky:</p>
+
+<pre>
+julia&amp; <strong>expression8=parse("while true; println(\"looping\"); end")</strong>
+:(while true # none, line 1:
+        println("looping")
+    end)
+&nbsp;
+julia&amp; <strong>dump(expression8)</strong>
+Expr 
+  head: Symbol while
+  args: Array(Any,(2,))
+    1: Bool true
+    2: Expr 
+      head: Symbol block
+      args: Array(Any,(2,))
+        1: LineNumberNode 
+          file: Symbol none
+          line: Int64 1
+        2: Expr 
+          head: Symbol call
+          args: Array(Any,(2,))
+          typ: Any
+      typ: Any
+  typ: Any
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zobrazení S-výrazu parsované části zdrojového kódu</h2>
+
+<p>Programátoři, kteří se již seznámili s&nbsp;některých jazykem patřícím do
+LISPovské rodiny, tedy například s&nbsp;AutoLISPem, Common Lispem, Scheme či
+Clojure, ví, že se v&nbsp;těchto jazycích program zapisuje s&nbsp;použitím
+takzvaných S-výrazů (symolických výrazů) neboli S-expression (někdy se tento
+název &bdquo;vtipně&ldquo; zkracuje na sexprs nebo sexps). S-výrazy vlastně
+přímo vyjadřují podobu AST, což mj.&nbsp;naznačuje, proč je tvorba maker
+v&nbsp;LISPovských jazycích celkem jednoduchá a přímočará. Vzhledem
+k&nbsp;tomu, že díky použití S-výrazů lze AST reprezentovat v&nbsp;poměrně
+čitelné a současně i kompaktní podobě (jako seznam vnořených seznamů, symbolů a
+konstant), obsahuje i knihovna programovacího jazyka Julia možnost, jak si
+nechat vypsat libovolný objekt typu <strong>Expr</strong> &bdquo;lispovským
+způsobem&ldquo;. Vše potřebné zařídí funkce <strong>Meta.show_sexpr()</strong>,
+což je ostatně patrné i při pohledu na další příklady (pro ilustraci používám
+stejné příklady, jako v&nbsp;předchozích kapitolách):</p>
+
+<pre>
+julia&amp; <strong>expression1=parse("1+2")</strong>
+:(1 + 2)
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression1)</strong>
+(:call, :+, 1, 2)
+</pre>
+
+<pre>
+julia&amp; <strong>expression2=parse("1+2+3")</strong>
+:(1 + 2 + 3)
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression2)</strong>
+(:call, :+, 1, 2, 3)
+</pre>
+
+<pre>
+julia&amp; <strong>expression3=parse("sin(3.1415)")</strong>
+:(sin(3.1415))
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression3)</strong>
+(:call, :sin, 3.1415)
+</pre>
+
+<pre>
+julia&amp; <strong>expression4=parse("length(\"asd\")")</strong>
+:(length("asd"))
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression4)</strong>
+(:call, :length, "asd")
+</pre>
+
+<pre>
+julia&amp; <strong>expression5=parse("1+(2+3)")</strong>
+:(1 + (2 + 3))
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression5)</strong>
+(:call, :+, 1, (:call, :+, 2, 3))
+</pre>
+
+<pre>
+julia&amp; <strong>expression6=parse("1&lt;2 &amp;&amp; 4&gt;=3")</strong>
+:(1 &lt; 2 &amp;&amp; 4 &gt;= 3)
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression6)</strong>
+(:&amp;&amp;, (:comparison, 1, :&lt;, 2), (:comparison, 4, :(&gt;=), 3))
+</pre>
+
+<pre>
+julia&amp; <strong>expression7=parse("if 2&gt;1 then; println(\"vetsi\"); end")</strong>
+:(if 2 &gt; 1 # none, line 1:
+        then # none, line 1:
+        println("vetsi")
+    end)
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression7)</strong>
+(:if, (:comparison, 2, :&gt;, 1), (:block,
+    :( # none, line 1:),
+    :then,
+    :( # none, line 1:),
+    (:call, :println, "vetsi")
+  ))
+</pre>
+
+<pre>
+julia&amp; <strong>expression8=parse("while true; println(\"looping\"); end")</strong>
+:(while true # none, line 1:
+        println("looping")
+    end)
+&nbsp;
+julia&amp; <strong>Meta.show_sexpr(expression8)</strong>
+(:while, true, (:block,
+    :( # none, line 1:),
+    (:call, :println, "looping")
+  ))
+</pre>
+
+<pre>
+julia&amp; <strong>Meta.show_sexpr(parse("1+2*(3+4)"))</strong>
+(:call, :+, 1, (:call, :*, 2, (:call, :+, 3, 4)))
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Vyhodnocení výrazů s&nbsp;využitím funkce <strong>eval()</strong></h2>
+
+<p>S&nbsp;první částí činnosti interpretru programovacího jazyka Julia jsme se
+již seznámili v&nbsp;předchozím textu &ndash; je jím parser. Druhá část je
+nejméně důležitá a z&nbsp;uživatelského hlediska je představována funkcí
+<strong>eval()</strong>, které se předá AST a výsledkem volání funkce
+<strong>eval()</strong> je příslušný vyhodnocený výraz a popř.&nbsp;i nějaké
+vedlejší efekty (například výpis textu funkcí <strong>println</strong>,
+vytvoření nové proměnné, vytvoření a spuštění nového vlákna atd.). Základní
+použití funkce <strong>eval()</strong> je velmi jednoduché &ndash; budeme jí
+totiž zpočátku předávat pouze AST korektně vygenerované funkcí
+<strong>parse()</strong>:</p>
+
+<pre>
+julia&amp; <strong>expression1=parse("1+2")</strong>
+:(1 + 2)
+&nbsp;
+julia&amp; <strong>eval(expression1)</strong>
+3
+</pre>
+
+<pre>
+julia&amp; <strong>expression2=parse("1+2+3")</strong>
+:(1 + 2 + 3)
+&nbsp;
+julia&amp; <strong>eval(expression2)</strong>
+6
+</pre>
+
+<pre>
+julia&amp; <strong>expression3=parse("sin(3.1415)")</strong>
+:(sin(3.1415))
+&nbsp;
+julia&amp; <strong>eval(expression3)</strong>
+9.265358966049026e-5
+</pre>
+
+<pre>
+julia&amp; <strong>expression4=parse("length(\"asd\")")</strong>
+:(length("asd"))
+&nbsp;
+julia&amp; <strong>eval(expression4)</strong>
+3
+</pre>
+
+<pre>
+julia&amp; <strong>expression5=parse("1+(2+3)")</strong>
+:(1 + (2 + 3))
+&nbsp;
+julia&amp; <strong>eval(expression5)</strong>
+6
+</pre>
+
+<pre>
+julia&amp; <strong>expression6=parse("1&lt;2 &amp;&amp; 4&gt;=3")</strong>
+:(1 &lt; 2 &amp;&amp; 4 &gt;= 3)
+&nbsp;
+julia&amp; <strong>eval(expression6)</strong>
+true
+</pre>
+
+<pre>
+julia&amp; <strong>expression7=parse("if 2&gt;1 then; println(\"vetsi\"); end")</strong>
+:(if 2 &gt; 1 # none, line 1:
+        then # none, line 1:
+        println("vetsi")
+    end)
+&nbsp;
+julia&amp; <strong>eval(expression7)</strong>
+vetsi
+</pre>
+
+<p>Poznámka: v&nbsp;tomto případě není řetězec &bdquo;vetsi&ldquo; výsledkem
+funkce <strong>eval()</strong>, ale pouhým vedlejším efektem volání funkce
+<strong>println()</strong>.</p>
+
+<pre>
+julia&amp; <strong>expression8=parse("while true; println(\"looping\"); end")</strong>
+:(while true # none, line 1:
+        println("looping")
+    end)
+&nbsp;
+julia&amp; <strong>eval(expression7)</strong>
+looping
+looping
+looping
+looping
+looping
+looping
+looping
+...
+</pre>
+
+<p>V&nbsp;tomto případě funkce <strong>eval()</strong> podle předpokladů nikdy
+neskončí.</p>
+
+<p>Povšimněte si toho, že výraz může obsahovat neznámé proměnné, což při jeho
+parsingu nevadí. Ovšem při vyhodnocování již taková proměnná musí
+existovat:</p>
+
+<pre>
+julia&amp; <strong>expression9=parse("i/(i+1.0)")</strong>
+:(i / (i + 1.0))
+&nbsp;
+julia&amp; <strong>dump(expression9)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol /
+    2: Symbol i
+    3: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol +
+        2: Symbol i
+        3: Float64 1.0
+      typ: Any
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(expression9)</strong>
+ERROR: UndefVarError: i not defined
+&nbsp;
+julia&amp; <strong>i=3</strong>
+3
+&nbsp;
+julia&amp; <strong>eval(expression9)</strong>
+0.75
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Programová či &bdquo;ruční&ldquo; konstrukce výrazů</h2>
+
+<p>Nyní již máme k&nbsp;dispozici dostatek informací k&nbsp;tomu, abychom mohli
+začít konstruovat vlastní výrazy. Nejsložitější (resp.&nbsp;přesněji řečeno
+&bdquo;nejukecanější&ldquo;) je explicitní použití konstruktoru objektů typu
+<strong>Expr</strong>. Zkusme si nyní vytvořit výraz odpovídající zápisu
+&bdquo;1+2*3&ldquo;:</p>
+
+<pre>
+julia&amp; <strong>my_expression=Expr(:call, :+, 1, Expr(:call, :*, 2, 3))</strong>
+:(1 + 2 * 3)
+&nbsp;
+julia&amp; <strong>dump(my_expression)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol *
+        2: Int64 2
+        3: Int64 3
+      typ: Any
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(my_expression)</strong>
+7
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Použití znaku : namísto konstruktoru <strong>Expr</strong></h2>
+
+<p>V&nbsp;demonstračním příkladu ukázaném <a href="#k08">v&nbsp;předchozí
+kapitole</a> se nám sice výraz zkonstruovat podařilo, ale samotný zápis jeho
+konstruktoru jistě neoplývá čitelností ani srozumitelností &ndash; takto by se
+nám makra tvořila velmi špatně. Základem pro radikální zjednodušení konstrukce
+výrazů je použití symbolu : (dvojtečka), který se používá pro takzvanou
+&bdquo;citaci&ldquo; (quoting):</p>
+
+<pre>
+julia&amp; <strong>my_expression=:(1+2*3)</strong>
+:(1 + 2 * 3)
+&nbsp;
+julia&amp; <strong>dump(my_expression)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol *
+        2: Int64 2
+        3: Int64 3
+      typ: Any
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(my_expression)</strong>
+7
+</pre>
+
+<p>Pro delší výrazy, například pro zápis programových smyček, je však i použití
+dvojtečky zbytečně nečitelné. Zde přichází na řadu syntaktický cukr
+představovaný slovy <strong>quote</strong> a <strong>end</strong>:</p>
+
+<pre>
+julia&amp; <strong>my_expression=quote</strong>
+       1+2*3
+       end
+quote  # none, line 2:
+    1 + 2 * 3
+end
+&nbsp;
+julia&amp; <strong>dump(my_expression)</strong>
+Expr 
+  head: Symbol block
+  args: Array(Any,(2,))
+    1: LineNumberNode 
+      file: Symbol none
+      line: Int64 2
+    2: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol +
+        2: Int64 1
+        3: Expr 
+          head: Symbol call
+          args: Array(Any,(3,))
+          typ: Any
+      typ: Any
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(my_expression)</strong>
+7
+</pre>
+
+<p>Použití při deklaraci programové smyčky:</p>
+
+<pre>
+julia&amp; <strong>my_loop=quote</strong>
+       while i&lt;10 
+       println(i)
+       i=i+1
+       end
+       end
+quote  # none, line 2:
+    while i &lt; 10 # none, line 3:
+        println(i) # none, line 4:
+        i = i + 1
+    end
+end
+</pre>
+
+<p>Poznámka: první klíčové slovo <strong>end</strong> uzavírá programovou
+smyčku, druhé slovo <strong>end</strong> pak blok <strong>quote</strong>.</p>
+
+<p>Použití takto vytvořeného objektu typu <strong>Expr</strong> (především
+reprezentace AST) je přímočaré:</p>
+
+<pre>
+julia&amp; <strong>i=0</strong>
+0
+&nbsp;
+julia&amp; <strong>eval(my_loop)</strong>
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Tvorba výrazů a použití interpolace</h2>
+
+<p>Kromě operace <i>citace</i> (quote) se při tvorbě maker ještě velmi často
+uplatňuje opačná operace &ndash; takzvaná <i>interpolace</i>. Interpolace se
+zapisuje s&nbsp;využitím znaku $ (dolar) a ruší efekt citace pro následující
+symbol (tento symbol je ihned vyhodnocen &ndash; do AST se zapíše až jeho
+vyhodnocená forma). Ukažme si jednoduchý příklad a rozdíl mezi přímým
+vyhodnocením výrazu, parsingem výrazu s&nbsp;použitím citace a interpolace a
+jeho následným vyhodnocením.</p>
+
+<p>Přímé vyhodnocení výrazu:</p>
+
+<pre>
+julia&amp; <strong>x=42</strong>
+42
+&nbsp;
+julia&amp; <strong>1+2*x</strong>
+85
+</pre>
+
+<p>Vytvoření výrazu citací, ale bez interpolace:</p>
+
+<pre>
+julia&amp; <strong>ex2=:(1+2*x)</strong>
+:(1 + 2x)
+&nbsp;
+julia&amp; <strong>dump(ex2)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol *
+        2: Int64 2
+        3: Symbol x   <strong>zde se stále pracuje se jménem proměnné</strong>
+      typ: Any
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(ex2)</strong>
+85
+</pre>
+
+<p>Vytvoření výrazu citací s&nbsp;interpolací. Proměnná <strong>x</strong> se
+vyhodnotí a do AST je uložen výsledek:</p>
+
+<pre>
+julia&amp; <strong>ex3=:(1+2*$x)</strong>
+:(1 + 2 * 42)
+&nbsp;
+julia&amp; <strong>dump(ex3)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Expr 
+      head: Symbol call
+      args: Array(Any,(3,))
+        1: Symbol *
+        2: Int64 2
+        3: Int64 42   <strong>zde se pracuje s vyhodnoceným výrazem/symbolem x</strong>
+      typ: Any
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(ex3)</strong>
+85
+</pre>
+
+<p>Interpolaci lze použít i na složitější výraz, nejenom na jediný symbol.
+V&nbsp;dalším příkladu se již při konstrukci AST vyhodnotí 2*42=84 a teprve
+hodnota 84 je skutečně uložena do AST:</p>
+
+<pre>
+julia&amp; <strong>ex4=:(1+$(2*x))</strong>
+:(1 + 84)
+&nbsp;
+julia&amp; <strong>dump(ex4)</strong>
+Expr 
+  head: Symbol call
+  args: Array(Any,(3,))
+    1: Symbol +
+    2: Int64 1
+    3: Int64 84
+  typ: Any
+&nbsp;
+julia&amp; <strong>eval(ex4)</strong>
+85
+</pre>
+
+<p>Na citaci se můžeme dívat jako na pozdržení vyhodnocení výrazu až do
+okamžiku jeho zavolání, zatímco na interpolaci se můžeme dívat jako na přesně
+opačnou operace &ndash; vynucení vyhodnocení označené části výrazu.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Makrosystém programovacího jazyka Julia</h2>
+
+<p>Makrosystém programovacího jazyka Julia je založen na tom, že makra jsou
+spouštěna již ve chvíli, kdy je kód parsován, tedy předtím, než je vůbec
+spuštěn interpretrem. To znamená, že makra mohou do kódu (resp.&nbsp;do jeho
+AST) vkládat další symboly, modifikovat symboly, které do původní podoby kódu
+zapsal uživatel atd. Makro se deklaruje podobným způsobem jako funkce,
+samozřejmě s&nbsp;tím rozdílem, že se používá klíčové slovo
+<strong>macro</strong>. Musíme se však uvědomit, že parametrem či parametry
+makra není nějaký již vyhodnocený výraz (typicky konstanta), ale zpracovaný
+AST:</p>
+
+<pre>
+julia&amp; <strong>macro sayhello(name)</strong>
+                  return :( println("Hello, ", $name) )
+              end
+</pre>
+
+<p>Použití makra je od volání funkcí odlišné a lze použít dvě podoby:</p>
+
+<pre>
+julia&amp; <strong>@sayhello "Root.cz"</strong>
+Hello, Root.cz
+&nbsp;
+julia&amp; <strong>@sayhello("Root.cz")</strong>
+Hello, Root.cz
+</pre>
+
+<p>Pokud by makro mělo více parametrů, budou se v&nbsp;prvním případě oddělovat
+mezerami, ve druhém čárkami (jako u funkcí).</p>
+
+<p>Další makro můžeme použít v&nbsp;případě, kdy potřebujeme najít chybu
+v&nbsp;nějakém výrazu, nebo pouze zjišťujeme, jaké výrazy se v&nbsp;programu
+používají. Makro nejdříve vypíše tvar výrazu a poté vrátí výsledek jeho
+vyhodnocení:</p>
+
+<pre>
+julia&amp; <strong>macro debug(expression)</strong>
+       println("Evaluating: ", expression)
+       return eval(expression)
+       end
+&nbsp;
+julia&amp; <strong>@debug 1+2*3</strong>
+Evaluating: 1 + 2 * 3
+7
+&nbsp;
+julia&amp; <strong>@debug(1+2*3)</strong>
+Evaluating: 1 + 2 * 3
+7
+</pre>
+
+<p>Prozatím poslední makro, které si ukážeme, lze použít pro aserci. Povšimněte
+si použití citace i interpolace:</p>
+
+<pre>
+julia&amp; <strong>macro assert(ex)</strong>
+           return :( $ex ? nothing : throw(AssertionError($(string(ex)))) )
+       end
+</pre>
+
+<p>Příklad použití:</p>
+
+<pre>
+julia&amp; <strong>assert(1&lt;2)</strong>
+&nbsp;
+julia&amp; <strong>assert(1&gt;2)</strong>
+ERROR: AssertionError: 
+ in assert at error.jl:38
+</pre>
+
+<p>Složitější makra si popíšeme a ukážeme příště.</p>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>S-expression (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/S-expression">https://en.wikipedia.org/wiki/S-expression</a>
+</li>
+
+<li>S-Expressions (Rosetta Code)<br />
+<a href="http://rosettacode.org/wiki/S-Expressions">http://rosettacode.org/wiki/S-Expressions</a>
+</li>
+
+<li>Metaprogramming (Julia)<br />
+<a href="http://julia.readthedocs.io/en/latest/manual/metaprogramming/">http://julia.readthedocs.io/en/latest/manual/metaprogramming/</a>
+</li>
+
+<li>Introducing Julia/Metaprogramming<br />
+<a href="https://en.wikibooks.org/wiki/Introducing_Julia/Metaprogramming">https://en.wikibooks.org/wiki/Introducing_Julia/Metaprogramming</a>
+</li>
+
+<li>Tutorial for the Common Lisp Loop Macro<br />
+<a href="http://www.ai.sri.com/pkarp/loop.html">http://www.ai.sri.com/pkarp/loop.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part I, Getting the Compiler to Write Your Code For You)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part II: The Compiler Strikes Back)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part III: Syntax Quote)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html</a>
+</li>
+
+<li>Clojure Macros and Metaprogramming<br />
+<a href="http://clojure-doc.org/articles/language/macros.html">http://clojure-doc.org/articles/language/macros.html</a>
+</li>
+
+<li>Tech behind Tech: Clojure Macros Simplified<br />
+<a href="http://techbehindtech.com/2010/09/28/clojure-macros-simplified/">http://techbehindtech.com/2010/09/28/clojure-macros-simplified/</a>
+</li>
+
+<li>Fatvat - Exploring functional programming: Clojure Macros<br />
+<a href="http://www.fatvat.co.uk/2009/02/clojure-macros.html">http://www.fatvat.co.uk/2009/02/clojure-macros.html</a>
+</li>
+
+<li>CS 2101 Parallel Computing with Julia<br />
+<a href="https://www.coursehero.com/file/11508091/CS-2101-Parallel-Computing-with-Julia/">https://www.coursehero.com/file/11508091/CS-2101-Parallel-Computing-with-Julia/</a>
+</li>
+
+<li>Julia By Example<br />
+<a href="https://samuelcolvin.github.io/JuliaByExample/">https://samuelcolvin.github.io/JuliaByExample/</a>
+</li>
+
+<li>Tasks and Parallel Computing<br />
+<a href="http://docs.julialang.org/en/release-0.4/stdlib/parallel/">http://docs.julialang.org/en/release-0.4/stdlib/parallel/</a>
+</li>
+
+<li>clock(3) - Linux man page<br />
+<a href="http://linux.die.net/man/3/clock">http://linux.die.net/man/3/clock</a>
+</li>
+
+<li>rand_r(3) - Linux man page<br />
+<a href="http://linux.die.net/man/3/rand_r">http://linux.die.net/man/3/rand_r</a>
+</li>
+
+<li>atan2(3) - Linux man page<br />
+<a href="http://linux.die.net/man/3/atan2">http://linux.die.net/man/3/atan2</a>
+</li>
+
+<li>Calling C and Fortran Code<br />
+<a href="http://docs.julialang.org/en/release-0.4/manual/calling-c-and-fortran-code/?highlight=symbol">http://docs.julialang.org/en/release-0.4/manual/calling-c-and-fortran-code/?highlight=symbol</a>
+</li>
+
+<li>Array Programming<br />
+<a href="https://en.wikipedia.org/wiki/Array_programming">https://en.wikipedia.org/wiki/Array_programming</a>
+</li>
+
+<li>Discovering Array Languages<br />
+<a href="http://archive.vector.org.uk/art10008110">http://archive.vector.org.uk/art10008110</a>
+</li>
+
+<li>no stinking loops -- Kalothi<br />
+<a href="http://www.nsl.com/">http://www.nsl.com/</a>
+</li>
+
+<li>Vector (obsahuje odkazy na články, knihy a blogy o programovacích jazycích APL, J a K)<br />
+<a href="http://www.vector.org.uk/">http://www.vector.org.uk/</a>
+</li>
+
+<li>APL Interpreters<br />
+<a href="http://www.vector.org.uk/?area=interpreters">http://www.vector.org.uk/?area=interpreters</a>
+</li>
+
+<li>APL_(programming_language<br />
+<a href="http://en.wikipedia.org/wiki/APL_(programming_language">http://en.wikipedia.org/wiki/APL_(programming_language</a>
+</li>
+
+<li>APL FAQ<br />
+<a href="http://www.faqs.org/faqs/apl-faq/">http://www.faqs.org/faqs/apl-faq/</a>
+</li>
+
+<li>APL FAQ (nejnovější verze)<br />
+<a href="http://home.earthlink.net/~swsirlin/apl.faq.html">http://home.earthlink.net/~swsirlin/apl.faq.html</a>
+</li>
+
+<li>A+<br />
+<a href="http://www.aplusdev.org/">http://www.aplusdev.org/</a>
+</li>
+
+<li>APLX<br />
+<a href="http://www.microapl.co.uk/">http://www.microapl.co.uk/</a>
+</li>
+
+<li>FreeAPL<br />
+<a href="http://www.pyr.fi/apl/index.htm">http://www.pyr.fi/apl/index.htm</a>
+</li>
+
+<li>J: a modern, high-level, general-purpose, high-performance programming language<br />
+<a href="http://www.jsoftware.com/">http://www.jsoftware.com/</a>
+</li>
+
+<li>K, Kdb: an APL derivative for Solaris, Linux, Windows<br />
+<a href="http://www.kx.com">http://www.kx.com</a>
+</li>
+
+<li>openAPL (GPL)<br />
+<a href="http://sourceforge.net/projects/openapl">http://sourceforge.net/projects/openapl</a>
+</li>
+
+<li>Parrot APL (GPL)<br />
+<a href="http://www.parrotcode.org/">http://www.parrotcode.org/</a>
+</li>
+
+<li>Learning J (Roger Stokes)<br />
+<a href="http://www.jsoftware.com/help/learning/contents.htm">http://www.jsoftware.com/help/learning/contents.htm</a>
+</li>
+
+<li>Rosetta Code<br />
+<a href="http://rosettacode.org/wiki/Main_Page">http://rosettacode.org/wiki/Main_Page</a>
+</li>
+
+<li>Why APL<br />
+<a href="http://www.acm.org/sigapl/whyapl.htm">http://www.acm.org/sigapl/whyapl.htm</a>
+</li>
+
+<li>Introducing Julia/Functions<br />
+<a href="https://en.wikibooks.org/wiki/Introducing_Julia/Functions">https://en.wikibooks.org/wiki/Introducing_Julia/Functions</a>
+</li>
+
+<li>Functions (Julia documentation)<br />
+<a href="http://docs.julialang.org/en/release-0.4/manual/functions/">http://docs.julialang.org/en/release-0.4/manual/functions/</a>
+</li>
+
+<li>Evaluate binomial coefficients<br />
+<a href="http://rosettacode.org/wiki/Evaluate_binomial_coefficients">http://rosettacode.org/wiki/Evaluate_binomial_coefficients</a>
+</li>
+
+<li>Ackermann function<br />
+<a href="http://rosettacode.org/wiki/Ackermann_function">http://rosettacode.org/wiki/Ackermann_function</a>
+</li>
+
+<li>Julia (front page)<br />
+<a href="http://julialang.org/">http://julialang.org/</a>
+</li>
+
+<li>Julia &ndash; dokumentace<br />
+<a href="http://docs.julialang.org/en/release-0.4/">http://docs.julialang.org/en/release-0.4/</a>
+</li>
+
+<li>Julia &ndash; repositář na GitHubu<br />
+<a href="https://github.com/JuliaLang/julia">https://github.com/JuliaLang/julia</a>
+</li>
+
+<li>Julia (programming language)<br />
+<a href="https://en.wikipedia.org/wiki/Julia_%28programming_language%29">https://en.wikipedia.org/wiki/Julia_%28programming_language%29</a>
+</li>
+
+<li>IJulia<br />
+<a href="https://github.com/JuliaLang/IJulia.jl">https://github.com/JuliaLang/IJulia.jl</a>
+</li>
+
+<li>Introducing Julia<br />
+<a href="https://en.wikibooks.org/wiki/Introducing_Julia">https://en.wikibooks.org/wiki/Introducing_Julia</a>
+</li>
+
+<li>Julia: the REPL<br />
+<a href="https://en.wikibooks.org/wiki/Introducing_Julia/The_REPL">https://en.wikibooks.org/wiki/Introducing_Julia/The_REPL</a>
+</li>
+
+<li>Month of Julia<br />
+<a href="https://github.com/DataWookie/MonthOfJulia">https://github.com/DataWookie/MonthOfJulia</a>
+</li>
+
+<li>Learn X in Y minutes (where X=Julia)<br />
+<a href="https://learnxinyminutes.com/docs/julia/">https://learnxinyminutes.com/docs/julia/</a>
+</li>
+
+<li>New Julia language seeks to be the C for scientists<br />
+<a href="http://www.infoworld.com/article/2616709/application-development/new-julia-language-seeks-to-be-the-c-for-scientists.html">http://www.infoworld.com/article/2616709/application-development/new-julia-language-seeks-to-be-the-c-for-scientists.html</a>
+</li>
+
+<li>Julia: A Fast Dynamic Language for Technical Computing<br />
+<a href="http://karpinski.org/publications/2012/julia-a-fast-dynamic-language">http://karpinski.org/publications/2012/julia-a-fast-dynamic-language</a>
+</li>
+
+<li>The LLVM Compiler Infrastructure<br />
+<a href="http://llvm.org/">http://llvm.org/</a>
+</li>
+
+<li>Julia: benchmarks<br />
+<a href="http://julialang.org/benchmarks/">http://julialang.org/benchmarks/</a>
+</li>
+
+<li>Type system<br />
+<a href="https://en.wikipedia.org/wiki/Type_system">https://en.wikipedia.org/wiki/Type_system</a>
+</li>
+
+<li>Half-precision floating-point format<br />
+<a href="https://en.wikipedia.org/wiki/Half-precision_floating-point_format">https://en.wikipedia.org/wiki/Half-precision_floating-point_format</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
