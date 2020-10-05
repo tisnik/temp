@@ -1,0 +1,1593 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Propojení světa LISPu se světem JavaScriptu s využitím transpřekladače Wisp (2.část)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Propojení světa LISPu se světem JavaScriptu s využitím transpřekladače Wisp (2.část)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Ve druhé části článku o transpřekladači Wisp si na několika demonstračních příkladech ukážeme, jakým způsobem lze implementovat obdobu programových smyček s&nbsp;využitím rekurze a TCO. Dále si popíšeme práci s&nbsp;proměnnými, práci s&nbsp;poli a vektory i to, jak se provádí překlad jmen deklarovaných funkcí do JavaScriptu. Nezapomeneme ani na popis tvorby uživatelských maker.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Klasická rekurze a některá její omezení</a></p>
+<p><a href="#k02">2. Rekurze a TCO (tail call optimization)</a></p>
+<p><a href="#k03">3. Proměnné a mutátory</a></p>
+<p><a href="#k04">4. Pole a vektory</a></p>
+<p><a href="#k05">5. Překlad jmen funkcí do JavaScriptu</a></p>
+<p><a href="#k06">6. Volání metod a funkcí JavaScriptu</a></p>
+<p><a href="#k07">7. Tvorba uživatelských maker</a></p>
+<p><a href="#k08">8. Tvorba jednoduchých maker s&nbsp;využitím <strong>defmacro</strong></a></p>
+<p><a href="#k09">9. Použití &bdquo;syntax-quote&ldquo; a &bdquo;unquote&ldquo; při tvorbě uživatelských maker</a></p>
+<p><a href="#k10">10. Repositář s&nbsp;dnešními demonstračními příklady</a></p>
+<p><a href="#k11">11. Odkazy na předchozí části tohoto seriálu</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Klasická rekurze a některá její omezení</h2>
+
+<p>Dostáváme se k&nbsp;typické vlastnosti společně většině programovacích
+jazyků založených či odvozených od LISPu. <i>Wisp</i> totiž, podobně jako mnohé
+další (nejenom) LISPovské programovací jazyky, preferuje rekurzi před masivním
+používáním programových smyček. Jsou pro to samozřejmě dobré důvody, jak
+teoretické, tak i praktické (opět jde o paralelní výpočty). Ve <i>Wispu</i> lze
+většinou použít přímý zápis rekurze, tj.&nbsp;v&nbsp;těle vytvářené funkce se
+může objevit volání této funkce. Zcela typickým &bdquo;školním&ldquo; příkladem
+rekurzivní funkce je funkce pro výpočet faktoriálu, jejíž jednoduchá varianta
+(neochráněná před všemi typy vstupů) může vypadat takto:</p>
+
+<pre>
+(defn fact
+    [n]
+    (if (&lt;= n 1)
+        1
+        (* n (fact (- n 1)))))
+</pre>
+
+<p>Tato funkce je do JavaScriptu přeložena podle očekávání:</p>
+
+<pre>
+var fact = exports.fact = function fact(n) {
+    return n &lt;= 1 ? 1 : n * fact(n - 1);
+};
+</pre>
+
+<p>Přílišnému nadšení nad tím, jak jednoduše nyní můžeme spočítat faktoriál
+z&nbsp;libovolně velkého čísla, však nepodléhejme, protože může dojít (a dojde)
+ke dvěma problémům: přetečení výsledku (do kladného nekonečna) a hlavně
+k&nbsp;přetečení zásobníku. Pojďme si to vyzkoušet. Nejdříve vytvoříme privátní
+funkci pro výpočet faktoriálu, ať se nemusíme zabývat problémy s&nbsp;objektem
+<strong>exports</strong> (privátní funkce se deklaruje pomocí
+<strong>defn-</strong> a nikoli <strong>defn</strong>):</p>
+
+<pre>
+(defn- fact
+    [n]
+    (if (&lt;= n 1)
+        1
+        (* n (fact (- n 1)))))
+</pre>
+
+<p>Tato rekurzivně definovaná funkce je do JavaScriptu přeložena opět podle
+očekávání:</p>
+
+<pre>
+var fact = function fact(n) {
+    return n &lt;= 1 ? 1 : n * fact(n - 1);
+};
+</pre>
+
+<p>Transpřeloženou funkci uloženou do souboru <strong>fact.js</strong>
+použijeme na HTML stránce:</p>
+
+<pre>
+&lt;html&gt;
+    &lt;head&gt;
+        &lt;title&gt;factorial&lt;/title&gt;
+        &lt;script type="text/javascript" src="fact.js"&gt;
+        &lt;/script&gt;
+    &lt;/head&gt;
+    &lt;body&gt;
+        &lt;script&gt;
+            document.write(fact(10));
+            document.write("&lt;br/&gt;");
+            document.write(fact(100));
+            document.write("&lt;br/&gt;");
+            document.write(fact(1000));
+            document.write("&lt;br/&gt;");
+            document.write(fact(10000));
+            document.write("&lt;br/&gt;");
+            document.write(fact(100000));
+        &lt;/script&gt;
+    &lt;/body&gt;
+&lt;/html&gt;
+</pre>
+
+<p>Podívejme se nyní na výsledek i na chybovou konzoli:</p>
+
+*** image ***
+
+<p>První dva výpočty jsou korektní, u dalších dvou výpočtů byl překročen
+maximální rozsah typu <i>double</i> použitého v&nbsp;JavaScriptu
+(v&nbsp;Clojure by se naproti tomu mohlo přejít na čísla typu BigDecimal) a
+konečně u posledního výpočtu došlo k&nbsp;přetečení zásobníku, na nějž se
+ukládají mezivýpočty a návratové body z&nbsp;volající funkce. Právě zde spočívá
+největší problém klasických rekurzivně volaných funkcí &ndash; velikost
+zásobníku je a vždy bude omezená, navíc i samotné volání rekurzivní funkce
+představuje poměrně vysokou režii.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Rekurze a TCO (tail call optimization)</h2>
+
+<p>Nyní již víme, že důvod, proč předchozí volání funkce <strong>fact</strong>
+skončilo s&nbsp;chybou, spočívá v&nbsp;tom, že došlo k&nbsp;přeplnění zásobníku
+při rekurzivním volání. Na zásobník se totiž musí ukládat parametry předávané
+volané funkci a taktéž body návratu (zjednodušeně řečeno návratové adresy). Aby
+k&nbsp;přetečení zásobníku nedocházelo, můžeme naši funkci
+<strong>fact</strong> upravit tak, aby se využívalo takzvané <i>tail
+rekurze</i>. Velmi zjednodušeně řečeno je <i>tail rekurze</i> použita tehdy,
+pokud je posledním příkazem nějaké funkce příkaz pro rekurzivní volání té samé
+funkce. V&nbsp;tomto případě se nemusí na zásobník nic ukládat a namísto toho
+se prostě provede skok. V&nbsp;Clojure a tím pádem taktéž ve Wispu se však musí
+<i>tail rekurze</i> zapsat explicitně, což má své přednosti i zápory (podle mě
+převažují přednosti, protože již ze zápisu programu je zcela zřejmé, kdy
+k&nbsp;<i>tail rekurzi</i> skutečně dojde).</p>
+
+<p>Na základě informací, které jsme se dozvěděli v&nbsp;předchozím textu, se
+tedy pokusme upravit původní čistě rekurzivní způsob zápisu funkce pro výpočet
+faktoriálu takovým způsobem, aby bylo možné využít tail rekurzi. Funkci je
+nutné upravit tak, aby jejím posledním příkazem bylo opět volání
+<strong>fact</strong> &ndash; u původní verze tomu tak nebylo, protože
+posledním příkazem bylo násobení. První pokus o úpravu spočívá v&nbsp;zavedení
+akumulátoru výsledku:</p>
+
+<pre>
+(defn fact
+    [n acc]
+    (if (&lt;= n 1)
+        acc
+        (fact (- n 1) (* acc n))))
+</pre>
+
+<p>Ovšem stále je zde jeden problém &ndash; z&nbsp;původní funkce s&nbsp;jedním
+parametrem se nyní stala funkce, jíž je nutné předávat i druhý parametr, který
+navíc musí být nastavený na jedničku. Náprava je prostá a spočívá
+v&nbsp;použití funkce <strong>fact</strong> s&nbsp;volitelnou aritou
+(popř.&nbsp;by bylo možné vytvořit pomocnou funkci, ovšem mě se následující
+zápis líbí více, protože se zbytečně nevytváří pomocné funkce):</p>
+
+<pre>
+(defn- fact
+    ([n]
+     (fact n 1))
+    ([n acc]
+     (if (&lt;= n 1)
+         acc
+         (fact (- n 1) (* acc n)))))
+</pre>
+
+<p>Výše uvedená funkce již může využívat tail rekurze, ovšem jak jsme si již
+řekli, je nutné tail rekurzi zapsat explicitně. Proto i zde dojde k&nbsp;chybě
+při přetečení zásobníku (na rozdíl od mnoha LISPů).</p>
+
+<p>Explicitní zápis rekurze spočívá ve využití speciální formy
+<strong>recur</strong>, která se zapíše přesně do místa, kde má k&nbsp;tail
+rekurzi (=skoku) dojít:</p>
+
+<pre>
+(defn- fact
+    ([n]
+     (fact n 1))
+    ([n acc]
+     (if (&lt;= n 1)
+         acc
+         (recur (-n 1) (* acc n)))))
+</pre>
+
+<p>Poznámka: tuto funkci nedokáže současná verze <i>Wispu</i> přeložit.</p>
+
+<p>Poměrně jednoduše lze rekurzi s&nbsp;využitím TCO deklarovat pomocí
+<strong>loop</strong> společně s&nbsp;<strong>recur</strong>. Za formou
+<strong>loop</strong> se nachází vektor s&nbsp;deklarací a inicializací
+lokálních proměnných použitých ve smyčce, na kterou je rekurzivní volání
+automaticky převedeno. Forma <strong>recur</strong> umístěná uvnitř
+<strong>loop</strong> přesune řízení programu ihned za slovo
+<strong>loop</strong>, přičemž parametry předané do <strong>recur</strong>
+slouží ke změně hodnot(y) lokálních proměnných. Co to znamená v&nbsp;praxi?
+Podívejme se na způsob zápisu smyčky, jejíž počitadlo (lokální proměnná
+<strong>i</strong>) se zvyšuje od 0 do 10:</p>
+
+<pre>
+<i>; počitadlo od 0 do 10</i>
+(loop [i 0]
+    (if (== i 10)          <i>; podmínka pro ukončení smyčky</i>
+        sum                <i>; návratová hodnota při splnění podmínky</i>
+        (recur (+ i 1))))  <i>; rekurze (s TCO)</i>
+                           <i>; v nové iteraci obsahuje i hodnotu staré_i+1</i>
+</pre>
+
+<p>Smyčka, ve které se používá počitadlo <strong>i</strong> a současně se
+počítá i suma <strong>sum</strong>, bude implementována takto:</p>
+
+<pre>
+<i>; výpočet desáté mocniny dvojky</i>
+(loop [i 0 sum 1]
+    (if (== i 10)          <i>; podmínka pro ukončení smyčky</i>
+        sum                <i>; návratová hodnota při splnění podmínky</i>
+        (recur (+ i 1) (* sum 2))))  <i>; rekurze (s TCO)</i>
+                           <i>; v nové iteraci obsahuje i hodnotu staré_i+1</i>
+                           <i>; a sum hodnotu staré_sum * 2</i>
+</pre>
+
+<p>Podívejme se nyní na implementaci funkce pro výpočet n-té mocniny dvojky:</p>
+
+<pre>
+<i>; funkce pro výpočet n-té mocniny dvojky</i>
+(defn pow2
+    [n]
+    (loop [i 0 sum 1]
+        (if (== i n)       <i>; podmínka pro ukončení smyčky</i>
+            sum            <i>; návratová hodnota při splnění podmínky</i>
+            (recur (+ i 1) (* sum 2)))))  <i>; rekurze (s TCO)</i>
+                           <i>; v nové iteraci obsahuje i hodnotu staré_i+1</i>
+                           <i>; a sum hodnotu staré_sum * 2</i>
+</pre>
+
+<p>Další příklady na použití forem <strong>loop</strong> a
+<strong>recur</strong>:</p>
+
+<pre>
+<i>; příklad pro výpočet sumy pole</i>
+(def array [1 2 3 4 5])
+&nbsp;
+(loop [i 0 sum 0]
+    (if (== i 5)           <i>; podmínka pro ukončení smyčky</i>
+        sum                <i>; návratová hodnota při splnění podmínky</i>
+        (recur (+ i 1) (+ sum (get array i) ))))  <i>; rekurze (s TCO)</i>
+&nbsp;
+<i>; explicitní TCO?</i>
+(defn power
+    ([x y]
+        (power x y 1))
+    ([x y current]
+        (if (== y 0)
+            current
+            (if (&gt; y 0)
+                (recur x (- y 1) (* x current))
+                (recur x (+ y 1) (/ current x))))))
+&nbsp;
+(defn power2
+    [x y]
+    (loop [exponent y
+           current 1.0]
+        (if (== exponent 0)
+            current
+            (if (&gt; exponent 0)
+                (recur (- exponent 1) (* x current))
+                (recur (+ exponent 1) (/ current x))))))
+</pre>
+
+<p>Výsledek transpřekladu do JavaScriptu:</p>
+
+<pre>
+<i>// implementace počitadla od 0 do 10</i>
+<i>// povšimněte si lokálních symbolů uvnitř funkce</i>
+<i>// a použití loop pro předávání parametrů</i>
+(function loop() {
+    var recur = loop;
+    var iø1 = 0;
+    do {
+        recur = iø1 == 10 ? sum : (loop[0] = iø1 + 1, loop);
+    } while (iø1 = loop[0], recur === loop);
+    return recur;
+}.call(this));
+<i>// vlastní smyčka je skutečně převedena na smyčku, zde typu do-while</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>// implementace počitadla od 0 do 10</i>
+<i>// společně s výpočtem sumy</i>
+<i>// lokální proměnné opět mají v názvu speciální znak ø</i>
+(function loop() {
+    var recur = loop;
+    var iø1 = 0;
+    var sumø1 = 1;
+    do {
+        recur = iø1 == 10 ? sumø1 : (loop[0] = iø1 + 1, loop[1] = sumø1 * 2, loop);
+    } while (iø1 = loop[0], sumø1 = loop[1], recur === loop);
+    return recur;
+}.call(this));
+&nbsp;
+&nbsp;
+&nbsp;
+<i>// funkce pro výpočet n-té mocniny dvojky</i>
+var pow2 = exports.pow2 = function pow2(n) {
+    return function loop() {
+        var recur = loop;
+        var iø1 = 0;
+        var sumø1 = 1;
+        do {
+            recur = iø1 == n ? sumø1 : (loop[0] = iø1 + 1, loop[1] = sumø1 * 2, loop);
+        } while (iø1 = loop[0], sumø1 = loop[1], recur === loop);
+        return recur;
+    }.call(this);
+};
+&nbsp;
+&nbsp;
+&nbsp;
+<i>// zpracování polí/vektorů ve funkci</i>
+var array = exports.array = [
+    1,
+    2,
+    3,
+    4,
+    5
+];
+&nbsp;
+(function loop() {
+    var recur = loop;
+    var iø1 = 0;
+    var sumø1 = 0;
+    do {
+        recur = iø1 == 5 ? sumø1 : (loop[0] = iø1 + 1, loop[1] = sumø1 + (array || 0)[iø1], loop);
+    } while (iø1 = loop[0], sumø1 = loop[1], recur === loop);
+    return recur;
+}.call(this));
+&nbsp;
+&nbsp;
+&nbsp;
+<i>// výpočet obecné mocniny</i>
+var power = exports.power = function power() {
+    switch (arguments.length) {
+    case 2:
+        var x = arguments[0];
+        var y = arguments[1];
+        return power(x, y, 1);
+    case 3:
+        var x = arguments[0];
+        var y = arguments[1];
+        var current = arguments[2];
+        return y == 0 ? current : y &gt; 0 ? (loop[0] = x, loop[1] = y - 1, loop[2] = x * current, loop) : (loop[0] = x, loop[1] = y + 1, loop[2] = current / x, loop);
+    default:
+        throw RangeError('Wrong number of arguments passed');
+    }
+};
+&nbsp;
+&nbsp;
+&nbsp;
+<i>// výpočet obecné mocniny, druhá možnost implementovaná pomocí loop a recur</i>
+var power2 = exports.power2 = function power2(x, y) {
+    return function loop() {
+        var recur = loop;
+        var exponentø1 = y;
+        var currentø1 = 1;
+        do {
+            recur = exponentø1 == 0 ? currentø1 : exponentø1 &gt; 0 ? (loop[0] = exponentø1 - 1, loop[1] = x * currentø1, loop) : (loop[0] = exponentø1 + 1, loop[1] = currentø1 / x, loop);
+        } while (exponentø1 = loop[0], currentø1 = loop[1], recur === loop);
+        return recur;
+    }.call(this);
+};
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Proměnné a mutátory</h2>
+
+<p>Na rozdíl od programovacího jazyka Clojure, v&nbsp;němž jsou implicitně
+všechny datové struktury neměnné (immutable), je tomu v&nbsp;případě jazyka
+Wisp poněkud jinak, protože Wisp se snaží o co nejužší kooperaci
+s&nbsp;JavaScriptem, který používá běžné proměnné. I z&nbsp;tohoto důvodu sice
+existuje možnost vytvoření globální proměnné či datové struktury
+s&nbsp;využitím speciální formy <strong>def</strong>, ovšem kdykoli později je
+možné hodnotu změnit pomocí <strong>set!</strong>. Vykřičník je součástí názvu,
+což se ostatně týká i dalších funkcí a speciálních metod, které mění stav
+programu. Podívejme se nyní na několik příkladů, v&nbsp;nichž se
+<strong>def</strong> a <strong>set!</strong> používá:</p>
+
+<pre>
+<i>; Ukázka použití proměnných.</i>
+&nbsp;
+&nbsp;
+<i>; Pozor: proměnné nejsou ve Wispu neměnitelné (immutable)</i>
+<i>; tak jako je tomu v originálním Clojure!</i>
+(def x 42)
+&nbsp;
+(def y (+ x 1))
+&nbsp;
+(def z [1 2 3 4])
+&nbsp;
+<i>; mutátor</i>
+(set! x (- x 1))
+&nbsp;
+<i>; speciální formu if je možné použít i uvnitř výrazu</i>
+(set! y (if (&lt; x 0) "negative" "positive"))
+&nbsp;
+<i>; změna typu hodnoty uložené do proměnné</i>
+(set! x [1 2 3 4])
+(set! x "Hello World!")
+(set! x 0)
+(set! x true)
+(set! x nil)
+&nbsp;
+<i>; proměnné jsou přístupné i uvnitř funkcí</i>
+(defn foo
+    []
+    (+ x 1))
+&nbsp;
+<i>; proměnné versus lokální symboly</i>
+(defn foo
+    []
+    (print x)
+    (let [x 42]
+        (print x)))
+&nbsp;
+<i>; proměnné versus lokální symboly</i>
+(defn foo
+    []
+    (print x)
+    (let [x 42]
+        (let [x 99999]
+            (print x))
+        (print x)))
+</pre>
+
+<p>Výsledek transpřekladu do JavaScriptu je velmi přímočarý:</p>
+
+<pre>
+var x = exports.x = 42;
+&nbsp;
+var y = exports.y = x + 1;
+&nbsp;
+var z = exports.z = [
+    1,
+    2,
+    3,
+    4
+];
+&nbsp;
+x = x - 1;
+&nbsp;
+y = x &lt; 0 ? 'negative' : 'positive';
+&nbsp;
+x = [
+    1,
+    2,
+    3,
+    4
+];
+&nbsp;
+x = 'Hello World!';
+&nbsp;
+x = 0;
+&nbsp;
+x = true;
+&nbsp;
+x = void 0;
+&nbsp;
+var foo = exports.foo = function foo() {
+    return x + 1;
+};
+&nbsp;
+var foo = exports.foo = function foo() {
+    console.log(x);
+    return function () {
+        var xø1 = 42;
+        return console.log(xø1);
+    }.call(this);
+};
+&nbsp;
+var foo = exports.foo = function foo() {
+    console.log(x);
+    return function () {
+        var xø1 = 42;
+        (function () {
+            var xø2 = 99999;
+            return console.log(xø2);
+        }.call(this));
+        return console.log(xø1);
+    }.call(this);
+};
+</pre>
+
+<p>Pokud nepotřebujete symboly proměnných exportovat, lze při jejich deklaraci
+použít metainformaci :private:</p>
+
+<pre>
+<i>; lokální proměnné v rámci modulu</i>
+(def ^:private xx 42)
+&nbsp;
+(def ^:private yy (+ x 1))
+&nbsp;
+(def ^:private zz [1 2 3 4])
+</pre>
+
+<p>Překlad do JavaScriptu bude odlišný &ndash; bude chybět přiřazení do
+struktury <strong>exports</strong>:</p>
+
+<pre>
+var xx = 42;
+var yy = x + 1;
+var zz = [
+    1,
+    2,
+    3,
+    4
+];
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Pole a vektory</h2>
+
+<p>Další datovou strukturou, která je jak v&nbsp;JavaScriptu, tak i přeneseně
+ve Wispu, měnitelná (mutable), jsou vektory či pole. V&nbsp;programovacím
+jazyku Clojure jsou vektory, stejně jako další typy sekvencí, striktně neměnné,
+ovšem existuje zde možnost použít nativní Javovská pole či vícedimenzionální
+pole. Pro přístup k&nbsp;prvkům těchto polí resp.&nbsp;pro modifikaci prvků, se
+používají funkce <strong>aget</strong> a <strong>aset</strong> (kupodivu bez
+vykřičníku). V&nbsp;jazyku Wisp se příliš mezi neměnitelnou sekvencí a polem
+nerozlišuje, což znamená, že funkci <strong>aget</strong> i makro
+<strong>aset</strong> lze použít právě pro vektory, a to následujícím
+způsobem:</p>
+
+<pre>
+<i>; Ukázka práce s poli (vektory).</i>
+&nbsp;
+&nbsp;
+<i>; Pole == vektory nejsou neměnné (immutable) tak jako v Clojure!</i>
+(def pole [1 2 3 4])
+&nbsp;
+<i>; pouze výraz pro přečtení prvku pole</i>
+(aget pole 1)
+&nbsp;
+<i>; přečtení vybraného prvku z pole</i>
+(def x (aget pole 1))
+&nbsp;
+<i>; změna hodnoty prvků v poli</i>
+(aset pole 0 1000)
+(aset pole 2 "Hello")
+&nbsp;
+<i>; alternativní způsob</i>
+(set! (aget pole 2) 999)
+&nbsp;
+&nbsp;
+<i>; dvourozměrné pole (matice)</i>
+(def matice [[1 2 3] [4 5 6] [7 8 9]])
+&nbsp;
+<i>; nepravidelná matice</i>
+(def matice2 [[1] [2 3] [4 5 6] [7 8 9 10]])
+</pre>
+
+<p>Výsledek transpřekladu do JavaScriptu:</p>
+
+<pre>
+<i>// Pole == vektory nejsou neměnné (immutable) tak jako v Clojure!</i>
+var pole = exports.pole = [
+    1,
+    2,
+    3,
+    4
+];
+&nbsp;
+<i>// pouze výraz pro přečtení prvku pole</i>
+pole[1];
+&nbsp;
+<i>// přečtení vybraného prvku z pole</i>
+var x = exports.x = pole[1];
+&nbsp;
+<i>// změna hodnoty prvků v poli</i>
+pole[0] = 1000;
+pole[2] = 'Hello';
+pole[2] = 999;
+&nbsp;
+<i>// dvourozměrné pole (matice)</i>
+var matice = exports.matice = [
+    [
+        1,
+        2,
+        3
+    ],
+    [
+        4,
+        5,
+        6
+    ],
+    [
+        7,
+        8,
+        9
+    ]
+];
+&nbsp;
+<i>// nepravidelná matice</i>
+var matice2 = exports.matice2 = [
+    [1],
+    [
+        2,
+        3
+    ],
+    [
+        4,
+        5,
+        6
+    ],
+    [
+        7,
+        8,
+        9,
+        10
+    ]
+];
+</pre>
+
+<p>Opět platí, že lze deklarovat i lokální proměnné (v&nbsp;rámci jednoho
+modulu):</p>
+
+<pre>
+<i>; Pole == vektory nejsou neměnné (immutable) tak jako v Clojure!</i>
+(def ^:private pole [1 2 3 4])
+&nbsp;
+<i>; dvourozměrné pole (matice)</i>
+(def ^:private matice [[1 2 3] [4 5 6] [7 8 9]])
+&nbsp;
+<i>; nepravidelná matice</i>
+(def ^:private matice2 [[1] [2 3] [4 5 6] [7 8 9 10]])
+</pre>
+
+<p>Což se přeloží následovně:</p>
+
+<pre>
+var pole = [
+    1,
+    2,
+    3,
+    4
+];
+var matice = [
+    [
+        1,
+        2,
+        3
+    ],
+    [
+        4,
+        5,
+        6
+    ],
+    [
+        7,
+        8,
+        9
+    ]
+];
+var matice2 = [
+    [1],
+    [
+        2,
+        3
+    ],
+    [
+        4,
+        5,
+        6
+    ],
+    [
+        7,
+        8,
+        9,
+        10
+    ]
+];
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Překlad jmen funkcí do JavaScriptu</h2>
+
+<p>Vzhledem k&nbsp;tomu, že programovací jazyky založené na LISPu používají
+zcela odlišné konvence pro pojmenování funkcí a globálních proměnných
+(resp.&nbsp;přesněji řečeno symbolů), než je tomu v&nbsp;jazycích, od nichž je
+odvozen JavaScript, musí zákonitě při kooperaci mezi takto odlišnými světy
+docházet k&nbsp;problémům při porozumění programovému kódu. Překladač
+<i>Wisp</i> se tomu snaží zabránit, a to takovým způsobem, že některé jmenné
+konvence použité ve zdrojovém kódu detekuje a nahradí je konvencemi známými
+z&nbsp;JavaScriptu. Podívejme se na několik typických příkladů:</p>
+
+<ol>
+<li>Funkce s&nbsp;víceslovním názvem: <strong>calculate-multiplication</strong></li>
+<li>Predikát, tj.&nbsp;funkce vracející pravdivostní hodnotu: <strong>zero?</strong></li>
+<li>Funkce provádějící konverzi: <strong>string-&gt;bool</strong></li>
+<li>Privátní funkce: <strong>**hidden**</strong> (jedná se pouze o jmennou konvenci!)</li>
+</ol>
+
+<p><i>Wisp</i> provede následující přejmenování:</p>
+
+<ol>
+<li>Funkce s&nbsp;víceslovním názvem: <strong>calculateMultiplication</strong></li>
+<li>Predikát, tj.&nbsp;funkce vracející pravdivostní hodnotu: <strong>isZero</strong></li>
+<li>Funkce provádějící konverzi: <strong>stringToBool</strong></li>
+<li>Privátní funkce: <strong>__hidden__</strong></li>
+</ol>
+
+<p>Ostatně se o tom můžeme jednoduše přesvědčit sami:</p>
+
+<pre>
+<i>; Jména funkcí generovaná transpřekladačem Wisp</i>
+&nbsp;
+&nbsp;
+<i>; Běžná funkce zapisovaná ve stylu LISPu</i>
+(defn calculate-multiplication
+    [x y]
+    (* x y))
+&nbsp;
+&nbsp;
+<i>; Predikáty</i>
+(defn zero?
+    [x]
+    (== x 0))
+&nbsp;
+(defn even?
+    [x]
+    (zero? (mod x 2)))
+&nbsp;
+(defn odd?
+    [x]
+    (not (even? x)))
+&nbsp;
+&nbsp;
+<i>; Konverzní funkce</i>
+(defn string-&gt;bool
+    [s]
+    (== s "true"))
+&nbsp;
+(defn deg-&gt;rad
+    [angle]
+    (* angle (/ 3.1415 180)))
+&nbsp;
+&nbsp;
+<i>; Privátní funkce</i>
+(defn **hidden**
+    [x]
+    (+ x 1))
+</pre>
+
+<p>Výsledek transpřekladu do JavaScriptu:</p>
+
+<pre>
+var calculateMultiplication = exports.calculateMultiplication = function calculateMultiplication(x, y) {
+    return x * y;
+};
+&nbsp;
+var isZero = exports.isZero = function isZero(x) {
+    return x == 0;
+};
+&nbsp;
+var isEven = exports.isEven = function isEven(x) {
+    return isZero(x % 2);
+};
+&nbsp;
+var isOdd = exports.isOdd = function isOdd(x) {
+    return !isEven(x);
+};
+&nbsp;
+var stringToBool = exports.stringToBool = function stringToBool(s) {
+    return s == 'true';
+};
+&nbsp;
+var degToRad = exports.degToRad = function degToRad(angle) {
+    return angle * (3.1415 / 180);
+};
+&nbsp;
+var __hidden__ = exports.__hidden__ = function __hidden__(x) {
+    return x + 1;
+};
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Volání metod a funkcí JavaScriptu</h2>
+
+<p>Podobně jako programovací jazyk Clojure nabízí takzvaný Java-interop, tedy
+vzájemnou interoperabilitu mezi Clojure a Javou (volání konstruktorů a metod,
+přístup k&nbsp;atributům), musí jazyk Wisp zajistit interoperabilitu
+s&nbsp;JavaScriptem. Je to pochopitelný požadavek, protože je velmi
+pravděpodobné, že program napsaný ve Wispu bude muset například měnit DOM HTML
+dokumentu, volat JavaScriptové funkce a metody node.js serveru atd. Jaké
+operace tedy musí <i>Wisp</i> zajistit?:</p>
+
+<ol>
+<li>Volání konstruktorů JavaScriptových objektů</li>
+<li>Volání metod JavaScriptových objektů</li>
+<li>Přístup k&nbsp;atributům JavaScriptových objektů</li>
+</ol>
+
+<p>Podívejme se, jak jsou tyto vlastnosti ve Wispu implementovány. Můžeme zde
+vidět nepatrné odlišnosti od jazyka Clojure a to především při přístupu
+k&nbsp;atributům:</p>
+
+<pre>
+<i>; Interoperabilita mezi Wispem a JavaScriptem</i>
+&nbsp;
+&nbsp;
+<i>; konstruktory</i>
+(new Date)
+&nbsp;
+(new Date "December 7, 2015 14:16:18")
+&nbsp;
+<i>; alternativní zápis konstruktorů</i>
+<i>; (nezapomeňte na tečku na konci názvu objektu!)</i>
+(Date.)
+&nbsp;
+(Date. "December 7, 2015 14:16:18")
+&nbsp;
+<i>; volání metod</i>
+&nbsp;
+(def str "Hello world!")
+&nbsp;
+(.indexOf str "!")
+&nbsp;
+<i>; alternativní zápis volání metod</i>
+(str.indexOf "!")
+&nbsp;
+<i>; uložení výsledků volání metod</i>
+(def x (.random Math))
+(def y (Math.random))
+&nbsp;
+<i>; přístup k atributům je oproti Javě+Clojure poněkud komplikovanější</i>
+(def pole [1 2 3])
+(.-length pole)
+</pre>
+
+<p>Výsledek transpřekladu do JavaScriptu:</p>
+
+<pre>
+new Date();
+&nbsp;
+new Date('December 7, 2015 14:16:18');
+&nbsp;
+new Date();
+&nbsp;
+new Date('December 7, 2015 14:16:18');
+&nbsp;
+var str = exports.str = 'Hello world!';
+&nbsp;
+str.indexOf('!');
+&nbsp;
+str.indexOf('!');
+&nbsp;
+var x = exports.x = Math.random();
+&nbsp;
+var y = exports.y = Math.random();
+&nbsp;
+var pole = exports.pole = [
+    1,
+    2,
+    3
+];
+&nbsp;
+pole.length;
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Tvorba uživatelských maker</h2>
+
+<p>Jedna z&nbsp;velmi silných stránek programovacího jazyka <i>Wisp</i> je
+podpora pro práci s&nbsp;makry. Makra jsou aplikována ihned při načítání forem
+ze standardního vstupu, popř.&nbsp;při načítání jednotlivých forem ze
+zdrojového souboru. Pro jednoduchost si můžeme představit, že tato makra
+provádí textové substituce, i když tyto substituce mohou být obecně složitější
+(a mnohem užitečnější), než například substituce prováděné preprocesorem
+programovacího jazyka C či C++, a to zejména z&nbsp;toho důvodu, že <i>reader
+makra</i> používají informace získané z&nbsp;interpretru jazyka
+<i>Wisp</i>.</p>
+
+<p>Význam uživatelských maker spočívá především v&nbsp;tom, že se tato makra
+provedou (aplikují) při zpracování zadávaných forem těsně předtím, než jsou
+tyto formy transformovány do JavaScriptu. To má dva důsledky: makro je
+v&nbsp;daném místě programu vykonáno pouze jednou a navíc makro může pracovat
+přímo s&nbsp;uživatelem zadanou formou bez toho, aby se daná forma automaticky
+vyhodnotila. To mj.&nbsp;znamená, že s&nbsp;využitím uživatelských maker lze
+realizovat i speciální formy (o nichž jsme se zmínili minule), například nové
+typy programových smyček apod.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Tvorba jednoduchých maker s&nbsp;využitím <strong>defmacro</strong></h2>
+
+<p>V&nbsp;následujícím textu se budeme snažit vytvořit poměrně jednoduché makro
+nazvané <strong>trace</strong> sloužící k&nbsp;tomu, aby se při jeho použití
+vypisovaly na konzoli <i>trasovací</i> informace o tom, jaký výraz (forma) je
+volána a jaká je návratová hodnota této formy po vyhodnocení. Toto makro by
+tedy mělo být při zápisu:</p>
+
+<pre>
+(trace vyraz)
+</pre>
+
+<p>...expandováno (v&nbsp;první velmi nedokonalé verzi) na následující
+formu:</p>
+
+<pre>
+(let [x vyraz]
+    (print "vyraz = " x)
+    x)
+</pre>
+
+<p>Důvod, proč je využita lokální proměnná je jednoduchý &ndash; hodnotu
+vyhodnoceného výrazu musíme vypsat a současně i vrátit (což je ono
+<strong>x</strong> na posledním řádku); navíc by nebylo správné výraz
+vyhodnocovat dvakrát kvůli vedlejším efektům. Za <strong>vyraz</strong> je
+přitom možné dosadit jakýkoli platný výraz akceptovaný transpřekladačem
+<i>Wisp</i>, což znamená, že po zápisu:</p>
+
+<pre>
+(trace (* 6 7))
+</pre>
+
+<p>By se měla ve skutečnosti vytvořit (v&nbsp;<i>compile time</i>) a následně
+v&nbsp;čase běhu (<i>runtime</i>) vyhodnotit tato forma:</p>
+
+<pre>
+(let [x (* 6 7)]
+    (print "(* 6 7)=" x)
+    x)
+</pre>
+
+<p>Resp.&nbsp;pravděpodobně spíše následující forma:</p>
+
+<pre>
+(let [x (* 6 7)]
+    (print (quote (* 6 7)) "=" x)
+    x)
+</pre>
+
+<p>(připomeňme si, že <strong>quote</strong> se obvykle zapisuje pomocí
+apostrofu, což však zde nebude možné, protože předchozí výraz budeme
+<i>konstruovat</i> jako seznam a nikoli zapisovat z&nbsp;klávesnice).</p>
+
+<p>Vygenerování výrazu odpovídajícího požadovanému chování
+<strong>trace</strong> vlastně není příliš složité, když si připomeneme, jak se
+vytváří příkazy. Stačí si uvědomit, že apostrofy zakážou vyhodnocení symbolu,
+který je zapsán ihned za apostrofem a funkce <strong>list</strong> slouží
+k&nbsp;vytvoření seznamu z&nbsp;prvků, které jsou funkci <strong>list</strong>
+předány, tj.&nbsp;zápis <strong>(list a b c)</strong> vrátí seznam <strong>(a b
+c)</strong>:</p>
+
+<pre>
+(defn gen-trace [vyraz]
+    (list
+        'let ['x vyraz]
+        (list 'print (list 'quote vyraz) "=" 'x)
+        'x))
+</pre>
+
+<p>Zbývá udělat další krok &ndash; vytvořit skutečné uživatelské makro. To je
+velmi jednoduché, protože postačuje namísto <strong>defn</strong> (definice
+funkce) použít <strong>defmacro</strong> (definice makra). Výsledkem je objekt
+aplikovaný v&nbsp;čase zadávání nových forem, což nám umožní předávat makru
+výrazy bez nutnosti jejich quotování (uvození pomocí znaku apostrof nebo
+<strong>quote</strong>):</p>
+
+<pre>
+(defn gen-trace [vyraz]
+    (list
+        'let ['x vyraz]
+        (list 'print (list 'quote vyraz) "=" 'x)
+        'x))
+&nbsp;
+&darr;&nbsp;&darr;&nbsp;&darr;
+&darr;&nbsp;&darr;&nbsp;&darr;
+&darr;&nbsp;&darr;&nbsp;&darr;
+&nbsp;
+(defmacro trace [vyraz]
+    (list
+        'let ['x vyraz]
+        (list 'print (list 'quote vyraz) "=" 'x)
+        'x))
+</pre>
+
+<p>Otestování funkce makra:</p>
+
+<pre>
+(defmacro trace [vyraz]
+    (list
+        'let ['x vyraz]
+        (list 'print (list 'quote vyraz) "=" 'x)
+        'x))
+&nbsp;
+(trace 42)
+&nbsp;
+(trace (Math.random))
+&nbsp;
+(trace "Hello")
+&nbsp;
+(trace (* 6 7))
+</pre>
+
+<p>Výsledek transpřekladu do JavaScriptu:</p>
+
+<pre>
+<i>// (trace 42)</i>
+void 0;
+(function () {
+    var xø1 = 42;
+    console.log(42, '=', xø1);
+    return xø1;
+}.call(this));
+&nbsp;
+<i>// (trace (Math.random))</i>
+(function () {
+    var xø1 = Math.random();
+    console.log(list(symbol(void 0, 'Math.random')), '=', xø1);
+    return xø1;
+}.call(this));
+&nbsp;
+<i>// (trace "Hello")</i>
+(function () {
+    var xø1 = 'Hello';
+    console.log('Hello', '=', xø1);
+    return xø1;
+}.call(this));
+&nbsp;
+<i>// (trace (* 6 7))</i>
+(function () {
+    var xø1 = 6 * 7;
+    console.log(list(symbol(void 0, '*'), 6, 7), '=', xø1);
+    return xø1;
+}.call(this));
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Použití &bdquo;syntax-quote&ldquo; a &bdquo;unquote&ldquo; při tvorbě uživatelských maker</h2>
+
+<p>Podívejme se ještě jednou na výraz, na který jsme chtěli expandovat zápis
+<strong>(trace vyraz)</strong>:</p>
+
+<pre>
+(let [x vyraz]
+    (print (quote vyraz) " = " x)
+    x)
+</pre>
+
+<p>Abychom vytvořili tento výraz ve formě rekurzivně zanořeného seznamu,
+definovali jsme makro <strong>trace</strong> s&nbsp;následující podobou:</p>
+
+<pre>
+(defmacro trace [vyraz]
+    (list
+        'let ['x vyraz]
+        (list 'print (list 'quote vyraz) "=" 'x)
+        'x))
+</pre>
+
+<p>Toto makro sice v&nbsp;rámci možností funguje (až na několik chybiček),
+ovšem způsob jeho zápisu a vlastně i způsob jeho vytvoření je, eufemicky
+řečeno, poměrně nehezký :-) Proč tomu tak je je zřejmé &ndash; ve vytvářeném
+seznamu jsme museli všechny funkce quotovat, seznam se musel explicitně
+vytvářet s&nbsp;využitím funkce <strong>list</strong> atd. Bylo by určitě
+mnohem zajímavější, jednodušší a současně i elegantnější mít možnost zápisu
+makra ve formě jakési šablony, do níž by se pouze dosazovaly části původního
+výrazu předaného makru pro expanzi. Požadavek na snadnou formu makra pomocí
+&bdquo;šablony&ldquo; ve skutečnosti není nijak nový, protože se začal
+objevovat již záhy po vytvoření programovacího jazyka <i>LISP</i>,
+tj.&nbsp;před zhruba padesáti lety. Tvůrci různých variant <i>LISPu</i> se
+tomuto požadavku snažili vyhovět různými způsoby; my si v&nbsp;následujícím
+textu řekneme, jak je tomu v&nbsp;případě <i>Wisp</i>. Vylepšený &ndash; a
+nutno říci, že prozatím nefunkční &ndash; tvar makra <strong>trace</strong>
+může vypadat následovně:</p>
+
+<pre>
+(defmacro trace2 [vyraz]
+  `(let [x ~vyraz] (print '~vyraz "=" x) x))
+</pre>
+
+<p>Co se vlastně změnilo? Již zde nepoužíváme nepěkný způsob vytváření seznamu
+s&nbsp;využitím funkcí <strong>list</strong> a quotovaných jmen volaných funkcí
+a speciálních forem (konkrétně <strong>let</strong>, <strong>print</strong> a
+<strong>quote</strong>). Namísto toho je požadovaný výsledný tvar makra
+jednoduše zapsán a před tento zápis je vložen znak zpětného apostrofu, který se
+přepíše (expanduje) jako makro &bdquo;syntax-quote&ldquo; Ovšem pouze
+s&nbsp;aplikací &bdquo;syntax-quote&ldquo; se daleko nedostaneme, protože ve
+skutečnosti potřebujeme hned na dvou místech do makra vložit vstupní výraz. Aby
+to bylo možné, je uvnitř &bdquo;syntax-quote&ldquo; použita tilda, neboli
+<i>reader makro</i> nazvané &bdquo;dequote&ldquo;, které pro nejbližší
+následující symbol ruší funkci quotování.</p>
+
+<p>Výsledkem je toto makro:</p>
+
+<pre>
+(defmacro trace
+    [vyraz]
+    `(let [x ~vyraz]
+        (print '~vyraz "=" x)
+        x))
+</pre>
+
+<p>Povšimněte si, jak je toto makro pěkně čitelné; až na ~ a ` se vlastně
+podobá běžné funkci. Zpětný apostrof zajistí, že se vše za apostrofem (celá
+forma až do konce makra) bude zpracovávat v&nbsp;takové podobě, jak je makro
+deklarováno, ovšem s&nbsp;jedinou výjimkou &ndash; <strong>vyraz</strong> je
+nahrazen skutečným parametrem makra, ať již se jedná o číslo, řetězec, složitou
+formu či další makro.</p>
+
+<p>Wisp navíc zajistí, že lokální proměnná <strong>x</strong> bude mít unikátní
+jméno, což je oproti Clojure nepatrné vylepšení (tam se musel používat další
+symbol #).</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář s&nbsp;dnešními demonstračními příklady</h2>
+
+<p>Demonstrační příklady, na nichž jsme si ukazovali další vlastnosti
+transpřekladače Wisp, byly uloženy do Git repositáře dostupného na adrese <a
+href="https://github.com/tisnik/clojure-examples">https://github.com/tisnik/clojure-examples</a>.
+V&nbsp;tabulce zobrazené pod tímto odstavcem naleznete na zdrojové kódy těchto
+příkladů přímé odkazy:</p>
+
+<table>
+<tr><th> #</th><th>Příklad/skriptu</th><th>Github</th></tr>
+<tr><td> 1</td><td>8_loops.clj</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/8_loops.clj">https://github.com/tisnik/clojure-examples/blob/master/wisp/8_loops.clj</a></td></tr>
+<tr><td> 2</td><td>9_variables.clj</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/9_variables.clj">https://github.com/tisnik/clojure-examples/blob/master/wisp/9_variables.clj</a></td></tr>
+<tr><td> 3</td><td>10_arrays.clj</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/10_arrays.clj">https://github.com/tisnik/clojure-examples/blob/master/wisp/10_arrays.clj</a></td></tr>
+<tr><td> 4</td><td>11_names.clj</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/11_names.clj">https://github.com/tisnik/clojure-examples/blob/master/wisp/11_names.clj</a></td></tr>
+<tr><td> 5</td><td>12_interop.clj</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/12_interop.clj">https://github.com/tisnik/clojure-examples/blob/master/wisp/12_interop.clj</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>Makefile</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/Makefile">https://github.com/tisnik/clojure-examples/blob/master/wisp/Makefile</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>8_loops.js</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/8_loops.js">https://github.com/tisnik/clojure-examples/blob/master/wisp/8_loops.js</a></td></tr>
+<tr><td> 8</td><td>9_variables.js</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/9_variables.js">https://github.com/tisnik/clojure-examples/blob/master/wisp/9_variables.js</a></td></tr>
+<tr><td> 9</td><td>10_arrays.js</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/10_arrays.js">https://github.com/tisnik/clojure-examples/blob/master/wisp/10_arrays.js</a></td></tr>
+<tr><td>10</td><td>11_names.js</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/11_names.js">https://github.com/tisnik/clojure-examples/blob/master/wisp/11_names.js</a></td></tr>
+<tr><td>11</td><td>12_interop.js</td><td><a href="https://github.com/tisnik/clojure-examples/blob/master/wisp/12_interop.js">https://github.com/tisnik/clojure-examples/blob/master/wisp/12_interop.js</a></td></tr>
+</table>
+
+<p>Poznámka 1: soubory 7&ndash;11 vznikly překladem prvních pěti zdrojových
+skriptů.</p>
+
+<p>Poznámka 2: zdrojové kódy s&nbsp;demonstračními příklady mají, podobně jako
+v&nbsp;předchozím článku, koncovku <strong>.clj</strong>, takže dojde ke
+správnému &bdquo;obarvení&ldquo; při otevření těchto souborů
+v&nbsp;programátorských editorech. Transpřekladači <i>Wisp</i> na koncovce
+nezáleží, i když se v&nbsp;dokumentaci doporučuje použít koncovku
+<strong>.wisp</strong>.</p>
+
+<p>Poznámka 3: soubor <strong>Makefile</strong> je možné použít pro překlad
+všech zdrojových souborů do JavaScriptu s&nbsp;využitím příkazu
+<strong>make</strong>. Při změně obsahu se provede překlad jen změněných
+souborů. Pokud potřebujete smazat soubory generované překladačem, lze použít
+příkaz <strong>make clean</strong>.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na předchozí části tohoto seriálu</h2>
+
+<ol>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (2)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-2/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-2/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (3)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-3/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-3/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (4)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-4/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-4/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (5)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-5/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-5/</a>
+</li>
+
+<li>Leiningen: nástroj pro správu projektů napsaných v Clojure (6)<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-6/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-6/</a>
+</li>
+
+<li>Programovací jazyk Clojure a databáze (1.část)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-databaze-1-cast/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-databaze-1-cast/</a>
+</li>
+
+<li>Pluginy pro Leiningen<br />
+<a href="http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-pluginy-pro-leiningen/">http://www.root.cz/clanky/leiningen-nastroj-pro-spravu-projektu-napsanych-v-clojure-pluginy-pro-leiningen/</a>
+</li>
+
+<li>Programovací jazyk Clojure a knihovny pro práci s vektory a maticemi<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi/</a>
+</li>
+
+<li>Programovací jazyk Clojure a knihovny pro práci s vektory a maticemi (2)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi-2/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-knihovny-pro-praci-s-vektory-a-maticemi-2/</a>
+</li>
+
+<li>Programovací jazyk Clojure: syntéza procedurálních textur s využitím knihovny Clisk<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk/">http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk/</a>
+</li>
+
+<li>Programovací jazyk Clojure: syntéza procedurálních textur s využitím knihovny Clisk (2)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-2/">http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-2/</a>
+</li>
+
+<li>Programovací jazyk Clojure: syntéza procedurálních textur s využitím knihovny Clisk (dokončení)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-dokonceni/">http://www.root.cz/clanky/programovaci-jazyk-clojure-synteza-proceduralnich-textur-s-vyuzitim-knihovny-clisk-dokonceni/</a>
+</li>
+
+<li>Seesaw: knihovna pro snadnou tvorbu GUI v jazyce Clojure<br />
+<a href="http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure/">http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure/</a>
+</li>
+
+<li>Seesaw: knihovna pro snadnou tvorbu GUI v jazyce Clojure (2)<br />
+<a href="http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-2/">http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-2/</a>
+</li>
+
+<li>Seesaw: knihovna pro snadnou tvorbu GUI v jazyce Clojure (3)<br />
+<a href="http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-3/">http://www.root.cz/clanky/seesaw-knihovna-pro-snadnou-tvorbu-gui-v-jazyce-clojure-3/</a>
+</li>
+
+<li>Programovací jazyk Clojure a práce s Gitem<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem/</a>
+</li>
+
+<li>Programovací jazyk Clojure a práce s Gitem (2)<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem-2/">http://www.root.cz/clanky/programovaci-jazyk-clojure-a-prace-s-gitem-2/</a>
+</li>
+
+<li>Programovací jazyk Clojure – triky při práci s řetězci<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-retezci/">http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-retezci/</a>
+</li>
+
+<li>Programovací jazyk Clojure – triky při práci s kolekcemi<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-kolekcemi/">http://www.root.cz/clanky/programovaci-jazyk-clojure-triky-pri-praci-s-kolekcemi/</a>
+</li>
+
+<li>Programovací jazyk Clojure – práce s mapami a množinami<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-prace-s-mapami-a-mnozinami/">http://www.root.cz/clanky/programovaci-jazyk-clojure-prace-s-mapami-a-mnozinami/</a>
+</li>
+
+<li>Programovací jazyk Clojure – základy zpracování XML<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-zaklady-zpracovani-xml/">http://www.root.cz/clanky/programovaci-jazyk-clojure-zaklady-zpracovani-xml/</a>
+</li>
+
+<li>Programovací jazyk Clojure – testování s využitím knihovny Expectations<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-testovani-s-vyuzitim-knihovny-expectations/">http://www.root.cz/clanky/programovaci-jazyk-clojure-testovani-s-vyuzitim-knihovny-expectations/</a>
+</li>
+
+<li>Programovací jazyk Clojure – některé užitečné triky použitelné (nejenom) v&nbsp;testech<br />
+<a href="http://www.root.cz/clanky/programovaci-jazyk-clojure-nektere-uzitecne-triky-pouzitelne-nejenom-v-testech/">http://www.root.cz/clanky/programovaci-jazyk-clojure-nektere-uzitecne-triky-pouzitelne-nejenom-v-testech/</a>
+</li>
+
+<li>Enlive – výkonný šablonovací systém pro jazyk Clojure<br/>
+<a href="http://www.root.cz/clanky/enlive-vykonny-sablonovaci-system-pro-jazyk-clojure/">http://www.root.cz/clanky/enlive-vykonny-sablonovaci-system-pro-jazyk-clojure/</a>
+</li>
+
+<li>Nástroj Leiningen a programovací jazyk Clojure: tvorba vlastních knihoven pro veřejný repositář Clojars<br />
+<a href="http://www.root.cz/clanky/nastroj-leiningen-a-programovaci-jazyk-clojure-tvorba-vlastnich-knihoven-pro-verejny-repositar-clojars/">http://www.root.cz/clanky/nastroj-leiningen-a-programovaci-jazyk-clojure-tvorba-vlastnich-knihoven-pro-verejny-repositar-clojars/</a>
+</li>
+
+<li>Propojení světa LISPu se světem JavaScriptu s využitím transpřeklada­če Wisp<br />
+<a href="http://www.root.cz/clanky/propojeni-sveta-lispu-se-svetem-javascriptu-s-vyuzitim-transprekladace-wisp/">http://www.root.cz/clanky/propojeni-sveta-lispu-se-svetem-javascriptu-s-vyuzitim-transprekladace-wisp/</a>
+</li>
+
+</ol>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Wisp na GitHubu<br />
+<a href="https://github.com/Gozala/wisp">https://github.com/Gozala/wisp</a>
+</li>
+
+<li>Wisp playground<br />
+<a href="http://www.jeditoolkit.com/try-wisp/">http://www.jeditoolkit.com/try-wisp/</a>
+</li>
+
+<li>REPL v prohlížeči<br />
+<a href="http://www.jeditoolkit.com/interactivate-wisp/">http://www.jeditoolkit.com/interactivate-wisp/</a>
+</li>
+
+<li>Minification (programming)<br />
+<a href="https://en.wikipedia.org/wiki/Minification_(programming)">https://en.wikipedia.org/wiki/Minification_(programming)</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part I, Getting the Compiler to Write Your Code For You)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part II: The Compiler Strikes Back)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part III: Syntax Quote)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html</a>
+</li>
+
+<li>Tech behind Tech: Clojure Macros Simplified<br />
+<a href="http://techbehindtech.com/2010/09/28/clojure-macros-simplified/">http://techbehindtech.com/2010/09/28/clojure-macros-simplified/</a>
+</li>
+
+<li>Fatvat - Exploring functional programming: Clojure Macros<br />
+<a href="http://www.fatvat.co.uk/2009/02/clojure-macros.html">http://www.fatvat.co.uk/2009/02/clojure-macros.html</a>
+</li>
+
+<li>Eulerovo číslo<br />
+<a href="http://cs.wikipedia.org/wiki/Eulerovo_??slo">http://cs.wikipedia.org/wiki/Eulerovo_??slo</a>
+</li>
+
+<li>List comprehension<br />
+<a href="http://en.wikipedia.org/wiki/List_comprehension">http://en.wikipedia.org/wiki/List_comprehension</a>
+</li>
+
+<li>List Comprehensions in Clojure<br />
+<a href="http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html">http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html</a>
+</li>
+
+<li>Clojure Programming Concepts: List Comprehension<br />
+<a href="http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension">http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension</a>
+</li>
+
+<li>Clojure core API: for macro<br />
+<a href="http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for">http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for</a>
+</li>
+
+<li>cirrus machina - The Clojure for macro<br />
+<a href="http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/">http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/</a>
+</li>
+
+<li>Clojure.org: Clojure home page<br />
+<a href="http://clojure.org/downloads">http://clojure.org/downloads</a>
+</li>
+
+<li>Clojure.org: Vars and the Global Environment<br />
+<a href="http://clojure.org/Vars">http://clojure.org/Vars</a>
+</li>
+
+<li>Clojure.org: Refs and Transactions<br />
+<a href="http://clojure.org/Refs">http://clojure.org/Refs</a>
+</li>
+
+<li>Clojure.org: Atoms<br />
+<a href="http://clojure.org/Atoms">http://clojure.org/Atoms</a>
+</li>
+
+<li>Clojure.org: Agents as Asynchronous Actions<br />
+<a href="http://clojure.org/agents">http://clojure.org/agents</a>
+</li>
+
+<li>A Couple of Clojure Agent Examples<br />
+<a href="http://lethain.com/a-couple-of-clojure-agent-examples/">http://lethain.com/a-couple-of-clojure-agent-examples/</a>
+</li>
+
+<li>Clojure - Functional Programming for the JVM<br />
+<a href="http://java.ociweb.com/mark/clojure/article.html">http://java.ociweb.com/mark/clojure/article.html</a>
+</li>
+
+<li>Clojure quick reference<br />
+<a href="http://faustus.webatu.com/clj-quick-ref.html">http://faustus.webatu.com/clj-quick-ref.html</a>
+</li>
+
+<li>4Clojure<br />
+<a href="http://www.4clojure.com/">http://www.4clojure.com/</a>
+</li>
+
+<li>ClojureDoc<br />
+<a href="http://clojuredocs.org/">http://clojuredocs.org/</a>
+</li>
+
+<li>Clojure (Wikipedia EN)<br />
+<a href="http://en.wikipedia.org/wiki/Clojure">http://en.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Clojure (Wikipedia CS)<br />
+<a href="http://cs.wikipedia.org/wiki/Clojure">http://cs.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Riastradh's Lisp Style Rules<br />
+<a href="http://mumble.net/~campbell/scheme/style.txt">http://mumble.net/~campbell/scheme/style.txt</a>
+</li>
+
+<li>Dynamic Languages Strike Back<br />
+<a href="http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html">http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html</a>
+</li>
+
+<li>Scripting: Higher Level Programming for the 21st Century<br />
+<a href="http://www.tcl.tk/doc/scripting.html">http://www.tcl.tk/doc/scripting.html</a>
+</li>
+
+<li>Java Virtual Machine Support for Non-Java Languages<br />
+<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html">http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html</a>
+</li>
+
+<li>The Lua VM, on the Web<br />
+<a href="https://kripken.github.io/lua.vm.js/lua.vm.js.html">https://kripken.github.io/lua.vm.js/lua.vm.js.html</a>
+</li>
+
+<li>Lua.vm.js REPL<br />
+<a href="https://kripken.github.io/lua.vm.js/repl.html">https://kripken.github.io/lua.vm.js/repl.html</a>
+</li>
+
+<li>lua2js<br />
+<a href="https://www.npmjs.com/package/lua2js">https://www.npmjs.com/package/lua2js</a>
+</li>
+
+<li>lua2js na GitHubu<br />
+<a href="https://github.com/basicer/lua2js-dist">https://github.com/basicer/lua2js-dist</a>
+</li>
+
+<li>Seriál o programovacím jazyku Lua<br />
+<a href="http://www.root.cz/serialy/programovaci-jazyk-lua/">http://www.root.cz/serialy/programovaci-jazyk-lua/</a>
+</li>
+
+<li>Source-to-source compiler<br />
+<a href="https://en.wikipedia.org/wiki/Source-to-source_compiler">https://en.wikipedia.org/wiki/Source-to-source_compiler</a>
+</li>
+
+<li>JavaScript is Assembly Language for the Web: Sematic Markup is Dead! Clean vs. Machine-coded HTML<br />
+<a href="http://www.hanselman.com/blog/JavaScriptIsAssemblyLanguageForTheWebSematicMarkupIsDeadCleanVsMachinecodedHTML.aspx">http://www.hanselman.com/blog/JavaScriptIsAssemblyLanguageForTheWebSematicMarkupIsDeadCleanVsMachinecodedHTML.aspx</a>
+</li>
+
+<li>JavaScript is Web Assembly Language and that's OK.<br />
+<a href="http://www.hanselman.com/blog/JavaScriptIsWebAssemblyLanguageAndThatsOK.aspx">http://www.hanselman.com/blog/JavaScriptIsWebAssemblyLanguageAndThatsOK.aspx</a>
+</li>
+
+<li>Dart<br />
+<a href="https://www.dartlang.org/">https://www.dartlang.org/</a>
+</li>
+
+<li>CoffeeScript<br />
+<a href="http://coffeescript.org/">http://coffeescript.org/</a>
+</li>
+
+<li>TypeScript<br />
+<a href="http://www.typescriptlang.org/">http://www.typescriptlang.org/</a>
+</li>
+
+<li>Lua (programming language)<br />
+<a href="http://en.wikipedia.org/wiki/Lua_(programming_language)">http://en.wikipedia.org/wiki/Lua_(programming_language)</a>
+</li>
+
+<li>Static single assignment form (SSA)<br />
+<a href="http://en.wikipedia.org/wiki/Static_single_assignment_form">http://en.wikipedia.org/wiki/Static_single_assignment_form</a>
+</li>
+
+<li>LuaJIT 2.0 SSA IR
+<a href="http://wiki.luajit.org/SSA-IR-2.0">http://wiki.luajit.org/SSA-IR-2.0</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Tcl Plugin Version 3<br />
+<a href="http://www.tcl.tk/software/plugin/">http://www.tcl.tk/software/plugin/</a>
+</li>
+
+<li>JavaScript: The Web Assembly Language?<br />
+<a href="http://www.informit.com/articles/article.aspx?p=1856657">http://www.informit.com/articles/article.aspx?p=1856657</a>
+</li>
+
+<li>asm.js<br />
+<a href="http://asmjs.org/">http://asmjs.org/</a>
+</li>
+
+<li>List of languages that compile to JS<br />
+<a href="https://github.com/jashkenas/coffeescript/wiki/List-of-languages-that-compile-to-JS">https://github.com/jashkenas/coffeescript/wiki/List-of-languages-that-compile-to-JS</a>
+</li>
+
+<li>REPL<br />
+<a href="https://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop">https://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop</a>
+</li>
+
+<li>The LLVM Compiler Infrastructure<br />
+<a href="http://llvm.org/ProjectsWithLLVM/">http://llvm.org/ProjectsWithLLVM/</a>
+</li>
+
+<li>clang: a C language family frontend for LLVM<br />
+<a href="http://clang.llvm.org/">http://clang.llvm.org/</a>
+</li>
+
+<li>emscripten<br />
+<a href="http://kripken.github.io/emscripten-site/">http://kripken.github.io/emscripten-site/</a>
+</li>
+
+<li>LLVM Backend ("Fastcomp")<br />
+<a href="http://kripken.github.io/emscripten-site/docs/building_from_source/LLVM-Backend.html#llvm-backend">http://kripken.github.io/emscripten-site/docs/building_from_source/LLVM-Backend.html#llvm-backend</a>
+</li>
+
+<li>Emscripten - Fastcomp na GitHubu<br />
+<a href="https://github.com/kripken/emscripten-fastcomp">https://github.com/kripken/emscripten-fastcomp</a>
+</li>
+
+<li>Clang (pro Emscripten) na GitHubu<br />
+<a href="https://github.com/kripken/emscripten-fastcomp-clang">https://github.com/kripken/emscripten-fastcomp-clang</a>
+</li>
+
+<li>Why not use JavaScript?<br />
+<a href="https://ckknight.github.io/gorillascript/">https://ckknight.github.io/gorillascript/</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2015</small></p>
+</body>
+</html>
+
