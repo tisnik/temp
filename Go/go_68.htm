@@ -39,16 +39,16 @@
 
 <p><a href="#k01">*** 1. </a></p>
 <p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
+<p><a href="#k03">*** 3. Zápis záznamů do Parquet souborů</a></p>
 <p><a href="#k04">*** 4. </a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
+<p><a href="#k10">*** 10. Analýza výsledků</a></p>
+<p><a href="#k11">*** 11. Ukládání řetězců</a></p>
+<p><a href="#k12">*** 12. Použití slovníků</a></p>
 <p><a href="#k13">*** 13. </a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
@@ -70,63 +70,388 @@
 <p><a name="k02"></a></p>
 <h2 id="k02">2. </h2>
 
+<p></p>
+
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Zápis záznamů do Parquet souborů</h2>
 
 <p></p>
+
+<pre>
+package main
+
+import (
+        "log"
+        "os"
+
+        "github.com/xitongsys/parquet-go/parquet"
+        "github.com/xitongsys/parquet-go/writer"
+)
+
+const defaultOutputFile = "flat.parquet"
+
+// Record represents one record stored in Parquet file
+type Record struct {
+        Id      int64  `parquet:"name=id, type=INT64"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Remark  string `parquet:"name=remark, type=UTF8, encoding=PLAIN"`
+}
+
+func writeRecord(pw *writer.ParquetWriter) {
+        // create report structure to be stored in Parquet file
+        record := Record{
+                Id:      int64(1),
+                Name:    "Pepa",
+                Surname: "Vyskoč",
+                Active:  false,
+                Remark:  "foo bar baz",
+        }
+
+        // write the record structure into Parquet file
+        err := pw.Write(record)
+        if err != nil {
+                log.Println("Write into Parquet error", err)
+        }
+}
+
+// stopWrite function stop writing into Parquet file
+func stopWrite(pw *writer.ParquetWriter) {
+        err := pw.WriteStop()
+
+        // most write errors are caught at this time
+        if err != nil {
+                log.Println("WriteStop error", err)
+        }
+}
+
+func main() {
+        w, err := os.Create("flat.parquet")
+        if err != nil {
+                log.Println("Can't create local file", err)
+                return
+        }
+
+        defer w.Close()
+
+        // initialize Parquet file writer
+        pw, err := writer.NewParquetWriterFromWriter(w, new(Record), 1)
+        if err != nil {
+                log.Println("Can't create parquet writer", err)
+                return
+        }
+
+        pw.RowGroupSize = 128 * 1024 * 1024 //128M
+        pw.CompressionType = parquet.CompressionCodec_SNAPPY
+
+        defer stopWrite(pw)
+
+        writeRecord(pw)
+
+        log.Println("Write Finished")
+}
+</pre>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Přečtení záznamu z&nbsp;Parquet souboru</h2>
+
+<pre>
+// This tool is able to read all records stored in selected Parquet file.
+// Currently, only records with the structure `Record` is read correctly. Name
+// of input Parquet file needs to be selected from command line.
+package main
+
+import (
+        "log"
+
+        "github.com/xitongsys/parquet-go-source/local"
+        "github.com/xitongsys/parquet-go/reader"
+        "github.com/xitongsys/parquet-go/source"
+)
+
+const defaultInputFile = "flat.parquet"
+
+// Record represents one record stored in Parquet file
+type Record struct {
+        Id      int64  `parquet:"name=id, type=INT64"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Remark  string `parquet:"name=remark, type=UTF8, encoding=PLAIN"`
+}
+
+// closeReader tries to close the given Parquet file reader
+func closeReader(reader source.ParquetFile) {
+        err := reader.Close()
+        if err != nil {
+                log.Println("close reader:", err)
+        }
+}
+
+func displayContentOfParquetFile(fileName string) {
+        const parallelNumber = 4
+
+        // construct the file reader and try to open the Parquet file for
+        // reading
+        fileReader, err := local.NewLocalFileReader(fileName)
+
+        if err != nil {
+                log.Fatal("Can't open file", err)
+                return
+        }
+
+        // fileReader needs to be closed properly
+        defer closeReader(fileReader)
+
+        // initializa Parquet file reader
+        parquetReader, err := reader.NewParquetReader(fileReader, new(Record),
+                parallelNumber)
+
+        if err != nil {
+                log.Fatal("Can't create parquet reader", err)
+                return
+        }
+
+        // parquetReader needs to be stopped
+        defer parquetReader.ReadStop()
+
+        displayRecords(parquetReader)
+}
+
+// displayRecords function lists all records from Parquet file
+func displayRecords(parquetReader *reader.ParquetReader) {
+        recordCount := int(parquetReader.GetNumRows())
+
+        // try to read and display all records
+        for i := 0; i < recordCount; i++ {
+                record := make([]Record, 1)
+
+                // try to read record
+                err := parquetReader.Read(&record)
+                if err != nil {
+                        log.Println("Read error", err)
+                } else {
+                        // and display it
+                        log.Println(record)
+                }
+        }
+}
+
+func main() {
+        displayContentOfParquetFile(defaultInputFile)
+}
+</pre>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Ukládání pravdivostních hodnot</h2>
+
+<p></p>
+
+<pre>
+package main
+
+import (
+        "log"
+        "os"
+
+        "github.com/xitongsys/parquet-go/parquet"
+        "github.com/xitongsys/parquet-go/writer"
+)
+
+const defaultOutputFile = "flat.parquet"
+
+// Record represents one record stored in Parquet file
+type Record struct {
+        Active bool `parquet:"name=active, type=BOOLEAN"`
+}
+
+func writeRecords(pw *writer.ParquetWriter, n int) {
+        // create report structure to be stored in Parquet file
+        record := Record{
+                Active: false,
+        }
+
+        for i := 0; i < n; i++ {
+                record.Active = i%2 == 0
+                // write the record structure into Parquet file
+                err := pw.Write(record)
+                if err != nil {
+                        log.Println("Write into Parquet error", err)
+                }
+        }
+}
+
+// stopWrite function stop writing into Parquet file
+func stopWrite(pw *writer.ParquetWriter) {
+        err := pw.WriteStop()
+
+        // most write errors are caught at this time
+        if err != nil {
+                log.Println("WriteStop error", err)
+        }
+}
+
+func createAndWriteIntoParquetFile(filename string, records int) {
+        w, err := os.Create(filename)
+        if err != nil {
+                log.Println("Can't create local file", err)
+                return
+        }
+
+        defer w.Close()
+
+        // initialize Parquet file writer
+        pw, err := writer.NewParquetWriterFromWriter(w, new(Record), 1)
+        if err != nil {
+                log.Println("Can't create parquet writer", err)
+                return
+        }
+
+        pw.RowGroupSize = 128 * 1024 * 1024 //128M
+        pw.CompressionType = parquet.CompressionCodec_UNCOMPRESSED
+
+        defer stopWrite(pw)
+
+        writeRecords(pw, records)
+
+        log.Println("Write Finished")
+}
+
+func main() {
+        createAndWriteIntoParquetFile("0records.parquet", 0)
+        createAndWriteIntoParquetFile("1record.parquet", 1)
+        createAndWriteIntoParquetFile("10records.parquet", 10)
+        createAndWriteIntoParquetFile("100records.parquet", 100)
+        createAndWriteIntoParquetFile("1000records.parquet", 1000)
+        createAndWriteIntoParquetFile("10000records.parquet", 10000)
+        createAndWriteIntoParquetFile("100000records.parquet", 100000)
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Analýza výsledků</h2>
 
 <p></p>
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
-
-
-
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Ukládání celočíselných hodnot</h2>
 
 <p></p>
 
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Analýza výsledků</h2>
 
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+<h2 id="k09">9. Nastavení komprimačního algoritmu</h2>
+
+<pre>
+package main
+
+import (
+        "log"
+        "os"
+
+        "github.com/xitongsys/parquet-go/parquet"
+        "github.com/xitongsys/parquet-go/writer"
+)
+
+const defaultOutputFile = "flat.parquet"
+
+// Record represents one record stored in Parquet file
+type Record struct {
+        Active bool `parquet:"name=active, type=BOOLEAN"`
+}
+
+func writeRecords(pw *writer.ParquetWriter, n int) {
+        // create report structure to be stored in Parquet file
+        record := Record{
+                Active: false,
+        }
+
+        for i := 0; i < n; i++ {
+                record.Active = i%2 == 0
+                // write the record structure into Parquet file
+                err := pw.Write(record)
+                if err != nil {
+                        log.Println("Write into Parquet error", err)
+                }
+        }
+}
+
+// stopWrite function stop writing into Parquet file
+func stopWrite(pw *writer.ParquetWriter) {
+        err := pw.WriteStop()
+
+        // most write errors are caught at this time
+        if err != nil {
+                log.Println("WriteStop error", err)
+        }
+}
+
+func createAndWriteIntoParquetFile(filename string, records int, compression parquet.CompressionCodec) {
+        w, err := os.Create(filename)
+        if err != nil {
+                log.Println("Can't create local file", err)
+                return
+        }
+
+        defer w.Close()
+
+        // initialize Parquet file writer
+        pw, err := writer.NewParquetWriterFromWriter(w, new(Record), 1)
+        if err != nil {
+                log.Println("Can't create parquet writer", err)
+                return
+        }
+
+        pw.RowGroupSize = 128 * 1024 * 1024 //128M
+        pw.CompressionType = compression
+
+        defer stopWrite(pw)
+
+        writeRecords(pw, records)
+
+        log.Println("Write Finished")
+}
+
+func main() {
+        createAndWriteIntoParquetFile("1000000records_compression_none.parquet", 1000000, parquet.CompressionCodec_UNCOMPRESSED)
+        createAndWriteIntoParquetFile("1000000records_compression_snappy.parquet", 1000000, parquet.CompressionCodec_SNAPPY)
+        createAndWriteIntoParquetFile("1000000records_compression_gzip.parquet", 1000000, parquet.CompressionCodec_GZIP)
+}
+</pre>
 
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Analýza výsledků</h2>
 
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Ukládání řetězců</h2>
 
 <p></p>
 
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Použití slovníků</h2>
 <p></p>
 
 
@@ -208,6 +533,14 @@ demonstrační příklady, které naleznete v&nbsp;následující tabulce:</p>
 
 <li>Několik poznámek ke sloupcovým databázím<br />
 <a href="https://www.root.cz/clanky/nekolik-poznamek-ke-sloupcovym-databazim/">https://www.root.cz/clanky/nekolik-poznamek-ke-sloupcovym-databazim/</a>
+</li>
+
+<li>Column-oriented DBMS (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Column-oriented_DBMS">https://en.wikipedia.org/wiki/Column-oriented_DBMS</a>
+</li>
+
+<li>Extract, transform, load (ETL)<br />
+<a href="https://en.wikipedia.org/wiki/Extract,_transform,_load">https://en.wikipedia.org/wiki/Extract,_transform,_load</a>
 </li>
 
 <li>Apache Parquet<br />
