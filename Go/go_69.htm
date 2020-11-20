@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Komunikace se sloupcovými databázemi z jazyka Go: Parquet soubory (dokončení)</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Komunikace se sloupcovými databázemi z jazyka Go: Parquet soubory (dokončení)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,9 +37,9 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
+<p><a href="#k01">*** 1. Komunikace se sloupcovými databázemi z&nbsp;jazyka Go: Parquet soubory (dokončení)</a></p>
+<p><a href="#k02">*** 2. Rychlost zápisu vs. rychlost čtení z&nbsp;Parquet souborů</a></p>
+<p><a href="#k03">*** 3. Čtení dat po blocích</a></p>
 <p><a href="#k04">*** 4. </a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
@@ -68,10 +68,257 @@
 <p><a name="k02"></a></p>
 <h2 id="k02">2. </h2>
 
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "log"
+        "math/rand"
+        "os"
+        "time"
+&nbsp;
+        "github.com/bxcodec/faker/v3"
+        "github.com/xitongsys/parquet-go/parquet"
+        "github.com/xitongsys/parquet-go/writer"
+)
+&nbsp;
+const defaultOutputFile = "flat.parquet"
+&nbsp;
+<i>// Record represents one record stored in Parquet file</i>
+type <strong>Record</strong> struct {
+        ID      uint64 `parquet:"name=id, type=UINT_64, encoding=PLAIN"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN_DICTIONARY"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Email   string `parquet:"name=email, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Color   string `parquet:"name=color, type=UTF8, encoding=PLAIN_DICTIONARY"`
+}
+&nbsp;
+func <strong>generateColor</strong>() string {
+        var colors []string = []string{
+                "black",
+                "blue",
+                "red",
+                "magenta",
+                "green",
+                "cyan",
+                "yellow",
+                "white",
+        }
+        return colors[rand.Int()%len(colors)]
+}
+&nbsp;
+func <strong>writeRecords</strong>(pw *writer.ParquetWriter, n int) {
+        <i>// create report structure to be stored in Parquet file</i>
+        record := Record{}
+&nbsp;
+        for i := 0; i &lt; n; i++ {
+                record.ID = uint64(i)
+                record.Name = faker.FirstName()
+                record.Surname = faker.LastName()
+                record.Email = faker.Email()
+                record.Active = i%2 == 0
+                record.Color = generateColor()
+&nbsp;
+                <i>// write the record structure into Parquet file</i>
+                err := pw.Write(record)
+                if err != nil {
+                        log.Println("Write into Parquet error", err)
+                }
+        }
+}
+&nbsp;
+<i>// stopWrite function stop writing into Parquet file</i>
+func <strong>stopWrite</strong>(pw *writer.ParquetWriter) {
+        err := pw.WriteStop()
+&nbsp;
+        <i>// most write errors are caught at this time</i>
+        if err != nil {
+                log.Println("WriteStop error", err)
+        }
+}
+&nbsp;
+func <strong>createAndWriteIntoParquetFile</strong>(filename string, records int, compression parquet.CompressionCodec) {
+        t1 := time.Now()
+&nbsp;
+        w, err := os.Create(filename)
+        if err != nil {
+                log.Println("Can't create local file", err)
+                return
+        }
+&nbsp;
+        defer w.Close()
+&nbsp;
+        <i>// initialize Parquet file writer</i>
+        pw, err := writer.NewParquetWriterFromWriter(w, new(Record), 1)
+        if err != nil {
+                log.Println("Can't create parquet writer", err)
+                return
+        }
+&nbsp;
+        pw.RowGroupSize = 128 * 1024 * 1024 //128M
+        pw.CompressionType = compression
+&nbsp;
+        defer stopWrite(pw)
+&nbsp;
+        writeRecords(pw, records)
+&nbsp;
+        log.Println("Write Finished")
+&nbsp;
+        <i>// compute and print duration</i>
+        t2 := time.Now()
+        since := time.Since(t1)
+        log.Println("Start time: ", t1)
+        log.Println("End time:   ", t2)
+        log.Println("Duration:   ", since)
+}
+&nbsp;
+func <strong>main</strong>() {
+        createAndWriteIntoParquetFile("1000000records_compression_none.parquet", 1000000, parquet.CompressionCodec_UNCOMPRESSED)
+        createAndWriteIntoParquetFile("1000000records_compression_snappy.parquet", 1000000, parquet.CompressionCodec_SNAPPY)
+        createAndWriteIntoParquetFile("1000000records_compression_gzip.parquet", 1000000, parquet.CompressionCodec_GZIP)
+}
+</pre>
+
+<p>Zápis do ramdisku:</p>
+
+<pre>
+2020/11/14 16:22:21 Write Finished
+2020/11/14 16:22:21 Start time:  2020-11-14 16:22:18.382414375 +0100 CET m=+0.001018949
+2020/11/14 16:22:21 End time:    2020-11-14 16:22:21.496799932 +0100 CET m=+3.115404464
+2020/11/14 16:22:21 Duration:    3.114385625s
+&nbsp;
+2020/11/14 16:22:24 Write Finished
+2020/11/14 16:22:24 Start time:  2020-11-14 16:22:21.52651968 +0100 CET m=+3.145124247
+2020/11/14 16:22:24 End time:    2020-11-14 16:22:24.81071525 +0100 CET m=+6.429319812
+2020/11/14 16:22:24 Duration:    3.284195685s
+&nbsp;
+2020/11/14 16:22:28 Write Finished
+2020/11/14 16:22:28 Start time:  2020-11-14 16:22:24.835851362 +0100 CET m=+6.454455962
+2020/11/14 16:22:28 End time:    2020-11-14 16:22:28.88592985 +0100 CET m=+10.504534394
+2020/11/14 16:22:28 Duration:    4.050078532s
+</pre>
+
+<pre>
+<i>// This tool is able to read all records stored in selected Parquet file.</i>
+<i>// Currently, only records with the structure `Record` is read correctly. Name</i>
+<i>// of input Parquet file needs to be selected from command line.</i>
+package <strong>main</strong>
+&nbsp;
+import (
+        "log"
+        "time"
+&nbsp;
+        "github.com/xitongsys/parquet-go-source/local"
+        "github.com/xitongsys/parquet-go/reader"
+        "github.com/xitongsys/parquet-go/source"
+)
+&nbsp;
+<i>// Record represents one record stored in Parquet file</i>
+type <strong>Record</strong> struct {
+        ID      uint64 `parquet:"name=id, type=UINT_64, encoding=PLAIN"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN_DICTIONARY"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Email   string `parquet:"name=email, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Color   string `parquet:"name=color, type=UTF8, encoding=PLAIN_DICTIONARY"`
+}
+&nbsp;
+<i>// closeReader tries to close the given Parquet file reader</i>
+func <strong>closeReader</strong>(reader source.ParquetFile) {
+        err := reader.Close()
+        if err != nil {
+                log.Println("close reader:", err)
+        }
+}
+&nbsp;
+func <strong>readParquetFile</strong>(fileName string) {
+        t1 := time.Now()
+&nbsp;
+        const parallelNumber = 1
+&nbsp;
+        <i>// construct the file reader and try to open the Parquet file for</i>
+        <i>// reading</i>
+        fileReader, err := local.NewLocalFileReader(fileName)
+&nbsp;
+        if err != nil {
+                log.Fatal("Can't open file", err)
+                return
+        }
+&nbsp;
+        <i>// fileReader needs to be closed properly</i>
+        defer closeReader(fileReader)
+&nbsp;
+        <i>// initializa Parquet file reader</i>
+        parquetReader, err := reader.NewParquetReader(fileReader, new(Record),
+                parallelNumber)
+&nbsp;
+        if err != nil {
+                log.Fatal("Can't create parquet reader", err)
+                return
+        }
+&nbsp;
+        <i>// parquetReader needs to be stopped</i>
+        defer parquetReader.ReadStop()
+&nbsp;
+        readRecords(parquetReader)
+&nbsp;
+        <i>// compute and print duration</i>
+        t2 := time.Now()
+        since := time.Since(t1)
+        log.Println("Start time: ", t1)
+        log.Println("End time:   ", t2)
+        log.Println("Duration:   ", since)
+}
+&nbsp;
+func <strong>readRecords</strong>(parquetReader *reader.ParquetReader) {
+        recordCount := int(parquetReader.GetNumRows())
+        log.Println("Records to read", recordCount)
+&nbsp;
+        record := make([]Record, 1)
+        records := 0
+&nbsp;
+        <i>// try to read and display all records</i>
+        for i := 0; i &lt; recordCount; i++ {
+                // try to read record
+                err := parquetReader.Read(&amp;record)
+                if err != nil {
+                        log.Println("Read error", err)
+                        continue
+                } else {
+                        records++
+                }
+        }
+        log.Println("Read", records, "records")
+}
+&nbsp;
+func <strong>main</strong>() {
+        readParquetFile("1000000records_compression_none.parquet")
+        readParquetFile("1000000records_compression_snappy.parquet")
+        readParquetFile("1000000records_compression_gzip.parquet")
+}
+</pre>
+
+<table>
+<tr><th>#</th><th>Komprimace</th><th>Zápis</th><th>Čtení</th></tr>
+<tr><td>1</td><td>None</td><td></td><td></td></tr>
+<tr><td>2</td><td>Snappy</td><td></td><td></td></tr>
+<tr><td>3</td><td>GZIP</td><td></td><td></td></tr>
+</table>
+
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Čtení dat po blocích</h2>
+
+<p></p>
+
+<table>
+<tr><th>#</th><th>Komprimace</th><th>Zápis</th><th>Čtení po záznamech</th><th>Čtení po blocích</th></tr>
+<tr><td>1</td><td>None</td><td></td><td></td><td></td></tr>
+<tr><td>2</td><td>Snappy</td><td></td><td></td><td></td></tr>
+<tr><td>3</td><td>GZIP</td><td></td><td></td><td></td></tr>
+</table>
 
 
 
@@ -163,9 +410,9 @@ demonstrační příklady, které naleznete v&nbsp;následující tabulce:</p>
 
 <table>
 <tr><th> #</th><th>Příklad</th><th>Stručný popis</th><th>Cesta</th></tr>
-<tr><td> 1</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
-<tr><td> 2</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
-<tr><td> 3</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
+<tr><td> 1</td><td>01-write-performance-by-records</td><td>měření rychlosti zápisu do Parquet souborů</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/01-write-performance-by-records">https://github.com/tisnik/go-root/blob/master/article_68/09-write-performance/01-write-performance-by-records</a></td></tr>
+<tr><td> 2</td><td>02-read-performance-by-records</td><td>měření rychlosti čtení z&nbsp;Parquet souborů</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/02-read-performance-by-records">https://github.com/tisnik/go-root/blob/master/article_69/02-read-performance-by-records</a></td></tr>
+<tr><td> 3</td><td>03-read-performance-by-blocks</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/03-read-performance-by-blocks">https://github.com/tisnik/go-root/blob/master/article_69/03-read-performance-by-blocks</a></td></tr>
 <tr><td> 4</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
 <tr><td> 5</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
 <tr><td> 6</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
