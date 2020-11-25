@@ -323,22 +323,257 @@ func <strong>main</strong>() {
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Vliv velikosti bloku na rychlost čtení</h2>
+
+<pre>
+<i>// This tool is able to read all records stored in selected Parquet file.</i>
+<i>// Currently, only records with the structure `Record` is read correctly. Name</i>
+<i>// of input Parquet file needs to be selected from command line.</i>
+package main
+&nbsp;
+import (
+        "encoding/csv"
+        "log"
+        "os"
+        "strconv"
+        "time"
+&nbsp;
+        "github.com/xitongsys/parquet-go-source/local"
+        "github.com/xitongsys/parquet-go/reader"
+        "github.com/xitongsys/parquet-go/source"
+)
+&nbsp;
+<i>// maximum block size for reading Parquet files by blocks</i>
+const maxBlockSize = 1000
+&nbsp;
+<i>// Record represents one record stored in Parquet file</i>
+type Record struct {
+        ID      uint64 `parquet:"name=id, type=UINT_64, encoding=PLAIN"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN_DICTIONARY"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Email   string `parquet:"name=email, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Color   string `parquet:"name=color, type=UTF8, encoding=PLAIN_DICTIONARY"`
+}
+&nbsp;
+<i>// closeReader tries to close the given Parquet file reader</i>
+func closeReader(reader source.ParquetFile) {
+        err := reader.Close()
+        if err != nil {
+                log.Println("close reader:", err)
+        }
+}
+&nbsp;
+func readParquetFile(fileName string, blockSize int) {
+        // construct the file reader and try to open the Parquet file for
+        // reading
+        fileReader, err := local.NewLocalFileReader(fileName)
+&nbsp;
+        if err != nil {
+                log.Fatal("Can't open file", err)
+                return
+        }
+&nbsp;
+        // fileReader needs to be closed properly
+        defer closeReader(fileReader)
+&nbsp;
+        // initializa Parquet file reader
+        parquetReader, err := reader.NewParquetReader(fileReader, new(Record), 1)
+&nbsp;
+        if err != nil {
+                log.Fatal("Can't create parquet reader", err)
+                return
+        }
+&nbsp;
+        // parquetReader needs to be stopped
+        defer parquetReader.ReadStop()
+&nbsp;
+        readRecords(parquetReader, blockSize)
+}
+&nbsp;
+func readRecords(parquetReader *reader.ParquetReader, blockSize int) {
+        recordCount := int(parquetReader.GetNumRows())
+        // log.Println("Records to read", recordCount)
+&nbsp;
+        records := make([]Record, blockSize)
+        readRecords := 0
+&nbsp;
+        // try to read and display all records
+        for readRecords < recordCount {
+                // try to read record
+                err := parquetReader.Read(&records)
+                if err != nil {
+                        log.Println("Read error", err)
+                        continue
+                } else {
+                        readRecords += len(records)
+                }
+        }
+        // log.Println("Read", readRecords, "records")
+}
+&nbsp;
+func main() {
+        // create and open new CSV file
+        csvFile, err := os.Create("durations.csv")
+        if err != nil {
+                log.Fatal("Create CSV file", err)
+        }
+&nbsp;
+        defer csvFile.Close()
+&nbsp;
+        // initialize CSV writer
+        csvWriter := csv.NewWriter(csvFile)
+        defer csvWriter.Flush()
+&nbsp;
+        csvWriter.Write([]string{"Block size", "Time to read"})
+&nbsp;
+        for blockSize := 1; blockSize <= maxBlockSize; blockSize++ {
+                t1 := time.Now()
+&nbsp;
+                readParquetFile("1000000records_compression_none.parquet", blockSize)
+&nbsp;
+                // compute and print duration
+                since := time.Since(t1)
+                log.Printf("Block size: %d  Duration: %d\n", blockSize, since)
+&nbsp;
+                // write duration into CSV file
+                csvWriter.Write([]string{strconv.Itoa(blockSize), strconv.Itoa(int(since))})
+        }
+}
+</pre>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Vyhodnocení výsledků</h2>
 
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Konstantní počet gorutin pro čtení a jejich vliv na rychlost zpracování Parquet souborů</h2>
 
+<pre>
+<i>// This tool is able to read all records stored in selected Parquet file</i>.
+<i>// Currently, only records with the structure `Record` is read correctly. Name</i>
+<i>// of input Parquet file needs to be selected from command line</i>.
+package main
+&nbsp;
+import (
+        "encoding/csv"
+        "log"
+        "os"
+        "strconv"
+        "time"
+&nbsp;
+        "github.com/xitongsys/parquet-go-source/local"
+        "github.com/xitongsys/parquet-go/reader"
+        "github.com/xitongsys/parquet-go/source"
+)
+&nbsp;
+<i>// maximum block size for reading Parquet files by blocks</i>
+const maxBlockSize = 1000
+&nbsp;
+const readers = 100
+&nbsp;
+<i>// Record represents one record stored in Parquet file</i>
+type Record struct {
+        ID      uint64 `parquet:"name=id, type=UINT_64, encoding=PLAIN"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN_DICTIONARY"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Email   string `parquet:"name=email, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Color   string `parquet:"name=color, type=UTF8, encoding=PLAIN_DICTIONARY"`
+}
+&nbsp;
+<i>// closeReader tries to close the given Parquet file reader</i>
+func closeReader(reader source.ParquetFile) {
+        err := reader.Close()
+        if err != nil {
+                log.Println("close reader:", err)
+        }
+}
+&nbsp;
+func readParquetFile(fileName string, blockSize int) {
+        // construct the file reader and try to open the Parquet file for
+        // reading
+        fileReader, err := local.NewLocalFileReader(fileName)
+&nbsp;
+        if err != nil {
+                log.Fatal("Can't open file", err)
+                return
+        }
+&nbsp;
+        // fileReader needs to be closed properly
+        defer closeReader(fileReader)
+&nbsp;
+        // initializa Parquet file reader
+        parquetReader, err := reader.NewParquetReader(fileReader, new(Record), readers)
+&nbsp;
+        if err != nil {
+                log.Fatal("Can't create parquet reader", err)
+                return
+        }
+&nbsp;
+        // parquetReader needs to be stopped
+        defer parquetReader.ReadStop()
+&nbsp;
+        readRecords(parquetReader, blockSize)
+}
+&nbsp;
+func readRecords(parquetReader *reader.ParquetReader, blockSize int) {
+        recordCount := int(parquetReader.GetNumRows())
+        // log.Println("Records to read", recordCount)
+&nbsp;
+        records := make([]Record, blockSize)
+        readRecords := 0
+&nbsp;
+        // try to read and display all records
+        for readRecords < recordCount {
+                // try to read record
+                err := parquetReader.Read(&records)
+                if err != nil {
+                        log.Println("Read error", err)
+                        continue
+                } else {
+                        readRecords += len(records)
+                }
+        }
+        // log.Println("Read", readRecords, "records")
+}
+&nbsp;
+func main() {
+        // create and open new CSV file
+        csvFile, err := os.Create("durations.csv")
+        if err != nil {
+                log.Fatal("Create CSV file", err)
+        }
+&nbsp;
+        defer csvFile.Close()
+&nbsp;
+        // initialize CSV writer
+        csvWriter := csv.NewWriter(csvFile)
+        defer csvWriter.Flush()
+&nbsp;
+        csvWriter.Write([]string{"Block size", "Time to read"})
+&nbsp;
+        for blockSize := 1; blockSize &lt;= maxBlockSize; blockSize++ {
+                t1 := time.Now()
+&nbsp;
+                readParquetFile("1000000records_compression_none.parquet", blockSize)
+&nbsp;
+                // compute and print duration
+                since := time.Since(t1)
+                log.Printf("Block size: %d  Duration: %d\n", blockSize, since)
+&nbsp;
+                // write duration into CSV file
+                csvWriter.Write([]string{strconv.Itoa(blockSize), strconv.Itoa(int(since))})
+        }
+}
+</pre>
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Vyhodnocení výsledků</h2>
 
 
 
@@ -393,7 +628,62 @@ func <strong>main</strong>() {
 
 
 <p><a name="k18"></a></p>
-<h2 id="k18">18. </h2>
+<h2 id="k18">18. Pomocné skripty</h2>
+
+<pre>
+<i>#!/usr/bin/env python3</i>
+&nbsp;
+import sys
+import csv
+import matplotlib.pyplot as plt
+&nbsp;
+<i># Check if command line argument is specified (it is mandatory).</i>
+if len(sys.argv) &lt; 2:
+    print("Usage:")
+    print("  read-by-blocks-chart.py input_file.csv")
+    print("Example:")
+    print("  read-by-blocks-chart.py durations.csv")
+    sys.exit(1)
+&nbsp;
+<i># First command line argument should contain name of input CSV.</i>
+input_csv = sys.argv[1]
+&nbsp;
+<i># Try to open the CSV file specified.</i>
+with open(input_csv) as csv_input:
+    <i># And open this file as CSV</i>
+    csv_reader = csv.reader(csv_input)
+&nbsp;
+    <i># Skip header</i>
+    next(csv_reader, None)
+&nbsp;
+    <i># Read all rows from the provided CSV file</i>
+    durations = [(int(row[0]), int(row[1])) for row in csv_reader]
+&nbsp;
+<i># Create new graph</i>
+x = [i[0] for i in durations]
+y = [i[1] for i in durations]
+&nbsp;
+plt.plot(x, y, "b")
+&nbsp;
+<i># Title of a graph</i>
+plt.title("Reading by block with size N")
+&nbsp;
+<i># Add a label to x-axis</i>
+plt.xlabel("Block size")
+&nbsp;
+<i># Add a label to y-axis</i>
+plt.ylabel("Duration time [ns]")
+&nbsp;
+<i># Set the plot layout</i>
+plt.tight_layout()
+&nbsp;
+<i># And save the plot into raster format and vector format as well</i>
+plt.savefig("read-by-block-time.png")
+plt.savefig("read-by-block-time.svg")
+&nbsp;
+<i># Try to show the plot on screen</i>
+plt.show()
+</pre>
 
 
 
@@ -410,17 +700,19 @@ demonstrační příklady, které naleznete v&nbsp;následující tabulce:</p>
 
 <table>
 <tr><th> #</th><th>Příklad</th><th>Stručný popis</th><th>Cesta</th></tr>
-<tr><td> 1</td><td>01-write-performance-by-records</td><td>měření rychlosti zápisu do Parquet souborů</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/01-write-performance-by-records">https://github.com/tisnik/go-root/blob/master/article_68/09-write-performance/01-write-performance-by-records</a></td></tr>
-<tr><td> 2</td><td>02-read-performance-by-records</td><td>měření rychlosti čtení z&nbsp;Parquet souborů</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/02-read-performance-by-records">https://github.com/tisnik/go-root/blob/master/article_69/02-read-performance-by-records</a></td></tr>
-<tr><td> 3</td><td>03-read-performance-by-blocks</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/03-read-performance-by-blocks">https://github.com/tisnik/go-root/blob/master/article_69/03-read-performance-by-blocks</a></td></tr>
-<tr><td> 4</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
-<tr><td> 5</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
-<tr><td> 6</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
+<tr><td> 1</td><td>01-write-performance-by-records</td><td>měření rychlosti zápisu do Parquet souborů po záznamech</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/01-write-performance-by-records">https://github.com/tisnik/go-root/blob/master/article_68/09-write-performance/01-write-performance-by-records</a></td></tr>
+<tr><td> 2</td><td>02-read-performance-by-records</td><td>měření rychlosti čtení z&nbsp;Parquet souborů po záznamech</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/02-read-performance-by-records">https://github.com/tisnik/go-root/blob/master/article_69/02-read-performance-by-records</a></td></tr>
+<tr><td> 3</td><td>03-read-performance-by-blocks</td><td>měření rychlosti čtení z&nbsp;Parquet souborů po blocích</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/03-read-performance-by-blocks">https://github.com/tisnik/go-root/blob/master/article_69/03-read-performance-by-blocks</a></td></tr>
+<tr><td> 4</td><td>04-write-performance-by-records-pprof</td><td>měření rychlosti čtení z&nbsp;Parquet souborů po záznamech + informace z&nbsp;profileru</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/04-write-performance-by-records-pprof">https://github.com/tisnik/go-root/blob/master/article_69/04-write-performance-by-records-pprof</a></td></tr>
+<tr><td> 5</td><td>05-plot-read-performance-by-blocks</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/05-plot-read-performance-by-blocks">https://github.com/tisnik/go-root/blob/master/article_69/05-plot-read-performance-by-blocks</a></td></tr>
+<tr><td> 6</td><td>06-plot-read-performance-by-blocks-100-readers</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/06-plot-read-performance-by-blocks-100-readers">https://github.com/tisnik/go-root/blob/master/article_69/06-plot-read-performance-by-blocks-100-readers</a></td></tr>
 <tr><td> 7</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
 <tr><td> 8</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
 <tr><td> 9</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
 <tr><td>10</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_69/">https://github.com/tisnik/go-root/blob/master/article_69/</a></td></tr>
 </table>
+
+<p>Pomocné nástroje:</p>
 
 
 
