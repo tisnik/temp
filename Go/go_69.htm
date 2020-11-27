@@ -43,9 +43,9 @@
 <p><a href="#k04">*** 4. </a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
-<p><a href="#k08">*** 8. </a></p>
-<p><a href="#k09">*** 9. </a></p>
+<p><a href="#k07">*** 7. Vyhodnocení výsledků</a></p>
+<p><a href="#k08">*** 8. Odvození počtu gorutin od velikosti bloku</a></p>
+<p><a href="#k09">*** 9. Vyhodnocení výsledků</a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
 <p><a href="#k12">*** 12. </a></p>
@@ -578,22 +578,266 @@ func main() {
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Odvození počtu gorutin od velikosti bloku</h2>
 
+<pre>
+// This tool is able to read all records stored in selected Parquet file.
+// Currently, only records with the structure `Record` is read correctly. Name
+// of input Parquet file needs to be selected from command line.
+package main
+
+import (
+        "encoding/csv"
+        "log"
+        "os"
+        "strconv"
+        "time"
+
+        "github.com/xitongsys/parquet-go-source/local"
+        "github.com/xitongsys/parquet-go/reader"
+        "github.com/xitongsys/parquet-go/source"
+)
+
+// maximum block size for reading Parquet files by blocks
+const maxBlockSize = 1000
+
+// Record represents one record stored in Parquet file
+type Record struct {
+        ID      uint64 `parquet:"name=id, type=UINT_64, encoding=PLAIN"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN_DICTIONARY"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Email   string `parquet:"name=email, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Color   string `parquet:"name=color, type=UTF8, encoding=PLAIN_DICTIONARY"`
+}
+
+// closeReader tries to close the given Parquet file reader
+func closeReader(reader source.ParquetFile) {
+        err := reader.Close()
+        if err != nil {
+                log.Println("close reader:", err)
+        }
+}
+
+func readParquetFile(fileName string, blockSize int) {
+        // construct the file reader and try to open the Parquet file for
+        // reading
+        fileReader, err := local.NewLocalFileReader(fileName)
+
+        if err != nil {
+                log.Fatal("Can't open file", err)
+                return
+        }
+
+        // fileReader needs to be closed properly
+        defer closeReader(fileReader)
+
+        // initializa Parquet file reader
+        parquetReader, err := reader.NewParquetReader(fileReader, new(Record), int64(blockSize))
+
+        if err != nil {
+                log.Fatal("Can't create parquet reader", err)
+                return
+        }
+
+        // parquetReader needs to be stopped
+        defer parquetReader.ReadStop()
+
+        readRecords(parquetReader, blockSize)
+}
+
+func readRecords(parquetReader *reader.ParquetReader, blockSize int) {
+        recordCount := int(parquetReader.GetNumRows())
+        // log.Println("Records to read", recordCount)
+
+        records := make([]Record, blockSize)
+        readRecords := 0
+
+        // try to read and display all records
+        for readRecords < recordCount {
+                // try to read record
+                err := parquetReader.Read(&records)
+                if err != nil {
+                        log.Println("Read error", err)
+                        continue
+                } else {
+                        readRecords += len(records)
+                }
+        }
+        // log.Println("Read", readRecords, "records")
+}
+
+func main() {
+        // create and open new CSV file
+        csvFile, err := os.Create("durations.csv")
+        if err != nil {
+                log.Fatal("Create CSV file", err)
+        }
+
+        defer csvFile.Close()
+
+        // initialize CSV writer
+        csvWriter := csv.NewWriter(csvFile)
+        defer csvWriter.Flush()
+
+        csvWriter.Write([]string{"Block size", "Time to read"})
+
+        for blockSize := 1; blockSize <= maxBlockSize; blockSize++ {
+                t1 := time.Now()
+
+                readParquetFile("1000000records_compression_none.parquet", blockSize)
+
+                // compute and print duration
+                since := time.Since(t1)
+                log.Printf("Block size: %d  Duration: %d\n", blockSize, since)
+
+                // write duration into CSV file
+                csvWriter.Write([]string{strconv.Itoa(blockSize), strconv.Itoa(int(since))})
+        }
+}
+</pre>
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+<h2 id="k09">9. Vyhodnocení výsledků</h2>
 
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Čtení hodnot z&nbsp;vybraného sloupce</h2>
 
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Použití indexu sloupce při čtení</h2>
+
+<pre>
+// This tool is able to read all records stored in selected Parquet file.
+// Currently, only records with the structure `Record` is read correctly. Name
+// of input Parquet file needs to be selected from command line.
+package main
+
+import (
+        "log"
+        "time"
+
+        "github.com/xitongsys/parquet-go-source/local"
+        "github.com/xitongsys/parquet-go/reader"
+        "github.com/xitongsys/parquet-go/source"
+)
+
+// Record represents one record stored in Parquet file
+type Record struct {
+        ID      uint64 `parquet:"name=id, type=UINT_64, encoding=PLAIN"`
+        Name    string `parquet:"name=name, type=UTF8, encoding=PLAIN_DICTIONARY"`
+        Surname string `parquet:"name=surname, type=UTF8, encoding=PLAIN"`
+        Email   string `parquet:"name=email, type=UTF8, encoding=PLAIN"`
+        Active  bool   `parquet:"name=active, type=BOOLEAN"`
+        Color   string `parquet:"name=color, type=UTF8, encoding=PLAIN_DICTIONARY"`
+}
+
+const activeColumnIndex = 4
+
+// closeReader tries to close the given Parquet file reader
+func closeReader(reader source.ParquetFile) {
+        err := reader.Close()
+        if err != nil {
+                log.Println("close reader:", err)
+        }
+}
+
+func readParquetFile(fileName string) {
+        t1 := time.Now()
+
+        const parallelNumber = 1
+
+        // construct the file reader and try to open the Parquet file for
+        // reading
+        fileReader, err := local.NewLocalFileReader(fileName)
+
+        if err != nil {
+                log.Fatal("Can't open file", err)
+                return
+        }
+
+        // fileReader needs to be closed properly
+        defer closeReader(fileReader)
+
+        // initializa Parquet file reader
+        parquetColumnReader, err := reader.NewParquetColumnReader(fileReader, parallelNumber)
+
+        if err != nil {
+                log.Fatal("Can't create parquet column reader", err)
+                return
+        }
+
+        // parquetReader needs to be stopped
+        defer parquetColumnReader.ReadStop()
+
+        readColumnData(parquetColumnReader, activeColumnIndex)
+
+        // compute and print duration
+        t2 := time.Now()
+        since := time.Since(t1)
+        log.Println("Start time: ", t1)
+        log.Println("End time:   ", t2)
+        log.Println("Duration:   ", since)
+}
+
+func readColumnData(parquetReader *reader.ParquetReader, columnIndex int) {
+        valuesCount := int(parquetReader.GetNumRows())
+        log.Println("Values to read", valuesCount)
+
+        activeCount := 0
+        inactiveCount := 0
+
+        values := 0
+
+        // try to read and display all records
+        for i := 0; i < valuesCount; i++ {
+                // try to read value
+                data, _, _, err := parquetReader.ReadColumnByIndex(int64(columnIndex), 1)
+                if err != nil {
+                        log.Println("Read error", err)
+                        continue
+                } else {
+                        values++
+                }
+                if data[0].(bool) {
+                        activeCount++
+                } else {
+                        inactiveCount++
+                }
+        }
+        log.Println("Read", values, "values", "active", activeCount, "inactive", inactiveCount)
+}
+
+func main() {
+        readParquetFile("1000000records_compression_none.parquet")
+        readParquetFile("1000000records_compression_snappy.parquet")
+        readParquetFile("1000000records_compression_gzip.parquet")
+}
+</pre>
+
+<pre>
+2020/11/17 19:18:08 Values to read 1000000
+2020/11/17 19:18:08 Read 1000000 values active 500000 inactive 500000
+2020/11/17 19:18:08 Start time:  2020-11-17 19:18:08.01666144 +0100 CET m=+0.000954929
+2020/11/17 19:18:08 End time:    2020-11-17 19:18:08.598879555 +0100 CET m=+0.583173023
+2020/11/17 19:18:08 Duration:    582.218211ms
+&nbsp;
+2020/11/17 19:18:08 Values to read 1000000
+2020/11/17 19:18:09 Read 1000000 values active 500000 inactive 500000
+2020/11/17 19:18:09 Start time:  2020-11-17 19:18:08.598904304 +0100 CET m=+0.583197768
+2020/11/17 19:18:09 End time:    2020-11-17 19:18:09.145461682 +0100 CET m=+1.129755154
+2020/11/17 19:18:09 Duration:    546.557462ms
+&nbsp;
+2020/11/17 19:18:09 Values to read 1000000
+2020/11/17 19:18:09 Read 1000000 values active 500000 inactive 500000
+2020/11/17 19:18:09 Start time:  2020-11-17 19:18:09.145480412 +0100 CET m=+1.129773875
+2020/11/17 19:18:09 End time:    2020-11-17 19:18:09.743330813 +0100 CET m=+1.727624282
+2020/11/17 19:18:09 Duration:    597.850522ms
+</pre>
 
 
 
@@ -682,6 +926,74 @@ plt.savefig("read-by-block-time.png")
 plt.savefig("read-by-block-time.svg")
 &nbsp;
 <i># Try to show the plot on screen</i>
+plt.show()
+</pre>
+
+<pre>
+#!/usr/bin/env python3
+
+import sys
+import csv
+import matplotlib.pyplot as plt
+
+
+def read_csv(filename):
+    # Try to open the CSV file specified.
+    with open(filename) as csv_input:
+        # And open this file as CSV
+        csv_reader = csv.reader(csv_input)
+
+        # Skip header
+        next(csv_reader, None)
+
+        # Read all rows from the provided CSV file
+        durations = [(int(row[0]), int(row[1])) for row in csv_reader]
+
+    # Create new graph
+    x = [i[0] for i in durations]
+    y = [i[1] for i in durations]
+
+    return x, y
+
+
+# Check if command line argument is specified (it is mandatory).
+if len(sys.argv) < 3:
+    print("Usage:")
+    print("  read-by-blocks-charts.py input_file.csv input_file.csv")
+    print("Example:")
+    print("  read-by-blocks-charts.py durations-1.csv durations-100.csv")
+    sys.exit(1)
+
+# First command line argument should contain name of input CSV.
+input_csv_1 = sys.argv[1]
+input_csv_2 = sys.argv[2]
+
+x1, y1 = read_csv(input_csv_1)
+x2, y2 = read_csv(input_csv_2)
+
+plt.plot(x1, y1, "b", label="1 reader goroutine")
+plt.plot(x2, y2, "r", label="100 reader goroutines")
+
+# Title of a graph
+plt.title("Reading by block with size N")
+
+# Add a label to x-axis
+plt.xlabel("Block size")
+
+# Add a label to y-axis
+plt.ylabel("Duration time [ns]")
+
+# Add a legend
+plt.legend()
+
+# Set the plot layout
+plt.tight_layout()
+
+# And save the plot into raster format and vector format as well
+plt.savefig("read-by-block-time.png")
+plt.savefig("read-by-block-time.svg")
+
+# Try to show the plot on screen
 plt.show()
 </pre>
 
