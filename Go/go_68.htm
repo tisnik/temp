@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Komunikace se sloupcovými databázemi z jazyka Go: Parquet soubory</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Komunikace se sloupcovými databázemi z jazyka Go: Parquet soubory</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -31,14 +31,14 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>V seriálu o programovacím jazyku Go jsme si již ukázali, jakým způsobem (resp. s jakými balíčky) se v jazyce Go pracuje s klasickými relačními databázemi a taktéž s nerelační databází Redis. Dnes si popíšeme základy práce s Parquet soubory, což je datový formát orientovaný na databáze sloupcové.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
+<p><a href="#k01">1. Komunikace se sloupcovými databázemi z&nbsp;jazyka Go: Parquet soubory</a></p>
+<p><a href="#k02">2. Souborový formát Parquet</a></p>
 <p><a href="#k03">*** 3. Zápis záznamů do Parquet souborů</a></p>
 <p><a href="#k04">*** 4. </a></p>
 <p><a href="#k05">*** 5. </a></p>
@@ -61,16 +61,115 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Komunikace se sloupcovými databázemi z&nbsp;jazyka Go: Parquet soubory</h2>
 
-<p></p>
+<p>Ve zhruba posledním desetiletí se stále častěji můžeme setkat
+s&nbsp;takzvanými sloupcovými databázemi neboli <i>column-oriented DBMS</i>
+popř.&nbsp;<i>columnar DBMS</i>, v&nbsp;nichž se &ndash; jak už jejich název
+naznačuje &ndash; data ukládají po sloupcích a nikoli po jednotlivých záznamech
+(řádcích). Způsob uložení dat má poměrně velký vliv jak na velikost výsledných
+souborů (lze totiž použít efektivní metody kódování a popř.&nbsp;i komprimace
+údajů), tak i na rychlost přístupu k&nbsp;datům ve chvíli, kdy potřebujeme
+zpracovat pouze jeden či několik sloupců &ndash; a to bývá v&nbsp;některých
+oblastech velmi častý požadavek (&bdquo;vypočti průměrnou útratu&ldquo; atd.).
+Nejdůležitější vlastnosti sloupcových databází byly popsány v&nbsp;pěkném
+článku <a
+href="https://www.root.cz/clanky/nekolik-poznamek-ke-sloupcovym-databazim/">Několik
+poznámek ke sloupcovým databázím</a> od <a
+href="https://www.root.cz/autori/pavel-stehule/">Pavla Stěhuleho</a> a právě
+s&nbsp;těmito vlastnostmi se setkáme při studiu resp.&nbsp;při používání
+Parquet souborů (viz navazující kapitoly).</p>
+
+<p><div class="rs-tip-major">Poznámka: uložení do sloupců lze realizovat i
+v&nbsp;některých klasických relačních databázích &ndash; ostatně to, že je
+databáze relační vlastně nijak neurčuje fyzický způsob uložení dat.</div></p>
+
+<p>Dnes se zaměříme na přímou práci s&nbsp;Parquet soubory, a to
+s&nbsp;využitím programovacího jazyka Go a balíčku <strong>go-parquet</strong>.
+Jedná se o souborový formát určený právě pro použití ve sloupcových databázích.
+Ovšem Parquet soubory lze vytvářet a popř.&nbsp;i číst i bez toho, aby nad nimi
+byla vytvořena další mezivrstva (nebo chcete-li rozhraní) ve formě SQL či
+jiného podobně koncipovaného DSL. Příklad použití:</p>
+
+*** image ***
+<p><i>Obrázek 1: Parquet soubory mohou vznikat například na konci nějaké
+&bdquo;pipeline&ldquo;, v&nbsp;níž se shromažďují a transformují nějaká vstupní
+data (události). V&nbsp;takovém případě lze do souborů zapisovat přímo, bez
+použití DSL.</i></p>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Souborový formát Parquet</h2>
 
-<p></p>
+<p>Formát Parquet souborů byl navržen s&nbsp;ohledem na to, aby bylo data možné
+kódovat a zmenšit tak jejich velikost. Podporována je i komprimace na úrovni
+jednotlivých sloupců (které jsou ovšem rozděleny do oddílů). Zmenšení velikosti
+souborů nevede jen k&nbsp;úsporám místa na médiu (to již nemusí být kritické),
+ale (společně se zápisem po sloupcích) i k&nbsp;výraznému urychlení přístupu
+k&nbsp;datům &ndash; méně načtených bloků z&nbsp;disku, méně výpadků L1 a L2
+cache a v&nbsp;případě Parquet formátu se jeho tvůrci zaměřili i na to, aby
+programový kód obsahoval co nejméně rozeskoků (a tím pádem potenciálních
+výpadků instrukční pipeline).</p>
+
+<p>Parquet formát podporuje následující tzv.&nbsp;primitivní typy hodnot:</p>
+
+<table>
+<tr><th>#</th><th>Typ</th><th>Popis</th><th>Poznámka</th></tr>
+<tr><td>1</td><td>BOOLEAN</td><td>1 bit</td><td>osm bitů ve sloupci zakódováno do jediného bajtu</td></tr>
+<tr><td>2</td><td>INT32</td><td>32 bitů</td><td>lze využít DELTA kódování</td></tr>
+<tr><td>3</td><td>INT64</td><td>64 bitů</td><td>lze využít DELTA kódování</td></tr>
+<tr><td>4</td><td>INT96</td><td>96 bitů</td><td>z&nbsp;historických důvodů</td></tr>
+<tr><td>5</td><td>FLOAT</td><td>32 bitů</td><td>podle IEEE 754</td></tr>
+<tr><td>6</td><td>DOUBLE</td><td>64 bitů</td><td>podle IEEE 754</td></tr>
+<tr><td>7</td><td>BYTE_ARRAY</td><td>libovolná délka</td><td>pro řetězce, seznamy atd.</td></tr>
+<tr><td>8</td><td>FIXED_LEN_BYTE_ARRAY</td><td>specifikovaná délka</td><td>pro řetězce, seznamy atd.</td></tr>
+</table>
+
+<p>Tyto primitivní typy jsou namapovány na logické typy následujícím
+způsobem:</p>
+
+<table>
+<tr><th>Parquet Type</th><th>Primitive Type</th><th>Go Type</th></tr>
+<tr><td>BOOLEAN</td><td>BOOLEAN</td><td>bool</td></tr>
+<tr><td>INT32</td><td>INT32</td><td>int32</td></tr>
+<tr><td>INT64</td><td>INT64</td><td>int64</td></tr>
+<tr><td>INT96</td><td>INT96</td><td>string</td></tr>
+<tr><td>FLOAT</td><td>FLOAT</td><td>float32</td></tr>
+<tr><td>DOUBLE</td><td>DOUBLE</td><td>float64</td></tr>
+<tr><td>BYTE_ARRAY</td><td>BYTE_ARRAY</td><td>string</td></tr>
+<tr><td>FIXED_LEN_BYTE_ARRAY</td><td>FIXED_LEN_BYTE_ARRAY</td><td>string</td></tr>
+<tr><td>UTF8</td><td>BYTE_ARRAY</td><td>string</td></tr>
+<tr><td>INT_8</td><td>INT32</td><td>int8</td></tr>
+<tr><td>INT_16</td><td>INT32</td><td>int16</td></tr>
+<tr><td>INT_32</td><td>INT32</td><td>int32</td></tr>
+<tr><td>INT_64</td><td>INT64</td><td>int64</td></tr>
+<tr><td>UINT_8</td><td>INT32</td><td>uint8</td></tr>
+<tr><td>UINT_16</td><td>INT32</td><td>uint16</td></tr>
+<tr><td>UINT_32</td><td>INT32</td><td>uint32</td></tr>
+<tr><td>UINT_64</td><td>INT64</td><td>uint64</td></tr>
+<tr><td>DATE</td><td>INT32</td><td>int32</td></tr>
+<tr><td>TIME_MILLIS</td><td>INT32</td><td>int32</td></tr>
+<tr><td>TIME_MICROS</td><td>INT64</td><td>int64</td></tr>
+<tr><td>TIMESTAMP_MILLIS</td><td>INT64</td><td>int64</td></tr>
+<tr><td>TIMESTAMP_MICROS</td><td>INT64</td><td>int64</td></tr>
+<tr><td>INTERVAL</td><td>FIXED_LEN_BYTE_ARRAY</td><td>string</td></tr>
+<tr><td>DECIMAL</td><td>INT32,INT64,FIXED_LEN_BYTE_ARRAY,BYTE_ARRAY</td><td>int32, int64, string, string</td></tr>
+<tr><td>LIST</td><td></td><td>slice</td></tr>
+<tr><td>MAP</td><td></td><td>map</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: dnes se zaměříme na práci s&nbsp;typy
+<strong>BOOLEAN</strong>, <strong>INT32</strong>/<strong>INT64</strong> a
+<strong>UTF8</strong>, tedy na ukládání pravdivostních hodnot, celých čísel a
+řetězců. Příště si vysvětlíme složitější datové typy a taktéž způsob zpracování
+hodnoty <strong>NULL</strong>.</div></p>
+
+*** image ***
+<p><i>Obrázek 2: I když to může vypadat podivně, setkáme se i
+s&nbsp;následující pipeline, která kombinuje Apache Kafku (tedy proud
+událostí), relační databázi uchovávající aktuální stav &bdquo;světa&ldquo; a
+Parquet soubory.</i></p>
 
 
 
@@ -937,7 +1036,34 @@ func <strong>main</strong>() {
 }
 </pre>
 
+<p>Aniž bychom museli přesně znát interní formát Parquet souborů, je již na
+první pohled zřejmé, že se nejdříve uložil slovník (všech osm jmen barev) a
+následně soubor obsahuje pouze indexy do tohoto slovníku. Zvýrazněn je jeden
+z&nbsp;indexů, který je čtyřbajtový:</p>
+
 <pre>
+$ <strong>xxd -g 1 10000records_compression_none.parquet | head -n 20</strong>
+&nbsp;
+00000000: 50 41 52 31 15 04 15 8e 01 15 8e 01 4c 15 10 15  PAR1........L...
+00000010: 00 00 00 03 00 00 00 72 65 64 05 00 00 00 77 68  .......red....wh
+00000020: 69 74 65 04 00 00 00 63 79 61 6e 07 00 00 00 6d  ite....cyan....m
+00000030: 61 67 65 6e 74 61 04 00 00 00 62 6c 75 65 05 00  agenta....blue..
+00000040: 00 00 62 6c 61 63 6b 06 00 00 00 79 65 6c 6c 6f  ..black....yello
+00000050: 77 05 00 00 00 67 72 65 65 6e 15 00 15 8c 73 15  w....green....s.
+00000060: 8c 73 2c 15 96 1a 15 04 15 06 15 06 00 00 20 02  .s,........... .
+00000070: 00 00 00 00 02 01 00 00 00 02 02 00 00 00 02 03  ................
+00000080: 00 00 00 02 04 00 00 00 02 05 00 00 00 02 06 00  ................
+00000090: 00 00 02 07 <u>00 00 00 02</u> 05 00 00 00 02 04 00 00  ................
+000000a0: 00 02 07 00 00 00 02 01 00 00 00 02 06 00 00 00  ................
+000000b0: 02 07 00 00 00 02 03 00 00 00 02 04 00 00 00 02  ................
+000000c0: 05 00 00 00 02 03 00 00 00 02 06 00 00 00 02 03  ................
+000000d0: 00 00 00 02 04 00 00 00 02 07 00 00 00 02 01 00  ................
+000000e0: 00 00 02 02 00 00 00 02 00 00 00 00 02 02 00 00  ................
+000000f0: 00 02 05 00 00 00 02 00 00 00 00 02 07 00 00 00  ................
+00000100: 02 03 00 00 00 02 05 00 00 00 02 03 00 00 00 02  ................
+00000110: 01 00 00 00 0a 03 00 00 00 04 07 00 00 00 02 03  ................
+00000120: 00 00 00 04 07 00 00 00 02 01 00 00 00 02 07 00  ................
+00000130: 00 00 02 03 00 00 00 02 01 00 00 00 04 06 00 00  ................
 </pre>
 
 
@@ -956,6 +1082,10 @@ záznamů:</p>
 <tr><td>2</td><td>SNAPPY</td><td>24915</td><td>17038</td><td>68%</td></tr>
 <tr><td>3</td><td>GZIP</td><td>13445</td><td>8181</td><td>60%</td></tr>
 </table>
+
+<p><div class="rs-tip-major">Poznámka: jména barev jsou tvořena velmi krátkými
+řetězci. Ušetření místa by bylo výraznější ve chvíli, kdyby se jednalo o delší
+texty.</div></p>
 
 
 
@@ -1306,6 +1436,10 @@ demonstrační příklady, které naleznete v&nbsp;následující tabulce:</p>
 
 <li>Extract, transform, load (ETL)<br />
 <a href="https://en.wikipedia.org/wiki/Extract,_transform,_load">https://en.wikipedia.org/wiki/Extract,_transform,_load</a>
+</li>
+
+<li>Top 9 column-oriented databases<br />
+<a href="https://www.predictiveanalyticstoday.com/top-wide-columnar-store-databases/">https://www.predictiveanalyticstoday.com/top-wide-columnar-store-databases/</a>
 </li>
 
 <li>Apache Parquet<br />
