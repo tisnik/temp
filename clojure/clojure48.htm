@@ -68,43 +68,245 @@
 <p><a name="k02"></a></p>
 <h2 id="k02">2. </h2>
 
-if
-if+do
-if-let
-when
-when-not
-when-let
-cond
-cond + else
-case
-case + else
+<pre>
+(defproject stream-pipe-0 "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
+            :url "https://www.eclipse.org/legal/epl-2.0/"}
+  :dependencies [[org.clojure/clojure "1.10.1"]
+                 [fundingcircle/jackdaw "0.7.6"]
+                 [org.clojure/tools.logging "0.3.1"]
+                 [log4j/log4j "1.2.17" :exclusions [javax.mail/mail
+                                                    javax.jms/jms
+                                                    com.sun.jmdk/jmxtools
+                                                    com.sun.jmx/jmxri]]
+                 [org.slf4j/slf4j-log4j12 "1.6.6"]]
+  :main ^:skip-aot stream-pipe-0.core
+  :target-path "target/%s"
+  :resource-paths ["resources/"]
+  :profiles {:uberjar {:aot :all
+                       :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})
+</pre>
+
+<pre>
+log4j.rootLogger=WARN, file, console
+
+log4j.appender.file=org.apache.log4j.RollingFileAppender
+log4j.appender.file.File=log/chainring.log
+log4j.appender.file.MaxFileSize=5MB
+log4j.appender.file.MaxBackupIndex=50
+log4j.appender.file.layout=org.apache.log4j.PatternLayout
+log4j.appender.file.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss.SSS} | %-5p | %t | %c | %m%n
+
+log4j.appender.console=org.apache.log4j.ConsoleAppender
+log4j.appender.console.layout=org.apache.log4j.PatternLayout
+log4j.appender.console.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss.SSS} | %-5p | %t | %c | %m%n
+
+</pre>
+
+<pre>
+(ns stream-pipe-0.core
+  (:require [jackdaw.admin :as ja]
+            [jackdaw.client :as jc]
+            [jackdaw.client.log :as jl]
+            [jackdaw.serdes.json]
+            [jackdaw.streams :as j]
+            [clojure.pprint :as pp]
+            [clojure.tools.logging :as log]))
 
 
-(defmacro unless [& args] `(when-not ~@args))
+(def topic-config
+  "Konfigurace témat - vstupního i výstupního."
+  {:input
+   {:topic-name "input"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}
+   :output
+   {:topic-name "output"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}})
 
-(map #(unless (= %2 %3) [%1 %2 %3])
-  (iterate inc 0)    ; a lazy list for indecies
-  [:a :b :c]
-  [:a :a :a])
 
-https://cljdoc.org/d/better-cond/better-cond/2.1.0/doc/readme
-
-https://cljdoc.org/d/com.walmartlabs/cond-let/1.0.0/doc/readme
-
-https://cljdoc.org/d/cond-plus/cond-plus/1.0.1/doc/readme
+(def app-config
+  "Konfigurace aplikace (ve smyslu knihovny Jackdaw."
+  {"application.id" "pipe"
+   "bootstrap.servers" "localhost:9092"
+   "cache.max.bytes.buffering" "0"})
 
 
-https://docs.racket-lang.org/reference/if.html?q=cond#%28form._%28%28lib._racket%2Fprivate%2Fletstx-scheme..rkt%29._cond%29%29
+(defn delete-topic
+  "Pomocná funkce pro smazání vybraného tématu."
+  [broker-config topic]
+  (try
+    (log/warn "Deleting topic" (:topic-name topic))
+    (let [client (ja/->AdminClient broker-config)]
+      (ja/delete-topics! client [topic]))
+    (catch Exception e (str "caught exception: " (.getMessage e)))))
+
+
+(defn new-topic
+  "Pomocná funkce pro vytvoření nového tématu."
+  [broker-config topic]
+  (try
+    (log/warn "Creating topic" (:topic-name topic))
+    (let [client (ja/->AdminClient broker-config)]
+      (ja/create-topics! client [topic]))
+      (catch Exception e (str "caught exception: " (.getMessage e)))))
+
+
+(defn build-topology
+  "Definice celé pipeliny (kolony) - základ aplikace."
+  [builder topic-config]
+  (-> (j/kstream builder (:input topic-config))
+      (j/to (:output topic-config)))
+  builder)
+
+
+(defn start-app
+  "Spuštění aplikace."
+  [app-config topic-config]
+  (let [builder (j/streams-builder)
+        topology (build-topology builder topic-config)
+        app (j/kafka-streams topology app-config)]
+    (log/warn "Starting pipe")
+    (j/start app)
+    (log/warn "Pipe is up")
+    app))
+
+
+(defn stop-app
+  "Zastavení aplikace."
+  [app]
+  (log/warn "Stopping pipe")
+  (j/close app)
+  (log/warn "Pipe is down"))
+
+
+(defn -main
+  [& args]
+  (let [broker-config {"bootstrap.servers" "localhost:9092"}]
+
+    ;; na začátku pro jistotu vymažeme témata používaná pipou
+    (delete-topic broker-config (:input topic-config))
+    (delete-topic broker-config (:output topic-config))
+
+    ;; vytvoření nových témat akceptujících zprávy ve formátu JSON
+    (new-topic broker-config (:input topic-config))
+    (new-topic broker-config (:output topic-config))
+
+    ;; spuštění kolony
+    (log/warn "Starting application")
+    (let [app (start-app app-config topic-config)]
+      (log/warn "App created:" app))))
+</pre>
 
 
 
 <p><a name="k03"></a></p>
 <h2 id="k03">3. </h2>
 
+<pre>
+2020-12-23 16:28:36.354 | WARN  | main | stream-pipe-0.core | Deleting topic input
+2020-12-23 16:28:36.599 | WARN  | main | stream-pipe-0.core | Deleting topic output
+2020-12-23 16:28:36.618 | WARN  | main | stream-pipe-0.core | Creating topic input
+2020-12-23 16:28:36.650 | WARN  | main | stream-pipe-0.core | Creating topic output
+2020-12-23 16:28:36.678 | WARN  | main | stream-pipe-0.core | Starting application
+2020-12-23 16:28:36.797 | WARN  | main | org.apache.kafka.clients.consumer.ConsumerConfig | The configuration 'admin.retries' was supplied but isn't a known config.
+2020-12-23 16:28:36.797 | WARN  | main | org.apache.kafka.clients.consumer.ConsumerConfig | The configuration 'admin.retry.backoff.ms' was supplied but isn't a known config.
+2020-12-23 16:28:36.802 | WARN  | main | stream-pipe-0.core | Starting pipe
+2020-12-23 16:28:36.805 | WARN  | main | stream-pipe-0.core | Pipe is up
+2020-12-23 16:28:36.807 | WARN  | main | stream-pipe-0.core | App created: #object[org.apache.kafka.streams.KafkaStreams 0x61d8a491 org.apache.kafka.streams.KafkaStreams@61d8a491]
+</pre>
+
+<pre>
+$ <strong>kafkacat -P -b localhost:9092 -t input</strong>
+&nbsp;
+{"foo":"bar"}
+{}
+</pre>
+
+<pre>
+$ <strong>kafkacat -C -b localhost:9092 -t output</strong>
+&nbsp;
+% Reached end of topic output [0] at offset 1
+{"foo":"bar"}
+% Reached end of topic output [0] at offset 2
+{}
+% Reached end of topic output [0] at offset 3
+</pre>
+
 
 
 <p><a name="k04"></a></p>
 <h2 id="k04">4. </h2>
+
+<pre>
+$ kafkacat -P -b localhost:9092 -t input
+&nbsp;
+xyz
+</pre>
+
+<pre>
+2020-12-23 16:32:57.649 | ERROR | pipe-934ea525-1ffd-4c1a-b8a0-89a827416553-StreamThread-1 | org.apache.kafka.streams.errors.LogAndFailExceptionHandler | Exception caught during Deserialization, taskId: 0_0, topic: input, partition: 0, offset: 0
+java.lang.Exception: JSON error (unexpected character): x
+	at clojure.data.json$_read.invokeStatic(json.clj:226)
+	at clojure.data.json$_read.invoke(json.clj:177)
+	at clojure.data.json$read.invokeStatic(json.clj:272)
+	at clojure.data.json$read.doInvoke(json.clj:228)
+	at clojure.lang.RestFn.applyTo(RestFn.java:139)
+	at clojure.core$apply.invokeStatic(core.clj:667)
+	at clojure.core$apply.invoke(core.clj:660)
+	at clojure.data.json$read_str.invokeStatic(json.clj:278)
+	at clojure.data.json$read_str.doInvoke(json.clj:274)
+	at clojure.lang.RestFn.invoke(RestFn.java:439)
+	at jackdaw.serdes.json$deserializer$fn__5866.invoke(json.clj:34)
+	at jackdaw.serdes.fn_impl.FnDeserializer.deserialize(fn_impl.clj:37)
+	at org.apache.kafka.common.serialization.Deserializer.deserialize(Deserializer.java:60)
+	at org.apache.kafka.streams.processor.internals.SourceNode.deserializeValue(SourceNode.java:60)
+	at org.apache.kafka.streams.processor.internals.RecordDeserializer.deserialize(RecordDeserializer.java:66)
+	at org.apache.kafka.streams.processor.internals.RecordQueue.updateHead(RecordQueue.java:169)
+	at org.apache.kafka.streams.processor.internals.RecordQueue.addRawRecords(RecordQueue.java:101)
+	at org.apache.kafka.streams.processor.internals.PartitionGroup.addRawRecords(PartitionGroup.java:136)
+	at org.apache.kafka.streams.processor.internals.StreamTask.addRecords(StreamTask.java:744)
+	at org.apache.kafka.streams.processor.internals.StreamThread.addRecordsToTasks(StreamThread.java:1045)
+	at org.apache.kafka.streams.processor.internals.StreamThread.runOnce(StreamThread.java:883)
+	at org.apache.kafka.streams.processor.internals.StreamThread.runLoop(StreamThread.java:819)
+	at org.apache.kafka.streams.processor.internals.StreamThread.run(StreamThread.java:788)
+2020-12-23 16:32:57.652 | ERROR | pipe-934ea525-1ffd-4c1a-b8a0-89a827416553-StreamThread-1 | org.apache.kafka.streams.processor.internals.StreamThread | stream-thread [pipe-934ea525-1ffd-4c1a-b8a0-89a827416553-StreamThread-1] Encountered the following unexpected Kafka exception during processing, this usually indicate Streams internal errors:
+org.apache.kafka.streams.errors.StreamsException: <strong>Deserialization exception handler is set to fail upon a deserialization error. If you would rather have the streaming pipeline continue after a deserialization error, please set the default.deserialization.exception.handler appropriately.</strong>
+	at org.apache.kafka.streams.processor.internals.RecordDeserializer.deserialize(RecordDeserializer.java:80)
+	at org.apache.kafka.streams.processor.internals.RecordQueue.updateHead(RecordQueue.java:169)
+	at org.apache.kafka.streams.processor.internals.RecordQueue.addRawRecords(RecordQueue.java:101)
+	at org.apache.kafka.streams.processor.internals.PartitionGroup.addRawRecords(PartitionGroup.java:136)
+	at org.apache.kafka.streams.processor.internals.StreamTask.addRecords(StreamTask.java:744)
+	at org.apache.kafka.streams.processor.internals.StreamThread.addRecordsToTasks(StreamThread.java:1045)
+	at org.apache.kafka.streams.processor.internals.StreamThread.runOnce(StreamThread.java:883)
+	at org.apache.kafka.streams.processor.internals.StreamThread.runLoop(StreamThread.java:819)
+	at org.apache.kafka.streams.processor.internals.StreamThread.run(StreamThread.java:788)
+Caused by: java.lang.Exception: JSON error (unexpected character): x
+	at clojure.data.json$_read.invokeStatic(json.clj:226)
+	at clojure.data.json$_read.invoke(json.clj:177)
+	at clojure.data.json$read.invokeStatic(json.clj:272)
+	at clojure.data.json$read.doInvoke(json.clj:228)
+	at clojure.lang.RestFn.applyTo(RestFn.java:139)
+	at clojure.core$apply.invokeStatic(core.clj:667)
+	at clojure.core$apply.invoke(core.clj:660)
+	at clojure.data.json$read_str.invokeStatic(json.clj:278)
+	at clojure.data.json$read_str.doInvoke(json.clj:274)
+	at clojure.lang.RestFn.invoke(RestFn.java:439)
+	at jackdaw.serdes.json$deserializer$fn__5866.invoke(json.clj:34)
+	at jackdaw.serdes.fn_impl.FnDeserializer.deserialize(fn_impl.clj:37)
+	at org.apache.kafka.common.serialization.Deserializer.deserialize(Deserializer.java:60)
+	at org.apache.kafka.streams.processor.internals.SourceNode.deserializeValue(SourceNode.java:60)
+	at org.apache.kafka.streams.processor.internals.RecordDeserializer.deserialize(RecordDeserializer.java:66)
+	... 8 more
+2020-12-23 16:32:57.662 | ERROR | pipe-934ea525-1ffd-4c1a-b8a0-89a827416553-StreamThread-1 | org.apache.kafka.streams.KafkaStreams | stream-client [pipe-934ea525-1ffd-4c1a-b8a0-89a827416553] All stream threads have died. The instance will be in error state and should be closed.
+</pre>
 
 
 
