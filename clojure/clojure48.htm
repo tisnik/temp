@@ -246,6 +246,163 @@ $ <strong>kafkacat -C -b localhost:9092 -t output</strong>
 <h2 id="k04">4. </h2>
 
 <pre>
+(ns stream-pipe-1.core
+  (:require [jackdaw.admin :as ja]
+            [jackdaw.client :as jc]
+            [jackdaw.client.log :as jl]
+            [jackdaw.serdes.json]
+            [jackdaw.streams :as j]
+            [clojure.pprint :as pp]
+            [clojure.tools.logging :as log]))
+
+
+(def topic-config
+  "Konfigurace témat - vstupního i výstupního."
+  {:input
+   {:topic-name "input"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}
+   :output
+   {:topic-name "output"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}})
+
+
+(def app-config
+  "Konfigurace aplikace (ve smyslu knihovny Jackdaw."
+  {"application.id" "pipe"
+   "bootstrap.servers" "localhost:9092"
+   "cache.max.bytes.buffering" "0"})
+
+
+(defn delete-topic
+  "Pomocná funkce pro smazání vybraného tématu."
+  [broker-config topic]
+  (try
+    (log/warn "Deleting topic" (:topic-name topic))
+    (let [client (ja/->AdminClient broker-config)]
+      (ja/delete-topics! client [topic]))
+    (catch Exception e (str "caught exception: " (.getMessage e)))))
+
+
+(defn new-topic
+  "Pomocná funkce pro vytvoření nového tématu."
+  [broker-config topic]
+  (try
+    (log/warn "Creating topic" (:topic-name topic))
+    (let [client (ja/->AdminClient broker-config)]
+      (ja/create-topics! client [topic]))
+      (catch Exception e (str "caught exception: " (.getMessage e)))))
+
+
+(defn etl
+  "Transformační funkce."
+  [[k v]]
+  [k {:result (+ (:x v) (:y v))}])
+
+
+(defn build-topology
+  "Definice celé pipeliny (kolony) - základ aplikace."
+  [builder topic-config]
+  (-> (j/kstream builder (:input topic-config))
+      (j/peek (fn [[k v]]
+                (log/warn "Received message with key:   " k " and value:" v)))
+      (j/map etl)
+      (j/peek (fn [[k v]]
+                (log/warn "Transformed message with key:" k " and value:" v)))
+      (j/to (:output topic-config)))
+  builder)
+
+
+(defn start-app
+  "Spuštění aplikace."
+  [app-config topic-config]
+  (let [builder (j/streams-builder)
+        topology (build-topology builder topic-config)
+        app (j/kafka-streams topology app-config)]
+    (log/warn "Starting pipe")
+    (j/start app)
+    (log/warn "Pipe is up")
+    app))
+
+
+(defn stop-app
+  "Zastavení aplikace."
+  [app]
+  (log/warn "Stopping pipe")
+  (j/close app)
+  (log/warn "Pipe is down"))
+
+
+(defn -main
+  [& args]
+  (let [broker-config {"bootstrap.servers" "localhost:9092"}]
+
+    ;; na začátku pro jistotu vymažeme témata používaná pipou
+    (delete-topic broker-config (:input topic-config))
+    (delete-topic broker-config (:output topic-config))
+
+    ;; vytvoření nových témat akceptujících zprávy ve formátu JSON
+    (new-topic broker-config (:input topic-config))
+    (new-topic broker-config (:output topic-config))
+
+    ;; spuštění kolony
+    (log/warn "Starting application")
+    (let [app (start-app app-config topic-config)]
+      (log/warn "App created:" app))))
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. </h2>
+
+
+<pre>
+$ <strong>lein run</strong>
+&nbsp;
+2020-12-23 16:52:16.362 | WARN  | main | stream-pipe-1.core | Deleting topic input
+2020-12-23 16:52:16.600 | WARN  | main | stream-pipe-1.core | Deleting topic output
+2020-12-23 16:52:16.615 | WARN  | main | stream-pipe-1.core | Creating topic input
+2020-12-23 16:52:16.643 | WARN  | main | stream-pipe-1.core | Creating topic output
+2020-12-23 16:52:16.669 | WARN  | main | stream-pipe-1.core | Starting application
+2020-12-23 16:52:16.786 | WARN  | main | org.apache.kafka.clients.consumer.ConsumerConfig | The configuration 'admin.retries' was supplied but isn't a known config.
+2020-12-23 16:52:16.787 | WARN  | main | org.apache.kafka.clients.consumer.ConsumerConfig | The configuration 'admin.retry.backoff.ms' was supplied but isn't a known config.
+2020-12-23 16:52:16.792 | WARN  | main | stream-pipe-1.core | Starting pipe
+2020-12-23 16:52:16.796 | WARN  | main | stream-pipe-1.core | Pipe is up
+2020-12-23 16:52:16.798 | WARN  | main | stream-pipe-1.core | App created: #object[org.apache.kafka.streams.KafkaStreams 0x6a97517 org.apache.kafka.streams.KafkaStreams@6a97517]
+</pre>
+
+<pre>
+$ kafkacat -P -b localhost:9092 -t input -K:
+"***":{"x":1, "y":2}
+"---":{"x":100, "y":-100}
+</pre>
+
+<pre>
+2020-12-23 16:52:18.853 | WARN  | pipe-2d6a6caf-3ee0-49ec-a0d9-35edbf0cfe7c-StreamThread-1 | stream-pipe-1.core | Received message with key:    ***  and value: {:x 1, :y 2}
+2020-12-23 16:52:18.856 | WARN  | pipe-2d6a6caf-3ee0-49ec-a0d9-35edbf0cfe7c-StreamThread-1 | stream-pipe-1.core | Transformed message with key: ***  and value: {:result 3}
+2020-12-23 16:52:33.498 | WARN  | pipe-2d6a6caf-3ee0-49ec-a0d9-35edbf0cfe7c-StreamThread-1 | stream-pipe-1.core | Received message with key:    ---  and value: {:x 100, :y -100}
+2020-12-23 16:52:33.498 | WARN  | pipe-2d6a6caf-3ee0-49ec-a0d9-35edbf0cfe7c-StreamThread-1 | stream-pipe-1.core | Transformed message with key: ---  and value: {:result 0}
+</pre>
+
+<pre>
+% Reached end of topic output [0] at offset 0
+{"result":3}
+% Reached end of topic output [0] at offset 1
+{"result":0}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. </h2>
+
+<pre>
 $ kafkacat -P -b localhost:9092 -t input
 &nbsp;
 xyz
@@ -310,18 +467,148 @@ Caused by: java.lang.Exception: JSON error (unexpected character): x
 
 
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
-
-
-
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
-
-
-
 <p><a name="k07"></a></p>
 <h2 id="k07">7. </h2>
+
+<pre>
+(ns stream-pipe-2.core
+  (:require [jackdaw.admin :as ja]
+            [jackdaw.client :as jc]
+            [jackdaw.client.log :as jl]
+            [jackdaw.serdes.json]
+            [jackdaw.streams :as j]
+            [clojure.pprint :as pp]
+            [clojure.tools.logging :as log]))
+
+
+(def topic-config
+  "Konfigurace témat - vstupního i výstupního."
+  {:input
+   {:topic-name "input"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}
+   :output
+   {:topic-name "output"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}})
+
+
+(def app-config
+  "Konfigurace aplikace (ve smyslu knihovny Jackdaw)."
+  {"application.id" "pipe"
+   "bootstrap.servers" "localhost:9092"
+   "cache.max.bytes.buffering" "0"
+   "default.deserialization.exception.handler" "org.apache.kafka.streams.errors.LogAndContinueExceptionHandler"})
+
+
+(defn delete-topic
+  "Pomocná funkce pro smazání vybraného tématu."
+  [broker-config topic]
+  (try
+    (log/warn "Deleting topic" (:topic-name topic))
+    (let [client (ja/->AdminClient broker-config)]
+      (ja/delete-topics! client [topic]))
+    (catch Exception e (str "caught exception: " (.getMessage e)))))
+
+
+(defn new-topic
+  "Pomocná funkce pro vytvoření nového tématu."
+  [broker-config topic]
+  (try
+    (log/warn "Creating topic" (:topic-name topic))
+    (let [client (ja/->AdminClient broker-config)]
+      (ja/create-topics! client [topic]))
+      (catch Exception e (str "caught exception: " (.getMessage e)))))
+
+
+(defn etl
+  "Transformační funkce."
+  [[k v]]
+  [k {:result (+ (:x v) (:y v))}])
+
+
+(defn build-topology
+  "Definice celé pipeliny (kolony) - základ aplikace."
+  [builder topic-config]
+  (-> (j/kstream builder (:input topic-config))
+      (j/peek (fn [[k v]]
+                (log/warn "Received message with key:   " k " and value:" v)))
+      (j/map etl)
+      (j/peek (fn [[k v]]
+                (log/warn "Transformed message with key:" k " and value:" v)))
+      (j/to (:output topic-config)))
+  builder)
+
+
+(defn start-app
+  "Spuštění aplikace."
+  [app-config topic-config]
+  (let [builder (j/streams-builder)
+        topology (build-topology builder topic-config)
+        app (j/kafka-streams topology app-config)]
+    (log/warn "Starting pipe")
+    (j/start app)
+    (log/warn "Pipe is up")
+    app))
+
+
+(defn stop-app
+  "Zastavení aplikace."
+  [app]
+  (log/warn "Stopping pipe")
+  (j/close app)
+  (log/warn "Pipe is down"))
+
+
+(defn -main
+  [& args]
+  (let [broker-config {"bootstrap.servers" "localhost:9092"}]
+
+    ;; na začátku pro jistotu vymažeme témata používaná pipou
+    (delete-topic broker-config (:input topic-config))
+    (delete-topic broker-config (:output topic-config))
+
+    ;; vytvoření nových témat akceptujících zprávy ve formátu JSON
+    (new-topic broker-config (:input topic-config))
+    (new-topic broker-config (:output topic-config))
+
+    ;; spuštění kolony
+    (log/warn "Starting application")
+    (let [app (start-app app-config topic-config)]
+      (log/warn "App created:" app))))
+</pre>
+
+<pre>
+2020-12-23 17:28:22.197 | WARN  | pipe-3cb9ae24-57a5-4d20-b4f7-a89e9a311445-StreamThread-1 | org.apache.kafka.streams.errors.LogAndContinueExceptionHandler | Exception caught during Deserialization, taskId: 0_0, topic: input, partition: 0, offset: 0
+java.lang.Exception: JSON error (expected false)
+	at clojure.data.json$_read.invokeStatic(json.clj:215)
+	at clojure.data.json$_read.invoke(json.clj:177)
+	at clojure.data.json$read.invokeStatic(json.clj:272)
+	at clojure.data.json$read.doInvoke(json.clj:228)
+	at clojure.lang.RestFn.applyTo(RestFn.java:139)
+	at clojure.core$apply.invokeStatic(core.clj:667)
+	at clojure.core$apply.invoke(core.clj:660)
+	at clojure.data.json$read_str.invokeStatic(json.clj:278)
+	at clojure.data.json$read_str.doInvoke(json.clj:274)
+	at clojure.lang.RestFn.invoke(RestFn.java:439)
+	at jackdaw.serdes.json$deserializer$fn__5866.invoke(json.clj:34)
+	at jackdaw.serdes.fn_impl.FnDeserializer.deserialize(fn_impl.clj:37)
+	at org.apache.kafka.common.serialization.Deserializer.deserialize(Deserializer.java:60)
+	at org.apache.kafka.streams.processor.internals.SourceNode.deserializeValue(SourceNode.java:60)
+	at org.apache.kafka.streams.processor.internals.RecordDeserializer.deserialize(RecordDeserializer.java:66)
+	at org.apache.kafka.streams.processor.internals.RecordQueue.updateHead(RecordQueue.java:169)
+	at org.apache.kafka.streams.processor.internals.RecordQueue.addRawRecords(RecordQueue.java:101)
+	at org.apache.kafka.streams.processor.internals.PartitionGroup.addRawRecords(PartitionGroup.java:136)
+	at org.apache.kafka.streams.processor.internals.StreamTask.addRecords(StreamTask.java:744)
+	at org.apache.kafka.streams.processor.internals.StreamThread.addRecordsToTasks(StreamThread.java:1045)
+	at org.apache.kafka.streams.processor.internals.StreamThread.runOnce(StreamThread.java:883)
+	at org.apache.kafka.streams.processor.internals.StreamThread.runLoop(StreamThread.java:819)
+	at org.apache.kafka.streams.processor.internals.StreamThread.run(StreamThread.java:788)
+</pre>
 
 
 
