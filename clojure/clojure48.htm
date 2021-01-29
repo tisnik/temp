@@ -1341,6 +1341,143 @@ takto:</p>
 <p>Zdrojový kód příkladu je následně nutné upravit tak, aby se nová témata na
 začátku smazala a ihned poté znovu inicializovala:</p>
 
+<pre>
+(ns <strong>stream-pipe-4.core</strong>
+  (:require [jackdaw.admin :as ja]
+            [jackdaw.client :as jc]
+            [jackdaw.client.log :as jl]
+            [jackdaw.serdes.json]
+            [jackdaw.streams :as j]
+            [clojure.pprint :as pp]
+            [clojure.tools.logging :as log]))
+&nbsp;
+&nbsp;
+(def <strong>topic-config</strong>
+  <i>"Konfigurace témat - vstupního i výstupního."</i>
+  {:input
+   {:topic-name "input"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}
+   :output-1
+   {:topic-name "output1"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}
+   :output-2
+   {:topic-name "output2"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}
+   :output-3
+   {:topic-name "output3"
+    :partition-count 1
+    :replication-factor 1
+    :key-serde (jackdaw.serdes.json/serde)
+    :value-serde (jackdaw.serdes.json/serde)}})
+&nbsp;
+&nbsp;
+(def <strong>app-config</strong>
+  <i>"Konfigurace aplikace (ve smyslu knihovny Jackdaw)."</i>
+  {"application.id" "pipe"
+   "bootstrap.servers" "localhost:9092"
+   "cache.max.bytes.buffering" "0"
+   "default.deserialization.exception.handler" "org.apache.kafka.streams.errors.LogAndContinueExceptionHandler"})
+&nbsp;
+&nbsp;
+(defn <strong>delete-topic</strong>
+  <i>"Pomocná funkce pro smazání vybraného tématu."</i>
+  [broker-config topic]
+  (try
+    (log/warn "Deleting topic" (:topic-name topic))
+    (let [client (ja/-&gt;AdminClient broker-config)]
+      (ja/delete-topics! client [topic]))
+    (catch Exception e (str "caught exception: " (.getMessage e)))))
+&nbsp;
+&nbsp;
+(defn <strong>new-topic</strong>
+  <i>"Pomocná funkce pro vytvoření nového tématu."</i>
+  [broker-config topic]
+  (try
+    (log/warn "Creating topic" (:topic-name topic))
+    (let [client (ja/-&gt;AdminClient broker-config)]
+      (ja/create-topics! client [topic]))
+      (catch Exception e (str "caught exception: " (.getMessage e)))))
+&nbsp;
+&nbsp;
+(defn <strong>etl-1</strong>
+  <i>"Transformační funkce."</i>
+  [[k v]]
+  [k {:result (+ (:x v) (:y v))}])
+&nbsp;
+&nbsp;
+(defn <strong>etl-2</strong>
+  <i>"Transformační funkce."</i>
+  [[k v]]
+  [k (assoc v :timestamp (str (new java.util.Date)))])
+&nbsp;
+&nbsp;
+(defn <strong>build-topology</strong>
+  <i>"Definice celé pipeliny (kolony) - základ aplikace."</i>
+  [builder topic-config]
+  (-&gt; (j/kstream builder (:input topic-config))
+      (j/peek (fn [[k v]]
+                (log/warn "Received message with key:   " k " and value:" v)))
+      (j/through (:output-1 topic-config))
+      (j/map etl-1)
+      (j/peek (fn [[k v]]
+                (log/warn "Transformed message with key:" k " and value:" v)))
+      (j/through (:output-2 topic-config))
+      (j/map etl-2)
+      (j/peek (fn [[k v]]
+                (log/warn "Transformed message with key:" k " and value:" v)))
+      (j/to (:output-3 topic-config)))
+  builder)
+&nbsp;
+&nbsp;
+(defn <strong>start-app</strong>
+  <i>"Spuštění aplikace."</i>
+  [app-config topic-config]
+  (let [builder (j/streams-builder)
+        topology (build-topology builder topic-config)
+        app (j/kafka-streams topology app-config)]
+    (log/warn "Starting pipe")
+    (j/start app)
+    (log/warn "Pipe is up")
+    app))
+&nbsp;
+&nbsp;
+(defn <strong>stop-app</strong>
+  <i>"Zastavení aplikace."</i>
+  [app]
+  (log/warn "Stopping pipe")
+  (j/close app)
+  (log/warn "Pipe is down"))
+&nbsp;
+&nbsp;
+(defn <strong>-main</strong>
+  [&amp; args]
+  (let [broker-config {"bootstrap.servers" "localhost:9092"}]
+&nbsp;
+    <i>;; na začátku pro jistotu vymažeme témata používaná pipou</i>
+    (delete-topic broker-config (:input topic-config))
+    (delete-topic broker-config (:output-1 topic-config))
+    (delete-topic broker-config (:output-2 topic-config))
+    (delete-topic broker-config (:output-3 topic-config))
+&nbsp;
+    <i>;; vytvoření nových témat akceptujících zprávy ve formátu JSON</i>
+    (new-topic broker-config (:input topic-config))
+    (new-topic broker-config (:output-1 topic-config))
+    (new-topic broker-config (:output-2 topic-config))
+    (new-topic broker-config (:output-3 topic-config))
+&nbsp;
+    <i>;; spuštění kolony</i>
+    (log/warn "Starting application")
+    (let [app (start-app app-config topic-config)]
+      (log/warn "App created:" app))))
 </pre>
 
 
