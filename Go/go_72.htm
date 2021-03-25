@@ -49,7 +49,7 @@
 <p><a href="#k10">10. Příklad vytvoření jednotkových testů</a></p>
 <p><a href="#k11">11. Mockování funkcí a metod pro potřeby jednotkových testů</a></p>
 <p><a href="#k12">*** 12. Mockování funkcí a metod přistupujících do relační databáze s&nbsp;využitím knihovny <strong>go-sqlmock</strong></a></p>
-<p><a href="#k13">*** 13. </a></p>
+<p><a href="#k13">13. Export testovaných funkcí a kostra jednotkových testů</a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
@@ -636,6 +636,225 @@ func <strong>main</strong>() {
 
 <p></p>
 
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "fmt"
+        "os"
+&nbsp;
+        "database/sql"
+&nbsp;
+        _ "github.com/lib/pq"           <i>// PostgreSQL database driver</i>
+        _ "github.com/mattn/go-sqlite3" <i>// SQLite database driver</i>
+&nbsp;
+        "github.com/rs/zerolog"
+        "github.com/rs/zerolog/log"
+)
+&nbsp;
+<i>// Datová struktura s konfigurací připojení k databázi</i>
+type <strong>StorageConfiguration</strong> struct {
+        Driver           string `mapstructure:"db_driver" toml:"db_driver"`
+        SQLiteDataSource string `mapstructure:"sqlite_datasource" toml:"sqlite_datasource"`
+        PGUsername       string `mapstructure:"pg_username" toml:"pg_username"`
+        PGPassword       string `mapstructure:"pg_password" toml:"pg_password"`
+        PGHost           string `mapstructure:"pg_host" toml:"pg_host"`
+        PGPort           int    `mapstructure:"pg_port" toml:"pg_port"`
+        PGDBName         string `mapstructure:"pg_db_name" toml:"pg_db_name"`
+        PGParams         string `mapstructure:"pg_params" toml:"pg_params"`
+}
+&nbsp;
+<i>// Chybové zprávy</i>
+const (
+        canNotConnectToDataStorageMessage = "Can not connect to data storage"
+        connectionToDBNotEstablished      = "Connection to database not established"
+        unableToCloseDBRowsHandle         = "Unable to close the DB rows handle"
+        databaseOperationFailed           = "Database operation failed"
+)
+&nbsp;
+<i>// Inicializace připojení k databázi</i>
+func <strong>initDatabaseConnection</strong>(configuration StorageConfiguration) (*sql.DB, error) {
+        driverName := configuration.Driver
+        dataSource := ""
+        log.Info().Str("driverName", configuration.Driver).Msg("DB connection configuration")
+&nbsp;
+        <i>// inicializace připojení s vybraným driverem</i>
+        switch driverName {
+        case "sqlite3":
+                <i>//driverType := DBDriverSQLite3</i>
+                <i>//driver = &sqlite3.SQLiteDriver{}</i>
+                dataSource = configuration.SQLiteDataSource
+        case "postgres":
+                <i>//driverType := DBDriverPostgres</i>
+                <i>//driver = &pq.Driver{}</i>
+                dataSource = fmt.Sprintf(
+                        "postgresql://%v:%v@%v:%v/%v?%v",
+                        configuration.PGUsername,
+                        configuration.PGPassword,
+                        configuration.PGHost,
+                        configuration.PGPort,
+                        configuration.PGDBName,
+                        configuration.PGParams,
+                )
+        default:
+                <i>// neznámý driver</i>
+                err := fmt.Errorf("driver %v is not supported", driverName)
+                log.Err(err).Msg(canNotConnectToDataStorageMessage)
+                return nil, err
+        }
+&nbsp;
+        <i>// pokus o inicializaci připojení k databázi</i>
+        connection, err := sql.Open(driverName, dataSource)
+&nbsp;
+        <i>// test, zda bylo připojení k databázi úspěšné</i>
+        if err != nil {
+                log.Err(err).Msg(canNotConnectToDataStorageMessage)
+                return nil, err
+        }
+&nbsp;
+        return connection, nil
+}
+&nbsp;
+<i>// Zobrazení všech záznamů v tabulce "persons"</i>
+func <strong>displayAllRecords</strong>(connection *sql.DB) error {
+        <i>// dotaz do databáze</i>
+        query := "SELECT id, name, surname FROM persons"
+        rows, err := connection.Query(query)
+&nbsp;
+        <i>// test, zda byl SQL příkaz proveden bez chyby</i>
+        if err != nil {
+                return err
+        }
+&nbsp;
+        defer func() {
+                <i>// pokud dojde k chybě nebo na konci smyčky, musíme uvolnit prostředky</i>
+                if closeErr := rows.Close(); closeErr != nil {
+                        log.Error().Err(closeErr).Msg(unableToCloseDBRowsHandle)
+                }
+        }()
+&nbsp;
+        <i>// projít všemi vrácenými řádky</i>
+        for rows.Next() {
+                var (
+                        id      int
+                        name    string
+                        surname string
+                )
+&nbsp;
+                <i>// přečtení dat z jednoho vráceného řádku</i>
+                if err := rows.Scan(&amp;id, &amp;name, &amp;surname); err != nil {
+                        return err
+                }
+&nbsp;
+                <i>// výpis načteného záznamu</i>
+                log.Info().Int("ID", id).
+                        Str("name", name).
+                        Str("surname", surname).
+                        Msg("Record")
+        }
+&nbsp;
+        return nil
+}
+&nbsp;
+<i>// Vložení nového záznamu do tabulky "persons"</i>
+func <strong>insertRecord</strong>(connection *sql.DB, name string, surname string) (int, error) {
+        <i>// provedení SQL příkazu se dvěma parametry</i>
+        sqlStatement := "INSERT INTO persons (name, surname) VALUES($1, $2);"
+        result, err := connection.Exec(sqlStatement, name, surname)
+&nbsp;
+        <i>// test, zda byl SQL příkaz proveden bez chyby</i>
+        if err != nil {
+                return 0, err
+        }
+&nbsp;
+        <i>// přečíst počet řádků v tabulce, které byly SQL příkazem upraveny</i>
+        affected, err := result.RowsAffected()
+&nbsp;
+        <i>// i tato operace může teoreticky skončit s chybou nebo nemusí být podporována</i>
+        if err != nil {
+                return 0, err
+        }
+        return int(affected), nil
+}
+&nbsp;
+<i>// Vymazání záznamu nebo záznamů na základě zapsaného jména</i>
+func <strong>deleteByName</strong>(connection *sql.DB, name string) (int, error) {
+        <i>// provedení SQL příkazu s jedním parametrem</i>
+        sqlStatement := "DELETE FROM persons WHERE name = $1;"
+        result, err := connection.Exec(sqlStatement, name)
+&nbsp;
+        <i>// test, zda byl SQL příkaz proveden bez chyby</i>
+        if err != nil {
+                return 0, err
+        }
+&nbsp;
+        <i>// přečíst počet řádků v tabulce, které byly SQL příkazem upraveny</i>
+        affected, err := result.RowsAffected()
+&nbsp;
+        <i>// i tato operace může teoreticky skončit s chybou nebo nemusí být podporována</i>
+        if err != nil {
+                return 0, err
+        }
+        return int(affected), nil
+}
+&nbsp;
+func <strong>main</strong>() {
+        <i>// nastavit logovací systém pro barevný výstup na terminál</i>
+        log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+&nbsp;
+        <i>// konfigurace připojení do databáze</i>
+        config := StorageConfiguration{
+                Driver:     "postgres",
+                PGUsername: "postgres",
+                PGPassword: "postgres",
+                PGHost:     "localhost",
+                PGPort:     5432,
+                PGDBName:   "testdb",
+                PGParams:   "sslmode=disable",
+        }
+&nbsp;
+        log.Debug().Msg("Started")
+&nbsp;
+        <i>// inicializace připojení k databázi</i>
+        connection, err := initDatabaseConnection(config)
+        if err != nil {
+                log.Err(err).Msg(connectionToDBNotEstablished)
+                return
+        }
+&nbsp;
+        <i>// přečtení všech záznamů z tabulky "persons"</i>
+        err = displayAllRecords(connection)
+        if err != nil {
+                log.Err(err).Msg(databaseOperationFailed)
+                return
+        }
+&nbsp;
+        <i>// vymazání záznamu či záznamů na základě zapsaného jména</i>
+        affected, err := deleteByName(connection, "Eda")
+        if err != nil {
+                log.Err(err).Msg(databaseOperationFailed)
+                return
+        }
+        log.Info().Int("deleted rows", affected).Msg("DELETE")
+&nbsp;
+        <i>// přidání nového záznamu do databáze</i>
+        affected, err = insertRecord(connection, "Eda", "Vodopád")
+        if err != nil {
+                log.Err(err).Msg(databaseOperationFailed)
+                return
+        }
+        log.Info().Int("inserted rows", affected).Msg("INSERT")
+&nbsp;
+        <i>// přečtení všech záznamů z tabulky "persons"</i>
+        err = displayAllRecords(connection)
+        if err != nil {
+                log.Err(err).Msg(databaseOperationFailed)
+                return
+        }
+&nbsp;
+        log.Debug().Msg("Finished")
+}
+</pre>
 
 
 <p><a name="k08"></a></p>
@@ -954,26 +1173,46 @@ prakticky jakýkoli balíček nabízející ORM, tedy objektově-relační mapov
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Export testovaných funkcí a kostra jednotkových testů</h2>
 
-<p></p>
+<p>Nyní již máme k&nbsp;dispozici všechny základní informace o způsobu
+testování kódu, který používá balíček <strong>database/sql</strong>, a to jak
+přímo, tak i nepřímo. Můžeme se tedy pokusit vytvořit si první jednoduché
+jednotkové testy. Nejprve je nutné zajistit, aby byly testované funkce dostupné
+(viditelné) nejenom z&nbsp;balíčku <strong>main</strong>, ale i z&nbsp;balíčku
+<strong>main_test</strong>. K&nbsp;tomu můžeme použít malého triku &ndash;
+vytvoříme soubor <strong>export_test.go</strong>, který je v&nbsp;balíčku
+<strong>main</strong> a který bude obsahovat alternativní jména testovaných
+funkcí, ovšem začínajících na velké písmeno (tedy takové funkce budou viditelné
+i vně balíčku):</p>
 
 <pre>
-package main
-
+package <strong>main</strong>
+&nbsp;
 var (
         DisplayAllRecords = displayAllRecords
 )
 </pre>
 
-<pre>
-package main_test
+<p><div class="rs-tip-major">Poznámka: funkce jsou v&nbsp;jazyku Go považovány
+za plnohodnotné hodnoty, proto je tento trik takto jednoduše
+implementovatelný.</div></p>
 
+<p>Dále můžeme vytvořit kostru jednotkových testů. Bude se jednat o soubor se
+jménem končícím na <strong>_test.go</strong> a bude spadat do balíčku
+<strong>main_test</strong> (tím pádem se testy nebudou linkovat do výsledného
+binárního kódu aplikace). Importovat budeme pochopitelně balíček
+<strong>testing</strong> zmíněný v&nbsp;předchozích kapitolách, dále hlavní
+balíček <strong>main</strong> a taktéž balíček <strong>go-sqlmock</strong>:</p>
+
+<pre>
+package <strong>main_test</strong>
+&nbsp;
 import (
         "testing"
-
+&nbsp;
         main "db-test"
-
+&nbsp;
         "github.com/DATA-DOG/go-sqlmock"
 )
 </pre>
