@@ -40,9 +40,9 @@
 <p><a href="#k01">*** 1. Lexikální a syntaktická analýza zdrojových kódů jazyka Go (dokončení)</a></p>
 <p><a href="#k02">*** 2. </a></p>
 <p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
+<p><a href="#k04">*** 4. Vyhodnocení aritmetických výrazů zapsaných v&nbsp;postfixové notaci</a></p>
+<p><a href="#k05">*** 5. Detekce neplatných výrazů</a></p>
+<p><a href="#k06">*** 6. Realizace programu pro vyhodnocení výrazů zapsaných v&nbsp;postfixové notaci</a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
@@ -63,7 +63,7 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Lexikální a syntaktická analýza zdrojových kódů jazyka Go (dokončení)</h2>
 
-<p></p>
+<p>V&nbsp;dnešním článku se ještě jednou budeme zabývat problematikou lexikální a syntaktické analýzy založené na balíčcích umístěných ve jmenném prostoru <strong>go</strong> (konkrétně se jedná o balíčky <strong>go/token</strong>, <strong>go/scanner</strong> a <strong>go/ast</strong>). Ukážeme si praktické příklady, například to, jakým způsobem je možné detekovat některé problematické části kódu stylem, jakým to provádí nástroj <i>gocritic</i>, který byl popsán v&nbsp;článku <a href="https://www.root.cz/clanky/kontrola-potencialnich-chyb-ve-zdrojovych-kodech-go-nastroji-gosec-a-go-critic/">Kontrola potenciálních chyb ve zdrojových kódech Go nástroji gosec a go-critic</a>. Dále navážeme na kapitoly o postfixové notaci zápisu aritmetických a logických výrazů, protože si ukážeme, jakým způsobem se tyto výrazy vyhodnocují (například v&nbsp;jednoduchém interpretru). Vyhodnocovat přitom budeme jak výrazy zpracovávané vlastním lexikálním analyzátorem (ovšem značně primitivním), tak i standardní knihovnou <strong>go/scanner</strong>.</p>
 
 
 
@@ -261,16 +261,97 @@ func <strong>main</strong>() {
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Vyhodnocení aritmetických výrazů zapsaných v&nbsp;postfixové notaci</h2>
 
-<p></p>
+<p><a href="https://www.root.cz/clanky/lexikalni-a-syntakticka-analyza-zdrojovych-kodu-jazyka-go-2-cast/">V&nbsp;předchozím článku</a> jsme se mj.&nbsp;dalších věcí seznámili i s&nbsp;tím, jakým způsobem lze převést aritmetický či logický výraz zapsaný v&nbsp;klasické <i>infixové</i> notaci na totožný výraz, ovšem nyní zapsaný v&nbsp;notaci <i>postfixové</i> (označované taktéž zkratkou RPN). Tím se, kromě dalších věcí, odstraňuje nutnost použití závorek, které určují prioritu, protože v&nbsp;RPN je priorita určena způsobem řazení operandů a operátorů. Dále je v&nbsp;RPN zcela přesně určeno, kdy se operace vykoná &ndash; konkrétně ihned poté, co je přijat její token. Z&nbsp;praktického pohledu je ovšem neméně důležité, že aritmetické i logické výrazy zapsané s&nbsp;využitím RPN se velmi snadno programově vyhodnocují, takže RPN může být použita i jako mezistupeň v&nbsp;interpretrech nebo například v&nbsp;SW kalkulačkách. A právě výpočtem výrazů zapsaných v&nbsp;postfixové notaci se budeme zabývat v&nbsp;navazujícím textu.</p>
+
+<p>O tom, jak bude realizován výpočet postfixově zapsaného aritmetického nebo logického výrazu, jsme si taktéž řekli. Celý algoritmus je založen na použití <i>zásobníku operandů</i> (mimochodem &ndash; na zásobníku je založen i převod z&nbsp;infixové notace do notace postfixové, což je zvláštní shoda). Operandy (tj.&nbsp;numerické hodnoty popř.&nbsp;hodnoty proměnných) jsou totiž nejdříve odkládány na tento zásobník a teprve poté, co je přijat <i>operátor</i>, jsou operandy (popř.&nbsp;jeden operand) získány ze zásobníku operandů, a to operací typu <strong>pop</strong>, která tyto hodnoty ze zásobníku současně i odstraní. Celý výpočet by mohl probíhat následovně:</p>
+
+<ol>
+
+<li>Je načten token obsahující hodnotu symbolu z&nbsp;výrazu reprezentovaného
+v&nbsp;postfixové notaci (RPN). Jedná se buď o numerickou hodnotu, jméno
+proměnné nebo symbol operátoru (+, -, *, / a řekněme %).</li>
+
+<li>V&nbsp;případě, že se jedná o číselnou hodnotu, je tato hodnota uložena na
+zásobník (nazývaný, jak již víme, <i>zásobník operandů</i>, protože obsahuje
+operandy prováděných operací).</li>
+
+<li>Pokud se jedná o proměnnou, je její jméno uloženo na zásobník (při
+skutečném vyhodnocování výrazů lze v&nbsp;tomto okamžiku nahradit jméno
+proměnné jejím obsahem buď nyní, nebo až v&nbsp;dalším kroku).</li>
+
+<li>V&nbsp;případě, že se jedná o binární operátor, jsou ze zásobníku (přesněji
+ze zásobníku operandů) vyzvednuty oba operandy, operace se provede a výsledek
+se opět uloží na zásobník. U unárního operátoru (změna znaménka atd.) se
+pochopitelně pracuje pouze s&nbsp;jediným operandem.</li>
+
+<li>Na konci bude na zásobníku uložena jediná hodnota, kterou je výsledek.</li>
+
+</ol>
+
+<p><div class="rs-tip-major">Poznámka: existují i další rozšíření, například pro podporu volání funkcí, provádění speciálních zásobníkových operací (<strong>dup</strong>, <strong>drop</strong>, <strong>rot</strong>, <strong>swap</strong>, <strong>over</strong>) atd.</div></p>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Detekce neplatných výrazů</h2>
 
-<p></p>
+<p>Užitečná je i detekce neplatných výrazů. I pokud budeme předpokládat, že vždy budeme přijímat korektní tokeny (tj.&nbsp;nepřečteme například token představující pravou kulatou závorku atd.), mohou nastat následující stavy značící, že vstupní výraz není zapsán korektně:</p>
+
+<ol>
+
+<li>Je přijat token představující unární operátor a současně je zásobník
+operandů prázdný. V&nbsp;takovém případě není pochopitelně možné danou operaci
+provést.</li>
+
+<li>Je přijat token představující binární operátor (například operátor součtu)
+a zásobník operandů je buď prázdný (viz výše) nebo obsahuje pouze jeden
+operand. I toto je pochopitelně stav, který může nastat jen ve chvíli, kdy je
+vstupní výraz nekorektní.</li>
+
+<li>Na konci, tedy po příjmu a zpracování posledního tokenu, je na zásobníku
+operandů uloženo větší množství hodnot. V&nbsp;korektním případě by zde měla
+být uložena hodnota jediná.</li>
+
+<li>Teoreticky může být na konci (po příjmu a zpracování posledního tokenu)
+zásobník operandů prázdný. To však nastane jen ve chvíli, kdy je i vstupní
+výraz prázdný (binární operátory totiž sice snižují počet hodnot uložených na
+zásobníku operandů o jeden prvek, ale nikdy se nemohou dostat až
+k&nbsp;prázdnému zásobníku).</li>
+
+</ol>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Realizace programu pro vyhodnocení výrazů zapsaných v&nbsp;postfixové notaci</h2>
+
+<p>Nyní se již můžeme zabývat praktickou částí, tj.&nbsp;vlastní implementací algoritmu pro vyhodnocení aritmetických popř.&nbsp;logických výrazů zapsaných v&nbsp;postfixové notaci. První z&nbsp;těchto demonstračních příkladů je rozdělen do několika částí:</p>
+
+<ol>
+
+<li>Rozdělení vstupu (v&nbsp;tomto případě řetězce) s&nbsp;RPN výrazem na jednotlivé prvky, které představují buď operátory nebo operandy.</li>
+
+<li>Postupné načítání těchto prvků, jejich převod z&nbsp;řetězcové podoby na obdobu tokenů (první dva kroky tedy zhruba odpovídají lexikální analýze).</li>
+
+<li>Vyhodnocování podle pravidel algoritmu RPN uvedeného v&nbsp;předchozím textu. Přitom je použita velmi jednoduchá implementace zásobníku operandů založená na řezu (<i>slice</i>).</li>
+
+<li>Na konci je obsah zásobníku operandů vypsán na standardní výstup. Teoreticky by měl být vypsán pouze jediný výsledek, ovšem i když bude výraz zapsán chybně, dojde k&nbsp;výpisu obsahu celého zásobníku operandů.</li>
+
+</ol>
+
+<p>Nyní se podrobněji na jednotlivé části celého programu podíváme. Začneme rozdělením vstupu s&nbsp;RPN výrazem na jednotlivé prvky, které by měly představovat buď operátory nebo operandy. Pokud budeme předpokládat, že jsou jednotlivé prvky ve vstupním řetězci odděleny alespoň jednou mezerou (což ovšem v&nbsp;RPN nemusí být pravda!), je tato operace implementovaná v&nbsp;jazyku Go triviální, protože již existuje ve formě funkce ze základní knihovny:</p>
+
+<p>Další části již vyžadují implementaci zásobníku operandů. Pro jednoduchost můžeme použít implementaci založenou na řezu (<i>slice</i>), ovšem s&nbsp;tím, že se zdaleka nemusí jednat o implementaci nejrychlejší (záleží na algoritmu pro alokaci prvků řezu &ndash; v&nbsp;tomto případě by bylo výhodnější provést realokaci pro řekněme šestnáct číselných hodnot). Implementace zásobníku jakožto nového datového typu je v&nbsp;jazyce Go triviální, stejně jako podporované operace představované metodami:</p>
+
+<p>Nejzajímavější část celého programu se stará o vlastní vyhodnocování výrazů. Základní postup již známe &ndash; pokud je načtena numerická konstanta, je vždy uložena na zásobník operandů, pokud je naopak načten operátor, jsou ze zásobníku získány operandy a je provedena zvolená operace:</p>
+
+<p>Realizace zvolené operace je v&nbsp;první verzi algoritmu &bdquo;zadrátovaná&ldquo; přímo do zdrojového kódu. Nejedná se ani zdaleka o to nejelegantnější řešení, ovšem je snadno přenositelné i do těch programovacích jazyků, v&nbsp;nichž nejsou funkce plnohodnotnými datovými typy:</p>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, který operand načítaný ze zásobníku operandů je při vyhodnocování &bdquo;levý&ldquo; a který &bdquo;pravý&ldquo;. U těch operací, které jsou komutativní (což je součet a součin) na pořadí operandů pochopitelně nezáleží, ale u operací nekomutativních (rozdíl, podíl, podíl modulo) již ano.</div></p>
+
+<p>Nakonec nám pouze zbývá vypsat obsah zásobníku operandů. Pokud se zobrazí jeden výsledek, byl výraz zapsán korektně, ovšem při nekorektním zápisu může nastat situace, kdy bude zásobník operandů prázdný popř.&nbsp;naopak bude obsahovat větší množství hodnot (ty budou taktéž vypsány, což je ostatně ze zdrojového kódu jasně patrné):</p>
 
 <pre>
 package <strong>main</strong>
@@ -428,10 +509,14 @@ func <strong>main</strong>() {
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<p><a name="k07"></a></p>
+<h2 id="k07">7. </h2>
 
-<p></p>
+<p>Jak jsme se již naznačili v&nbsp;předchozím textu, není realizace výpočtů postfixových výrazů realizována tím nejefektivnějším způsobem. Tuto část můžeme upravit, a to například tak, že se (anonymní) funkce pro výpočet jednotlivých operací uloží do mapy operandů, kterou jsme až doposud používali ve funkci množiny (<i>set</i>). Takto vytvořená mapa je do značné míry v&nbsp;programovacím jazyku Go idiomatická:</p>
+
+<p>Díky tomu, že u každého operandu máme k&nbsp;dispozici i přímo funkci pro vlastní výpočet, je další část programového kódu jednodušší, než tomu bylo v&nbsp;předchozím demonstračním příkladu:</p>
+
+<p>V&nbsp;předchozích dvou příkladech jsme použili vlastní velmi jednoduchý <i>lexikální analyzátor</i>, který ze vstupního řetězce vytvořil prvky, jež můžeme považovat za <i>tokeny</i>.</p>
 
 
 
