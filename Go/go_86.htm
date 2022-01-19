@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Propojení Go s Pythonem s využitím cgo a ctypes (2. část)</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Propojení Go s Pythonem s využitím cgo a ctypes (2. část)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,11 +37,11 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
+<p><a href="#k01">1. Go, Python a problematika práce s&nbsp;řetězci</a></p>
+<p><a href="#k02">2. Funkce pro uvolnění řetězce z&nbsp;paměti naprogramovaná v&nbsp;jazyce Go</a></p>
+<p><a href="#k03">3. Explicitní správa paměti v&nbsp;Pythonu aneb odvrácená strana integrace s&nbsp;Go</a></p>
+<p><a href="#k04">4. Přímé volání céčkovské funkce <strong>free</strong> z&nbsp;Pythonu</a></p>
+<p><a href="#k05">5. Spojování řetězců s&nbsp;memory leakem vs. volání funkce <strong>free</strong></a></p>
 <p><a href="#k06">*** 6. </a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
@@ -56,14 +56,23 @@
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. </a></p>
 <p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Go, Python a problematika práce s&nbsp;řetězci</h2>
 
-<p></p>
+<p><a
+href="https://www.root.cz/clanky/propojeni-go-s-pythonem-s-vyuzitim-cgo-a-ctypes/">V&nbsp;úvodním
+článku</a> věnovaném volání funkcí naprogramovaných v&nbsp;jazyce Go
+z&nbsp;Pythonu jsme si mj.&nbsp;ukázali i funkci, která akceptuje dva řetězce
+(konkrétně céčkovské řetězce), převede tyto řetězce na datový typ
+<strong>string</strong> v&nbsp;Go, řetězce spojí, převede výsledek zpět na
+céčkovský řetězec a ten vrátí, přesněji řečeno vrátí ukazatel na první znak
+tohoto nového řetězce. V&nbsp;této funkci je logická chyba, která není odhalena
+překladačem. Tato chyba spočívá v&nbsp;tom, že se alokovaný céčkovský řetězec
+neuvolňuje z&nbsp;paměti:</p>
 
 <pre>
 package <strong>main</strong>
@@ -82,7 +91,11 @@ func <strong>concat</strong>(text1, text2 *C.char) *C.char {
 func <strong>main</strong>() {}
 </pre>
 
-<p></p>
+<p>To, že k&nbsp;uvolňování naalokované paměti skutečně nedochází, si můžeme
+ověřit následujícím skriptem naprogramovaným v&nbsp;jazyku Python. Tento skript
+nejprve vytvoří dva dlouhé (korektně zakódované) řetězce, které postupně
+spojuje a vypisuje délku výsledného řetězce. Celý skript může vypadat
+následovně:</p>
 
 <pre>
 import ctypes
@@ -101,21 +114,52 @@ for i in range(100000):
     time.sleep(0.01)
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: nezapomeňte proces se skriptem ukončit
+ještě předtím, než se začne swapovat nebo se dokonce spustí OOM
+killer.</div></p>
+
+
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Funkce pro uvolnění řetězce z&nbsp;paměti naprogramovaná v&nbsp;jazyce Go</h2>
 
-<p></p>
+<p>O uvolnění paměti alokované (i když poněkud nenápadně) funkcí
+<strong>C.Cstring</strong> se tedy musíme postarat sami. Pro tento účel
+vytvoříme novou funkci nazvanou například <strong>freeString</strong>, které se
+předá céčkový řetězec (tedy ukazatel na první znak v&nbsp;řetězci). Tato funkce
+zavolá standardní céčkovskou funkci <strong>free</strong>. Je ovšem nutné
+podotknout, že je zapotřebí několika triků. První trik spočívá v&nbsp;tom, že
+se použije strukturovaný komentář:</p>
+
+<pre>
+<i>// #include &lt;stdlib.h&gt;</i>
+</pre>
+
+<p>tento komentář se předá <strong>cgo</strong> při překladu a dělá přesně to,
+co je zde napsáno. Tento řádek je nutné použít proto, aby bylo možné zavolat
+funkci <strong>free</strong> přes <strong>C.free</strong> (víme již, že
+<strong>C</strong> je pseudobalíček).</p>
+
+<p>Další trik spočívá v&nbsp;konverzi běžného ukazatele v&nbsp;Go na
+&bdquo;ne-bezpečný&ldquo; céčkový ukazatel, který se předá standardní céčkovské
+funkci <strong>free</strong>:</p>
+
+<pre>
+C.free(unsafe.Pointer(s))
+</pre>
+
+<p>Nová podoba zdrojového kódu, který se bude překládat do dynamické knihovny,
+bude vypadat následovně:</p>
 
 <pre>
 package <strong>main</strong>
 &nbsp;
-// #include &lt;stdlib.h&gt;
+<i>// #include &lt;stdlib.h&gt;</i>
 import "C"
 import "unsafe"
 &nbsp;
-//export concat
-func concat(text1, text2 *C.char) *C.char {
+<i>//export concat</i>
+func <strong>concat</strong>(text1, text2 *C.char) *C.char {
         t1 := C.GoString(text1)
         t2 := C.GoString(text2)
 &nbsp;
@@ -123,20 +167,26 @@ func concat(text1, text2 *C.char) *C.char {
         return C.CString(result)
 }
 &nbsp;
-//export freeString
-func freeString(s *C.char) {
+<i>//export freeString</i>
+func <strong>freeString</strong>(s *C.char) {
         C.free(unsafe.Pointer(s))
 }
-
+&nbsp;
 func <strong>main</strong>() {}
 </pre>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Explicitní správa paměti v&nbsp;Pythonu aneb odvrácená strana integrace s&nbsp;Go</h2>
 
-<p></p>
+<p>Samotná existence funkce <strong>freeString</strong> nám pochopitelně nijak
+kouzelně nepomůže vyřešit problém s&nbsp;uvolňováním paměti &ndash; budeme
+muset tuto funkci volat explicitně. Je to ukázáno v&nbsp;dalším skriptu, který
+získá ukazatel vracený funkcí <strong>concat</strong>, přetypováním a přístupem
+k&nbsp;atributu <strong>value</strong> získá řetězec, který vypíše a následně
+původní blok paměti (což je, jak již víme, céčkový řetězec) uvolní zavoláním
+funkce <strong>freeString</strong>:</p>
 
 <pre>
 import ctypes
@@ -154,11 +204,59 @@ print(val.decode("utf-8"))
 so8.freeString(ptr)
 </pre>
 
+<p>V&nbsp;úvodní kapitole byl návratový typ funkce <strong>concat</strong>
+specifikován takto:</p>
+
+<pre>
+so7.concat.restype = ctypes.c_char_p
+</pre>
+
+<p>Tento datový typ <strong>nelze</strong> v&nbsp;novém skriptu použít, neboť
+<i>ctypes</i> se nám v&nbsp;tomto případě snaží pomoci a namísto ukazatele pro
+nás vytvoří Pythonovský řetězec (a původní ukazatel je ztracen &rarr; memory
+leak). Musíme tedy namísto toho použít:</p>
+
+<pre>
+so8.concat.restype = ctypes.POINTER(ctypes.c_char)
+</pre>
+
+<p>....což je zdánlivě to samé, ovšem tentokrát již <i>ctypes</i> nebude na
+pozadí provádět žádné další nepředložené operace.</p>
+
+
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Přímé volání céčkovské funkce <strong>free</strong> z&nbsp;Pythonu</h2>
 
-<p></p>
+<p>Ve skutečnosti nemusíme v&nbsp;jazyce Go vytvářet funkci
+<strong>freeString</strong> ani žádnou podobnou funkci, protože s&nbsp;využitím
+<i>ctypes</i> je možné standardní céčkovskou funkci <strong>free</strong> volat
+přímo z&nbsp;Pythonu. Nejprve ovšem musíme standardní knihovnu (<i>libc</i>)
+najít a načíst. K&nbsp;tomu nám dopomůže pomocná funkce
+<strong>ctypes.util.find_library</strong>:</p>
+
+<pre>
+import ctypes.util
+&nbsp;
+libc = ctypes.CDLL(ctypes.util.find_library('c'))
+</pre>
+
+<p>Následně můžeme (pro jistotu) specifikovat, jakého typu je jediný argument
+této funkce:</p>
+
+<pre>
+libc.free.argtypes = (ctypes.c_void_p,)
+</pre>
+
+<p>Poté je již možné funkci <strong>free</strong> zavolat a předat jí libovolný
+platný céčkovský ukazatel (což je obecně odlišné od Pythonovské
+reference!):</p>
+
+<pre>
+libc.free(ptr)
+</pre>
+
+<p>Upravený skript vypadá následovně:</p>
 
 <pre>
 import ctypes
@@ -180,12 +278,17 @@ print(val.decode("utf-8"))
 libc.free(ptr)
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: mimochodem stojí za povšimnutí, jak
+relativně složité jsou kódy v&nbsp;Go i Pythonu ve chvíli, kdy se oba jazyky
+musí navzájem domlouvat přes typový systém programovacího jazyka C.</div></p>
+
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Spojování řetězců s&nbsp;memory leakem vs. volání funkce <strong>free</strong></h2>
 
-<p></p>
+<p>Jen pro úplnost se podívejme na spojování řetězců s&nbsp;memory leakem (bez
+uvolnění paměti):</p>
 
 <pre>
 import ctypes
@@ -205,7 +308,7 @@ for i in range(100000):
     time.sleep(0.001)
 </pre>
 
-<p></p>
+<p>Se skriptem, který uvolnění paměti korektně provádí:</p>
 
 <pre>
 import ctypes, ctypes.util
@@ -225,9 +328,14 @@ for i in range(100000):
     ptr = so8.concat(t1, t2)
     val = ctypes.cast(ptr, ctypes.c_char_p).value
     print(len(val))
-    #libc.free(ptr)
+    <strong>libc.free(ptr)</strong>
     time.sleep(0.001)
 </pre>
+
+<p><div class="rs-tip-major">Poznámka: při běžném testování se na tento problém
+nemusí narazit, protože řetězce bývají v&nbsp;porovnání s&nbsp;kapacitami
+moderních RAM relativně malé. Ovšem v&nbsp;produkčním nasazení je problém
+způsobený použitím prvního skriptu prakticky zaručen :-)</div></p>
 
 
 
@@ -599,10 +707,171 @@ print(so10.average(c_array(v4), len(v4)))
 <p><a name="k14"></a></p>
 <h2 id="k14">14. </h2>
 
+<pre>
+package main
+
+import "math"
+import "fmt"
+
+/*
+struct Vector {
+    double X;
+    double Y;
+};
+*/
+import "C"
+
+//export length
+func length(v C.struct_Vector) C.double {
+        r := C.double(math.Sqrt(float64(v.X*v.X) + float64(v.Y*v.Y)))
+        fmt.Printf("%f %f %f\n", float64(v.X), float64(v.Y), r)
+        return r
+}
+
+func main() {}
+</pre>
+
+<pre>
+/* Code generated by cmd/cgo; DO NOT EDIT. */
+
+/* package command-line-arguments */
+
+
+#line 1 "cgo-builtin-export-prolog"
+
+#include <stddef.h> /* for ptrdiff_t below */
+
+#ifndef GO_CGO_EXPORT_PROLOGUE_H
+#define GO_CGO_EXPORT_PROLOGUE_H
+
+#ifndef GO_CGO_GOSTRING_TYPEDEF
+typedef struct { const char *p; ptrdiff_t n; } _GoString_;
+#endif
+
+#endif
+
+/* Start of preamble from import "C" comments.  */
+
+
+#line 6 "so11.go"
+
+struct Vector {
+    double X;
+    double Y;
+};
+
+#line 1 "cgo-generated-wrapper"
+
+
+/* End of preamble from import "C" comments.  */
+
+
+/* Start of boilerplate cgo prologue.  */
+#line 1 "cgo-gcc-export-header-prolog"
+
+#ifndef GO_CGO_PROLOGUE_H
+#define GO_CGO_PROLOGUE_H
+
+typedef signed char GoInt8;
+typedef unsigned char GoUint8;
+typedef short GoInt16;
+typedef unsigned short GoUint16;
+typedef int GoInt32;
+typedef unsigned int GoUint32;
+typedef long long GoInt64;
+typedef unsigned long long GoUint64;
+typedef GoInt64 GoInt;
+typedef GoUint64 GoUint;
+typedef __SIZE_TYPE__ GoUintptr;
+typedef float GoFloat32;
+typedef double GoFloat64;
+typedef float _Complex GoComplex64;
+typedef double _Complex GoComplex128;
+
+/*
+  static assertion to make sure the file is being used on architecture
+  at least with matching size of GoInt.
+*/
+typedef char _check_for_64_bit_pointer_matching_GoInt[sizeof(void*)==64/8 ? 1:-1];
+
+#ifndef GO_CGO_GOSTRING_TYPEDEF
+typedef _GoString_ GoString;
+#endif
+typedef void *GoMap;
+typedef void *GoChan;
+typedef struct { void *t; void *v; } GoInterface;
+typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
+
+#endif
+
+/* End of boilerplate cgo prologue.  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern double length(struct Vector v);
+
+#ifdef __cplusplus
+}
+#endif
+</pre>
+
 
 
 <p><a name="k15"></a></p>
 <h2 id="k15">15. </h2>
+
+<pre>
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+
+#include "so11.h"
+
+int main()
+{
+    void *library;
+    double (*length)(struct Vector v);
+
+    /* pokus o otevreni a nacteni sdilene knihovny */
+    library = dlopen("./so11.so", RTLD_LAZY);
+    if (library != NULL) {
+        printf("dynamic library loaded: %p\n", library);
+    } else {
+        puts("unable to load dynamic library");
+        return 1;
+    }
+
+    length = dlsym(library, "length");
+
+    if (length != NULL) {
+        struct Vector v;
+        v.X = 1.0;
+        v.Y = 1.0;
+        double ret;
+        printf("address for 'length' retrieved: %p\n", (void*)length);
+        puts("Calling 'length'...");
+        ret = length(v);
+        printf("...called, vector length: %f\n", ret);
+    } else {
+        puts("unable to retrieve address for 'length'");
+    }
+
+    /* pokus o uzavreni sdilene knihovny */
+    if (library != NULL) {
+        int err = dlclose(library);
+        if (err != 0) {
+            puts("unable to close dynamic library");
+            return 1;
+        } else {
+            puts("dynamic library closed");
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
+</pre>
 
 
 
@@ -689,6 +958,10 @@ demonstrační příklady, které naleznete v&nbsp;následující tabulce:</p>
 <tr><td>44</td><td>so10.go</td><td>funkce zpracovávající pole s&nbsp;prvky typu <strong>double</strong></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_86/so10.go">https://github.com/tisnik/go-root/blob/master/article_86/so10.go</a></td></tr>
 <tr><td>45</td><td>so10.h</td><td>vygenerovaný hlavičkový soubor</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_86/so10.h">https://github.com/tisnik/go-root/blob/master/article_86/so10.h</a></td></tr>
 <tr><td>46</td><td>use_so10A.py</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/article_86/use_so10.py">https://github.com/tisnik/go-root/blob/master/article_86/use_so10.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>47</td><td>so11.go</td><td>funkce zpracovávající strukturu</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_86/so11.go">https://github.com/tisnik/go-root/blob/master/article_86/so11.go</a></td></tr>
+<tr><td>48</td><td>so11.h</td><td>vygenerovaný hlavičkový soubor</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_86/so11.h">https://github.com/tisnik/go-root/blob/master/article_86/so11.h</a></td></tr>
+<tr><td>49</td><td>use_so11.c</td><td>volání funkce <strong>length</strong> z&nbsp;céčka</td><td><a href="https://github.com/tisnik/go-root/blob/master/article_86/use_so11.c">https://github.com/tisnik/go-root/blob/master/article_86/use_so11.c</a></td></tr>
 </table>
 
 
