@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Na dva předchozí články, v&nbsp;nichž jsme si ukázali možnosti standardního šablonovacího systému programovacího jazyka Go, dnes navážeme. Ukážeme si totiž, jakým způsobem je možné použít HTML šablony a jak je lze zaintegovat do služeb postavených na HTTP serveru.</p>
 
 
 
@@ -51,10 +51,10 @@
 <p><a href="#k12">12. Benchmark: rychlost načtení a aplikace šablon</a></p>
 <p><a href="#k13">13. Vytvoření šablon pouze při inicializaci HTTP serveru</a></p>
 <p><a href="#k14">14. Detekce modifikace šablon</a></p>
-<p><a href="#k15">*** 15. Příklad detekce změn v&nbsp;souborech</a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. </a></p>
+<p><a href="#k15">15. Příklad detekce změn v&nbsp;souborech</a></p>
+<p><a href="#k16">16. HTTP server detekující změny šablon</a></p>
+<p><a href="#k17">17. Úplný zdrojový kód serveru</a></p>
+<p><a href="#k18">18. Závěr</a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -1380,7 +1380,7 @@ umožňuje sledovat změny provedené ve sledovaných souborech (kde soubor je
 v&nbsp;tomto případě na Linuxu identifikován i-uzlem).</p>
 
 <p>Tato funkcionalita je implementovaná v&nbsp;knihovně
-<strong>fsnotify/fsnotivy</strong>, kterou využijeme v&nbsp;dalších dvou
+<strong>fsnotify/fsnotify</strong>, kterou využijeme v&nbsp;dalších dvou
 příkladech. Nejdříve je nutné vytvořit projekt, který tuto knihovnu využívá,
 takže po příkazu <strong>go mod init</strong> provedeme úpravu tohoto
 souboru:</p>
@@ -1401,8 +1401,15 @@ require (
 <p><a name="k15"></a></p>
 <h2 id="k15">15. Příklad detekce změn v&nbsp;souborech</h2>
 
-<pre>
-</pre>
+<p>Knihovna <strong>fsnotify/fsnotify</strong> je založena na sledování změn
+v&nbsp;souboru, který je identifikován svým i-uzlem. To ovšem znamená, že není
+možné sledovat přímo konkrétní soubor se šablonou, protože textové editory při
+ukládání typicky původní soubor přejmenují a změny uloží do souboru nového.
+Sledovat je tedy nutné změny v&nbsp;adresáři, v&nbsp;němž se soubor nachází.
+Zajímat nás budou zápisy do tohoto speciálního souboru (adresáře jsou
+z&nbsp;pohledu systému taktéž soubory). Pokud k&nbsp;zápisu dojde, zjistíme
+jméno změněného souboru přímo z&nbsp;události, kterou knihovna
+<strong>fsnotify/fsnotify</strong> vytvoří:</p>
 
 <pre>
 select {
@@ -1424,6 +1431,14 @@ case err, ok := &lt;-watcher.Errors:
         log.Println("error:", err)
 }
 </pre>
+
+<p><div class="rs-tip-major">Poznámka: pokud by se sledovaly změny konkrétního
+souboru, vše by zdánlivě fungovalo až do druhé změny. Tehdy totiž (typicky) již
+nový soubor má odlišný i-uzel &ndash; opět doporučuji si vše
+vyzkoušet.</div></p>
+
+<p>Program, který bude sledovat změny souboru
+<strong>html_template06.htm</strong> může vypadat následovně:</p>
 
 <pre>
 package <strong>main</strong>
@@ -1482,53 +1497,70 @@ func <strong>main</strong>() {
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. HTTP server detekující změny šablon</h2>
 
-
-
-<p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<p>Knihovnu <strong>fsnotify/fsnotify</strong> můžeme integrovat do HTTP
+serveru a zajistit tak, aby se šablony načetly až ve chvíli, kdy skutečně dojde
+k&nbsp;jejich změně. Samotný detektor změn bude spuštěn ve vlastní gorutině a
+informace o změněných souborech bude posílat do kanálu
+<strong>changed</strong>:</p>
 
 <pre>
-package <strong>main</strong>
+changed := make(chan string)
+<strong>go</strong> startWatcher(".", templateFilename, changed)
+</pre>
 
-import (
-        "fmt"
-        "html/template"
-        "io/ioutil"
-        "log"
-        "net/http"
+<p>Samotná implementace gorutiny vychází z&nbsp;příkladu uvedeného <a
+href="#k15">výše</a>. Přidán je pouze kanál, do něhož jsou posílána jména
+změněných souborů:</p>
 
-        "github.com/fsnotify/fsnotify"
-)
-
-const templateFilename = "./html_template06.htm"
-
-<i>// datový typ, jehož prvky budou vypisovány v šabloně</i>
-type <strong>Role</strong> struct {
-        Name       string
-        Surname    string
-        Popularity int
-}
-
-func <strong>sendStaticPage</strong>(writer http.ResponseWriter, filename string) {
-        log.Printf("Sending static file %s", filename)
-
-        body, err := ioutil.ReadFile(filename)
-        if err == nil {
-                fmt.Fprint(writer, string(body))
-        } else {
-                writer.WriteHeader(http.StatusNotFound)
-                fmt.Fprint(writer, "Not found!")
+<pre>
+func <strong>startWatcher</strong>(directory string, filename string, changed chan string) {
+        log.Print("Starting watcher")
+&nbsp;
+        watcher, err := fsnotify.NewWatcher()
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer watcher.Close()
+&nbsp;
+        log.Printf("Watching directory %s", directory)
+&nbsp;
+        err = watcher.Add(directory)
+        if err != nil {
+                log.Fatal(err)
+        }
+&nbsp;
+        for {
+                select {
+                case event, ok := &lt;-watcher.Events:
+                        if !ok {
+                                return
+                        }
+                        log.Println("event:", event)
+                        if event.Op&amp;fsnotify.Write == fsnotify.Write {
+                                log.Println("modified file:", event.Name)
+                                if filename == event.Name {
+                                        log.Println("Template change detected")
+                                        <strong>changed &lt;- filename</strong>
+                                }
+                        }
+                case err, ok := &lt;-watcher.Errors:
+                        if !ok {
+                                return
+                        }
+                        log.Println("error:", err)
+                }
         }
 }
+</pre>
 
-func <strong>staticPage</strong>(filename string) func(writer http.ResponseWriter, request *http.Request) {
-        return func(writer http.ResponseWriter, request *http.Request) {
-                sendStaticPage(writer, filename)
-        }
-}
+<p>Změnit se ovšem musí i samotný handler, který nejprve otestuje, jestli došlo
+k&nbsp;modifikaci šablony a pokud ano, tuto šablonu načte (nekontroluje se však
+jméno souboru &ndash; tuto část resp.&nbsp;podmínku je však triviální
+přidat):</p>
 
+<pre>
 func <strong>rolesHandler</strong>(tmpl *template.Template, roles []Role, changed chan string) func(writer http.ResponseWriter, request *http.Request) {
         return func(writer http.ResponseWriter, request *http.Request) {
                 select {
@@ -1538,7 +1570,7 @@ func <strong>rolesHandler</strong>(tmpl *template.Template, roles []Role, change
                 default:
                         log.Print("Using old template")
                 }
-
+&nbsp;
                 log.Printf("Application template for %d data records", len(roles))
                 <i>// aplikace šablony - přepis hodnot</i>
                 err := tmpl.Execute(writer, roles)
@@ -1549,36 +1581,106 @@ func <strong>rolesHandler</strong>(tmpl *template.Template, roles []Role, change
                 }
         }
 }
+</pre>
 
+
+
+<p><a name="k17"></a></p>
+<h2 id="k17">17. Úplný zdrojový kód serveru</h2>
+
+<p>Úplný zdrojový kód serveru popsaného v&nbsp;předchozí kapitole bude vypadat
+následovně:</p>
+
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "fmt"
+        "html/template"
+        "io/ioutil"
+        "log"
+        "net/http"
+&nbsp;
+        "github.com/fsnotify/fsnotify"
+)
+&nbsp;
+const templateFilename = "./html_template06.htm"
+&nbsp;
+<i>// datový typ, jehož prvky budou vypisovány v šabloně</i>
+type <strong>Role</strong> struct {
+        Name       string
+        Surname    string
+        Popularity int
+}
+&nbsp;
+func <strong>sendStaticPage</strong>(writer http.ResponseWriter, filename string) {
+        log.Printf("Sending static file %s", filename)
+&nbsp;
+        body, err := ioutil.ReadFile(filename)
+        if err == nil {
+                fmt.Fprint(writer, string(body))
+        } else {
+                writer.WriteHeader(http.StatusNotFound)
+                fmt.Fprint(writer, "Not found!")
+        }
+}
+&nbsp;
+func <strong>staticPage</strong>(filename string) func(writer http.ResponseWriter, request *http.Request) {
+        return func(writer http.ResponseWriter, request *http.Request) {
+                sendStaticPage(writer, filename)
+        }
+}
+&nbsp;
+func <strong>rolesHandler</strong>(tmpl *template.Template, roles []Role, changed chan string) func(writer http.ResponseWriter, request *http.Request) {
+        return func(writer http.ResponseWriter, request *http.Request) {
+                select {
+                case filename := &lt;-changed:
+                        log.Printf("Have to reload template from file %s", filename)
+                        tmpl = loadTemplate(filename)
+                default:
+                        log.Print("Using old template")
+                }
+&nbsp;
+                log.Printf("Application template for %d data records", len(roles))
+                <i>// aplikace šablony - přepis hodnot</i>
+                err := tmpl.Execute(writer, roles)
+                if err != nil {
+                        writer.WriteHeader(http.StatusInternalServerError)
+                        log.Printf("Error executing template: %v", err)
+                        return
+                }
+        }
+}
+&nbsp;
 func <strong>loadTemplate</strong>(templateFilename string) *template.Template {
         log.Printf("Constructing template from file %s", templateFilename)
-
+&nbsp;
         <i>// vytvoření nové šablony</i>
         tmpl, err := template.ParseFiles(templateFilename)
         if err != nil {
                 log.Fatalf("Template can't be constructed: %v", err)
                 return nil
         }
-
+&nbsp;
         return tmpl
 }
-
+&nbsp;
 func <strong>startWatcher</strong>(directory string, filename string, changed chan string) {
         log.Print("Starting watcher")
-
+&nbsp;
         watcher, err := fsnotify.NewWatcher()
         if err != nil {
                 log.Fatal(err)
         }
         defer watcher.Close()
-
+&nbsp;
         log.Printf("Watching directory %s", directory)
-
+&nbsp;
         err = watcher.Add(directory)
         if err != nil {
                 log.Fatal(err)
         }
-
+&nbsp;
         for {
                 select {
                 case event, ok := &lt;-watcher.Events:
@@ -1601,7 +1703,7 @@ func <strong>startWatcher</strong>(directory string, filename string, changed ch
                 }
         }
 }
-
+&nbsp;
 func <strong>main</strong>() {
         <i>// tyto hodnoty budou použity při aplikaci šablony</i>
         roles := []Role{
@@ -1613,16 +1715,16 @@ func <strong>main</strong>() {
                 Role{"Eda", "Wasserfall", 0},
                 Role{"Přemysl", "Hájek", 10},
         }
-
+&nbsp;
         changed := make(chan string)
         go startWatcher(".", templateFilename, changed)
-
+&nbsp;
         tmpl := loadTemplate(templateFilename)
-
+&nbsp;
         const address = ":8080"
-
+&nbsp;
         log.Printf("Starting server on address %s", address)
-
+&nbsp;
         http.HandleFunc("/", staticPage("index.html"))
         http.HandleFunc("/missing", staticPage("missing.html"))
         http.HandleFunc("/roles", rolesHandler(tmpl, roles, changed))
@@ -1633,7 +1735,15 @@ func <strong>main</strong>() {
 
 
 <p><a name="k18"></a></p>
-<h2 id="k18">18. </h2>
+<h2 id="k18">18. Závěr</h2>
+
+<p>Většinou zjistíte, že neustálé načítání šablon aplikaci nijak zásadně
+nezpomaluje, přesněji řečeno že onen pověstný <i>bottleneck</i> se nachází
+v&nbsp;jiné části HTTP serveru. Popř.&nbsp;si infrastruktura vyžádá, že změny
+šablon vůbec nemohou být provedeny bez &bdquo;otočení&ldquo; uzlu s&nbsp;HTTP
+serverem. Nicméně i přesto může být užitečné tuto část HTTP serveru
+(resp.&nbsp;celé služby) sledovat a například exportovat formou metrik pro
+Prometheus.</p>
 
 
 
