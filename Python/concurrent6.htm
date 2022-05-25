@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Souběžné a paralelně běžící úlohy naprogramované v Pythonu – závěrečné zhodnocení</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Souběžné a paralelně běžící úlohy naprogramované v Pythonu – závěrečné zhodnocení</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,13 +37,13 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
+<p><a href="#k01">*** 1. Základní řešení problému typu producent-konzument v&nbsp;knihovně Trio</a></p>
+<p><a href="#k02">*** 2. Specifikace maximální doby čekání na zprávu popř.&nbsp;pro poslání zprávy do blokovaného kanálu</a></p>
+<p><a href="#k03">*** 3. Explicitní uzavření kanálu v&nbsp;korutině, reakce na uzavření kanálu dalšími korutinami</a></p>
+<p><a href="#k04">*** 4. Problematika uzavření kanálu používaného větším množstvím korutin</a></p>
+<p><a href="#k05">*** 5. Vyřešení předchozího problému &ndash; &bdquo;naklonování&ldquo; kanálu</a></p>
+<p><a href="#k06">*** 6. Využití kontextových informací</a></p>
+<p><a href="#k07">*** 7. Zámky</a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
@@ -61,12 +61,106 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Základní řešení problému typu producent-konzument v&nbsp;knihovně Trio</h2>
+
+<p></p>
+
+<pre>
+import <strong>trio</strong>
+&nbsp;
+&nbsp;
+num_producers = 5
+num_consumers = 20
+&nbsp;
+&nbsp;
+<u>async def</u> <strong>producer</strong>(id, send_channel):
+    for i in range(1, 10):
+        message = f"message {i}"
+        print(f"Producer #{id}: {message}")
+        <u>await</u> send_channel.send(message)
+&nbsp;
+&nbsp;
+<u>async def</u> <strong>consumer</strong>(id, receive_channel):
+    async for value in receive_channel:
+        print(f"Consumer #{id}: received{value!r}")
+        <u>await</u> trio.sleep(1)
+&nbsp;
+&nbsp;
+<u>async def</u> <strong>main</strong>():
+    async with trio.open_nursery() as nursery:
+        send_channel, receive_channel = trio.open_memory_channel(0)
+        for id in range(num_producers):
+            nursery.start_soon(producer, id, send_channel)
+        for id in range(num_consumers):
+            nursery.start_soon(consumer, id, receive_channel)
+&nbsp;
+&nbsp;
+trio.run(main)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto demonstračního
+příkladu je dostupný na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_25_multiple_prod_cons.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_25_multiple_prod_cons.py</a>.</div></p>
+
+<p></p>
+
+<pre>
+Producer #4: message 1
+Producer #3: message 1
+Producer #2: message 1
+Producer #1: message 1
+Producer #0: message 1
+Producer #0: message 2
+Consumer #15: received'message 1'
+Producer #1: message 2
+Consumer #16: received'message 1'
+Producer #2: message 2
+Consumer #17: received'message 1'
+Producer #3: message 2
+Consumer #18: received'message 1'
+Producer #4: message 2
+Consumer #19: received'message 1'
+...
+...
+...
+Consumer #16: received'message 8'
+Producer #2: message 9
+Consumer #17: received'message 8'
+Producer #3: message 9
+Consumer #18: received'message 8'
+Producer #4: message 9
+Consumer #19: received'message 8'
+Consumer #6: received'message 9'
+Consumer #5: received'message 9'
+Consumer #0: received'message 9'
+Consumer #1: received'message 9'
+Consumer #2: received'message 9'
+</pre>
+
+<p></p>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Specifikace maximální doby čekání na zprávu popř.&nbsp;pro poslání zprávy do blokovaného kanálu</h2>
+
+<p></p>
+
+<pre>
+with trio.fail_after(producer_timeout):
+    <u>await</u> send_channel.send(message)
+</pre>
+
+<p></p>
+
+<pre>
+with trio.fail_after(consumer_timeout):
+    value = <u>await</u> receive_channel.receive()
+    print(f"Consumer #{id}: received{value!r}")
+    <u>await</u> trio.sleep(1)
+</pre>
+
+<p></p>
 
 <pre>
 import <strong>trio</strong>
@@ -88,7 +182,7 @@ producer_timeout = 2
 &nbsp;
 <u>async def</u> <strong>consumer</strong>(id, receive_channel):
     while True:
-        with trio.fail_after(1):
+        with trio.fail_after(consumer_timeout):
             value = <u>await</u> receive_channel.receive()
             print(f"Consumer #{id}: received{value!r}")
             <u>await</u> trio.sleep(1)
@@ -106,13 +200,88 @@ producer_timeout = 2
 trio.run(main)
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto demonstračního
+příkladu je dostupný na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_26_timeouts.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_26_timeouts.py</a>.</div></p>
+
 <pre>
+Producer #4: message 1
+Producer #3: message 1
+Producer #2: message 1
+Producer #1: message 1
+Producer #0: message 1
+Consumer #19: received'message 1'
+Producer #4: message 2
+Consumer #18: received'message 1'
+Producer #3: message 2
+Consumer #17: received'message 1'
+Producer #2: message 2
+Consumer #16: received'message 1'
+
+Producer #4: message 1
+Producer #3: message 1
+Producer #2: message 1
+Producer #1: message 1
+Producer #0: message 1
+Consumer #19: received'message 1'
+Producer #4: message 2
+Consumer #18: received'message 1'
+Producer #3: message 2
+Consumer #17: received'message 1'
+Producer #2: message 2
+Consumer #16: received'message 1'
+...
+...
+...
+</pre>
+
+<pre>
+Producer #3: message 5
+Consumer #0: received'message 4'
+Producer #4: message 5
+Traceback (most recent call last):
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_timeouts.py", line 106, in fail_at
+    yield scope
+  File "trio_26_timeouts.py", line 23, in consumer
+    await trio.sleep(1)
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_timeouts.py", line 76, in sleep
+    await sleep_until(trio.current_time() + seconds)
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_timeouts.py", line 57, in sleep_until
+    await sleep_forever()
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_timeouts.py", line 40, in sleep_forever
+    await trio.lowlevel.wait_task_rescheduled(lambda _: trio.lowlevel.Abort.SUCCEEDED)
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_core/_traps.py", line 166, in wait_task_rescheduled
+    return (await _async_yield(WaitTaskRescheduled(abort_func))).unwrap()
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/outcome/_impl.py", line 138, in unwrap
+    raise captured_error
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_core/_run.py", line 1173, in raise_cancel
+    raise Cancelled._create()
+trio.Cancelled: Cancelled
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "trio_26_timeouts.py", line 35, in <module>
+    trio.run(main)
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_core/_run.py", line 1946, in run
+    raise runner.main_task_outcome.error
+  File "trio_26_timeouts.py", line 32, in main
+    nursery.start_soon(consumer, id, receive_channel)
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_core/_run.py", line 813, in __aexit__
+    raise combined_error_from_nursery
+  File "trio_26_timeouts.py", line 23, in consumer
+    await trio.sleep(1)
+  File "/usr/lib/python3.8/contextlib.py", line 131, in __exit__
+    self.gen.throw(type, value, traceback)
+  File "/home/ptisnovs/.local/lib/python3.8/site-packages/trio/_timeouts.py", line 108, in fail_at
+    raise TooSlowError
+trio.TooSlowError
 </pre>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Explicitní uzavření kanálu v&nbsp;korutině, reakce na uzavření kanálu dalšími korutinami</h2>
 
 <pre>
 import <strong>trio</strong>
@@ -143,6 +312,10 @@ import <strong>trio</strong>
 trio.run(main)
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto demonstračního
+příkladu je dostupný na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_27_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_27_channel_close.py</a>.</div></p>
+
 <pre>
 Producer: message 1
 Producer: message 2
@@ -168,7 +341,7 @@ No more messages can be received!
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Problematika uzavření kanálu používaného větším množstvím korutin</h2>
 
 <pre>
 import <strong>trio</strong>
@@ -204,6 +377,10 @@ num_consumers = 20
 &nbsp;
 trio.run(main)
 </pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto demonstračního
+příkladu je dostupný na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_28_multiple_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_28_multiple_channel_close.py</a>.</div></p>
 
 <pre>
 Producer #0: message 1
@@ -268,8 +445,9 @@ trio.ClosedResourceError
 </pre>
 
 
+
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Vyřešení předchozího problému &ndash; &bdquo;naklonování&ldquo; kanálu</h2>
 
 <pre>
 import <strong>trio</strong>
@@ -307,15 +485,101 @@ num_consumers = 20
 trio.run(main)
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto demonstračního
+příkladu je dostupný na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_29_multiple_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_29_multiple_channel_close.py</a>.</div></p>
+
+<pre>
+Producer #4: message 1
+Producer #3: message 1
+Producer #2: message 1
+Producer #1: message 1
+Producer #0: message 1
+Consumer #19: received'message 1'
+Producer #4: message 2
+Consumer #18: received'message 1'
+Producer #3: message 2
+Consumer #17: received'message 1'
+Producer #2: message 2
+Consumer #16: received'message 1'
+Producer #1: message 2
+Consumer #15: received'message 1'
+</pre>
+
+<pre>
+Producer #4: message 9
+Consumer #0: received'message 8'
+Consumer #0: received'message 9'
+Consumer #0: received'message 9'
+Consumer #0: received'message 9'
+Consumer #0: received'message 9'
+Consumer #0: received'message 9'
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+</pre>
+
+<pre>
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+No more messages can be received!
+</pre>
+
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Využití kontextových informací</h2>
 
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Zámky</h2>
+
+<pre>
+import trio
+&nbsp;
+&nbsp;
+num_workers = 10
+&nbsp;
+&nbsp;
+<u>async def</u> <strong>worker</strong>(id, lock):
+    while True:
+        async with lock:
+            print(f"Worker #{id}: acquires lock")
+            <u>await</u> trio.sleep(1)
+&nbsp;
+&nbsp;
+<u>async def</u> <strong>main</strong>():
+    <u>async with</u> trio.open_nursery() as nursery:
+        lock = trio.Lock()
+        for id in range(num_workers):
+            nursery.start_soon(worker, id, lock)
+&nbsp;
+&nbsp;
+trio.run(main)
+</pre>
+
+<pre>
+Worker #0: acquires lock
+Worker #1: acquires lock
+Worker #2: acquires lock
+Worker #3: acquires lock
+Worker #4: acquires lock
+Worker #5: acquires lock
+Worker #6: acquires lock
+Worker #7: acquires lock
+Worker #8: acquires lock
+Worker #9: acquires lock
+Worker #0: acquires lock
+Worker #1: acquires lock
+Worker #2: acquires lock
+Worker #3: acquires lock
+</pre>
 
 
 
@@ -492,10 +756,12 @@ tabulce:</p>
 <tr><td>90</td><td>consumer_only.go</td><td>konzument, zprávy nejsou nikým produkovány</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/consumer_only.go">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/consumer_only.go</a></td></tr>
 <tr><td>91</td><td>producers_consumers.go</td><td>větší množství producentů a konzumentů zpráv</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/producers_consumers.go">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/producers_consumers.go</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>92</td><td>trio_26_timeouts.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_26_timeouts.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_26_timeouts.py</a></td></tr>
-<tr><td>93</td><td>trio_27_channel_close.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_27_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_27_channel_close.py</a></td></tr>
-<tr><td>94</td><td>trio_28_multiple_channel_close.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_28_multiple_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_28_multiple_channel_close.py</a></td></tr>
-<tr><td>95</td><td>trio_29_multiple_channel_close.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_29_multiple_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_29_multiple_channel_close.py</a></td></tr>
+<tr><td>92</td><td>trio_26_timeouts.py</td><td>specifikace maximální doby čekání na zprávu popř.&nbsp;pro poslání zprávy do blokovaného kanálu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_26_timeouts.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_26_timeouts.py</a></td></tr>
+<tr><td>93</td><td>trio_27_channel_close.py</td><td>explicitní uzavření kanálu v&nbsp;korutině, reakce na uzavření kanálu dalšími korutinami</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_27_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_27_channel_close.py</a></td></tr>
+<tr><td>94</td><td>trio_28_multiple_channel_close.py</td><td>problematika uzavření kanálu používaného větším množstvím korutin</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_28_multiple_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_28_multiple_channel_close.py</a></td></tr>
+<tr><td>95</td><td>trio_29_multiple_channel_close.py</td><td>vyřešení předchozího problému &ndash; &bdquo;naklonování&ldquo; kanálu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_29_multiple_channel_close.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_29_multiple_channel_close.py</a></td></tr>
+<tr><td>96</td><td></td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/</a></td></tr>
+<tr><td>97</td><td>trio_31_locks.py</td><td>využití zámků</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_31_locks.py">https://github.com/tisnik/most-popular-python-libs/blob/master/concurrent/trio_31_locks.py</a></td></tr>
 </table>
 
 
