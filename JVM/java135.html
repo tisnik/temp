@@ -1,0 +1,2330 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - přístup k prvkům složených datových typů v JVM, Lua VM a Python VM</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - přístup k prvkům složených datových typů v JVM, Lua VM a Python VM</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o Javě i o virtuálním stroji tohoto jazyka si řekneme, jakým způsobem je v bajtkódech JVM, Lua VM a Python VM realizován přístup k prvkům složených datových typů. V případě Javy se samozřejmě jedná o pole, v případě jazyka Lua o tabulky a Python obsahuje podporu pro seznamy a n-tice.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - přístup k prvkům složených datových typů v JVM, Lua VM a Python VM</a></p>
+<p><a href="#k02">2. Přístup k&nbsp;prvkům polí v&nbsp;JVM</a></p>
+<p><a href="#k03">3. Demonstrační příklad <strong>Test21.java</strong>: přístup k&nbsp;prvkům jednorozměrného pole</a></p>
+<p><a href="#k04">4. Demonstrační příklad <strong>Test22.java</strong>: přístup k&nbsp;prvkům dvourozměrného pole</a></p>
+<p><a href="#k05">5. Přístup k&nbsp;prvkům tabulek v&nbsp;Lua VM</a></p>
+<p><a href="#k06">6. Demonstrační příklad <strong>Test21.lua</strong>: přístup k&nbsp;prvkům jednorozměrného pole (tabulky)</a></p>
+<p><a href="#k07">7. Demonstrační příklad <strong>Test22.lua</strong>: přístup k&nbsp;prvkům dvourozměrného pole (tabulky)</a></p>
+<p><a href="#k08">8. Přístup k&nbsp;prvkům seznamů a n-tic v&nbsp;Python VM</a></p>
+<p><a href="#k09">9. Repositář se zdrojovými kódy všech dnešních demonstračních příkladů</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - přístup k prvkům složených datových typů v JVM, Lua VM a Python VM</h2>
+
+<p>V&nbsp;předchozí části tohoto seriálu jsme si kromě dalších informací řekli
+a současně i na několika demonstračních příkladech ukázali, jakým způsobem lze
+v&nbsp;JVM, Lua VM i Python VM vytvářet složené datové typy, tj.&nbsp;pole,
+tabulky, seznamy či n-tice. Dnes budeme v&nbsp;tomto tématu pokračovat, protože
+si ukážeme způsob přístupu k&nbsp;prvkům těchto typů. Řekneme si, jak lze prvky
+přečíst (a to například pro jednorozměrnou i vícerozměrnou variantu složeného
+datového typu) i jak je lze zapsat, samozřejmě ovšem jen v&nbsp;těch případech,
+kdy je to dovoleno (u n-tic v&nbsp;Pythonu není zápis z&nbsp;pochopitelných
+důvodů povolen). Manipulace s&nbsp;prvky složených datových typů je již poněkud
+komplikovanější, než tomu bylo v&nbsp;případě jednoduchých datových typů
+(čísel, pravdivostních hodnot, znaků), a to z&nbsp;toho důvodu, že příslušné
+instrukce bajtkódu musí zpracovat jak referenci na příslušné
+pole/tabulku/seznam, tak i index čteného či zapisovaného prvku. Způsob
+implementace těchto operací bude vysvětlen na několika příkladech.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Přístup k&nbsp;prvkům polí v&nbsp;JVM</h2>
+
+<p>Mezi další operace týkající se polí podporovaných programovacím jazykem Java
+patří čtení obsahu jednotlivých prvků, popř.&nbsp;změna hodnoty jednotlivých
+prvků pole. Pro tyto účely je v&nbsp;instrukční sadě JVM vyhrazeno šestnáct
+instrukcí rozdělených do dvou sad. V&nbsp;první sadě je osm instrukcí určených
+pro přečtení prvku pole a uložení přečtené hodnoty na vrchol zásobníku
+operandů. Před zavoláním těchto instrukcí musí být na zásobníku operandů
+uložena reference na pole (tj.&nbsp;výsledek instrukce
+<strong>newarray</strong>, <strong>anewarray</strong>) a taktéž index prvku,
+který se má přečíst. Povšimněte si, že pole s&nbsp;prvky typu
+<strong>boolean</strong> je ve skutečnosti obsluhováno takovým způsobem, jako
+by obsahovalo prvky typu <strong>byte</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>iaload</td><td>0x2E</td><td>&times;</td><td>přečtení prvku z pole typu int[]</td></tr>
+<tr><td>2</td><td>laload</td><td>0x2F</td><td>&times;</td><td>přečtení prvku z pole typu long[]</td></tr>
+<tr><td>3</td><td>faload</td><td>0x30</td><td>&times;</td><td>přečtení prvku z pole typu float[]</td></tr>
+<tr><td>4</td><td>daload</td><td>0x31</td><td>&times;</td><td>přečtení prvku z pole typu double[]</td></tr>
+<tr><td>5</td><td>aaload</td><td>0x32</td><td>&times;</td><td>přečtení prvku z pole typu reference[]</td></tr>
+<tr><td>6</td><td>baload</td><td>0x33</td><td>&times;</td><td>přečtení prvku z pole typu byte[] nebo boolean[]</td></tr>
+<tr><td>7</td><td>caload</td><td>0x34</td><td>&times;</td><td>přečtení prvku z pole typu char[]</td></tr>
+<tr><td>8</td><td>saload</td><td>0x35</td><td>&times;</td><td>přečtení prvku z pole typu short[]</td></tr>
+</table>
+
+<p>Ve druhé skupině se nachází taktéž osm instrukcí. Tyto instrukce slouží pro
+změnu hodnoty vybraného prvku pole. Před spuštěním těchto instrukcí musí být na
+zásobníku operandů uložena jak reference na pole, tak i index měněného prvku a
+samozřejmě i jeho nová hodnota:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>iastore</td><td>0x4F</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu int[]</td></tr>
+<tr><td>2</td><td>lastore</td><td>0x50</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu long[]</td></tr>
+<tr><td>3</td><td>fastore</td><td>0x51</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu float[]</td></tr>
+<tr><td>4</td><td>dastore</td><td>0x52</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu double[]</td></tr>
+<tr><td>5</td><td>aastore</td><td>0x53</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu reference[]</td></tr>
+<tr><td>6</td><td>bastore</td><td>0x54</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu byte[] nebo boolean[]</td></tr>
+<tr><td>7</td><td>castore</td><td>0x55</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu char[]</td></tr>
+<tr><td>8</td><td>sastore</td><td>0x56</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu short[]</td></tr>
+</table>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad <strong>Test21.java</strong>: přístup k&nbsp;prvkům jednorozměrného pole</h2>
+
+<p>Podívejme se nyní na demonstrační příklad (pojmenovaný
+<strong>Test21.java</strong>), v&nbsp;němž se provádí přístup k&nbsp;prvkům
+jednorozměrných polí. V&nbsp;příkladu je implementována přetížená metoda
+<strong>readItem()</strong> pro čtení prvku s&nbsp;daným indexem z&nbsp;pole,
+dále pak přetížená metoda <strong>writeItem()</strong> pro zápis prvku do pole
+a konečně již poněkud složitější metoda <strong>modify()</strong>, v&nbsp;níž
+se hodnota všech prvků pole zvýší o jedničku. Všechny metody jsou přetížené
+z&nbsp;toho důvodu, protože je zapotřebí ukázat, jak se pracuje s&nbsp;poli
+různých datových typů, a to jak primitivních datových typů
+(<strong>byte</strong>, <strong>short</strong>, <strong>int</strong>,
+<strong>long</strong>, <strong>float</strong> a <strong>double</strong>) tak i
+s&nbsp;poli referenčních typů (tj.&nbsp;objektů, přesněji řečeno pole referencí
+na objekty):</p>
+
+<pre>
+<i>/**</i>
+<i> * Pristup k prvkum jednorozmerneho pole.</i>
+<i> */</i>
+public class <strong>Test21</strong> {
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu byte[]                                                 */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static byte <strong>readItem</strong>(byte[] array, int index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(byte[] array, int index, byte value) {
+        array[index] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zvyseni hodnoty vsech prvku pole o jednicku.</i>
+    <i> */</i>
+    static void <strong>modify</strong>(byte[] array) {
+        for (int i=0; i &lt; array.length; i++) {
+            array[i]++;
+        }
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu short[]                                                */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static short <strong>readItem</strong>(short[] array, short index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(short[] array, short index, short value) {
+        array[index] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zvyseni hodnoty vsech prvku pole o jednicku.</i>
+    <i> */</i>
+    static void <strong>modify</strong>(short[] array) {
+        for (int i=0; i &lt; array.length; i++) {
+            array[i]++;
+        }
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu int[]                                                  */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static int <strong>readItem</strong>(int[] array, int index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(int[] array, int index, int value) {
+        array[index] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zvyseni hodnoty vsech prvku pole o jednicku.</i>
+    <i> */</i>
+    static void <strong>modify</strong>(int[] array) {
+        for (int i=0; i &lt; array.length; i++) {
+            array[i]++;
+        }
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu long[]                                                 */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static long <strong>readItem</strong>(long[] array, int index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(long[] array, int index, long value) {
+        array[index] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zvyseni hodnoty vsech prvku pole o jednicku.</i>
+    <i> */</i>
+    static void <strong>modify</strong>(long[] array) {
+        for (int i=0; i &lt; array.length; i++) {
+            array[i]++;
+        }
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu float[]                                                */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static float <strong>readItem</strong>(float[] array, int index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(float[] array, int index, float value) {
+        array[index] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zvyseni hodnoty vsech prvku pole o jednicku.</i>
+    <i> */</i>
+    static void <strong>modify</strong>(float[] array) {
+        for (int i=0; i &lt; array.length; i++) {
+            array[i]++;
+        }
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu double[]                                               */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static double <strong>readItem</strong>(double[] array, int index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(double[] array, int index, double value) {
+        array[index] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zvyseni hodnoty vsech prvku pole o jednicku.</i>
+    <i> */</i>
+    static void <strong>modify</strong>(double[] array) {
+        for (int i=0; i &lt; array.length; i++) {
+            array[i]++;
+        }
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu Object[]                                               */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z pole.</i>
+    <i> */</i>
+    static Object <strong>readItem</strong>(Object[] array, int index) {
+        return array[index];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(Object[] array, int index, Object value) {
+        array[index] = value;
+    }
+&nbsp;
+}
+</pre>
+
+<p>Nejprve si ukažme, jak je přeložena přetížená metoda
+<strong>readItem()</strong>. Vidíme zde použití instrukcí typu
+<strong>*aload</strong> pro přečtení prvku z&nbsp;pole:</p>
+
+<pre>
+<strong>Precteni prvku z pole typu byte[]</strong>
+&nbsp;
+static byte <strong>readItem</strong>(byte[], int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   baload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   ireturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu short[]</strong>
+&nbsp;
+static short <strong>readItem</strong>(short[], short);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   saload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   ireturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu int[]</strong>
+&nbsp;
+static int <strong>readItem</strong>(int[], int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   iaload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   ireturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu long[]</strong>
+&nbsp;
+static long <strong>readItem</strong>(long[], int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   laload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   lreturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu float[]</strong>
+&nbsp;
+static float <strong>readItem</strong>(float[], int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   faload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   freturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu double[]</strong>
+&nbsp;
+static double <strong>readItem</strong>(double[], int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   daload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   dreturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu Object[]</strong>
+&nbsp;
+static java.lang.Object <strong>readItem</strong>(java.lang.Object[], int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   3:   areturn              <i>// vratit prislusny prvek precteny z pole</i>
+</pre>
+
+<p>V&nbsp;přetížené metodě <strong>writeItem()</strong> se po překladu
+používají instrukce <strong>*astore</strong>:</p>
+
+<pre>
+<strong>Zapis prvku do pole typu byte[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(byte[], int, byte);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   iload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   bastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu short[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(short[], short, short);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   iload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   sastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu int[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(int[], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   iload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   iastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu long[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(long[], int, long);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   lload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   lastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu float[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(float[], int, float);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   fload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   fastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu double[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(double[], int, double);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   dload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   dastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu Object[]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(java.lang.Object[], int, java.lang.Object);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit index zapisovaneho prvku na zasobnik operandu</i>
+   2:   aload_2              <i>// ulozit novou (zapisovanou) hodnotu prvku na zasobnik operandu</i>
+   3:   aastore              <i>// zapsat prvek do pole a soucasne odstranit tri polozky ze zasobniku</i>
+   4:   return               <i>// vratit prislusny prvek precteny z pole</i>
+</pre>
+
+<p>V&nbsp;metodě <strong>modify()</strong> můžeme vidět kombinaci čtení i
+zápisu hodnot prvků do polí:</p>
+
+<pre>
+<strong>Operace s prvky typu byte[]</strong>
+&nbsp;
+static void <strong>modify</strong>(byte[]);
+  Code:
+   0:   iconst_0
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci pocitadla smycky</i>
+   2:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   3:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   4:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   5:   if_icmpge    22      <i>// podminka na zacatku iterace</i>
+   8:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   9:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   10:  dup2                 <i>// pocitadlo bude pouzito 2x - i pro zapis</i>
+   11:  baload               <i>// nacist aktualni hodnotu prvku a ulozit ji na zasobnik operandu</i>
+   12:  iconst_1
+   13:  iadd                 <i>// pricist jednicku k puvodni hodnote prvku</i>
+   14:  i2b                  <i>// konverze vysledku</i>
+   15:  bastore              <i>// ulozit novou hodnotu prvku do pole</i>
+   16:  iinc    1, 1         <i>// zvysit hodnotu pocitadla o jednicku</i>
+   19:  goto    2            <i>// skok na zacatek programove smycky</i>
+   22:  return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky typu short[]</strong>
+&nbsp;
+static void <strong>modify</strong>(short[]);
+  Code:
+   0:   iconst_0
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci pocitadla smycky</i>
+   2:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   3:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   4:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   5:   if_icmpge    22      <i>// podminka na zacatku iterace</i>
+   8:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   9:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   10:  dup2                 <i>// pocitadlo bude pouzito 2x - i pro zapis</i>
+   11:  saload               <i>// nacist aktualni hodnotu prvku a ulozit ji na zasobnik operandu</i>
+   12:  iconst_1
+   13:  iadd                 <i>// pricist jednicku k puvodni hodnote prvku</i>
+   14:  i2s                  <i>// konverze vysledku</i>
+   15:  sastore              <i>// ulozit novou hodnotu prvku do pole</i>
+   16:  iinc    1, 1         <i>// zvysit hodnotu pocitadla o jednicku</i>
+   19:  goto    2            <i>// skok na zacatek programove smycky</i>
+   22:  return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky typu int[]</strong>
+&nbsp;
+static void <strong>modify</strong>(int[]);
+  Code:
+   0:   iconst_0
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci pocitadla smycky</i>
+   2:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   3:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   4:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   5:   if_icmpge    21      <i>// podminka na zacatku iterace</i>
+   8:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   9:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   10:  dup2                 <i>// pocitadlo bude pouzito 2x - i pro zapis</i>
+   11:  iaload               <i>// nacist aktualni hodnotu prvku a ulozit ji na zasobnik operandu</i>
+   12:  iconst_1
+   13:  iadd                 <i>// pricist jednicku k puvodni hodnote prvku</i>
+   14:  iastore              <i>// ulozit novou hodnotu prvku do pole</i>
+   15:  iinc    1, 1         <i>// zvysit hodnotu pocitadla o jednicku</i>
+   18:  goto    2            <i>// skok na zacatek programove smycky</i>
+   21:  return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky typu long[]</strong>
+&nbsp;
+static void <strong>modify</strong>(long[]);
+  Code:
+   0:   iconst_0
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci pocitadla smycky</i>
+   2:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   3:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   4:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   5:   if_icmpge    21      <i>// podminka na zacatku iterace</i>
+   8:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   9:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   10:  dup2                 <i>// pocitadlo bude pouzito 2x - i pro zapis</i>
+   11:  laload               <i>// nacist aktualni hodnotu prvku a ulozit ji na zasobnik operandu</i>
+   12:  lconst_1
+   13:  ladd                 <i>// pricist jednicku k puvodni hodnote prvku</i>
+   14:  lastore              <i>// ulozit novou hodnotu prvku do pole</i>
+   15:  iinc    1, 1         <i>// zvysit hodnotu pocitadla o jednicku</i>
+   18:  goto    2            <i>// skok na zacatek programove smycky</i>
+   21:  return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky typu float[]</strong>
+&nbsp;
+static void <strong>modify</strong>(float[]);
+  Code:
+   0:   iconst_0
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci pocitadla smycky</i>
+   2:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   3:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   4:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   5:   if_icmpge    21      <i>// podminka na zacatku iterace</i>
+   8:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   9:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   10:  dup2                 <i>// pocitadlo bude pouzito 2x - i pro zapis</i>
+   11:  faload               <i>// nacist aktualni hodnotu prvku a ulozit ji na zasobnik operandu</i>
+   12:  fconst_1
+   13:  fadd                 <i>// pricist jednicku k puvodni hodnote prvku</i>
+   14:  fastore              <i>// ulozit novou hodnotu prvku do pole</i>
+   15:  iinc    1, 1         <i>// zvysit hodnotu pocitadla o jednicku</i>
+   18:  goto    2            <i>// skok na zacatek programove smycky</i>
+   21:  return               <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky typu double[]</strong>
+static void <strong>modify</strong>(double[]);
+  Code:
+   0:   iconst_0
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci pocitadla smycky</i>
+   2:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   3:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   4:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   5:   if_icmpge    21      <i>// podminka na zacatku iterace</i>
+   8:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   9:   iload_1              <i>// hodnota pocitadla na zasobnik</i>
+   10:  dup2                 <i>// pocitadlo bude pouzito 2x - i pro zapis</i>
+   11:  daload               <i>// nacist aktualni hodnotu prvku a ulozit ji na zasobnik operandu</i>
+   12:  dconst_1
+   13:  dadd                 <i>// pricist jednicku k puvodni hodnote prvku</i>
+   14:  dastore              <i>// ulozit novou hodnotu prvku do pole</i>
+   15:  iinc    1, 1         <i>// zvysit hodnotu pocitadla o jednicku</i>
+   18:  goto    2            <i>// skok na zacatek programove smycky</i>
+   21:  return               <i>// vratit prislusny prvek precteny z pole</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad <strong>Test22.java</strong>: přístup k&nbsp;prvkům dvourozměrného pole</h2>
+
+<p>Zatímco přístup k&nbsp;jednorozměrným polím byl vcelku přímočarý, u
+dvourozměrných (a samozřejmě taktéž i vícerozměrných) polí již nastává problém
+s&nbsp;přístupem k&nbsp;jednotlivým prvkům, a to z&nbsp;toho důvodu, že
+vícerozměrné pole je v&nbsp;Javě chápáno jako pole referencí na další pole o
+jednu dimenzi menšího. Nejprve se nicméně podívejme na zdrojový kód dalšího
+demonstračního příkladu, v&nbsp;němž se opět provádí čtení i zápis:</p>
+
+<pre>
+<i>/**</i>
+<i> * Pristup k prvkum dvourozmerneho pole.</i>
+<i> */</i>
+public class <strong>Test22</strong> {
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu byte[]                                                 */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static byte <strong>readItem</strong>(byte[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(byte[][] array, int index1, int index2, byte value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy vsech prvku</i>
+    <i> */</i>
+    static byte <strong>sum</strong>(byte[][] array) {
+        byte sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i];
+            }
+        }
+        return sum;
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu short[]                                                */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static short <strong>readItem</strong>(short[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(short[][] array, int index1, int index2, short value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy vsech prvku</i>
+    <i> */</i>
+    static short <strong>sum</strong>(short[][] array) {
+        short sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i];
+            }
+        }
+        return sum;
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu int[]                                                  */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static int <strong>readItem</strong>(int[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(int[][] array, int index1, int index2, int value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy vsech prvku</i>
+    <i> */</i>
+    static int <strong>sum</strong>(int[][] array) {
+        int sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i];
+            }
+        }
+        return sum;
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu long[]                                                 */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static long <strong>readItem</strong>(long[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(long[][] array, int index1, int index2, long value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy vsech prvku</i>
+    <i> */</i>
+    static long <strong>sum</strong>(long[][] array) {
+        long sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i];
+            }
+        }
+        return sum;
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu float[]                                                */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static float <strong>readItem</strong>(float[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(float[][] array, int index1, int index2, float value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy vsech prvku</i>
+    <i> */</i>
+    static float <strong>sum</strong>(float[][] array) {
+        float sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i];
+            }
+        }
+        return sum;
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu double[]                                               */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static double <strong>readItem</strong>(double[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(double[][] array, int index1, int index2, double value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy vsech prvku</i>
+    <i> */</i>
+    static double <strong>sum</strong>(double[][] array) {
+        double sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i];
+            }
+        }
+        return sum;
+    }
+&nbsp;
+    <i>/* ---------------------------------------------------------------- */</i>
+    <i>/* Pole typu Object[]                                               */</i>
+    <i>/* ---------------------------------------------------------------- */</i>
+&nbsp;
+    <i>/**</i>
+    <i> * Nejjednodussi operace - precteni hodnoty prvku z dvourozmerneho pole.</i>
+    <i> */</i>
+    static Object <strong>readItem</strong>(Object[][] array, int index1, int index2) {
+        return array[index1][index2];
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Dalsi jednoducha operace - zapis hodnoty prvku do pole.</i>
+    <i> */</i>
+    static void <strong>writeItem</strong>(Object[][] array, int index1, int index2, Object value) {
+        array[index1][index2] = value;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vypocet sumy hash kodu vsech prvku pole.</i>
+    <i> */</i>
+    static int <strong>sum</strong>(Object[][] array) {
+        int sum = 0;
+        for (int j = 0; j &lt; array.length; j++) {
+            for (int i = 0; i &lt; array[j].length; i++) {
+                sum += array[j][i].hashCode();
+            }
+        }
+        return sum;
+    }
+&nbsp;
+}
+</pre>
+
+<p>Při čtení prvků z&nbsp;dvourozměrného pole můžeme v&nbsp;bajtkódu vidět
+použití dvojice instrukcí <strong>aaload+*aload</strong>, kde první instrukce
+slouží k&nbsp;přečtení &bdquo;pole polí&ldquo; a teprve druhá instrukce přečte
+vlastní prvek:</p>
+
+<pre>
+<strong>Precteni prvku z pole typu byte[][]</strong>
+&nbsp;
+static byte <strong>readItem</strong>(byte[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   baload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   ireturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu short[][]</strong>
+&nbsp;
+static short <strong>readItem</strong>(short[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   saload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   ireturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu int[][]</strong>
+&nbsp;
+static int <strong>readItem</strong>(int[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   iaload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   ireturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu long[][]</strong>
+&nbsp;
+static long <strong>readItem</strong>(long[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   laload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   lreturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu float[][]</strong>
+&nbsp;
+static float <strong>readItem</strong>(float[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   faload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   freturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu double[][]</strong>
+&nbsp;
+static double <strong>readItem</strong>(double[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   daload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   dreturn              <i>// vratit prislusny prvek precteny z pole</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Precteni prvku z pole typu Object[][]</strong>
+&nbsp;
+static java.lang.Object <strong>readItem</strong>(java.lang.Object[][], int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   aaload               <i>// nacist prislusny prvek a ulozit ho na zasobik operandu</i>
+   5:   areturn              <i>// vratit prislusny prvek precteny z pole</i>
+</pre>
+
+<p>Při zápisu prvku do pole se používá dvojice instrukcí
+<strong>aaload+*astore</strong>:</p>
+
+<pre>
+<strong>Zapis prvku do pole typu byte[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(byte[][], int, int, byte);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   iload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   bastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu short[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(short[][], int, int, short);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   iload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   sastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu int[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(int[][], int, int, int);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   iload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   iastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu long[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(long[][], int, int, long);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   lload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   lastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu float[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(float[][], int, int, float);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   fload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   fastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu double[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(double[][], int, int, double);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   dload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   dastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Zapis prvku do pole typu Object[][]</strong>
+&nbsp;
+static void <strong>writeItem</strong>(java.lang.Object[][], int, int, java.lang.Object);
+  Code:
+   0:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   1:   iload_1              <i>// ulozit prvni index cteneho prvku na zasobnik operandu</i>
+   2:   aaload               <i>// nacist n-te pole poli</i>
+   3:   iload_2              <i>// ulozit druhy index cteneho prvku na zasobnik operandu</i>
+   4:   aload_3              <i>// ulozit zapisovanou hodnotu na zasobnik</i>
+   5:   aastore              <i>// zmena prvku v poli</i>
+   6:   return               <i>// navrat z metody</i>
+</pre>
+
+<p>Podívejme se i na složitější algoritmus, v&nbsp;němž se prochází všemi prvky
+dvourozměrného pole:</p>
+
+<pre>
+<strong>Operace s prvky pole typu byte[][]</strong>
+&nbsp;
+static byte <strong>sum</strong>(byte[][]);
+  Code:
+   0:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_2             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_2              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       41   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   12:  iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   13:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   14:  iload_2              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   15:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   16:  arraylength          <i>// spocitat delku sub-pole</i>
+   17:  if_icmpge       35   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   20:  iload_1              <i>// hodnota sumy na zasobnik</i>
+   21:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   22:  iload_2
+   23:  aaload               <i>// nacist sub-pole</i>
+   24:  iload_3
+   25:  baload               <i>// nacist jiz konkretni prvek pole</i>
+   26:  iadd                 <i>// pricist k sume</i>
+   27:  i2b                  <i>// konverze mezivysledku</i>
+   28:  istore_1             <i>// ulozit mezivysledek</i>
+   29:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   32:  goto    12           <i>// skok na zacatek vnitrni programove smycky</i>
+   35:  iinc    2, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   38:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   41:  iload_1              <i>// suma</i>
+   42:  ireturn              <i>// vratit hodnotu sumy</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky pole typu short[][]</strong>
+&nbsp;
+static short <strong>sum</strong>(short[][]);
+  Code:
+   0:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_2             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_2              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       41   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   12:  iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   13:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   14:  iload_2              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   15:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   16:  arraylength          <i>// spocitat delku sub-pole</i>
+   17:  if_icmpge       35   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   20:  iload_1              <i>// hodnota sumy na zasobnik</i>
+   21:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   22:  iload_2
+   23:  aaload               <i>// nacist sub-pole</i>
+   24:  iload_3
+   25:  saload               <i>// nacist jiz konkretni prvek pole</i>
+   26:  iadd                 <i>// pricist k sume</i>
+   27:  i2s                  <i>// konverze mezivysledku</i>
+   28:  istore_1             <i>// ulozit mezivysledek</i>
+   29:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   32:  goto    12           <i>// skok na zacatek vnitrni programove smycky</i>
+   35:  iinc    2, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   38:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   41:  iload_1              <i>// suma</i>
+   42:  ireturn              <i>// vratit hodnotu sumy</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky pole typu int[][]</strong>
+&nbsp;
+static int <strong>sum</strong>(int[][]);
+  Code:
+   0:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_2             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_2              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       40   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   12:  iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   13:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   14:  iload_2              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   15:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   16:  arraylength          <i>// spocitat delku sub-pole</i>
+   17:  if_icmpge       34   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   20:  iload_1              <i>// hodnota sumy na zasobnik</i>
+   21:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   22:  iload_2
+   23:  aaload               <i>// nacist sub-pole</i>
+   24:  iload_3
+   25:  iaload               <i>// nacist jiz konkretni prvek pole</i>
+   26:  iadd
+   27:  istore_1             <i>// ulozit mezivysledek</i>
+   28:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   31:  goto    12           <i>// skok na zacatek vnitrni programove smycky</i>
+   34:  iinc    2, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   37:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   40:  iload_1              <i>// suma</i>
+   41:  ireturn              <i>// vratit hodnotu sumy</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky pole typu long[][]</strong>
+&nbsp;
+static long <strong>sum</strong>(long[][]);
+  Code:
+   0:   lconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   lstore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       43   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore  4            <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   13:  iload   4            <i>// hodnota pocitadla na zasobnik</i>
+   15:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   16:  iload_3              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   17:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   18:  arraylength          <i>// spocitat delku sub-pole</i>
+   19:  if_icmpge       37   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   22:  lload_1              <i>// hodnota sumy na zasobnik</i>
+   23:  aload_0
+   24:  iload_3
+   25:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   26:  iload   4
+   28:  laload               <i>// nacist jiz konkretni prvek pole</i>
+   29:  ladd
+   30:  lstore_1             <i>// ulozit mezivysledek</i>
+   31:  iinc    4, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   34:  goto    13           <i>// skok na zacatek vnitrni programove smycky</i>
+   37:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   40:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   43:  lload_1              <i>// suma</i>
+   44:  lreturn              <i>// vratit hodnotu sumy</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky pole typu float[][]</strong>
+&nbsp;
+static float <strong>sum</strong>(float[][]);
+  Code:
+   0:   fconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   fstore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_2             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_2              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       40   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   12:  iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   13:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   14:  iload_2              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   15:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   16:  arraylength          <i>// spocitat delku sub-pole</i>
+   17:  if_icmpge       34   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   20:  fload_1              <i>// hodnota sumy na zasobnik</i>
+   21:  aload_0
+   22:  iload_2
+   23:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   24:  iload_3
+   25:  faload               <i>// nacist jiz konkretni prvek pole</i>
+   26:  fadd
+   27:  fstore_1             <i>// ulozit mezivysledek</i>
+   28:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   31:  goto    12           <i>// skok na zacatek vnitrni programove smycky</i>
+   34:  iinc    2, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   37:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   40:  fload_1              <i>// suma</i>
+   41:  freturn              <i>// vratit hodnotu sumy</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky pole typu double[][]</strong>
+&nbsp;
+static double <strong>sum</strong>(double[][]);
+  Code:
+   0:   dconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   dstore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       43   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore  4            <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   13:  iload   4            <i>// hodnota pocitadla na zasobnik</i>
+   15:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   16:  iload_3              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   17:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   18:  arraylength          <i>// spocitat delku sub-pole</i>
+   19:  if_icmpge       37   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   22:  dload_1              <i>// hodnota sumy na zasobnik</i>
+   23:  aload_0
+   24:  iload_3
+   25:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   26:  iload   4
+   28:  daload               <i>// nacist jiz konkretni prvek pole</i>
+   29:  dadd
+   30:  dstore_1             <i>// ulozit mezivysledek</i>
+   31:  iinc    4, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   34:  goto    13           <i>// skok na zacatek vnitrni programove smycky</i>
+   37:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   40:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   43:  dload_1              <i>// suma</i>
+   44:  dreturn              <i>// vratit hodnotu sumy</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>Operace s prvky pole typu Object[][]</strong>
+&nbsp;
+static int <strong>sum</strong>(java.lang.Object[][]);
+  Code:
+   0:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   1:   istore_1             <i>// lokalni promenna pouzita ve funkci sumy</i>
+   2:   iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   3:   istore_2             <i>// lokalni promenna pouzita ve funkci pocitadla vnejsi smycky</i>
+   4:   iload_2              <i>// hodnota pocitadla na zasobnik</i>
+   5:   aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   6:   arraylength          <i>// vypocitat delku pole (pocet prvku)</i>
+   7:   if_icmpge       43   <i>// podminka na zacatku iterace (vnejsi smycka)</i>
+   10:  iconst_0             <i>// konstanta 0 na vrchol zasobniku operandu</i>
+   11:  istore_3             <i>// lokalni promenna pouzita ve funkci pocitadla vnitrni smycky</i>
+   12:  iload_3              <i>// hodnota pocitadla na zasobnik</i>
+   13:  aload_0              <i>// ulozit referenci na pole na zasobnik operandu</i>
+   14:  iload_2              <i>// pocitadlo vnejsi smycky ve funkci indexu</i>
+   15:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   16:  arraylength          <i>// spocitat delku sub-pole</i>
+   17:  if_icmpge       37   <i>// podminka na zacatku iterace (vnitrni smycka)</i>
+   20:  iload_1              <i>// hodnota sumy na zasobnik</i>
+   21:  aload_0
+   22:  iload_2
+   23:  aaload               <i>// nacist i-ty prvek "vnejsiho" pole</i>
+   24:  iload_3
+   25:  aaload               <i>// nacist jiz konkretni prvek pole</i>
+   26:  invokevirtual   #2;  <i>// Method java/lang/Object.hashCode:()I</i>
+   29:  iadd
+   30:  istore_1             <i>// ulozit mezivysledek</i>
+   31:  iinc    3, 1         <i>// zvysit hodnotu pocitadla vnitrni smycky o jednicku</i>
+   34:  goto    12           <i>// skok na zacatek vnitrni programove smycky</i>
+   37:  iinc    2, 1         <i>// zvysit hodnotu pocitadla vnejsi smycky o jednicku</i>
+   40:  goto    4            <i>// skok na zacatek vnejsi programove smycky</i>
+   43:  iload_1              <i>// suma</i>
+   44:  ireturn              <i>// vratit hodnotu sumy</i>
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Přístup k&nbsp;prvkům tabulek v&nbsp;Lua VM</h2>
+
+<p>Bajtkód využívaný virtuálním strojem programovacího jazyka Lua je založen,
+jak jsme se již dozvěděli v&nbsp;předcházejících částech tohoto seriálu, na
+registrech, do nichž jsou ukládány jak parametry funkcí, tak i lokální
+proměnné. Navíc se u většiny instrukcí bajtkódu používají parametry, které jsou
+součástí instrukčního slova. Nejinak je tomu i u instrukcí určených pro čtení a
+zápis hodnot do polí, přesněji řečeno do tabulek. Jedná se o instrukce nazvané
+<strong>GETTABLE</strong> a <strong>SETTABLE</strong>. Instrukce
+<strong>GETTABLE</strong> má v&nbsp;instrukčním slovu uloženy indexy tří
+registrů &ndash; index registru pro uložení výsledku, index registru
+s&nbsp;referencí na tabulku a index registru s&nbsp;uloženým pořadím čteného
+prvku. U instrukce <strong>SETTABLE</strong> je taktéž použita trojice indexů,
+které obsahují registr s&nbsp;referencí na pole, registr s&nbsp;indexem
+zapisovaného prvku a konečně registr s&nbsp;novou hodnotou prvku:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>GETTABLE</td><td>registr pole index</td><td>přečtení prvku z tabulky</td></tr>
+<tr><td>2</td><td>SETTABLE</td><td>pole index hodnota</td><td>zápis prvku do tabulky</td></tr>
+<tr><td>3</td><td>LEN</td><td>registr pole</td><td>vrací délku pole</td></tr>
+</table>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad <strong>Test21.lua</strong>: přístup k&nbsp;prvkům jednorozměrného pole (tabulky)</h2>
+
+<p>Opět se, podobně jako v&nbsp;případě programovacího jazyka Java, podívejme
+na jednoduchý demonstrační příklad, v&nbsp;němž se provádí čtení i zápis do
+tabulek. Na rozdíl od Javy nemusíme v&nbsp;případě programovacího jazyka Lua
+přetěžovat funkce/metody, protože bajtkód Lua VM používá dynamické typování.
+Z&nbsp;tohoto důvodu je demonstrační příklad mnohem kratší:</p>
+
+<pre>
+<i>--</i>
+<i>-- Pristup k prvkum (jednorozmerne) tabulky.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Nejjednodussi operace - precteni hodnoty prvku z pole/tabulky.</i>
+<i>--</i>
+function <strong>readItem</strong>(array, index)
+    return array[index]
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Dalsi jednoducha operace - zapis hodnoty prvku do pole/tabulky.</i>
+<i>--</i>
+function <strong>writeItem</strong>(array, index, value)
+    array[index] = value
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Zvyseni hodnoty vsech prvku pole/tabulky o jednicku.</i>
+<i>--</i>
+function <strong>modify</strong>(array)
+    for i = 1, #array do
+        array[i] = array[i] + 1
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Tisk vsech prvku pole/tabulky.</i>
+<i>--</i>
+function <strong>printArray</strong>(array)
+    for i = 1, #array do
+        print(readItem(array, i))
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Test.</i>
+<i>--</i>
+function <strong>main</strong>()
+    local array = {1, 2, 3}
+&nbsp;
+    print("Original array:")
+    printArray(array)
+    print()
+&nbsp;
+    writeItem(array, 2, 42)
+    print("2nd item have been changed:")
+    printArray(array)
+    print()
+&nbsp;
+    modify(array)
+    print("Modified array:")
+    printArray(array)
+    print()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+</pre>
+
+<p>Bajtkód funkce <strong>readItem()</strong> je velmi jednoduchý, protože
+obsahuje pouze trojici instrukcí, kde je navíc poslední instrukce ve
+skutečnosti nadbytečná. Přečtení prvku na daném indexu je provedeno jedinou
+instrukcí <strong>GETTABLE</strong>:</p>
+
+<pre>
+function &lt;Test21.lua:10,12&gt; (3 instructions at 0x9da4c88)
+2 params, 3 slots, 0 upvalues, 2 locals, 0 constants, 0 functions
+        1       [11]    GETTABLE        2 0 1            <i>// prime precteni prvku z tabulky (parametr 0) s indexem (parametr 1)</i>
+        2       [11]    RETURN          2 2              <i>// vraceni prectene hodnoty prvku</i>
+        3       [12]    RETURN          0 1              <i>// automaticky vkladany navrat z funkce</i>
+</pre>
+
+<p>Funkce <strong>writeItem()</strong> určená pro změnu hodnoty vybraného prvku
+tabulky je dokonce ještě jednodušší, protože všechnu funkcionalitu vykonává
+jediná instrukce <strong>SETTABLE</strong>:</p>
+
+<pre>
+function &lt;Test21.lua:19,21&gt; (2 instructions at 0x9da4f08)
+3 params, 3 slots, 0 upvalues, 3 locals, 0 constants, 0 functions
+        1       [20]    SETTABLE        0 1 2            <i>// primy zapis prvku do tabulky (parametr 0) s indexem (parametr 1)</i>
+        2       [21]    RETURN          0 1              <i>// automaticky vkladany navrat z funkce</i>
+</pre>
+
+<p>Poněkud složitější je bajtkód funkce, v&nbsp;níž se zvyšují hodnoty všech
+prvků tabulky o jedničku. Nejprve se zjistí délka tabulky instrukcí
+<strong>LEN</strong> a posléze je s&nbsp;využitím <strong>FORPREP</strong> a
+<strong>FORLOOP</strong> realizována počítaná programová smyčka:</p>
+
+<pre>
+function &lt;Test21.lua:28,32&gt; (9 instructions at 0x9da50f8)
+1 param, 6 slots, 0 upvalues, 5 locals, 1 constant, 0 functions
+        1       [29]    LOADK           1 -1    ; 1      <i>// pocatecni hodnota pocitadla pro for</i>
+        2       [29]    LEN             2 0              <i>// vraci se delka tabulky</i>
+        3       [29]    LOADK           3 -1    ; 1      <i>// priprava smycky for</i>
+        4       [29]    FORPREP         1 3     ; to 8   <i>// zacatek smycky for</i>
+        5       [30]    GETTABLE        5 0 4            <i>// cteni puvodni hodnoty prvku</i>
+        6       [30]    ADD             5 5 -1  ; - 1    <i>// pricteni jednicky (-1 je index konstanty)</i>
+        7       [30]    SETTABLE        0 4 5            <i>// zapis nove hodnoty prvku</i>
+        8       [29]    FORLOOP         1 -4    ; to 5   <i>// iterace na konci smycky</i>
+        9       [32]    RETURN          0 1              <i>// automaticky vkladany navrat z funkce</i>
+</pre>
+
+<p>Na této trojici přeložených funkcí můžeme vidět, že bajtkód Lua VM je na
+jedné straně velmi flexibilní (dynamické typování) a na straně druhé i do
+značné míry kompaktní, zejména v&nbsp;porovnání s&nbsp;JVM.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Demonstrační příklad <strong>Test22.lua</strong>: přístup k&nbsp;prvkům dvourozměrného pole (tabulky)</h2>
+
+<p>Další demonstrační příklad nazvaný <strong>Test22.lua</strong> obsahuje
+trojici funkcí, které přistupují k&nbsp;prvkům dvourozměrné tabulky, která je
+chápána jako běžná jednorozměrná tabulka obsahující jako své prvky další
+tabulky:</p>
+
+<pre>
+<i>--</i>
+<i>-- Pristup k prvkum tabulky.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Nejjednodussi operace - precteni hodnoty prvku z dvourozmerne tabulky/pole.</i>
+<i>--</i>
+function <strong>readItem</strong>(array, index1, index2)
+    return array[index1][index2]
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Dalsi jednoducha operace - zapis hodnoty prvku do dvourozmerne tabulky.</i>
+<i>--</i>
+function <strong>writeItem</strong>(array, index1, index2, value)
+    array[index1][index2] = value
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Vypocet sumy vsech prvku dvourozmerneho pole.</i>
+<i>--</i>
+function <strong>sum</strong>(array)
+    local sum = 0
+    for i = 1, #array do
+        for j = 1, #array[i] do
+            sum = sum + array[i][j]
+        end
+    end
+    return sum
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Tisk vsech prvku dvourozmerneho pole.</i>
+<i>--</i>
+function <strong>printArray</strong>(array)
+    for i = 1, #array do
+        for j = 1, #array[i] do
+            io.write(readItem(array, i, j))
+            io.write(' ')
+        end
+        print()
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Test.</i>
+<i>--</i>
+function <strong>main</strong>()
+    local array = {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}
+&nbsp;
+    printArray(array)
+    print("Sum = " .. sum(array))
+    print()
+&nbsp;
+    writeItem(array, 2, 2, 0)
+    printArray(array)
+&nbsp;
+    print("Sum = " .. sum(array))
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+</pre>
+
+<p>V&nbsp;bajtkódu funkce <strong>readItem()</strong> vidíme dvojici instrukcí
+<strong>GETTABLE</strong> použitých pro přečtení i-té podtabulky a j-tého prvku
+z&nbsp;této podtabulky:</p>
+
+<pre>
+function &lt;Test22.lua:10,12&gt; (4 instructions at 0x970cc88)
+3 params, 4 slots, 0 upvalues, 3 locals, 0 constants, 0 functions
+        1       [11]    GETTABLE        3 0 1            <i>// precteni tabulky (parametr 0) s indexem (parametr 1)</i>
+        2       [11]    GETTABLE        3 3 2            <i>// cteni hodnoty prvku z podtabulky</i>
+        3       [11]    RETURN          3 2              <i>// vraceni prectene hodnoty prvku</i>
+        4       [12]    RETURN          0 1              <i>// automaticky vkladany navrat z funkce</i>
+</pre>
+
+<p>Bajtkód funkce <strong>writeItem()</strong> nejprve získá pomocí instrukce
+<strong>GETTABLE</strong> i-tou podtabulku a posléze do ní zapíše j-tý prvek
+instrukcí <strong>SETTABLE</strong>:</p>
+
+<pre>
+function &lt;Test22.lua:19,21&gt; (3 instructions at 0x970cf28)
+4 params, 5 slots, 0 upvalues, 4 locals, 0 constants, 0 functions
+        1       [20]    GETTABLE        4 0 1            <i>// precteni tabulky (parametr 0) s indexem (parametr 1)</i>
+        2       [20]    SETTABLE        4 2 3            <i>// primy zapis prvku do tabulky</i>
+        3       [21]    RETURN          0 1              <i>// automaticky vkladany navrat z funkce</i>
+</pre>
+
+<p>Získání sumy všech prvků dvourozměrné tabulky (tj.&nbsp;tabulky
+s&nbsp;podtabulkami) opět vyžaduje použití vnořených programových smyček typu
+<strong>for</strong>, což je ostatně patrné i z&nbsp;následujícího výpisu:</p>
+
+<pre>
+function &lt;Test22.lua:28,36&gt; (17 instructions at 0x970d148)
+1 param, 11 slots, 0 upvalues, 10 locals, 2 constants, 0 functions
+        1       [29]    LOADK           1 -1    ; 0      <i>// registr cislo 1 obsahuje pocitanou sumu</i>
+        2       [30]    LOADK           2 -2    ; 1
+        3       [30]    LEN             3 0              <i>// delka tabulky (pocet podtabulek)</i>
+        4       [30]    LOADK           4 -2    ; 1      <i>// vsechny parametry vnejsi smycky jsou nastaveny</i>
+        5       [30]    FORPREP         2 9     ; to 15  <i>// zacatek vnejsi smycky for</i>
+        6       [31]    LOADK           6 -2    ; 1
+        7       [31]    GETTABLE        7 0 5            <i>// cteni podtabulky</i>
+        8       [31]    LEN             7 7              <i>// a vypocet jeji delky</i>
+        9       [31]    LOADK           8 -2    ; 1      <i>// vsechny parametry vnitrni smycky jsou nastaveny</i>
+        10      [31]    FORPREP         6 3     ; to 14  <i>// zacatek vnitrni smycky for</i>
+        11      [32]    GETTABLE        10 0 5           <i>// cteni podtabulky</i>
+        12      [32]    GETTABLE        10 10 9          <i>// cteni prvku z podtabulky do registru 10</i>
+        13      [32]    ADD             1 1 10           <i>// pricteni hodnoty k sume</i>
+        14      [31]    FORLOOP         6 -4    ; to 11  <i>// iterace na konci vnitrni smycky</i>
+        15      [30]    FORLOOP         2 -10   ; to 6   <i>// iterace na konci vnejsi smycky</i>
+        16      [35]    RETURN          1 2
+        17      [36]    RETURN          0 1              <i>// automaticky vkladany navrat z funkce</i>
+</pre>
+
+<p>Opět je patrná kompaktnost bajtkódu Lua VM.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Přístup k&nbsp;prvkům seznamů a n-tic v&nbsp;Python VM</h2>
+
+<p>V&nbsp;programovacím jazyce Python se namísto polí či tabulek využívá
+dvojice složených datových typů. Jedná se o seznamy (<i>list</i>), které jsou
+modifikovatelné, tj.&nbsp;lze do nich vkládat nové prvky, měnit hodnoty prvků
+či prvky vyjímat. Seznamy jsou v&nbsp;tomto pojetí velmi flexibilním datovým
+typem, jenž může plnohodnotně nahradit další složené datové typy, jakými jsou
+zásobník (<i>stack</i>) či fronta (<i>queue</i>). Kromě seznamů lze
+v&nbsp;Pythonu používat i n-tice (<i>tuple</i>), které jsou na rozdíl od
+seznamů neměnitelné, tj.&nbsp;<i>immutable</i>. Díky této vlastnosti lze n-tice
+použít například ve funkci klíčů v&nbsp;asociativních polích atd. Jakým
+způsobem je realizován přístup k&nbsp;prvkům seznamů i n-tic si podrobněji
+řekneme v&nbsp;navazující části tohoto seriálu. Kromě toho si příště popíšeme i
+další &bdquo;vychytávky&ldquo; Lua VM a Python VM, včetně využití již zmíněných
+asociativních polí, které jsou velmi flexibilním složeným datovým typem.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">09. Repositář se zdrojovými kódy všech dnešních demonstračních příkladů</h2>
+
+<p>Všechny dnes popsané a využité demonstrační příklady (naprogramované
+v&nbsp;Javě, Lue i Pythonu) byly uloženy do Mercurial repositáře umístěného na
+adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Odkazy na prozatím poslední verze těchto příkladů naleznete v&nbsp;tabulce pod
+tímto odstavcem:</p>
+
+<table>
+<tr><th> #</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td> 1</td><td>Test21.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Java/Test21.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Java/Test21.java</a></td></tr>
+<tr><td> 2</td><td>Test22.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Java/Test22.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Java/Test22.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>Test21.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Lua/Test21.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Lua/Test21.lua</a></td></tr>
+<tr><td> 4</td><td>Test22.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Lua/Test22.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/7e6f37046698/bytecode/Lua/Test22.lua</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>BCPL<br />
+<a href="http://en.wikipedia.org/wiki/BCPL">http://en.wikipedia.org/wiki/BCPL</a>
+</li>
+
+<li>The BCPL Cintcode System and Cintpos User Guide by Martin Richards<br />
+<a href="http://www.cl.cam.ac.uk/users/mr/bcplman.pdf">http://www.cl.cam.ac.uk/users/mr/bcplman.pdf</a>
+</li>
+
+<li>Bootstrapping the BCPL Compiler using INTCODE<br />
+<a href="http://www.gtoal.com/languages/bcpl/amiga/bcpl/booting.txt">http://www.gtoal.com/languages/bcpl/amiga/bcpl/booting.txt</a>
+</li>
+
+<li>p-code machine<br />
+<a href="http://en.wikipedia.org/wiki/P-code_machine">http://en.wikipedia.org/wiki/P-code_machine</a>
+</li>
+
+<li>ucsd-psystem-vm 0.11 (a portable virtual machine for the UCSD p-System)<br />
+<a href="http://ucsd-psystem-vm.sourceforge.net/">http://ucsd-psystem-vm.sourceforge.net/</a>
+</li>
+
+<li>Introduction to Smalltalk bytecodes<br />
+<a href="http://marianopeck.wordpress.com/2011/05/21/introduction-to-smalltalk-bytecodes/">http://marianopeck.wordpress.com/2011/05/21/introduction-to-smalltalk-bytecodes/</a>
+</li>
+
+<li>Audio File Formats.<br />
+<a href="http://sox.sourceforge.net/AudioFormats-11.html">http://sox.sourceforge.net/AudioFormats-11.html</a>
+</li>
+
+<li>TestSounds.com: pure digital sounds to test your audio<br />
+<a href="http://www.testsounds.com/">http://www.testsounds.com/</a>
+</li>
+
+<li>Test Tones (20hz - 20khz)<br />
+<a href="http://mdf1.tripod.com/test-tones.html">http://mdf1.tripod.com/test-tones.html</a>
+</li>
+
+<li>WAV (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/WAV">http://en.wikipedia.org/wiki/WAV</a>
+</li>
+
+<li>WAVE PCM soundfile format<br />
+<a href="https://ccrma.stanford.edu/courses/422/projects/WaveFormat/">https://ccrma.stanford.edu/courses/422/projects/WaveFormat/</a>
+</li>
+
+<li>Audio Interchange File Format<br />
+<a href="http://en.wikipedia.org/wiki/Aiff">http://en.wikipedia.org/wiki/Aiff</a>
+</li>
+
+<li>Musical Instrument Digital Interface,<br />
+<a href="http://en.wikipedia.org/wiki/Musical_Instrument_Digital_Interface">http://en.wikipedia.org/wiki/Musical_Instrument_Digital_Interface</a>
+</li>
+
+<li>A MIDI Pedalboard Encode,<br />
+<a href="http://www.pykett.org.uk/a_midi_pedalboard_encoder.htm">http://www.pykett.org.uk/a_midi_pedalboard_encoder.htm</a>
+</li>
+
+<li>MIDI Note Number, Frequency Table,<br />
+<a href="http://tonalsoft.com/pub/news/pitch-bend.aspx">http://tonalsoft.com/pub/news/pitch-bend.aspx</a>
+</li>
+
+<li>Note names, MIDI numbers and frequencies,<br />
+<a href="http://www.phys.unsw.edu.au/jw/notes.html">http://www.phys.unsw.edu.au/jw/notes.html</a>
+</li>
+
+<li>The MIDI Specification,<br />
+<a href="http://www.gweep.net/~prefect/eng/reference/protocol/midispec.html">http://www.gweep.net/~prefect/eng/reference/protocol/midispec.html</a>
+</li>
+
+<li>Essentials of the MIDI protocol,<br />
+<a href="http://ccrma.stanford.edu/~craig/articles/linuxmidi/misc/essenmidi.html">http://ccrma.stanford.edu/~craig/articles/linuxmidi/misc/essenmidi.html</a>
+</li>
+
+<li>General MIDI,<br />
+<a href="http://en.wikipedia.org/wiki/General_MIDI">http://en.wikipedia.org/wiki/General_MIDI</a>
+</li>
+
+<li>Obecné MIDI (General MIDI), <br />
+<a href="http://www-kiv.zcu.cz/~herout/html_sbo/midi/5.html">http://www-kiv.zcu.cz/~herout/html_sbo/midi/5.html</a>
+</li>
+
+<li>Custom Chips: Paula<br />
+<a href="http://www.amiga-hardware.com/showhardware.cgi?HARDID=1460">http://www.amiga-hardware.com/showhardware.cgi?HARDID=1460</a>
+</li>
+
+<li>Big Book of Amiga Hardware<br />
+<a href="http://www.amiga-resistance.info/bboahfaq/">http://www.amiga-resistance.info/bboahfaq/</a>
+</li>
+
+<li>Amiga Hardware Database<br />
+<a href="http://amiga.resource.cx/">http://amiga.resource.cx/</a>
+</li>
+
+<li>ExoticA<br />
+<a href="http://www.exotica.org.uk/wiki/Main_Page">http://www.exotica.org.uk/wiki/Main_Page</a>
+</li>
+
+<li>The absolute basics of Amiga audio<br />
+<a href="http://www.sufo.estates.co.uk/amiga/amimus.html">http://www.sufo.estates.co.uk/amiga/amimus.html</a>
+</li>
+
+<li>Wikipedia: Tracker<br />
+<a href="http://en.wikipedia.org/wiki/Tracker">http://en.wikipedia.org/wiki/Tracker</a>
+</li>
+
+<li>Wikipedia: Trackers<br />
+<a href="http://en.wikipedia.org/wiki/Trackers">http://en.wikipedia.org/wiki/Trackers</a>
+</li>
+
+<li>Ultimate Soundtracker<br />
+<a href="http://en.wikipedia.org/wiki/Ultimate_Soundtracker">http://en.wikipedia.org/wiki/Ultimate_Soundtracker</a>
+</li>
+
+<li>Protracker<br />
+<a href="http://en.wikipedia.org/wiki/ProTracker">http://en.wikipedia.org/wiki/ProTracker</a>
+</li>
+
+<li>Impulse Tracker<br />
+<a href="http://en.wikipedia.org/wiki/Impulse_Tracker">http://en.wikipedia.org/wiki/Impulse_Tracker</a>
+</li>
+
+<li>Scream Tracker<br />
+<a href="http://en.wikipedia.org/wiki/ScreamTracker">http://en.wikipedia.org/wiki/ScreamTracker</a>
+</li>
+
+<li>MikMod for Java<br />
+<a href="http://jmikmod.berlios.de/">http://jmikmod.berlios.de/</a>
+</li>
+
+<li>List of audio trackers<br />
+<a href="http://en.wikipedia.org/wiki/List_of_audio_trackers">http://en.wikipedia.org/wiki/List_of_audio_trackers</a>
+</li>
+
+<li>Wikipedia: Module File<br />
+<a href="http://en.wikipedia.org/wiki/Module_file">http://en.wikipedia.org/wiki/Module_file</a>
+</li>
+
+<li>Wikipedia: Chiptune<br />
+<a href="http://en.wikipedia.org/wiki/Chiptune">http://en.wikipedia.org/wiki/Chiptune</a>
+</li>
+
+<li>SDL_mixer 2.0<br />
+<a href="http://www.libsdl.org/projects/SDL_mixer/">http://www.libsdl.org/projects/SDL_mixer/</a>
+</li>
+
+<li>SDLJava: package sdljava.ttf<br />
+<a href="http://sdljava.sourceforge.net/docs/api/sdljava/ttf/package-summary.html#package_description">http://sdljava.sourceforge.net/docs/api/sdljava/ttf/package-summary.html#package_description</a>
+</li>
+
+<li>SDLJava: class sdljava.ttf.SDLTTF<br />
+<a href="http://sdljava.sourceforge.net/docs/api/sdljava/ttf/SDLTTF.html">http://sdljava.sourceforge.net/docs/api/sdljava/ttf/SDLTTF.html</a>
+</li>
+
+<li>SDLJava: class sdljava.ttf.SDLTrueTypeFont<br />
+<a href="http://sdljava.sourceforge.net/docs/api/sdljava/ttf/SDLTrueTypeFont.html">http://sdljava.sourceforge.net/docs/api/sdljava/ttf/SDLTrueTypeFont.html</a>
+</li>
+
+<li>SDL_ttf Documentation<br />
+<a href="http://www.libsdl.org/projects/SDL_ttf/docs/">http://www.libsdl.org/projects/SDL_ttf/docs/</a>
+</li>
+
+<li>SDL_ttf 2.0 (není prozatím součástí SDLJava)<br />
+<a href="http://www.libsdl.org/projects/SDL_ttf/">http://www.libsdl.org/projects/SDL_ttf/</a>
+</li>
+
+<li>SDL_ttf doc<br />
+<a href="http://www.libsdl.org/projects/SDL_ttf/docs/SDL_ttf_frame.html">http://www.libsdl.org/projects/SDL_ttf/docs/SDL_ttf_frame.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_Surface<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlsurface.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlsurface.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_PixelFormat<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlpixelformat.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlpixelformat.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_LockSurface<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdllocksurface.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdllocksurface.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_UnlockSurface<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlunlocksurface.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlunlocksurface.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_LoadBMP<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlloadbmp.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlloadbmp.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_SaveBMP<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlsavebmp.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlsavebmp.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_BlitSurface<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlblitsurface.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlblitsurface.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_VideoInfo<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlvideoinfo.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlvideoinfo.html</a>
+</li>
+
+<li>SDL 1.2 Documentation: SDL_GetVideoInfo<br />
+<a href="http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlgetvideoinfo.html">http://www.libsdl.org/release/SDL-1.2.15/docs/html/sdlgetvideoinfo.html</a>
+</li>
+
+<li>glDrawArrays<br />
+<a href="http://www.opengl.org/sdk/docs/man4/xhtml/glDrawArrays.xml">http://www.opengl.org/sdk/docs/man4/xhtml/glDrawArrays.xml</a>
+</li>
+
+<li>glDrawElements<br />
+<a href="http://www.opengl.org/sdk/docs/man4/xhtml/glDrawElements.xml">http://www.opengl.org/sdk/docs/man4/xhtml/glDrawElements.xml</a>
+</li>
+
+<li>glDrawArraysInstanced<br />
+<a href="http://www.opengl.org/sdk/docs/man4/xhtml/glDrawArraysInstanced.xml">http://www.opengl.org/sdk/docs/man4/xhtml/glDrawArraysInstanced.xml</a>
+</li>
+
+<li>glDrawElementsInstanced<br />
+<a href="http://www.opengl.org/sdk/docs/man4/xhtml/glDrawElementsInstanced.xml">http://www.opengl.org/sdk/docs/man4/xhtml/glDrawElementsInstanced.xml</a>
+</li>
+
+<li>Root.cz: Seriál Grafická knihovna OpenGL<br />
+<a href="http://www.root.cz/serialy/graficka-knihovna-opengl/">http://www.root.cz/serialy/graficka-knihovna-opengl/</a>
+</li>
+
+<li>Root.cz: Seriál Tvorba přenositelných grafických aplikací využívajících knihovnu GLUT<br />
+<a href="http://www.root.cz/serialy/tvorba-prenositelnych-grafickych-aplikaci-vyuzivajicich-knihovnu-glut/">http://www.root.cz/serialy/tvorba-prenositelnych-grafickych-aplikaci-vyuzivajicich-knihovnu-glut/</a>
+</li>
+
+<li>Best Practices for Working with Vertex Data<br />
+<a href="https://developer.apple.com/library/ios/documentation/3ddrawing/conceptual/opengles_programmingguide/TechniquesforWorkingwithVertexData/TechniquesforWorkingwithVertexData.html">https://developer.apple.com/library/ios/documentation/3ddrawing/conceptual/opengles_programmingguide/TechniquesforWorkingwithVertexData/TechniquesforWorkingwithVertexData.html</a>
+</li>
+
+<li>Class BufferStrategy<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/image/BufferStrategy.html">http://docs.oracle.com/javase/6/docs/api/java/awt/image/BufferStrategy.html</a>
+</li>
+
+<li>Class Graphics<br />
+<a href="http://docs.oracle.com/javase/1.5.0/docs/api/java/awt/Graphics.html">http://docs.oracle.com/javase/1.5.0/docs/api/java/awt/Graphics.html</a>
+</li>
+
+<li>Double Buffering and Page Flipping<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/doublebuf.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/doublebuf.html</a>
+</li>
+
+<li>BufferStrategy and BufferCapabilities<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/bufferstrategy.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/bufferstrategy.html</a>
+</li>
+
+<li>Java:Tutorials:Double Buffering<br />
+<a href="http://content.gpwiki.org/index.php/Java:Tutorials:Double_Buffering">http://content.gpwiki.org/index.php/Java:Tutorials:Double_Buffering</a>
+</li>
+
+<li>Double buffer in standard Java AWT<br />
+<a href="http://www.codeproject.com/Articles/2136/Double-buffer-in-standard-Java-AWT">http://www.codeproject.com/Articles/2136/Double-buffer-in-standard-Java-AWT</a>
+</li>
+
+<li>Java 2D: Hardware Accelerating - Part 1 - Volatile Images<br />
+<a href="http://www.javalobby.org/forums/thread.jspa?threadID=16840&tstart=0">http://www.javalobby.org/forums/thread.jspa?threadID=16840&tstart=0</a>
+</li>
+
+<li>Java 2D: Hardware Accelerating - Part 2 - Buffer Strategies<br />
+<a href="http://www.javalobby.org/java/forums/t16867.html">http://www.javalobby.org/java/forums/t16867.html</a>
+</li>
+
+<li>How does paintComponent work?<br />
+<a href="http://stackoverflow.com/questions/15544549/how-does-paintcomponent-work">http://stackoverflow.com/questions/15544549/how-does-paintcomponent-work</a>
+</li>
+
+<li>A Swing Architecture Overview<br />
+<a href="http://www.oracle.com/technetwork/java/architecture-142923.html">http://www.oracle.com/technetwork/java/architecture-142923.html</a>
+</li>
+
+<li>Class javax.swing.JComponent<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html">http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html</a>
+</li>
+
+<li>Class java.awt.Component<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html</a>
+</li>
+
+<li>Class java.awt.Component.BltBufferStrategy<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.BltBufferStrategy.html">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.BltBufferStrategy.html</a>
+</li>
+
+<li>Class java.awt.Component.FlipBufferStrategy<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.FlipBufferStrategy.html">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.FlipBufferStrategy.html</a>
+</li>
+
+<li>Metoda java.awt.Component.isDoubleBuffered()<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html#isDoubleBuffered()">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html#isDoubleBuffered()</a>
+</li>
+
+<li>Metoda javax.swing.JComponent.isDoubleBuffered()<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#isDoubleBuffered()">http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#isDoubleBuffered()</a>
+</li>
+
+<li>Metoda javax.swing.JComponent.setDoubleBuffered()<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#setDoubleBuffered(boolean)">http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#setDoubleBuffered(boolean)</a>
+</li>
+
+<li>Javadoc - třída GraphicsDevice<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsDevice.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsDevice.html</a>
+</li>
+
+<li>Javadoc - třída GraphicsEnvironment<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsEnvironment.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsEnvironment.html</a>
+</li>
+
+<li>Javadoc - třída GraphicsConfiguration<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsConfiguration.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsConfiguration.html</a>
+</li>
+
+<li>Javadoc - třída DisplayMode<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/DisplayMode.html">http://docs.oracle.com/javase/7/docs/api/java/awt/DisplayMode.html</a>
+</li>
+
+<li>Lesson: Full-Screen Exclusive Mode API<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/">http://docs.oracle.com/javase/tutorial/extra/fullscreen/</a>
+</li>
+
+<li>Full-Screen Exclusive Mode<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/exclusivemode.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/exclusivemode.html</a>
+</li>
+
+<li>Display Mode<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/displaymode.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/displaymode.html</a>
+</li>
+
+<li>Using the Full-Screen Exclusive Mode API in Java<br />
+<a href="http://www.developer.com/java/other/article.php/3609776/Using-the-Full-Screen-Exclusive-Mode-API-in-Java.htm">http://www.developer.com/java/other/article.php/3609776/Using-the-Full-Screen-Exclusive-Mode-API-in-Java.htm</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
