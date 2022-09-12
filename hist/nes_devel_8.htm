@@ -1135,6 +1135,221 @@ right_not_pressed:
         ldx #$40
         stx $4017               ; interrupt inhibit bit
 
+        ; čekání na vnitřní inicializaci PPU (dva snímky)
+        wait_for_frame
+        wait_for_frame
+
+        ; vymazání obsahu RAM
+        clear_ram
+
+        ; čekání na další snímek
+        wait_for_frame
+
+        ; nastavení tabulek jmen
+        jsr clear_nametables  ; zavolání subrutiny 
+
+        ; nastavení barvové palety
+        jsr load_palette      ; zavolání subrutiny
+
+        ; nastavení spritů
+        jsr load_sprites      ; zavolání subrutiny
+
+        ; načtení tabulky jmen
+        jsr load_nametable    ; zavolání subrutiny
+
+        ; načtení atributů
+        jsr load_attributes   ; zavolání subrutiny
+
+        cli                   ; vynulování bitu I - povolení přerušení
+        lda #%10010000      
+        sta PPUCTRL           ; při každém VBLANK se vyvolá NMI (důležité!)
+
+        lda #%00011110        ; povolení zobrazení pozadí a současně i spritů
+        sta PPUMASK
+
+        lda #10           ; inicializace čítačů
+        sta COUNTER1
+        sta COUNTER2
+
+        ; vlastní herní smyčka je prozatím prázdná
+game_loop:
+        jmp game_loop         ; nekonečná smyčka (později rozšíříme)
+.endproc
+
+
+
+; vynulování barvové palety
+.proc clear_palette
+        ppu_data_palette_address
+
+        ldx #$20        ; počitadlo barev v paletě: 16+16
+        lda #$00        ; vynulování každé barvy
+
+:
+        sta PPUDATA     ; zápis barvy
+        dex             ; snížení hodnoty počitadla
+        bne :-
+
+        rts             ; návrat ze subrutiny
+.endproc
+
+
+
+; vynulování tabulek jmen
+.proc clear_nametables
+        lda PPUSTATUS      ; reset záchytného registru
+        lda #>NAME_TABLE_0 ; horní bajt adresy
+        sta PPUADDR
+        lda #<NAME_TABLE_0 ; spodní bajt adresy
+        sta PPUADDR
+        ldx #$08           ; počitadlo stránek (8)
+        ldy #$00           ; X a Y tvoří 16bitový čítač
+        lda #$24           ; dlaždice číslo $24 představuje oblohu
+:
+        sta PPUDATA        ; zápis indexu dlaždice
+        dey                ; snížení hodnoty počitadla
+        bne :-             ; skok dokud se nezaplní celá stránka
+        dex                ; snížení hodnoty počitadla stránek
+        bne :-             ; skok dokud se nezaplní 8 stránek
+
+        rts                ; návrat ze subrutiny
+.endproc
+
+; nastavení barvové palety
+.proc load_palette
+        ppu_data_palette_address
+
+        ; $3f00-$3f0f - paleta pozadí
+        ; $3f10-$3f1f - paleta spritů
+
+        ldx #$00        ; vynulovat počitadlo a offset
+
+:
+        lda palette, x  ; načíst bajt s offsetem
+        sta PPUDATA     ; zápis barvy do PPU
+        inx             ; zvýšit počitadlo/offset
+        cpx #32         ; limit počtu barev
+        bne :-          ; opakovat smyčku 32x
+
+        rts             ; návrat ze subrutiny
+.endproc
+
+
+
+; načtení spritů
+.proc load_sprites
+        ldx #0            ; vynulování počitadla
+:
+        lda spritedata,X  ; budeme přesouvat data z této oblasti
+        sta $0200,X       ; uložení do paměti spritů
+        inx               ; zvýšení hodnoty počitadla
+        cpx #32           ; každý sprite má 4 bajty: y-coord, tile, attributy, y-coord * 8 spritů = 32
+        bne :-
+
+        rts               ; návrat ze subrutiny
+.endproc
+
+
+
+; načtení tabulky jmen
+.proc load_nametable
+        lda PPUSTATUS      ; reset záchytného registru
+        lda #>NAME_TABLE_0 ; horní bajt adresy
+        sta PPUADDR
+        lda #<NAME_TABLE_0 ; spodní bajt adresy
+        sta PPUADDR
+
+        ldx #$00           ; počitadlo
+:
+        lda nametabledata,X
+        sta PPUDATA        ; zápis indexu dlaždice
+        inx 
+        cpx #$80           ; chceme přenést 128 bajtů
+        bne :-
+
+        rts                ; návrat ze subrutiny
+.endproc
+
+
+
+; načtení atributů
+.proc load_attributes
+        lda PPUSTATUS        ; reset záchytného registru
+        lda #>ATTRIB_TABLE_0 ; horní bajt adresy $23c0
+        sta PPUADDR
+        lda #<ATTRIB_TABLE_0 ; spodní bajt adresy $23c0
+        sta PPUADDR
+        ldx #$00             ; počitadlo smyčky
+:
+        lda attributedata,X
+        sta PPUDATA          ; zápis indexu
+        inx                  ; zvýšení hodnoty počitadla
+        cpx #$08             ; provádíme kopii osmi bajtů
+        bne :-
+
+        rts                  ; návrat ze subrutiny
+.endproc
+
+
+
+; samotná barvová paleta
+palette:
+    .byte $22, $29, $1a, $0F, $22, $36, $17, $0F, $22, $30, $21, $0F, $22, $27, $17, $0F  ; barvy pozadí
+    .byte $22, $16, $27, $18, $22, $1A, $30, $27, $22, $16, $30, $27, $22, $0F, $36, $17  ; barvy spritů
+
+
+; data pro osm spritů
+spritedata:
+    .byte $10, $00, $00, $08   ; y-coord, tile number, attributes, x-coord
+    .byte $10, $01, $00, $10
+    .byte $18, $02, $00, $08
+    .byte $18, $03, $00, $10
+    .byte $20, $04, $00, $08
+    .byte $20, $05, $00, $10
+    .byte $28, $06, $00, $08
+    .byte $28, $07, $00, $10
+
+
+; tabulka jmen
+nametabledata:
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24  ; první řádek: nebe
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24  ; druhý řádek: nebe
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+
+    .byte $24,$24,$24,$24,$45,$45,$24,$24,$45,$45,$45,$45,$45,$45,$24,$24  ; třetí řádek
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$53,$54,$24,$24  ; různé cihly (horní polovina)
+
+    .byte $24,$24,$24,$24,$47,$47,$24,$24,$47,$47,$47,$47,$47,$47,$24,$24  ; čtvrtý řádek
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$55,$56,$24,$24  ; různé cihly (spodní polovina)
+
+
+; tabulka atributů
+attributedata:
+    .byte %00000000, %00010000, %00100000, %00000000, %00000000, %00000000, %00000000, %00110000
+
+
+
+; ---------------------------------------------------------------------
+; Tabulka vektorů CPU
+; ---------------------------------------------------------------------
+
+.segment "VECTORS"
+.addr nmi
+.addr reset
+.addr irq
+
+
+
+.segment "CHARS"
+    .incbin "mario.chr"
+
+
+
+; ---------------------------------------------------------------------
+; Finito
+; ---------------------------------------------------------------------
 </pre>
 
 
@@ -1186,9 +1401,24 @@ repositář:</p>
 <tr><td>11</td><td>example11.asm</td><td>nastavení barvové palety pozadí i spritů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example11.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example11.asm</a></td></tr>
 <tr><td>12</td><td>example12.asm</td><td>refaktoring předchozího příkladu makrem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example12.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example12.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>example13.asm</td><td>zobrazení spritů tvořících Maria</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example13.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example13.asm</a></td></tr>
+<tr><td>14</td><td>example14.asm</td><td>posun spritů, aby se zdůraznila jejich nezávislost</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example14.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example14.asm</a></td></tr>
+<tr><td>15</td><td>example15.asm</td><td>větší množství spritů na obrazovce rozdělených do řádků</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example15.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example15.asm</a></td></tr>
+<tr><td>16</td><td>example16.asm</td><td>větší množství spritů na obrazovce na jediném řádku</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example16.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example16.asm</a></td></tr>
+<tr><td>17</td><td>example17.asm</td><td>pohyb jednoho spritu pomocí ovladače</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example17.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example17.asm</a></td></tr>
+<tr><td>18</td><td>example18.asm</td><td>odvozeno z&nbsp;předchozího příkladu, symbolická jména adres</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example18.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example18.asm</a></td></tr>
+<tr><td>19</td><td>example19.asm</td><td>odvozeno z&nbsp;předchozího příkladu, pomocná makra pro pohyb spritu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example19.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example19.asm</a></td></tr>
+<tr><td>20</td><td>example20.asm</td><td>pohyb spritu je založen na instrukcích <strong>INC</strong> a <strong>DEC</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example20.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example20.asm</a></td></tr>
+<tr><td>21</td><td>example21.asm</td><td>přesun celého Maria (8 spritů)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example21.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example21.asm</a></td></tr>
+<tr><td>22</td><td>example22.asm</td><td>(rychlá) změna barvové palety spritů tlačítkem A</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example22.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example22.asm</a></td></tr>
+<tr><td>23</td><td>example23.asm</td><td>realizace čítače pro snížení frekvence změn barvové palety</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example23.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example23.asm</a></td></tr>
+<tr><td>24</td><td>example24.asm</td><td>horizontální a vertikální zrcadlení spritů řízené hráčem stiskem tlačítek</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example24.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example24.asm</a></td></tr>
+<tr><td>25</td><td>example25.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example25.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example25.asm</a></td></tr>
+<tr><td>26</td><td>example26.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example26.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example26.asm</a></td></tr>
+<tr><td>27</td><td>example27.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example27.asm">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/example27.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>25</td><td>link.cfg</td><td>konfigurace segmentů pro linker <strong>ld65</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/link.cfg">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/link.cfg</a></td></tr>
-<tr><td>26</td><td>Makefile</td><td>Makefile pro překlad a slinkování všech příkladů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/Makefile">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/Makefile</a></td></tr>
+<tr><td>28</td><td>link.cfg</td><td>konfigurace segmentů pro linker <strong>ld65</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/link.cfg">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/link.cfg</a></td></tr>
+<tr><td>29</td><td>Makefile</td><td>Makefile pro překlad a slinkování všech příkladů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/Makefile">https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/Makefile</a></td></tr>
 </table>
 
 <p><div class="rs-tip-major">Poznámka: pro slinkování a spuštění dnešních
