@@ -1,0 +1,1631 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - volání funkcí a metod v Lua VM, rozdíly oproti JVM</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - volání funkcí a metod v Lua VM, rozdíly oproti JVM</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V předcházející části tohoto seriálu jsme si ukázali, jakým způsobem je v bajtkódu JVM implementováno volání metod, a to jak statických metod, tak i metod nestatických. Taktéž jsme si ukázali způsob volání konstruktorů. Dnes se budeme zabývat podobnou problematikou, ovšem z pohledu programovacího jazyka Lua a virtuálního stroje Lua VM.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Volání funkcí a metod v&nbsp;bajtkódu Lua VM</a></p>
+<p><a href="#k02">2. Rozdíly mezi programovacími jazyky Java a Lua při volání funkcí/metod</a></p>
+<p><a href="#k03">3. Demonstrační příklad <strong>Test25.lua</strong>: volání funkcí v&nbsp;programovacím jazyku Lua</a></p>
+<p><a href="#k04">4. Překlad demonstračního příkladu <strong>Test25.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k05">5. Globální proměnná <strong>_ENV</strong> a její použití v&nbsp;bajtkódu</a></p>
+<p><a href="#k06">6. Demonstrační příklad <strong>Test26.lua</strong>: výpis obsahu globální proměnné <strong>_ENV</strong></a></p>
+<p><a href="#k07">7. Demonstrační příklad <strong>Test27.lua</strong>: výpis obsahu globální proměnné <strong>_ENV</strong> (úprava příkladu <strong>Test25.lua</strong>)</a></p>
+<p><a href="#k08">8. Demonstrační příklad <strong>Test28.lua</strong>: volání &bdquo;statických metod&ldquo; v&nbsp;programovacím jazyku Lua</a></p>
+<p><a href="#k09">9. Překlad demonstračního příkladu <strong>Test28.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k10">10. Demonstrační příklad <strong>Test29.lua</strong>: volání &bdquo;nestatických metod&ldquo; v&nbsp;programovacím jazyku Lua</a></p>
+<p><a href="#k11">11. Překlad demonstračního příkladu <strong>Test29.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k12">12. Překlad volání metod do bajtkódu</a></p>
+<p><a href="#k13">13. Repositář se zdrojovými kódy všech pěti dnešních demonstračních příkladů</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Volání funkcí a metod v&nbsp;bajtkódu Lua VM</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> jsme si na několika
+demonstračních příkladech ukázali, jakým způsobem je v&nbsp;bajtkódu JVM
+realizováno volání metod. Víme již, že je rozdíl mezi voláním statických metod,
+nestatických metod, privátních metod, konstruktorů i metod předepsaných
+v&nbsp;nějakém rozhraní (<i>interface</i>). Volání je realizováno přes
+instrukce <strong>INVOKESTATIC</strong>, <strong>INVOKEVIRTUAL</strong>,
+<strong>INVOKESPECIAL</strong> a <strong>INVOKEINTERFACE</strong>. Tyto
+instrukce navíc využívají takzvanou <i>signaturu metody</i>, což je jméno
+metody doplněné o typ její návratové hodnoty i o počet a typ všech parametrů
+metody (JVM, přesněji řečeno bajtkód JVM zde musí reflektovat fakt, že Java je
+silně a současně i staticky typovaný programovací jazyk). Dnes se budeme
+zabývat podobným tématem, ovšem z&nbsp;pohledu programovacího jazyka Lua a
+bajtkódu virtuálního stroje Lua VM. Uvidíme, že mezi JVM a Lua VM existují
+v&nbsp;této oblasti značné rozdíly.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Rozdíly mezi programovacími jazyky Java a Lua při volání funkcí/metod</h2>
+
+<p>Mezi programovacími jazyky Java a Lua existují velké rozdíly v&nbsp;tom,
+jakým způsobem je realizováno volání funkcí popř.&nbsp;metod. Většina těchto
+rozdílů vychází z&nbsp;faktu, že programovací jazyk Java je striktně a navíc
+ještě staticky typovaný, což se týká i parametrů metod, zatímco v&nbsp;případě
+programovacího jazyka Lua je typ parametrů vyhodnocován až v&nbsp;době běhu
+aplikace (při volání konkrétní funkce či metody). Navíc se v&nbsp;jazyku Lua
+nemusí při volání funkcí dodržet přesný počet parametrů &ndash; nadbytečné
+parametry nejsou využity a naopak, pokud se při volání uvede menší počet
+parametrů, než by odpovídalo počtu argumentů funkce, jsou tyto argumenty
+nastaveny na hodnotu <strong>nil</strong>. Aby byla situace ještě poněkud
+komplikovanější, je v&nbsp;Lua možné, aby funkce vracely více než jednu hodnotu
+a z&nbsp;funkcí lze i s&nbsp;(na)vázanými proměnnými vytvořit <i>uzávěr
+(closure)</i>. Základní rozdíly mezi Javou a Luou jsou vypsány v&nbsp;tabulce
+pod tímto odstavcem:</p>
+
+<table>
+<tr><th> #</th><th>Vlastnost</th><th>Java</th><th>Lua</th></tr>
+<tr><td> 1</td><td>Podpora pro volání funkcí</td><td>Ne</td><td>funkce()</td></tr>
+<tr><td> 2</td><td>Podpora pro volání metod</td><td>Ano (viz níže)</td><td>Ano (viz níže)</td></tr>
+<tr><td> 3</td><td>Volání statických metod</td><td>Třída.funkce()</td><td>objekt.funkce()</td></tr>
+<tr><td> 4</td><td>Volání nestatických metod</td><td>objekt.funkce()</td><td>objekt:funkce()</td></tr>
+<tr><td> 5</td><td>Kontrola počtu parametrů při překladu</td><td>Ano</td><td>Ne</td></tr>
+<tr><td> 6</td><td>Podpora typu parametrů při překladu</td><td>Ano</td><td>Ne</td></tr>
+<tr><td> 7</td><td>Podpora proměnného počtu parametrů</td><td>Ano</td><td>Ano</td></tr>
+<tr><td> 8</td><td>Podpora proměnného počtu návratových hodnot</td><td>Ne</td><td>Ano</td></tr>
+<tr><td> 9</td><td>Funkce je plnohodnotný datový typ</td><td>Ne pro Javu&lt;=7</td><td>Ano</td></tr>
+<tr><td>10</td><td>Podpora uzávěrů (closures)</td><td>Ne pro Javu&lt;=7</td><td>Ano</td></tr>
+</table>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad <strong>Test25.lua</strong>: volání funkcí v&nbsp;programovacím jazyku Lua</h2>
+
+<p>Dnešní první demonstrační příklad nazvaný <strong>Test25.lua</strong> je
+velmi jednoduchý. Jsou v&nbsp;něm implementovány funkce se jmény
+<strong>function1()</strong>, <strong>function2()</strong> a
+<strong>function3()</strong>, přičemž funkce <strong>function1()</strong>
+neočekává žádné argumenty, funkce <strong>function2()</strong> očekává jeden
+argument a konečně funkce <strong>function3()</strong> očekává dva argumenty,
+které jsou sečteny (v&nbsp;případě, že argumenty nejsou typu celé či reálné
+číslo, vznikne při běhu programu chyba). Všechny tři zmíněné funkce jsou volány
+z&nbsp;kódu, který je implementován v&nbsp;další trojici funkcí nazvaných
+<strong>callFunction1()</strong>, <strong>callFunction2()</strong> a
+<strong>callFunction3()</strong>. Povšimněte si, že se nikde nekontroluje ani
+počet ani typ skutečně předávaných parametrů:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 25.</i>
+<i>--</i>
+<i>-- Volani funkci v programovacim jazyce Lua.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce bez parametru.</i>
+<i>--</i>
+function <strong>function1</strong>()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce s jednim parametrem.</i>
+<i>--</i>
+function <strong>function2</strong>(x)
+    return x
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce se dvema parametry.</i>
+<i>--</i>
+function <strong>function3</strong>(x, y)
+    if x and y then
+        return x+y
+    else
+        return nil
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function1().</i>
+<i>--</i>
+function <strong>callFunction1</strong>()
+    function1()
+    function1(nil)
+    function1(42)
+    function1(1, 2)
+    function1("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function2().</i>
+<i>--</i>
+function <strong>callFunction2</strong>()
+    function2()
+    function2(nil)
+    function2(42)
+    function2(1, 2)
+    function2("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function3().</i>
+<i>--</i>
+function <strong>callFunction3</strong>()
+    function3()
+    function3(nil)
+    function3(42)
+    function3(1, 2)
+    function3("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    callFunction1()
+    callFunction2()
+    callFunction3()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Překlad demonstračního příkladu <strong>Test25.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Funkce <strong>function1()</strong>, <strong>function2()</strong> a
+<strong>function3()</strong> se do bajtkódu Lua VM přeloží následujícím
+způsobem:</p>
+
+<pre>
+<strong>function1():</strong>
+function &lt;Test25.lua:12,13&gt; (1 instruction at 0x8549c88)
+0 params, 2 slots, 0 upvalues, 0 locals, 0 constants, 0 functions
+        1       [13]    RETURN          0 1    <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (0) for 0x8549c88:
+locals (0) for 0x8549c88:
+upvalues (0) for 0x8549c88:
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>function2():</strong>
+function &lt;Test25.lua:20,22&gt; (2 instructions at 0x8549de0)
+1 param, 2 slots, 0 upvalues, 1 local, 0 constants, 0 functions
+        1       [21]    RETURN          0 2    <i>; navratova hodnota - konstanta ulozena na indexu 2</i>
+        2       [22]    RETURN          0 1    <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (0) for 0x8549de0:
+locals (1) for 0x8549de0:
+        0       x       1       3              <i>; parametr funkce zde vystupuje jako lokalni promenna</i>
+upvalues (0) for 0x8549de0:
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>function3():</strong>
+function &lt;Test25.lua:29,35&gt; (10 instructions at 0x8549f58)
+2 params, 3 slots, 0 upvalues, 2 locals, 0 constants, 0 functions
+        1       [30]    TEST            0 0    <i>; test hodnoty prvniho parametru funkce</i>
+        2       [30]    JMP             0 5    <i>; kdyz x==nil, skok na instrukci cislo 8</i>
+        3       [30]    TEST            1 0    <i>; test hodnoty druheho parametru funkce</i>
+        4       [30]    JMP             0 3    <i>; kdyz y==nil, skok na instrukci cislo 8</i>
+        5       [31]    ADD             2 0 1  <i>; secist hodnoty obou parametru</i>
+        6       [31]    RETURN          2 2    <i>; a vratit vysledek souctu</i>
+        7       [31]    JMP             0 2    <i>; skok na instrukci cislo 10</i>
+        8       [33]    LOADNIL         2 0    <i>; cil obou podminenych skoku, bude se vracet nil</i>
+        9       [33]    RETURN          2 2    <i>; vyskok z funkce, vraci se hodnota nil</i>
+        10      [35]    RETURN          0 1    <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (0) for 0x8549f58:
+locals (2) for 0x8549f58:
+        0       x       1       11             <i>; prvni parametr funkce zde vystupuje jako lokalni promenna</i>
+        1       y       1       11             <i>; druhy parametr funkce zde vystupuje jako lokalni promenna</i>
+upvalues (0) for 0x8549f58:
+</pre>
+
+<p>Na způsobu překladu všech tří funkcí <strong>function1()</strong>,
+<strong>function2()</strong> a <strong>function3()</strong> není nic
+překvapivého, zajímavější ovšem bude zjistit, jakým způsobem se tyto funkce
+volají:</p>
+
+<pre>
+<strong>callFunction1():</strong>
+function &lt;Test25.lua:42,48&gt; (16 instructions at 0x8549d88)
+0 params, 3 slots, 1 upvalue, 0 locals, 6 constants, 0 functions
+        1       [43]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        2       [43]    CALL            0 1 1   <i>; zavolani funkce function1()</i>
+        3       [44]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        4       [44]    LOADNIL         1 0     <i>; parametr funkce se preda v registru R1</i>
+        5       [44]    CALL            0 2 1   <i>; zavolani funkce function1()</i>
+        6       [45]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        7       [45]    LOADK           1 -2    <i>; parametr funkce se preda v registru R1</i>
+        8       [45]    CALL            0 2 1   <i>; zavolani funkce function1()</i>
+        9       [46]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        10      [46]    LOADK           1 -4    <i>; prvni parametr funkce</i>
+        11      [46]    LOADK           2 -5    <i>; druhy parametr funkce</i>
+        12      [46]    CALL            0 3 1   <i>; zavolani funkce function1()</i>
+        13      [47]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        14      [47]    LOADK           1 -6    <i>; prvni parametr funkce se preda v registru R1</i>
+        15      [47]    CALL            0 2 1   <i>; zavolani funkce function1()</i>
+        16      [48]    RETURN          0 1     <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (6) for 0x8549d88:
+        1       "function1"
+        2       42
+        3       "function3"
+        4       1
+        5       2
+        6       "xyzzy"
+locals (0) for 0x8549d88:
+upvalues (1) for 0x8549d88:
+        0       _ENV    0       0
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>callFunction2():</strong>
+function &lt;Test25.lua:55,61&gt; (16 instructions at 0x854a410)
+0 params, 3 slots, 1 upvalue, 0 locals, 6 constants, 0 functions
+        1       [56]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        2       [56]    CALL            0 1 1   <i>; zavolani funkce function2()</i>
+        3       [57]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        4       [57]    LOADNIL         1 0     <i>; parametr funkce se preda v registru R1</i>
+        5       [57]    CALL            0 2 1   <i>; zavolani funkce function2()</i>
+        6       [58]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        7       [58]    LOADK           1 -2    <i>; parametr funkce se preda v registru R1</i>
+        8       [58]    CALL            0 2 1   <i>; zavolani funkce function2()</i>
+        9       [59]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        10      [59]    LOADK           1 -4    <i>; prvni parametr funkce</i>
+        11      [59]    LOADK           2 -5    <i>; druhy parametr funkce</i>
+        12      [59]    CALL            0 3 1   <i>; zavolani funkce function1()</i>
+        13      [60]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        14      [60]    LOADK           1 -6    <i>; prvni parametr funkce se preda v registru R1</i>
+        15      [60]    CALL            0 2 1   <i>; zavolani funkce function2()</i>
+        16      [61]    RETURN          0 1     <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (6) for 0x854a410:
+        1       "function2"
+        2       42
+        3       "function3"
+        4       1
+        5       2
+        6       "xyzzy"
+locals (0) for 0x854a410:
+upvalues (1) for 0x854a410:
+        0       _ENV    0       0
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>callFunction3():</strong>
+function &lt;Test25.lua:68,74&gt; (16 instructions at 0x854a690)
+0 params, 3 slots, 1 upvalue, 0 locals, 5 constants, 0 functions
+        1       [69]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        2       [69]    CALL            0 1 1   <i>; zavolani funkce function3()</i>
+        3       [70]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        4       [70]    LOADNIL         1 0     <i>; parametr funkce se preda v registru R1</i>
+        5       [70]    CALL            0 2 1   <i>; zavolani funkce function3()</i>
+        6       [71]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        7       [71]    LOADK           1 -2    <i>; parametr funkce se preda v registru R1</i>
+        8       [71]    CALL            0 2 1   <i>; zavolani funkce function3()</i>
+        9       [72]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        10      [72]    LOADK           1 -3    <i>; prvni parametr funkce</i>
+        11      [72]    LOADK           2 -4    <i>; druhy parametr funkce</i>
+        12      [72]    CALL            0 3 1   <i>; zavolani funkce function1()</i>
+        13      [73]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na funkci</i>
+        14      [73]    LOADK           1 -5    <i>; prvni parametr funkce se preda v registru R1</i>
+        15      [73]    CALL            0 2 1   <i>; zavolani funkce function3()</i>
+        16      [74]    RETURN          0 1     <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (5) for 0x854a690:
+        1       "function3"
+        2       42
+        3       1
+        4       2
+        5       "xyzzy"
+locals (0) for 0x854a690:
+upvalues (1) for 0x854a690:
+        0       _ENV    0       0
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Globální proměnná <strong>_ENV</strong> a její použití v&nbsp;bajtkódu</h2>
+
+<p>Z&nbsp;předchozího výpisu bajtkódu je patrné, že volání všech tří funkcí se
+provádí naprosto stejným způsobem, bez ohledu na očekávaný počet parametrů.
+Hodnoty aktuálních parametrů se přenáší v&nbsp;pracovních registrech, ne tedy
+na zásobníku, jako je tomu v&nbsp;JVM. Samotné zavolání funkce zajišťuje
+dvojice instrukcí <strong>GETTABUP</strong> a <strong>CALL</strong>, přičemž
+instrukce <strong>CALL</strong> očekává v&nbsp;prvním uvedeném registru
+referenci na volanou funkci, která je získána přes instrukci
+<strong>GETTABUP</strong> z&nbsp;globální proměnné <strong>_ENV</strong>.</p>
+
+<p>Právě lokální proměnná nazvaná <strong>_ENV</strong> má v&nbsp;bajtkódu Lua
+VM velký význam, protože jsou v&nbsp;ní uloženy mj.&nbsp;i všechny globální
+funkce. Připomeňme si, že v&nbsp;programovacím jazyku Lua jsou funkce
+plnohodnotným datovým typem, což mj.&nbsp;znamená, že funkce (=hodnoty datového
+typu <strong>function</strong>) lze přiřazovat do proměnných, předávat je jiným
+funkcím jako parametry, získávat funkce jako návratovou hodnotu jiných funkcí
+atd. Právě díky této vlastnosti funkcí (viz též <a
+href="http://lua-users.org/wiki/FunctionsTutorial">http://lua-users.org/wiki/FunctionsTutorial</a>)
+je konstrukce bajtkódu při volání funkcí tak jednoduchá a navíc univerzální
+(nemusí se zavádět takové monstrózní jazykové konstrukce jako jsou anonymní
+třídy v&nbsp;Javě jen proto, že je zapotřebí v&nbsp;určitém místě kódu předat
+odkaz/referenci na již existující funkci nebo na funkci vytvořenou přímo na
+místě, kde je její tělo využíváno).</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad <strong>Test26.lua</strong>: výpis obsahu globální proměnné <strong>_ENV</strong></h2>
+
+<p>Dnešní druhý demonstrační příklad nazvaný <strong>Test26.lua</strong> je
+velmi jednoduchý. Po svém spouštění vypíše na standardní výstup obsah globální
+proměnné <strong>_ENV</strong> popsané <a href="#k05">v&nbsp;předchozí
+kapitole</a>. Žádná další činnost se neprovádí:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 26.</i>
+<i>--</i>
+<i>-- Vypis obsahu lokalni promenne _ENV.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    <i>-- vypis obsahu celeho asociativniho pole _ENV</i>
+    for key,val in pairs(_ENV) do
+         print(key,val)
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Podívejme se nyní na to, jaký obsah proměnná <strong>_ENV</strong> měla na
+testovacím počítači. Pro větší přehlednost byl výstup seřazen filtrem
+<strong>sort</strong>. Vyznačen je prvek <strong>main</strong> odpovídající
+stejnojmenné funkci implementované v&nbsp;demonstračním příkladu:</p>
+
+<pre>
+arg             table: 0x9845970
+assert          function: 0x8061d80
+bit32           table: 0x98430e8
+collectgarbage  function: 0x8061c80
+coroutine       table: 0x98437a0
+debug           table: 0x9844160
+dofile          function: 0x8061be0
+error           function: 0x8061b50
+getmetatable    function: 0x8061ae0
+_G              table: 0x9842308
+io              table: 0x9843b58
+ipairs          function: 0x8061710
+loadfile        function: 0x8061a40
+load            function: 0x8061820
+loadstring      function: 0x8061820
+<strong>main            function: 0x9845de0</strong>
+math            table: 0x9844f68
+module          function: 0x9843700
+next            function: 0x8061730
+os              table: 0x9843930
+package         table: 0x9842858
+pairs           function: 0x80616f0
+pcall           function: 0x8061580
+print           function: 0x8061420
+rawequal        function: 0x80613c0
+rawget          function: 0x80612f0
+rawlen          function: 0x8061350
+rawset          function: 0x8061280
+require         function: 0x9843740
+select          function: 0x8061140
+setmetatable    function: 0x8061070
+string          table: 0x9842d58
+table           table: 0x98439a8
+tonumber        function: 0x8060e70
+tostring        function: 0x8060e30
+type            function: 0x8060de0
+unpack          function: 0x80694a0
+_VERSION        Lua 5.2
+xpcall          function: 0x8060cf0
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Demonstrační příklad <strong>Test27.lua</strong>: výpis obsahu globální proměnné <strong>_ENV</strong> (úprava příkladu <strong>Test25.lua</strong>)</h2>
+
+<p>Zkusme si nyní pro úplnost zkombinovat oba předchozí demonstrační příklady
+<strong>Test25.lua</strong> a <strong>Test26.lua</strong>, aby bylo možné se
+ujistit, že reference na volané funkce jsou skutečně uloženy v&nbsp;globální
+proměnné <strong>_ENV</strong>. Nový demonstrační příklad nazvaný
+<strong>Test27.lua</strong> obsahuje všech šest funkcí
+<strong>function1()</strong>, <strong>function2()</strong>,
+<strong>function3()</strong>, <strong>callFunction1()</strong>,
+<strong>callFunction2()</strong> a <strong>callFunction3()</strong>. Tyto
+funkce by měly být viditelné ve výpisu globální proměnné
+<strong>_ENV</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 27.</i>
+<i>--</i>
+<i>-- Kombinace prikladu 25 a 26.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce bez parametru.</i>
+<i>--</i>
+function <strong>function1</strong>()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce s jednim parametrem.</i>
+<i>--</i>
+function <strong>function2</strong>(x)
+    return x
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce se dvema parametry.</i>
+<i>--</i>
+function <strong>function3</strong>(x, y)
+    if x and y then
+        return x+y
+    else
+        return nil
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function1().</i>
+<i>--</i>
+function <strong>callFunction1</strong>()
+    function1()
+    function1(nil)
+    function1(42)
+    function3(1, 2)
+    function1("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function2().</i>
+<i>--</i>
+function <strong>callFunction2</strong>()
+    function2()
+    function2(nil)
+    function2(42)
+    function3(1, 2)
+    function2("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function3().</i>
+<i>--</i>
+function <strong>callFunction3</strong>()
+    function3()
+    function3(nil)
+    function3(42)
+    function3(1, 2)
+    function3("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    <i>-- vypis obsahu celeho asociativniho pole _ENV</i>
+    for key,val in pairs(_ENV) do
+         print(key,val)
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Po spuštění tohoto demonstračního příkladu lze ze (seřazeného) výpisu obsahu
+globální proměnné <strong>_ENV</strong> vyčíst, že jsou zde skutečně uloženy
+jak všechny tři volané funkce, tak i volající funkce, funkce
+<strong>main</strong> atd. atd.:</p>
+
+<pre>
+arg             table: 0x95ec970
+assert          function: 0x8061d80
+bit32           table: 0x95ea0e8
+<strong>callFunction1   function: 0x95edf70</strong>
+<strong>callFunction2   function: 0x95edd68</strong>
+<strong>callFunction3   function: 0x95ecde0</strong>
+collectgarbage  function: 0x8061c80
+coroutine       table: 0x95ea7a0
+debug           table: 0x95eb160
+dofile          function: 0x8061be0
+error           function: 0x8061b50
+<strong>function1       function: 0x95ed7e0</strong>
+<strong>function2       function: 0x95edc80</strong>
+<strong>function3       function: 0x95edcb0</strong>
+getmetatable    function: 0x8061ae0
+_G              table: 0x95e9308
+io              table: 0x95eab58
+ipairs          function: 0x8061710
+loadfile        function: 0x8061a40
+load            function: 0x8061820
+loadstring      function: 0x8061820
+<strong>main            function: 0x95ed6e0</strong>
+math            table: 0x95ebf68
+module          function: 0x95ea700
+next            function: 0x8061730
+os              table: 0x95ea930
+package         table: 0x95e9858
+pairs           function: 0x80616f0
+pcall           function: 0x8061580
+print           function: 0x8061420
+rawequal        function: 0x80613c0
+rawget          function: 0x80612f0
+rawlen          function: 0x8061350
+rawset          function: 0x8061280
+require         function: 0x95ea740
+select          function: 0x8061140
+setmetatable    function: 0x8061070
+string          table: 0x95e9d58
+table           table: 0x95ea9a8
+tonumber        function: 0x8060e70
+tostring        function: 0x8060e30
+type            function: 0x8060de0
+unpack          function: 0x80694a0
+_VERSION        Lua 5.2
+xpcall          function: 0x8060cf0
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační příklad <strong>Test28.lua</strong>: volání &bdquo;statických metod&ldquo; v&nbsp;programovacím jazyku Lua</h2>
+
+<p>Díky tomu, že funkce jsou v&nbsp;programovacím jazyku Lua plnohodnotným
+datovým typem, je možné odkazy/reference na funkce vkládat i do tabulek (což je
+jediný strukturovaný datový typ tohoto jazyka). Tímto způsobem je možné
+v&nbsp;Lue vytvořit objekty, přičemž funkce vložené do tabulek lze chápat jako
+obdobu &bdquo;statických metod&ldquo;. &bdquo;Statické metody&ldquo; jsou běžné
+funkce, při jejichž deklaraci je mezi jménem tabulky a jménem funkce použita
+tečka, která je též použita při volání této funkce. Podívejme se na příklad
+<strong>Test28.lua</strong>, který je přímo odvozen od dnešního prvního
+příkladu <strong>Test25.lua</strong> až na ten rozdíl, že původní funkce
+<strong>function1()</strong>, <strong>function2()</strong> a
+<strong>function3()</strong> jsou uloženy do tabulky
+<strong>testClass</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 28.</i>
+<i>--</i>
+<i>-- Volani "statickych metod" v programovacim jazyce Lua.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>testClass</strong> = {}
+&nbsp;
+<i>--</i>
+<i>-- Funkce/staticka metoda bez parametru.</i>
+<i>--</i>
+function <strong>testClass.function1</strong>()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce/staticka metoda s jednim parametrem.</i>
+<i>--</i>
+function <strong>testClass.function2</strong>(x)
+    return x
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce/staticka metoda se dvema parametry.</i>
+<i>--</i>
+function <strong>testClass.function3</strong>(x, y)
+    if x and y then
+        return x+y
+    else
+        return nil
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkci/statickych metod.</i>
+<i>--</i>
+function <strong>callFunction1</strong>()
+    testClass.function1()
+    testClass.function1(nil)
+    testClass.function1(42)
+    testClass.function1(1, 2)
+    testClass.function1("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function2().</i>
+<i>--</i>
+function <strong>callFunction2</strong>()
+    testClass.function2()
+    testClass.function2(nil)
+    testClass.function2(42)
+    testClass.function2(1, 2)
+    testClass.function2("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function3().</i>
+<i>--</i>
+function <strong>callFunction3</strong>()
+    testClass.function3()
+    testClass.function3(nil)
+    testClass.function3(42)
+    testClass.function3(1, 2)
+    testClass.function3("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    callFunction1()
+    callFunction2()
+    callFunction3()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Překlad demonstračního příkladu <strong>Test28.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Zajímavé bude se podívat na způsob překladu demonstračního příkladu
+<strong>Test28.lua</strong>. Nejprve si opět uvedeme překlad všech tří volaných
+&bdquo;statických metod&ldquo;:</p>
+
+<pre>
+<strong>function1():</strong>
+function &lt;Test28.lua:14,15&gt; (1 instruction at 0x87f2d00)
+0 params, 2 slots, 0 upvalues, 0 locals, 0 constants, 0 functions
+        1       [15]    RETURN          0 1    <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (0) for 0x87f2d00:
+locals (0) for 0x87f2d00:
+upvalues (0) for 0x87f2d00:
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>function2():</strong>
+function &lt;Test28.lua:22,24&gt; (2 instructions at 0x87f2e20)
+1 param, 2 slots, 0 upvalues, 1 local, 0 constants, 0 functions
+        1       [23]    RETURN          0 2    <i>; navratova hodnota - konstanta ulozena na indexu 2</i>
+        2       [24]    RETURN          0 1    <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (0) for 0x87f2e20:
+locals (1) for 0x87f2e20:
+        0       x       1       3              <i>; parametr funkce zde vystupuje jako lokalni promenna</i>
+upvalues (0) for 0x87f2e20:
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>function3():</strong>
+function &lt;Test28.lua:31,37&gt; (10 instructions at 0x87f2ca8)
+2 params, 3 slots, 0 upvalues, 2 locals, 0 constants, 0 functions
+        1       [32]    TEST            0 0    <i>; test hodnoty prvniho parametru funkce</i>
+        2       [32]    JMP             0 5    <i>; kdyz x==nil, skok na instrukci cislo 8</i>
+        3       [32]    TEST            1 0    <i>; test hodnoty druheho parametru funkce</i>
+        4       [32]    JMP             0 3    <i>; kdyz y==nil, skok na instrukci cislo 8</i>
+        5       [33]    ADD             2 0 1  <i>; secist hodnoty obou parametru</i>
+        6       [33]    RETURN          2 2    <i>; a vratit vysledek souctu</i>
+        7       [33]    JMP             0 2    <i>; skok na instrukci cislo 10</i>
+        8       [35]    LOADNIL         2 0    <i>; cil obou podminenych skoku, bude se vracet nil</i>
+        9       [35]    RETURN          2 2    <i>; vyskok z funkce, vraci se hodnota nil</i>
+        10      [37]    RETURN          0 1    <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (0) for 0x87f2ca8:
+locals (2) for 0x87f2ca8:
+        0       x       1       11             <i>; prvni parametr funkce zde vystupuje jako lokalni promenna</i>
+        1       y       1       11             <i>; druhy parametr funkce zde vystupuje jako lokalni promenna</i>
+upvalues (0) for 0x87f2ca8:
+</pre>
+
+<p>Oproti prvnímu demonstračnímu příkladu zde nenastaly žádné změny, ovšem
+rozdílný je inicializační kód, který tabulku <strong>_ENV</strong> naplní:</p>
+
+<pre>
+        1       [9]     NEWTABLE        0 0 0
+        2       [9]     SETTABUP        0 -1 0  ; _ENV "testClass"
+        3       [14]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        4       [15]    CLOSURE         1 0     ; 0x87f2d00
+        5       [14]    SETTABLE        0 -2 1  ; "function1" -
+        6       [22]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        7       [24]    CLOSURE         1 1     ; 0x87f2e20
+        8       [22]    SETTABLE        0 -3 1  ; "function2" -
+        9       [31]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        10      [37]    CLOSURE         1 2     ; 0x87f2ca8
+        11      [31]    SETTABLE        0 -4 1  ; "function3" -
+        12      [50]    CLOSURE         0 3     ; 0x87f3398
+        13      [44]    SETTABUP        0 -5 0  ; _ENV "callFunction1"
+        14      [63]    CLOSURE         0 4     ; 0x87f3528
+        15      [57]    SETTABUP        0 -6 0  ; _ENV "callFunction2"
+        16      [76]    CLOSURE         0 5     ; 0x87f3238
+        17      [70]    SETTABUP        0 -7 0  ; _ENV "callFunction3"
+        18      [87]    CLOSURE         0 6     ; 0x87f3830
+        19      [83]    SETTABUP        0 -8 0  ; _ENV "main"
+        20      [91]    GETTABUP        0 0 -8  ; _ENV "main"
+        21      [91]    CALL            0 1 1
+        22      [91]    RETURN          0 1
+constants (8) for 0x87f2b50:
+        1       "testClass"
+        2       "function1"
+        3       "function2"
+        4       "function3"
+        5       "callFunction1"
+        6       "callFunction2"
+        7       "callFunction3"
+        8       "main"
+</pre>
+
+<p>Nyní se podívejme na způsob volání všech tří testovacích statických
+metod:</p>
+
+<pre>
+function &lt;Test28.lua:44,50&gt; (21 instructions at 0x87f3398)
+0 params, 3 slots, 1 upvalue, 0 locals, 7 constants, 0 functions
+        1       [45]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        2       [45]    GETTABLE        0 0 -2  <i>; "function1"</i>
+        3       [45]    CALL            0 1 1   <i>; zavolani funkce function1()</i>
+        4       [46]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        5       [46]    GETTABLE        0 0 -2  <i>; "function1"</i>
+        6       [46]    LOADNIL         1 0     <i>; parametr funkce se preda v registru R1</i>
+        7       [46]    CALL            0 2 1   <i>; zavolani funkce function1()</i>
+        8       [47]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        9       [47]    GETTABLE        0 0 -2  <i>; "function1"</i>
+        10      [47]    LOADK           1 -3    <i>; 42</i>
+        11      [47]    CALL            0 2 1   <i>; zavolani funkce function1()</i>
+        12      [48]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        13      [48]    GETTABLE        0 0 -2  <i>; "function3"</i>
+        14      [48]    LOADK           1 -5    <i>; 1</i>
+        15      [48]    LOADK           2 -6    <i>; 2</i>
+        16      [48]    CALL            0 3 1   <i>; zavolani funkce function1()</i>
+        17      [49]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        18      [49]    GETTABLE        0 0 -2  <i>; "function1"</i>
+        19      [49]    LOADK           1 -7    <i>; "xyzzy"</i>
+        20      [49]    CALL            0 2 1   <i>; zavolani funkce function1()</i>
+        21      [50]    RETURN          0 1     <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (7) for 0x87f3398:
+        1       "testClass"
+        2       "function1"
+        3       42
+        4       "function3"
+        5       1
+        6       2
+        7       "xyzzy"
+locals (0) for 0x87f3398:
+upvalues (1) for 0x87f3398:
+        0       _ENV    0       0
+&nbsp;
+&nbsp;
+&nbsp;
+function &lt;Test28.lua:57,63&gt; (21 instructions at 0x87f3528)
+0 params, 3 slots, 1 upvalue, 0 locals, 7 constants, 0 functions
+        1       [58]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        2       [58]    GETTABLE        0 0 -2  <i>; "function2"</i>
+        3       [58]    CALL            0 1 1   <i>; zavolani funkce function2()</i>
+        4       [59]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        5       [59]    GETTABLE        0 0 -2  <i>; "function2"</i>
+        6       [59]    LOADNIL         1 0     <i>; parametr funkce se preda v registru R1</i>
+        7       [59]    CALL            0 2 1   <i>; zavolani funkce function2()</i>
+        8       [60]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        9       [60]    GETTABLE        0 0 -2  <i>; "function2"</i>
+        10      [60]    LOADK           1 -3    <i>; 42</i>
+        11      [60]    CALL            0 2 1   <i>; zavolani funkce function2()</i>
+        12      [61]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        13      [61]    GETTABLE        0 0 -2  <i>; "function2"</i>
+        14      [61]    LOADK           1 -5    <i>; 1</i>
+        15      [61]    LOADK           2 -6    <i>; 2</i>
+        16      [61]    CALL            0 3 1   <i>; zavolani funkce function2()</i>
+        17      [62]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        18      [62]    GETTABLE        0 0 -2  <i>; "function2"</i>
+        19      [62]    LOADK           1 -7    <i>; "xyzzy"</i>
+        20      [62]    CALL            0 2 1   <i>; zavolani funkce function2()</i>
+        21      [63]    RETURN          0 1     <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (7) for 0x87f3528:
+        1       "testClass"
+        2       "function2"
+        3       42
+        4       "function3"
+        5       1
+        6       2
+        7       "xyzzy"
+locals (0) for 0x87f3528:
+upvalues (1) for 0x87f3528:
+        0       _ENV    0       0
+&nbsp;
+&nbsp;
+&nbsp;
+function &lt;Test28.lua:70,76&gt; (21 instructions at 0x87f3238)
+0 params, 3 slots, 1 upvalue, 0 locals, 6 constants, 0 functions
+        1       [71]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        2       [71]    GETTABLE        0 0 -2  <i>; "function3"</i>
+        3       [71]    CALL            0 1 1   <i>; zavolani funkce function3()</i>
+        4       [72]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        5       [72]    GETTABLE        0 0 -2  <i>; "function3"</i>
+        6       [72]    LOADNIL         1 0     <i>; parametr funkce se preda v registru R1</i>
+        7       [72]    CALL            0 2 1   <i>; zavolani funkce function3()</i>
+        8       [73]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        9       [73]    GETTABLE        0 0 -2  <i>; "function3"</i>
+        10      [73]    LOADK           1 -3    <i>; 42</i>
+        11      [73]    CALL            0 2 1   <i>; zavolani funkce function3()</i>
+        12      [74]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        13      [74]    GETTABLE        0 0 -2  <i>; "function3"</i>
+        14      [74]    LOADK           1 -4    <i>; 1</i>
+        15      [74]    LOADK           2 -5    <i>; 2</i>
+        16      [74]    CALL            0 3 1   <i>; zavolani funkce function3()</i>
+        17      [75]    GETTABUP        0 0 -1  <i>; z globalni promenne _ENV ziskat referenci na testClass</i>
+        18      [75]    GETTABLE        0 0 -2  <i>; "function3"</i>
+        19      [75]    LOADK           1 -6    <i>; "xyzzy"</i>
+        20      [75]    CALL            0 2 1   <i>; zavolani funkce function3()</i>
+        21      [76]    RETURN          0 1     <i>; navrat z funkce (automaticky vkladana instrukce)</i>
+constants (6) for 0x87f3238:
+        1       "testClass"
+        2       "function3"
+        3       42
+        4       1
+        5       2
+        6       "xyzzy"
+locals (0) for 0x87f3238:
+upvalues (1) for 0x87f3238:
+        0       _ENV    0       0
+</pre>
+
+<p>Vidíme, že volání &bdquo;statických metod&ldquo; se skutečně liší, a to
+zejména kvůli nutnosti načítat odkaz/referenci na funkci nikoli přímo
+z&nbsp;tabulky <strong>_ENV</strong>, ale z&nbsp;tabulky
+<strong>testClass</strong>. To je vlastně jediný rozdíl oproti prvnímu
+demonstračnímu příkladu.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Demonstrační příklad <strong>Test29.lua</strong>: volání &bdquo;nestatických metod&ldquo; v&nbsp;programovacím jazyku Lua</h2>
+
+<p>V&nbsp;programovacím jazyku Lua je možné funkce vkládat do tabulek i
+s&nbsp;využitím dvojtečky namísto tečky. Tento malý syntaktický rozdíl však
+vede k&nbsp;vytvoření sémanticky odlišného kódu &ndash; takto vytvořená funkce
+totiž bude mít navíc jeden parametr, v&nbsp;němž se předá odkaz na objekt, tedy
+hodnota, která se v&nbsp;jiných programovacích jazycích označuje klíčovým
+slovem <strong>self</strong> nebo <strong>this</strong>. Odlišné je pak i
+volání takových funkcí, které lze podle jejich vlastností již nazývat
+&bdquo;metodami&ldquo;:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 29.</i>
+<i>--</i>
+<i>-- Volani "metod" v programovacim jazyce Lua.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>testClass</strong> = {}
+&nbsp;
+<i>--</i>
+<i>-- Funkce/metoda bez parametru.</i>
+<i>--</i>
+function <strong>testClass:function1</strong>()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce/metoda s jednim parametrem.</i>
+<i>--</i>
+function <strong>testClass:function2</strong>(x)
+    return x
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce/metoda se dvema parametry.</i>
+<i>--</i>
+function <strong>testClass:function3</strong>(x, y)
+    if x and y then
+        return x+y
+    else
+        return nil
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function1().</i>
+<i>--</i>
+function <strong>callFunction1</strong>()
+    testClass:function1()
+    testClass:function1(nil)
+    testClass:function1(42)
+    testClass:function1(1, 2)
+    testClass:function1("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function2().</i>
+<i>--</i>
+function <strong>callFunction2</strong>()
+    testClass:function2()
+    testClass:function2(nil)
+    testClass:function2(42)
+    testClass:function2(1, 2)
+    testClass:function2("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function3().</i>
+<i>--</i>
+function <strong>callFunction3</strong>()
+    testClass:function3()
+    testClass:function3(nil)
+    testClass:function3(42)
+    testClass:function3(1, 2)
+    testClass:function3("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    callFunction1()
+    callFunction2()
+    callFunction3()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Překlad demonstračního příkladu <strong>Test29.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Jak se výše uvedený příklad přeloží do bajtkódu?</p>
+
+<pre>
+<strong>function1():</strong>
+function &lt;Test29.lua:14,15&gt; (1 instruction at 0x8cb2d00)
+1 param, 2 slots, 0 upvalues, 1 local, 0 constants, 0 functions
+        1       [15]    RETURN          0 1
+constants (0) for 0x8cb2d00:
+locals (1) for 0x8cb2d00:
+        0       self    1       2              <strong>novy parametr!</strong>
+upvalues (0) for 0x8cb2d00:
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>function2():</strong>
+function &lt;Test29.lua:22,24&gt; (2 instructions at 0x8cb2ea8)
+2 params, 2 slots, 0 upvalues, 2 locals, 0 constants, 0 functions
+        1       [23]    RETURN          1 2
+        2       [24]    RETURN          0 1
+constants (0) for 0x8cb2ea8:
+locals (2) for 0x8cb2ea8:
+        0       self    1       3              <strong>novy parametr!</strong>
+        1       x       1       3
+upvalues (0) for 0x8cb2ea8:
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>function3():</strong>
+function &lt;Test29.lua:31,37&gt; (10 instructions at 0x8cb2ca8)
+3 params, 4 slots, 0 upvalues, 3 locals, 0 constants, 0 functions
+        1       [32]    TEST            1 0     <strong>zde je zmena, posun indexu parametru!</strong>
+        2       [32]    JMP             0 5     ; to 8
+        3       [32]    TEST            2 0     <strong>zde je zmena, posun indexu parametru!</strong>
+        4       [32]    JMP             0 3     ; to 8
+        5       [33]    ADD             3 1 2
+        6       [33]    RETURN          3 2
+        7       [33]    JMP             0 2     ; to 10
+        8       [35]    LOADNIL         3 0
+        9       [35]    RETURN          3 2
+        10      [37]    RETURN          0 1
+constants (0) for 0x8cb2ca8:
+locals (3) for 0x8cb2ca8:
+        0       self    1       11              <strong>novy parametr!</strong>
+        1       x       1       11
+        2       y       1       11
+upvalues (0) for 0x8cb2ca8:
+</pre>
+
+<p>Při zpracování parametrů jsou indexy oproti předchozímu příkladu o jedničku
+zvýšeny, protože prvním parametrem je <strong>self</strong>, což je ostatně
+patrné i ze struktury <i>locals</i>.</p>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Překlad volání metod do bajtkódu</h2>
+
+<p>Volání metod vypadá v&nbsp;bajtkódu následovně:</p>
+
+<pre>
+function &lt;Test29.lua:44,50&gt; (21 instructions at 0x8cb3450)
+0 params, 4 slots, 1 upvalue, 0 locals, 7 constants, 0 functions
+        1       [45]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        2       [45]    SELF            0 0 -2  ; "function1"
+        3       [45]    CALL            0 2 1
+        4       [46]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        5       [46]    SELF            0 0 -2  ; "function1"
+        6       [46]    LOADNIL         2 0
+        7       [46]    CALL            0 3 1
+        8       [47]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        9       [47]    SELF            0 0 -2  ; "function1"
+        10      [47]    LOADK           2 -3    ; 42
+        11      [47]    CALL            0 3 1
+        12      [48]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        13      [48]    SELF            0 0 -4  ; "function3"
+        14      [48]    LOADK           2 -5    ; 1
+        15      [48]    LOADK           3 -6    ; 2
+        16      [48]    CALL            0 4 1
+        17      [49]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        18      [49]    SELF            0 0 -2  ; "function1"
+        19      [49]    LOADK           2 -7    ; "xyzzy"
+        20      [49]    CALL            0 3 1
+        21      [50]    RETURN          0 1
+constants (7) for 0x8cb3450:
+        1       "testClass"
+        2       "function1"
+        3       42
+        4       "function3"
+        5       1
+        6       2
+        7       "xyzzy"
+locals (0) for 0x8cb3450:
+upvalues (1) for 0x8cb3450:
+        0       _ENV    0       0
+&nbsp;
+&nbsp;
+&nbsp;
+function &lt;Test29.lua:57,63&gt; (21 instructions at 0x8cb2df0)
+0 params, 4 slots, 1 upvalue, 0 locals, 7 constants, 0 functions
+        1       [58]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        2       [58]    SELF            0 0 -2  ; "function2"
+        3       [58]    CALL            0 2 1
+        4       [59]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        5       [59]    SELF            0 0 -2  ; "function2"
+        6       [59]    LOADNIL         2 0
+        7       [59]    CALL            0 3 1
+        8       [60]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        9       [60]    SELF            0 0 -2  ; "function2"
+        10      [60]    LOADK           2 -3    ; 42
+        11      [60]    CALL            0 3 1
+        12      [61]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        13      [61]    SELF            0 0 -4  ; "function3"
+        14      [61]    LOADK           2 -5    ; 1
+        15      [61]    LOADK           3 -6    ; 2
+        16      [61]    CALL            0 4 1
+        17      [62]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        18      [62]    SELF            0 0 -2  ; "function2"
+        19      [62]    LOADK           2 -7    ; "xyzzy"
+        20      [62]    CALL            0 3 1
+        21      [63]    RETURN          0 1
+constants (7) for 0x8cb2df0:
+        1       "testClass"
+        2       "function2"
+        3       42
+        4       "function3"
+        5       1
+        6       2
+        7       "xyzzy"
+locals (0) for 0x8cb2df0:
+upvalues (1) for 0x8cb2df0:
+        0       _ENV    0       0
+&nbsp;
+&nbsp;
+&nbsp;
+function &lt;Test29.lua:70,76&gt; (21 instructions at 0x8cb2fd0)
+0 params, 4 slots, 1 upvalue, 0 locals, 6 constants, 0 functions
+        1       [71]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        2       [71]    SELF            0 0 -2  ; "function3"
+        3       [71]    CALL            0 2 1
+        4       [72]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        5       [72]    SELF            0 0 -2  ; "function3"
+        6       [72]    LOADNIL         2 0
+        7       [72]    CALL            0 3 1
+        8       [73]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        9       [73]    SELF            0 0 -2  ; "function3"
+        10      [73]    LOADK           2 -3    ; 42
+        11      [73]    CALL            0 3 1
+        12      [74]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        13      [74]    SELF            0 0 -2  ; "function3"
+        14      [74]    LOADK           2 -4    ; 1
+        15      [74]    LOADK           3 -5    ; 2
+        16      [74]    CALL            0 4 1
+        17      [75]    GETTABUP        0 0 -1  ; _ENV "testClass"
+        18      [75]    SELF            0 0 -2  ; "function3"
+        19      [75]    LOADK           2 -6    ; "xyzzy"
+        20      [75]    CALL            0 3 1
+        21      [76]    RETURN          0 1
+constants (6) for 0x8cb2fd0:
+        1       "testClass"
+        2       "function3"
+        3       42
+        4       1
+        5       2
+        6       "xyzzy"
+locals (0) for 0x8cb2fd0:
+upvalues (1) for 0x8cb2fd0:
+        0       _ENV    0       0
+</pre>
+
+<p>Jako novinka se zde objevuje nová instrukce <strong>SELF</strong>, která má
+tři operandy A,B a C. Tato instrukce naplní obsah registru R(A+1) obsahem
+registru R(B) a následně provede druhou operaci R(A) := R(B)[RK(C)],
+tj.&nbsp;naplní obsah registru R(A) hodnotou přečtenou z&nbsp;tabulky, jejíž
+reference je uložena v&nbsp;registru R(B) a index v&nbsp;konstantě RK(C). Tato
+instrukce se použije před voláním metody pro naplnění jejího prvního (skrytého)
+parametru.</p>
+
+<p>Příště si kromě dalších informací přehledně ukážeme rozdíly mezi Lua VM a
+JVM při volání metod (bude se jednat o o shrnutí dnešního tématu).</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář se zdrojovými kódy všech pěti dnešních demonstračních příkladů</h2>
+
+<p>Všech pět dnes popsaných a využitých demonstračních příkladů
+naprogramovaných v&nbsp;jazyku Lua bylo uloženo do Mercurial repositáře
+umístěného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Odkazy na prozatím poslední verze těchto příkladů naleznete v&nbsp;tabulce pod
+tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>Test25.lua</td><td><a href=http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test25.lua"">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test25.lua</a></td></tr>
+<tr><td>2</td><td>Test26.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test26.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test26.lua</a></td></tr>
+<tr><td>3</td><td>Test27.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test27.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test27.lua</a></td></tr>
+<tr><td>4</td><td>Test28.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test28.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test28.lua</a></td></tr>
+<tr><td>5</td><td>Test29.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test29.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/ad5568ec80b9/bytecode/Lua/Test29.lua</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/release/2.5.2/lib/bytecodes.html">https://docs.python.org/release/2.5.2/lib/bytecodes.html</a>
+</li>
+
+<li>For-each Loop in Java<br />
+<a href="http://www.leepoint.net/notes-java/flow/loops/foreach.html">http://www.leepoint.net/notes-java/flow/loops/foreach.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Python 2.x: funkce range()<br />
+<a href="https://docs.python.org/2/library/functions.html#range">https://docs.python.org/2/library/functions.html#range</a>
+</li>
+
+<li>Python 2.x: typ iterátor<br />
+<a href="https://docs.python.org/2/library/stdtypes.html#iterator-types">https://docs.python.org/2/library/stdtypes.html#iterator-types</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
