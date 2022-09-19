@@ -1,0 +1,1253 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - práce s uzávěry v Lua VM</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - práce s uzávěry v Lua VM</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Problematikou volání funkcí a metod, kterou jsme si vysvětlovali v minulé i předminulé části tohoto seriálu, se budeme zabývat i dnes. Zatím jsme si popsali způsob volání statických metod, nestatických metod a konstruktorů v JVM i volání funkcí a objektových metod v Lua VM. Dnes se budeme zabývat zajímavější oblastí - podporou uzávěrů (closures) v Lua VM.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - práce s uzávěry v Lua VM</a></p>
+<p><a href="#k02">2. Uzávěry v&nbsp;programovacím jazyku Lua</a></p>
+<p><a href="#k03">3. &bdquo;Externí lokální proměnné&ldquo; přístupné z&nbsp;uzávěrů</a></p>
+<p><a href="#k04">4. Demonstrační příklad <strong>Test30.lua</strong>: vytvoření a použití uzávěru</a></p>
+<p><a href="#k05">5. Překlad demonstračního příkladu <strong>Test30.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k06">6. Demonstrační příklad <strong>Test31.lua</strong>: externí lokální proměnné většího množství uzávěrů</a></p>
+<p><a href="#k07">7. Překlad demonstračního příkladu <strong>Test31.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k08">8. Demonstrační příklad <strong>Test32.lua</strong>: předání parametrů volanému uzávěru</a></p>
+<p><a href="#k09">9. Překlad demonstračního příkladu <strong>Test32.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k10">10. Repositář se zdrojovými kódy všech tří dnešních demonstračních příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - práce s uzávěry v Lua VM</h2>
+
+<p>Ve funkcionálních jazycích, mezi něž programovací jazyk <i>Lua</i> některými
+svými vlastnostmi bezesporu náleží, jsou funkce chápány jako plnohodnotný
+datový typ. To například znamená, že funkce mohou být ukládány do globálních i
+lokálních proměnných (tím vlastně dojde k&nbsp;pojmenování původně anonymní
+funkce), funkce mohou být předávány do jiných funkcí jako parametry,
+popř.&nbsp;lze funkce naopak použít jako návratovou hodnotu z&nbsp;jiných
+funkcí. V&nbsp;programovacím jazyku <i>Lua</i> se taktéž velmi často setkáme
+s&nbsp;ukládáním funkcí do tabulek &ndash; tímto způsobem lze tabulky použít
+jako základ pro tvorbu objektů. K&nbsp;tomu přispívá i &bdquo;syntaktický
+cukr&ldquo; popsaný již v&nbsp;předchozí části tohoto seriálu: pokud je nějaká
+funkce uložena do tabulky nazvané <strong>tabulka</strong> pod jménem
+<strong>funkce</strong> (tj.&nbsp;prvek tabulky nese toto jméno), je možné
+funkci zavolat buď pomocí příkazu <strong>tabulka.funkce()</strong> nebo
+<strong>tabulka:funkce()</strong>, přičemž ve druhém případě bude do funkce
+automaticky předán parametr <strong>self (this)</strong>, podobně jako je tomu
+například v&nbsp;Javě u nestatických metod.</p>
+
+<p>Ovšem podpora funkcí jde v&nbsp;programovacím jazyku <i>Lua</i> ještě nad
+tento popsaný rámec, protože se zde setkáme ještě s&nbsp;další zajímavou a
+mnohdy velmi užitečnou technikou. Poměrně často se totiž ve funkcionálních
+jazycích používají takzvané <i>uzávěry</i> (<i>closures</i>), které byly poprvé
+navrženy a implementovány ve známém jazyku <i>Scheme</i>. V&nbsp;programovacím
+jazyku <i>Lua</i> se uzávěry konstruují pomocí anonymní (nepojmenované) funkce
+vytvořené uvnitř jiné funkce, přičemž tyto anonymní funkce mají přístup
+k&nbsp;lokálním proměnným &bdquo;své&ldquo; vytvářející funkce. Vytvořené
+anonymní funkce (resp.&nbsp;odkazy na ně) je možné v&nbsp;jazyku <i>Lua</i>
+vracet volajícímu programu pomocí příkazu <strong>return</strong>, neboť funkce
+jsou v&nbsp;tomto jazyku plnohodnotným datovým typem, se kterým lze manipulovat
+podobně, jako s&nbsp;ostatními datovými typy (čísly, asociativními poli,
+pravdivostními hodnotami atd) &ndash; viz též předchozí odstavec.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Uzávěry v&nbsp;programovacím jazyku Lua</h2>
+
+<p>Zajímavá a přitom velmi důležitá je však jiná vlastnost uzávěrů &ndash;
+jelikož jsou uzávěry vytvořeny (a následně vráceny volajícímu kódu) uvnitř jiné
+funkce, mají mj.&nbsp;přístup i ke všem lokálním proměnným této funkce. Co se
+však stane v&nbsp;případě, že se na tyto proměnné budeme skutečně uvnitř
+uzávěru odkazovat, například budeme chtít číst či naopak modifikovat jejich
+hodnotu?  Dokonce se můžeme ptát, zde je vůbec následující příklad korektní,
+tj.&nbsp;zda po svém spuštění nevypíše chybové hlášení při pokusu o přístup
+k&nbsp;proměnné <i>y</i> (u &bdquo;normálních&ldquo; funkcí jsou totiž lokální
+proměnné vytvořeny na zásobníkovém rámci až ve chvíli volání této funkce, po
+opuštění funkce příkazem <strong>return</strong> se zásobníkový rámec a tím i
+lokální proměnné odstraní z&nbsp;operační paměti):</p>
+
+<pre>
+<i>-- Funkce obsahujici lokalni promennou.</i>
+<i>-- Tato funkce vraci anonymni funkci</i>
+<i>-- jako svuj vysledek.</i>
+<strong>function</strong> generateClosure()
+    <i>-- lokalni promenna, ktera neni</i>
+    <i>-- z okolniho programu dostupna</i>
+    <strong>local</strong> y = 1
+    <i>-- anonymni funkce vytiskne hodnotu</i>
+    <i>-- lokalni promenne funkce "generateClosure"</i>
+    <i>-- a potom se pokusi o zmenu jeji hodnoty:</i>
+    <strong>return</strong> <strong>function</strong>()
+        print(y)
+        y = y + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+<i>-- ziskame uzaver, tj. instanci anonymni funkce (i s "externi lokalni promennou")</i>
+closure1 = generateClosure()
+&nbsp;
+<i>-- jake hodnoty se vytisknou?</i>
+closure1()
+closure1()
+closure1()
+closure1()
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. &bdquo;Externí lokální proměnné&ldquo; přístupné z&nbsp;uzávěrů</h2>
+
+<p>Na první pohled by se mohlo zdát, že lokální proměnné funkcí ve všech
+případech zaniknou ve chvíli, kdy program opustí tělo této funkce (poněkud
+přesněji by bylo možné prohlásit, že lokální proměnná existuje jen v&nbsp;rámci
+svého <i>lexikálního kontextu</i>). Ovšem u většiny funkcionálních jazyků si
+každý vytvořený objekt (včetně funkce, zde speciálně uzávěru) uchovává odkazy
+na všechny proměnné, které jsou uvnitř objektu použity, nehledě na jejich
+lexikální kontext. To ovšem znamená, že pokud je uvnitř nějaké funkce nazvané
+<i>generateClosure()</i> (viz příklad uvedený <a href="#k02">v&nbsp;předchozí
+kapitole</a>) vytvořena anonymní funkce (uzávěr) přistupující k&nbsp;lokálním
+proměnným funkce <i>generateClosure()</i> a tato anonymní funkce je vrácena
+příkazem <strong>return</strong>, jsou všechny odkazované lokální proměnné
+vytvořené uvnitř <i>generateClosure()</i> zachovány minimálně po tu dobu, po
+kterou existuje vrácený uzávěr (ten může být uložen jak do lokální, tak i do
+globální proměnné). Každé volání uzávěru může s&nbsp;těmito lokálními (a
+zdánlivě už neexistujícími) proměnnými pracovat, tj.&nbsp;číst i zapisovat do
+nich hodnoty. To znamená, že program uvedený <a href="#k02">v&nbsp;předchozí
+kapitole</a> skutečně funguje &ndash; po svém spuštění vypíše posloupnost 1
+&ndash; 2 &ndash; 3 &ndash; 4.</p>
+
+<p>Vzhledem k&nbsp;tomuto chování není ve funkcionálních jazycích podporujících
+uzávěry obecně možné všechny lokální proměnné ukládat na zásobník (jeho rámec
+je po opuštění funkce zapomenut), ale je nutné využít spíše paměť alokovanou na
+haldě (<i>heap</i>), pro jejíž uvolňování je použita nějaká forma automatického
+uvolňování nepoužívané paměti (<i>garbage collectoru</i>). Vzhledem
+k&nbsp;tomu, že uzávěr pracuje skutečně s&nbsp;odkazem na lokální proměnnou
+vytvořenou v&nbsp;nadřazené funkci, vypíše následující program posloupnost 42
+&ndash; 43 &ndash; 44 a 45, neboť poslední hodnota proměnné <i>y</i> před
+opuštěním funkce byla nastavena na 42:</p>
+
+<pre>
+<i>-- Funkce obsahujici lokalni promennou.</i>
+<i>-- Tato funkce vraci anonymni funkci</i>
+<i>-- jako svuj vysledek.</i>
+<strong>function</strong> generateClosure()
+    <i>-- lokalni promenna, ktera neni</i>
+    <i>-- z okolniho programu dostupna</i>
+    <strong>local</strong> y = 1
+    <i>-- anonymni funkce vytiskne hodnotu</i>
+    <i>-- lokalni promenne funkce "generateClosure"</i>
+    <i>-- a potom se pokusi o zmenu jeji hodnoty:</i>
+    <strong>local</strong> result = <strong>function</strong>()
+        print(y)
+        y = y + 1
+    <strong>end</strong>
+    <i>-- po vytvoreni zarodku uzaveru</i>
+    <i>-- zmenime hodnotu lokalni promenne</i>
+    y = 42
+    <i>-- vratime vytvorenou funkci - uzaver</i>
+    <strong>return</strong> result
+<strong>end</strong>
+&nbsp;
+<i>-- ziskame uzaver, tj. instanci anonymni funkce</i>
+closure = generateClosure()
+&nbsp;
+<i>-- vytiskne se posloupnost hodnot 42, 43, 44 a 45</i>
+closure()
+closure()
+closure()
+closure()
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad <strong>Test30.lua</strong>: vytvoření a použití uzávěru</h2>
+
+<p>V&nbsp;dnešním prvním demonstračním příkladu pojmenovaném
+<strong>Test30.lua</strong> je ve funkci <strong>createCounter()</strong>
+vytvořen uzávěr, tj.&nbsp;anonymní funkce, s&nbsp;níž je svázána externí
+lokální proměnná <strong>counter</strong>. Při každém zavolání tohoto uzávěru
+se hodnota proměnné <strong>counter</strong> zvýší o jedničku a nová hodnota je
+vrácena jako návratová hodnota uzávěru. Ve funkci <strong>main()</strong> je
+uzávěr nejprve vytvořen a následně třikrát zavolán:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 30.</i>
+<i>--</i>
+<i>-- Vytvareni a nasledne pouziti uzaveru (closure).</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- Vytvoreni a vraceni uzaveru, tj. funkce na niz je navazana</i>
+<i>-- externi lokalni promenna - upvalue.</i>
+function <strong>createCounter</strong>()
+    <i>-- lokalni promenna, jejiz "zivotnost" presahuje</i>
+    <i>-- pouhe zavolani a provedeni bloku funkce createCounter()</i>
+    local counter = 0
+    <i>-- navratovou hodnotou funkce createCounter() je anonymni</i>
+    <i>-- funkce pracujici s promennou cnt, ktera je na tuto</i>
+    <i>-- anonymni funkci navazana</i>
+    return function()
+        <i>-- counter se oznacuje jako "externi lokalni promenna"</i>
+        <i>-- popr. v terminologii jazyka Lua "upvalue"</i>
+        counter = counter + 1
+        return counter
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    <i>-- ziskame "instanci" anonymni funkce i na ni navazanou</i>
+    <i>-- externi lokalni promennou "counter"</i>
+    <i>-- --&gt; closure</i>
+    local mycounter = createCounter()
+    print(mycounter())
+    print(mycounter())
+    print(mycounter())
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Po spuštění tohoto příkladu by se na standardním výstupu měla objevit
+následující sekvence čísel představujících vždy aktuální hodnotu externí
+lokální proměnné <strong>counter</strong>:</p>
+
+<pre>
+1
+2
+3
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Překlad demonstračního příkladu <strong>Test30.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Velmi zajímavé bude zjistit, jakým způsobem se vlastně zdrojový kód
+demonstračního příkladu <strong>Test30.lua</strong> přeložil do bajtkódu Lua
+VM. Nejprve se podívejme na bajtkód funkce <strong>createCounter()</strong>.
+Ten je překvapivě jednoduchý:</p>
+
+<pre>
+<strong>createCounter():</strong>
+function &lt;Test30.lua:11,24&gt; (4 instructions at 0x8de2cb0)
+0 params, 2 slots, 0 upvalues, 1 local, 1 constant, 1 function
+        1       [14]    LOADK           0 -1    <i>; inicializace lokální proměnné counter</i>
+        2       [23]    CLOSURE         1 0     <i>; vytvoření uzávěru, ten se uloží do registru R1</i>
+        3       [23]    RETURN          1 2     <i>; vrácení uzávěru</i>
+        4       [24]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (1) for 0x8de2cb0:
+        1       0
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (1) for 0x8de2cb0:
+        0       counter 2       5
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (0) for 0x8de2cb0:
+</pre>
+
+<p>Na tomto bajtkódu je zajímavá především speciální instrukce
+<strong>CLOSURE</strong>, která slouží &ndash; nikoli překvapivě &ndash;
+k&nbsp;vytvoření uzávěru a uložení reference na vytvořený objekt do zadaného
+registru. Reference na uzávěr je součástí metadat funkce
+<strong>createCounter()</strong>, viz též doplňující informace pod samotným
+bajtkódem.</p>
+
+<p>Samotná funkce tvořící uzávěr vypadá v&nbsp;bajtkódu následovně:</p>
+
+<pre>
+<strong>uzávěr:</strong>
+function &lt;Test30.lua:18,23&gh; (6 instructions at 0x8de2ee0)
+0 params, 2 slots, 1 upvalue, 0 locals, 1 constant, 0 functions
+        1       [21]    GETUPVAL        0 0     <i>; přečíst hodnotu externí lokální proměnné counter do R0</i>
+        2       [21]    ADD             0 0 -1  <i>; zvýšit tuto hodnotu o jedničku</i>
+        3       [21]    SETUPVAL        0 0     <i>; uložit novou hodnotu do externí lokální proměnné</i>
+        4       [22]    GETUPVAL        0 0     <i>; znovu přečíst hodnotu externí lokální proměnné counter do R0</i>
+        5       [22]    RETURN          0 2     <i>; vrátit aktuální hodnotu počitadla</i>
+        6       [23]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (1) for 0x8de2ee0:
+        1       1
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (0) for 0x8de2ee0:
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (1) for 0x8de2ee0:
+        0       counter 1       0
+</pre>
+
+<p>Opět se zde můžeme setkat s&nbsp;novinkou, konkrétně s&nbsp;dvojicí
+instrukcí <strong>GETUPVAL</strong> a <strong>SETUPVAL</strong>. Názvem
+&bdquo;upval&ldquo; se v&nbsp;programovacím jazyku Lua myslí proměnné navázané
+na funkci/uzávěr; reference na tyto proměnné jsou součástí metadat, konkrétně
+tabulky <strong>upvalues</strong> (upvalues se však nepoužívají jen při
+implementaci uzávěrů, ale například i při práci s&nbsp;globálními symboly).</p>
+
+<p>Samotné volání uzávěru již probíhá bez větších překvapení :-)</p>
+
+<pre>
+<strong>main():</strong>
+function &lt;Test30.lua:31,39&gt; (15 instructions at 0x8de3108)
+0 params, 3 slots, 1 upvalue, 1 local, 2 constants, 0 functions
+        1       [35]    GETTABUP        0 0 -1  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "createCounter"</i>
+        2       [35]    CALL            0 1 2   <i>; vytvoření uzávěru, uložení reference do registru R0</i>
+&nbsp;
+        3       [36]    GETTABUP        1 0 -2  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        4       [36]    MOVE            2 0     <i>; reference na uzávěr je v registru R2</i>
+        5       [36]    CALL            2 1 0   <i>; volání uzávěru přes registr R0</i>
+        6       [36]    CALL            1 0 1   <i>; volání funkce print()</i>
+&nbsp;
+        7       [37]    GETTABUP        1 0 -2  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        8       [37]    MOVE            2 0     <i>; reference na uzávěr je v registru R2</i>
+        9       [37]    CALL            2 1 0   <i>; volání uzávěru přes registr R0</i>
+        10      [37]    CALL            1 0 1   <i>; volání funkce print()</i>
+&nbsp;
+        11      [38]    GETTABUP        1 0 -2  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        12      [38]    MOVE            2 0     <i>; reference na uzávěr je v registru R2</i>
+        13      [38]    CALL            2 1 0   <i>; volání uzávěru přes registr R0</i>
+        14      [38]    CALL            1 0 1   <i>; volání funkce print()</i>
+&nbsp;
+        15      [39]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (2) for 0x8de3108:
+        1       "createCounter"
+        2       "print"
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (1) for 0x8de3108:
+        0       mycounter       3       16
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (1) for 0x8de3108:
+        0       _ENV    0       0
+</pre>
+
+<p>Z&nbsp;příkladu použití bajtkódu je pravděpodobně patrné, jak mocný a
+současně i jednoduchý bajtkód Lua VM je, například v&nbsp;porovnání
+s&nbsp;JVM.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad <strong>Test31.lua</strong>: externí lokální proměnné většího množství uzávěrů</h2>
+
+<p>V&nbsp;případě dalšího volání funkce <i>createCounter()</i> se vytvoří i
+nová lokální proměnná <strong>counter</strong> i nový uzávěr,
+tj.&nbsp;jednotlivé uzávěry obsahují vazby na své vlastní kopie původních
+lokálních proměnných (lokální proměnné tedy nejsou statické ve smyslu
+&bdquo;statičnosti&ldquo; známém například z&nbsp;céčka). Každé volání funkce
+<i>createCounter()</i> tedy vede k&nbsp;alokaci paměti na haldě; do této paměti
+je uložena počáteční hodnota lokální proměnné <i>counter</i> a vytvořený uzávěr
+obsahuje odkaz na tuto hodnotu. Tuto vlastnost si otestujeme na dnešním druhém
+demonstračním příkladu nazvaném <strong>Test31.lua</strong>, v&nbsp;němž se
+vytvoří dva uzávěry, které se následně volají v&nbsp;počítané programové smyčce
+typu <strong>for</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 31.</i>
+<i>--</i>
+<i>-- Vytvareni a nasledne pouziti uzaveru (closure).</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- Vytvoreni a vraceni uzaveru</i>
+function <strong>createCounter</strong>()
+    <i>-- lokalni promenna, jejiz "zivotnost" presahuje</i>
+    <i>-- pouhe zavolani a provedeni bloku funkce createCounter()</i>
+    local counter = 0
+    <i>-- navratovou hodnotou funkce createCounter() je anonymni</i>
+    <i>-- funkce pracujici s promennou cnt, ktera je na tuto</i>
+    <i>-- anonymni funkci navazana</i>
+    return function()
+        <i>-- counter se oznacuje jako "externi lokalni promenna"</i>
+        <i>-- popr. v terminologii jazyka Lua "upvalue"</i>
+        counter = counter + 1
+        return counter
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    <i>-- ziskame dvojici uzaveru</i>
+    local counter1 = createCounter()
+    local counter2 = createCounter()
+&nbsp;
+    <i>-- volani uzaveru</i>
+    for i = 1, 10 do
+        print("iteration #" .. i)
+        print("    counter1: " .. counter1())
+        print("    counter2: " .. counter2())
+        print("    counter1: " .. counter1())
+        print()
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Po spuštění tohoto příkladu by se na standardním výstupu měly objevit
+následující zprávy:</p>
+
+<pre>
+iteration #1
+    counter1: 1
+    counter2: 1
+    counter1: 2
+&nbsp;
+iteration #2
+    counter1: 3
+    counter2: 2
+    counter1: 4
+&nbsp;
+iteration #3
+    counter1: 5
+    counter2: 3
+    counter1: 6
+&nbsp;
+iteration #4
+    counter1: 7
+    counter2: 4
+    counter1: 8
+&nbsp;
+iteration #5
+    counter1: 9
+    counter2: 5
+    counter1: 10
+&nbsp;
+iteration #6
+    counter1: 11
+    counter2: 6
+    counter1: 12
+&nbsp;
+iteration #7
+    counter1: 13
+    counter2: 7
+    counter1: 14
+&nbsp;
+iteration #8
+    counter1: 15
+    counter2: 8
+    counter1: 16
+&nbsp;
+iteration #9
+    counter1: 17
+    counter2: 9
+    counter1: 18
+&nbsp;
+iteration #10
+    counter1: 19
+    counter2: 10
+    counter1: 20
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Překlad demonstračního příkladu <strong>Test31.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Opět se podívejme na způsob překladu jednotlivých částí demonstračního
+příkladu <strong>Test31.lua</strong>. Tentokrát již budou komentáře kratší,
+protože význam instrukcí <strong>CLOSURE</strong>, <strong>GETUPVAL</strong> a
+<strong>SETUPVAL</strong> jsme si již stručně vysvětlili <a
+href="#k05">v&nbsp;páté kapitole</a>:</p>
+
+<pre>
+<strong>createCounter():</strong>
+function &lt;Test31.lua:10,23&gt; (4 instructions at 0x8b3fcb0)
+0 params, 2 slots, 0 upvalues, 1 local, 1 constant, 1 function
+        1       [13]    LOADK           0 -1    <i>; inicializace lokální proměnné counter</i>
+        2       [22]    CLOSURE         1 0     <i>; vytvoření uzávěru, ten se uloží do registru R1</i>
+        3       [22]    RETURN          1 2     <i>; vrácení uzávěru</i>
+        4       [23]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (1) for 0x8b3fcb0:
+        1       0
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (1) for 0x8b3fcb0:
+        0       counter 2       5
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (0) for 0x8b3fcb0:
+</pre>
+
+<pre>
+<strong>uzávěr:</strong>
+function &lt;Test31.lua:17,22&gt; (6 instructions at 0x8b3fee0)
+0 params, 2 slots, 1 upvalue, 0 locals, 1 constant, 0 functions
+        1       [20]    GETUPVAL        0 0     <i>; přečíst hodnotu externí lokální proměnné counter do R0</i>
+        2       [20]    ADD             0 0 -1  <i>; zvýšit tuto hodnotu o jedničku</i>
+        3       [20]    SETUPVAL        0 0     <i>; uložit novou hodnotu do externí lokální proměnné</i>
+        4       [21]    GETUPVAL        0 0     <i>; znovu přečíst hodnotu externí lokální proměnné counter do R0</i>
+        5       [21]    RETURN          0 2     <i>; vrátit aktuální hodnotu počitadla</i>
+        6       [22]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (1) for 0x8b3fee0:
+        1       1
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (0) for 0x8b3fee0:
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (1) for 0x8b3fee0:
+        0       counter 1       0
+</pre>
+
+<pre>
+<strong>main():</strong>
+function &lt;Test31.lua:30,43&gt; (35 instructions at 0x8b40108)
+0 params, 9 slots, 1 upvalue, 6 locals, 7 constants, 0 functions
+        1       [32]    GETTABUP        0 0 -1  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "createCounter"</i>
+        2       [32]    CALL            0 1 2   <i>; vytvoření uzávěru</i>
+        3       [33]    GETTABUP        1 0 -1  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "createCounter"</i>
+        4       [33]    CALL            1 1 2   <i>; vytvoření uzávěru</i>
+        5       [36]    LOADK           2 -2    <i>; příprava na smyčku for: počáteční hodnota počitadla je 1</i>
+        6       [36]    LOADK           3 -3    <i>; příprava na smyčku for: koncová hodnota počitadla je 10</i>
+        7       [36]    LOADK           4 -2    <i>; příprava na smyčku for: iterační krok je 1</i>
+&nbsp;
+        8       [36]    FORPREP         2 25    <i>; příprava počítané smyčky for s koncem na adrese 34</i>
+&nbsp;
+        9       [37]    GETTABUP        6 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        10      [37]    LOADK           7 -5    <i>; řetězec "iteration #"</i>
+        11      [37]    MOVE            8 5
+        12      [37]    CONCAT          7 7 8   <i>; spojení řetězců</i>
+        13      [37]    CALL            6 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        14      [38]    GETTABUP        6 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        15      [38]    LOADK           7 -6    <i>; řetězec "    counter1: "</i>
+        16      [38]    MOVE            8 0     <i>; bude se volat první uzávěr</i>
+        17      [38]    CALL            8 1 2   <i>; volání prvního uzávěru</i>
+        18      [38]    CONCAT          7 7 8   <i>; spojení řetězců</i>
+        19      [38]    CALL            6 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        20      [39]    GETTABUP        6 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        21      [39]    LOADK           7 -7    <i>; řetězec "    counter2: "</i>
+        22      [39]    MOVE            8 1     <i>; bude se volat druhý uzávěr</i>
+        23      [39]    CALL            8 1 2   <i>; volání druhého uzávěru</i>
+        24      [39]    CONCAT          7 7 8   <i>; spojení řetězců</i>
+        25      [39]    CALL            6 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        26      [40]    GETTABUP        6 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        27      [40]    LOADK           7 -6    <i>; řetězec "    counter1: "</i>
+        28      [40]    MOVE            8 0     <i>; bude se volat první uzávěr</i>
+        29      [40]    CALL            8 1 2   <i>; volání třetího uzávěru</i>
+        30      [40]    CONCAT          7 7 8   <i>; spojení řetězců</i>
+        31      [40]    CALL            6 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        32      [41]    GETTABUP        6 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        33      [41]    CALL            6 1 1   <i>; volání funkce print() - prázdný řádek</i>
+&nbsp;
+        34      [36]    FORLOOP         2 -26   <i>; konec počítané smyčky for se skokem na instrukci 9</i>
+&nbsp;
+        35      [43]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (7) for 0x8b40108:
+        1       "createCounter"
+        2       1
+        3       10
+        4       "print"
+        5       "iteration #"
+        6       "    counter1: "
+        7       "    counter2: "
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (6) for 0x8b40108:
+        0       counter1        3       36
+        1       counter2        5       36
+        2       (for index)     8       35
+        3       (for limit)     8       35
+        4       (for step)      8       35
+        5       i       9       34
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (1) for 0x8b40108:
+        0       _ENV    0       0
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační příklad <strong>Test32.lua</strong>: předání parametrů volanému uzávěru</h2>
+
+<p>Dnešní třetí a současně i poslední demonstrační příklad
+<strong>Test32.lua</strong> se v&nbsp;mnoha ohledech podobá prvnímu příkladu
+nazvaném <strong>Test30.lua</strong>. Je zde však jedna podstatná odlišnost
+&ndash; při volání uzávěru se mu předává parametr určující, jakým způsobem se
+má změnit hodnota externí lokální proměnné navázané na uzávěr. Tato změna ve
+zdrojovém kódu samozřejmě povede i ke změnám ve vygenerovaném bajtkódu, což
+uvidíme <a href="#k09">v&nbsp;následující kapitole</a>:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 32.</i>
+<i>--</i>
+<i>-- Vytvareni a nasledne pouziti uzaveru (closure).</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- Vytvoreni a vraceni uzaveru</i>
+function <strong>createCounter</strong>()
+    <i>-- lokalni promenna, jejiz "zivotnost" presahuje</i>
+    <i>-- pouhe zavolani a provedeni bloku funkce createCounter()</i>
+    local counter = 0
+    <i>-- navratovou hodnotou funkce createCounter() je anonymni</i>
+    <i>-- funkce pracujici s promennou cnt, ktera je na tuto</i>
+    <i>-- anonymni funkci navazana</i>
+    return function(delta)
+        <i>-- counter se oznacuje jako "externi lokalni promenna"</i>
+        <i>-- popr. v terminologii jazyka Lua "upvalue"</i>
+        counter = counter + delta
+        return counter
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    <i>-- ziskame "instanci" anonymni funkce i na ni navazanou</i>
+    <i>-- externi lokalni promennou "counter"</i>
+    <i>-- --&gt; closure</i>
+    local mycounter = createCounter()
+&nbsp;
+    <i>-- volani uzaveru</i>
+    for i = 1, 10 do
+        print("iteration #" .. i)
+        print("    mycounter(1):  " .. mycounter(1))
+        print("    mycounter(10): " .. mycounter(10))
+        print("    mycounter(-2): " .. mycounter(-2))
+        print()
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Po spuštění demonstračního příkladu <strong>Test32.lua</strong> by se na
+standardním výstupu měly objevit následující zprávy:</p>
+
+<pre>
+iteration #1
+    mycounter(1):  1
+    mycounter(10): 11
+    mycounter(-2): 9
+&nbsp;
+iteration #2
+    mycounter(1):  10
+    mycounter(10): 20
+    mycounter(-2): 18
+&nbsp;
+iteration #3
+    mycounter(1):  19
+    mycounter(10): 29
+    mycounter(-2): 27
+&nbsp;
+iteration #4
+    mycounter(1):  28
+    mycounter(10): 38
+    mycounter(-2): 36
+&nbsp;
+iteration #5
+    mycounter(1):  37
+    mycounter(10): 47
+    mycounter(-2): 45
+&nbsp;
+iteration #6
+    mycounter(1):  46
+    mycounter(10): 56
+    mycounter(-2): 54
+&nbsp;
+iteration #7
+    mycounter(1):  55
+    mycounter(10): 65
+    mycounter(-2): 63
+&nbsp;
+iteration #8
+    mycounter(1):  64
+    mycounter(10): 74
+    mycounter(-2): 72
+&nbsp;
+iteration #9
+    mycounter(1):  73
+    mycounter(10): 83
+    mycounter(-2): 81
+&nbsp;
+iteration #10
+    mycounter(1):  82
+    mycounter(10): 92
+    mycounter(-2): 90
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Překlad demonstračního příkladu <strong>Test32.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Opět se podívejme na překlad demonstračního příkladu
+<strong>Test32.lua</strong> do bajtkódu Lua VM. Většina sekvencí instrukcí nám
+již bude známá z&nbsp;předchozích kapitol.</p>
+
+<pre>
+<strong>createCounter():</strong>
+function &lt;Test32.lua:10,23&gt; (4 instructions at 0x91c7cb0)
+0 params, 2 slots, 0 upvalues, 1 local, 1 constant, 1 function
+        1       [13]    LOADK           0 -1    <i>; inicializace lokální proměnné counter</i>
+        2       [22]    CLOSURE         1 0     <i>; vytvoření uzávěru, ten se uloží do registru R1</i>
+        3       [22]    RETURN          1 2     <i>; vrácení uzávěru</i>
+        4       [23]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (1) for 0x91c7cb0:
+        1       0
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (1) for 0x91c7cb0:
+        0       counter 2       5
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (0) for 0x91c7cb0:
+</pre>
+
+<pre>
+<strong>uzávěr:</strong>
+function &lt;Test32.lua:17,22&gt; (6 instructions at 0x91c7ee0)
+1 param, 2 slots, 1 upvalue, 1 local, 0 constants, 0 functions
+        <i>; zde dochází ke změně - registry jsou posunuty o jedničku (R0 totiž obsahuje parametr delta)</i>
+        1       [20]    GETUPVAL        1 0     <i>; přečíst hodnotu externí lokální proměnné counter do R0</i>
+        <i>; zde dochází ke změně - nepřičítá se konstanta, ale obsah registru R0</i>
+        2       [20]    ADD             1 1 0   <i>; zvýšit tuto hodnotu o obsah registru R0 - tedy o parametr delta</i>
+        3       [20]    SETUPVAL        1 0     <i>; uložit novou hodnotu do externí lokální proměnné</i>
+        4       [21]    GETUPVAL        1 0     <i>; znovu přečíst hodnotu externí lokální proměnné counter do R0</i>
+        5       [21]    RETURN          1 2     <i>; vrátit aktuální hodnotu počitadla</i>
+        6       [22]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (0) for 0x91c7ee0:
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (1) for 0x91c7ee0:
+        0       delta   1       7
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (1) for 0x91c7ee0:
+        0       counter 1       0
+</pre>
+
+<pre>
+<strong>main():</strong>
+function &lt;Test32.lua:30,44&gt; (36 instructions at 0x91c80f0)
+0 params, 9 slots, 1 upvalue, 5 locals, 9 constants, 0 functions
+        1       [34]    GETTABUP        0 0 -1  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "createCounter"</i>
+        2       [34]    CALL            0 1 2   <i>; vytvoření uzávěru</i>
+        3       [37]    LOADK           1 -2    <i>; příprava na smyčku for: počáteční hodnota počitadla je 1</i>
+        4       [37]    LOADK           2 -3    <i>; příprava na smyčku for: koncová hodnota počitadla je 10</i>
+        5       [37]    LOADK           3 -2    <i>; příprava na smyčku for: iterační krok je 1</i>
+&nbsp;
+        6       [37]    FORPREP         1 28    <i>; příprava počítané smyčky for s koncem na adrese 35</i>
+&nbsp;
+        7       [38]    GETTABUP        5 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        8       [38]    LOADK           6 -5    <i>; řetězec "iteration #"</i>
+        9       [38]    MOVE            7 4
+        10      [38]    CONCAT          6 6 7   <i>; spojení řetězců</i>
+        11      [38]    CALL            5 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        12      [39]    GETTABUP        5 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        13      [39]    LOADK           6 -6    <i>; řetězec "    mycounter(1):  "</i>
+        14      [39]    MOVE            7 0     <i>; reference na uzávěr bude v registru 7</i>
+        15      [39]    LOADK           8 -2    <i>; parametr uzávěru 1</i>
+        16      [39]    CALL            7 2 2   <i>; volání uzávěru</i>
+        17      [39]    CONCAT          6 6 7   <i>; spojení řetězců</i>
+        18      [39]    CALL            5 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        19      [40]    GETTABUP        5 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        20      [40]    LOADK           6 -7    <i>; řetězec "    mycounter(10): "</i>
+        21      [40]    MOVE            7 0     <i>; reference na uzávěr bude v registru 7</i>
+        22      [40]    LOADK           8 -3    <i>; parametr uzávěru 10</i>
+        23      [40]    CALL            7 2 2   <i>; volání uzávěru</i>
+        24      [40]    CONCAT          6 6 7   <i>; spojení řetězců</i>
+        25      [40]    CALL            5 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        26      [41]    GETTABUP        5 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        27      [41]    LOADK           6 -8    <i>; řetězec "    mycounter(-2): "</i>
+        28      [41]    MOVE            7 0     <i>; reference na uzávěr bude v registru 7</i>
+        29      [41]    LOADK           8 -9    <i>; parametr uzávěru -2</i>
+        30      [41]    CALL            7 2 2   <i>; volání uzávěru</i>
+        31      [41]    CONCAT          6 6 7   <i>; spojení řetězců</i>
+        32      [41]    CALL            5 2 1   <i>; volání funkce print()</i>
+&nbsp;
+        33      [42]    GETTABUP        5 0 -4  <i>; přečtení aktuální hodnoty prvku z globální tabulky _ENV: "print"</i>
+        34      [42]    CALL            5 1 1   <i>; volání funkce print() - prázdný řádek</i>
+&nbsp;
+        35      [37]    FORLOOP         1 -29   <i>; konec počítané smyčky for se skokem na instrukci 7</i>
+&nbsp;
+        36      [44]    RETURN          0 1     <i>; automaticky generovaná instrukce</i>
+&nbsp;
+<i>; tabulka konstant</i>
+constants (9) for 0x91c80f0:
+        1       "createCounter"
+        2       1
+        3       10
+        4       "print"
+        5       "iteration #"
+        6       "    mycounter(1):  "
+        7       "    mycounter(10): "
+        8       "    mycounter(-2): "
+        9       -2
+&nbsp;
+<i>; tabulka lokálních proměnných a parametrů funkce či uzávěru</i>
+locals (5) for 0x91c80f0:
+        0       mycounter       3       37
+        1       (for index)     6       36
+        2       (for limit)     6       36
+        3       (for step)      6       36
+        4       i       7       35
+&nbsp;
+<i>; tabulka externích lokálních proměnných</i>
+upvalues (1) for 0x91c80f0:
+        0       _ENV    0       0
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář se zdrojovými kódy všech tří dnešních demonstračních příkladů</h2>
+
+<p>Všechny tři dnes popsané a použité demonstrační příklady byly uloženy do
+Mercurial repositáře umístěného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Odkazy na prozatím poslední verze těchto tří příkladů naleznete v&nbsp;tabulce
+pod tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>Test30.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/1b36acebac99/bytecode/Lua/Test30.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/1b36acebac99/bytecode/Lua/Test30.lua</a></td></tr>
+<tr><td>2</td><td>Test31.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/1b36acebac99/bytecode/Lua/Test31.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/1b36acebac99/bytecode/Lua/Test31.lua</a></td></tr>
+<tr><td>3</td><td>Test32.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/1b36acebac99/bytecode/Lua/Test32.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/1b36acebac99/bytecode/Lua/Test32.lua</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/release/2.5.2/lib/bytecodes.html">https://docs.python.org/release/2.5.2/lib/bytecodes.html</a>
+</li>
+
+<li>For-each Loop in Java<br />
+<a href="http://www.leepoint.net/notes-java/flow/loops/foreach.html">http://www.leepoint.net/notes-java/flow/loops/foreach.html</a>
+</li>
+
+<li>Python 2.x: funkce range()<br />
+<a href="https://docs.python.org/2/library/functions.html#range">https://docs.python.org/2/library/functions.html#range</a>
+</li>
+
+<li>Python 2.x: typ iterátor<br />
+<a href="https://docs.python.org/2/library/stdtypes.html#iterator-types">https://docs.python.org/2/library/stdtypes.html#iterator-types</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
