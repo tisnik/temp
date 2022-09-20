@@ -1,0 +1,1643 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - volání funkcí a použití generátorů i uzávěrů v Python VM</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - volání funkcí a použití generátorů i uzávěrů v Python VM</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>I v dnešní části seriálu o JVM (i o dalších typech virtuálních strojů) se budeme zabývat problematikou volání funkcí a metod. Již víme, jak je řešeno volání statických i nestatických metod a konstruktorů v JVM, známe i volání funkcí, metod a uzávěrů v Lua VM, takže nám zbývá si vysvětlit způsob řešení této problematiky v Python VM.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - volání funkcí a použití generátorů i uzávěrů v Python VM</a></p>
+<p><a href="#k02">2. Demonstrační příklad <strong>Test28.py</strong>: volání funkcí v&nbsp;Pythonu</a></p>
+<p><a href="#k03">3. Překlad demonstračního příkladu <strong>Test28.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k04">4. Demonstrační příklad <strong>Test29.py</strong>: volání funkcí v&nbsp;Pythonu</a></p>
+<p><a href="#k05">5. Překlad demonstračního příkladu <strong>Test29.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k06">6. Demonstrační příklad <strong>Test30.py</strong>: funkce s&nbsp;pojmenovanými parametry</a></p>
+<p><a href="#k07">7. Překlad demonstračního příkladu <strong>Test30.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k08">8. Demonstrační příklad <strong>Test31.py</strong>: parametry s&nbsp;implicitní hodnotou</a></p>
+<p><a href="#k09">9. Překlad demonstračního příkladu <strong>Test31.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k10">10. závěry a generátory v&nbsp;Pythonu</a></p>
+<p><a href="#k11">11. Repositář se zdrojovými kódy všech šesti dnešních demonstračních příkladů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - volání funkcí a použití generátorů i uzávěrů v Python VM</h2>
+
+<p>V&nbsp;předchozích třech částech seriálu o programovacím jazyku Java i o
+virtuálním stroji Javy jsme si vysvětlili způsob volání metod, funkcí i
+konstruktorů v&nbsp;JVM (přesněji řečeno v&nbsp;bajtkódu JVM) a taktéž
+v&nbsp;bajtkódu Lua VM. Zde již byla popisovaná problematika poněkud
+zajímavější, a to především z&nbsp;toho důvodu, že programovací jazyk Lua plně
+podporuje použití takzvaných <i>uzávěrů (closures)</i> (pro jejich konstrukci
+jsou určeny zvláštní instrukce v&nbsp;bajtkódu). Dnes si popíšeme způsob volání
+funkcí v&nbsp;bajtkódu virtuálního stroje Pythonu. Kromě volání
+&bdquo;běžných&ldquo; funkcí si popíšeme i práci s&nbsp;<i>generátory</i>, pro
+jejichž implementaci je (kupodivu) v&nbsp;Pythonu vyhrazeno zvláštní klíčové
+slovo <strong>yield</strong> (v&nbsp;Lue se naproti tomu podobně koncipované
+<i>koprogramy/coroutines</i> vytváří jen s&nbsp;využitím k&nbsp;tomu určených
+funkcí, což je <a
+href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">poněkud
+flexibilnější řešení</a>).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Demonstrační příklad <strong>Test28.py</strong>: volání funkcí v&nbsp;Pythonu</h2>
+
+<p>Pro osvětlení některých sémantických rozdílů mezi programovacími jazyky Lua
+a Python byl vytvořen dnešní první demonstrační příklad nazvaný
+<strong>Test28.py</strong>. Jsou v&nbsp;něm implementovány funkce se jmény
+<strong>function1()</strong>, <strong>function2()</strong> a
+<strong>function3()</strong>, přičemž funkce <strong>function1()</strong>
+neočekává žádné argumenty, funkce <strong>function2()</strong> očekává jeden
+argument a konečně funkce <strong>function3()</strong> očekává dva argumenty,
+které jsou sečteny (přesněji řečeno je na ně aplikován operátor +, který lze
+přetížit). Všechny tři zmíněné funkce jsou volány z&nbsp;kódu, který je
+implementován v&nbsp;další trojici funkcí nazvaných
+<strong>callFunction1()</strong>, <strong>callFunction2()</strong> a
+<strong>callFunction3()</strong>, přičemž se počet skutečně použitých parametrů
+mění od nuly (žádné parametry) do dvou.</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 28.</i>
+<i>#</i>
+<i># Volani funkci v programovacim jazyce Python.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce bez parametru.</i>
+<i>#</i>
+def <strong>function1()</strong>:
+    pass
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce s jednim parametrem.</i>
+<i>#</i>
+def <strong>function2(x)</strong>:
+    return x
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce se dvema parametry.</i>
+<i>#</i>
+def <strong>function3(x, y)</strong>:
+    if x and y:
+        return x+y
+    else:
+        return None
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function1().</i>
+<i>#</i>
+def <strong>callFunction1()</strong>:
+    function1()
+    function1(None)
+    function1(42)
+    function1(1, 2)
+    function1("xyzzy")
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function2().</i>
+<i>#</i>
+def <strong>callFunction2()</strong>:
+    function2()
+    function2(None)
+    function2(42)
+    function2(1, 2)
+    function2("xyzzy")
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function3().</i>
+<i>#</i>
+def <strong>callFunction3()</strong>:
+    function3()
+    function3(None)
+    function3(42)
+    function3(1, 2)
+    function3("xyzzy")
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main()</strong>:
+    callFunction1()
+    callFunction2()
+    callFunction3()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble()</strong>:
+    from dis import dis
+&nbsp;
+    print("\nfunction1():")
+    dis(function1)
+&nbsp;
+    print("\nfunction2():")
+    dis(function2)
+&nbsp;
+    print("\nfunction3():")
+    dis(function3)
+&nbsp;
+    print("\ncallFunction1():")
+    dis(callFunction1)
+&nbsp;
+    print("\ncallFunction2():")
+    dis(callFunction2)
+&nbsp;
+    print("\ncallFunction3():")
+    dis(callFunction3)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Tento demonstrační příklad po svém spuštění skončí s&nbsp;chybou, protože
+v&nbsp;programovacím jazyku Python se kontroluje přesný počet (nikoli typ)
+argumentů, a to ve chvíli volání funkce (tj.&nbsp;v&nbsp;runtime, nikoli
+v&nbsp;compile time):</p>
+
+<pre>
+Traceback (most recent call last):
+  File "Test28.py", line 94, in &lt;module&gt;
+    main()
+  File "Test28.py", line 76, in main
+    callFunction1()
+  File "Test28.py", line 41, in callFunction1
+    function1(None)
+TypeError: function1() takes no arguments (1 given)
+</pre>
+
+<p>Podobně koncipovaný příklad naprogramovaný v&nbsp;Lue lze však spustit bez
+problémů, jelikož zde jsou přebytečné argumenty ignorovány (popř.&nbsp;uloženy
+do tabulky) a naopak chybějící argumenty jsou ve chvíli volání funkce
+inicializovány na <strong>nil</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 25.</i>
+<i>--</i>
+<i>-- Volani funkci v programovacim jazyce Lua.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce bez parametru.</i>
+<i>--</i>
+function <strong>function1</strong>()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce s jednim parametrem.</i>
+<i>--</i>
+function <strong>function2</strong>(x)
+    return x
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce se dvema parametry.</i>
+<i>--</i>
+function <strong>function3</strong>(x, y)
+    if x and y then
+        return x+y
+    else
+        return nil
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function1().</i>
+<i>--</i>
+function <strong>callFunction1</strong>()
+    function1()
+    function1(nil)
+    function1(42)
+    function1(1, 2)
+    function1("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function2().</i>
+<i>--</i>
+function <strong>callFunction2</strong>()
+    function2()
+    function2(nil)
+    function2(42)
+    function2(1, 2)
+    function2("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Volani funkce function3().</i>
+<i>--</i>
+function <strong>callFunction3</strong>()
+    function3()
+    function3(nil)
+    function3(42)
+    function3(1, 2)
+    function3("xyzzy")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    callFunction1()
+    callFunction2()
+    callFunction3()
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Překlad demonstračního příkladu <strong>Test28.py</strong> do bajtkódu Python VM</h2>
+
+<p>I když při běhu demonstračního příkladu <strong>Test28.py</strong> dojde
+k&nbsp;(běhové) chybě, je překlad všech funkcí do bajtkódu Python VM proveden
+korektně, o čemž se ostatně můžeme snadno přesvědčit:</p>
+
+<pre>
+<strong>function1</strong>():
+ 13           0 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+              3 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<pre>
+<strong>function2</strong>():
+ 21           0 LOAD_FAST                0 (x)         <i>// uložit první (a jediný) parametr funkce na TOS</i>
+              3 RETURN_VALUE                           <i>// vrátit tuto hodnotu</i>
+</pre>
+
+<pre>
+<strong>function3</strong>():
+ 29           0 LOAD_FAST                0 (x)         <i>// uložit první parametr funkce na TOS</i>
+              3 JUMP_IF_FALSE           16 (to 22)     <i>// skok pokud je první parametr None/false</i>
+              6 POP_TOP                                <i>// odstranit prvek z TOS</i>
+              7 LOAD_FAST                1 (y)         <i>// uložit druhý parametr funkce na TOS</i>
+             10 JUMP_IF_FALSE            9 (to 22)     <i>// skok pokud je druhý parametr None/false</i>
+             13 POP_TOP                                <i>// odstranit prvek z TOS</i>
+&nbsp;
+ 30          14 LOAD_FAST                0 (x)         <i>// uložit první parametr funkce na TOS</i>
+             17 LOAD_FAST                1 (y)         <i>// uložit druhý parametr funkce na TOS</i>
+             20 BINARY_ADD                             <i>// aplikace operátoru +</i>
+             21 RETURN_VALUE                           <i>// vrátit tuto hodnotu</i>
+             22 POP_TOP                                <i>// odstranit prvek z TOS</i>
+&nbsp;
+ 32          23 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             26 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+             27 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             30 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>(zde evidentně neproběhla žádná optimalizace bajtkódu, ostatně podobně jako
+v&nbsp;případě JVM i Lua VM).</p>
+
+<pre>
+<strong>callFunction1</strong>():
+ 40           0 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+              3 CALL_FUNCTION            0             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+              6 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 41           7 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+             10 LOAD_CONST               0 (None)      <i>// skutečný parametr funkce uložit na TOS</i>
+             13 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             16 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 42          17 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+             20 LOAD_CONST               1 (42)        <i>// skutečný parametr funkce uložit na TOS</i>
+             23 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             26 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 43          27 LOAD_GLOBAL              2 (function1) <i>// načíst referenci volané funkce</i>
+             30 LOAD_CONST               2 (1)         <i>// skutečný parametr funkce uložit na TOS</i>
+             33 LOAD_CONST               3 (2)         <i>// skutečný parametr funkce uložit na TOS</i>
+             36 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             39 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 44          40 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+             43 LOAD_CONST               4 ('xyzzy')   <i>// skutečný parametr funkce uložit na TOS</i>
+             46 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             49 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+             50 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             53 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<pre>
+<strong>callFunction2</strong>():
+ 52           0 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+              3 CALL_FUNCTION            0             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+              6 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 53           7 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             10 LOAD_CONST               0 (None)      <i>// skutečný parametr funkce uložit na TOS</i>
+             13 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             16 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 54          17 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             20 LOAD_CONST               1 (42)        <i>// skutečný parametr funkce uložit na TOS</i>
+             23 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             26 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 55          27 LOAD_GLOBAL              2 (function2) <i>// načíst referenci volané funkce</i>
+             30 LOAD_CONST               2 (1)         <i>// skutečný parametr funkce uložit na TOS</i>
+             33 LOAD_CONST               3 (2)         <i>// skutečný parametr funkce uložit na TOS</i>
+             36 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             39 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 56          40 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             43 LOAD_CONST               4 ('xyzzy')   <i>// skutečný parametr funkce uložit na TOS</i>
+             46 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             49 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+             50 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             53 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<pre>
+<strong>callFunction3</strong>():
+ 64           0 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+              3 CALL_FUNCTION            0             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+              6 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 65           7 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             10 LOAD_CONST               0 (None)      <i>// skutečný parametr funkce uložit na TOS</i>
+             13 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             16 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 66          17 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             20 LOAD_CONST               1 (42)        <i>// skutečný parametr funkce uložit na TOS</i>
+             23 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             26 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 67          27 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             30 LOAD_CONST               2 (1)         <i>// skutečný parametr funkce uložit na TOS</i>
+             33 LOAD_CONST               3 (2)         <i>// skutečný parametr funkce uložit na TOS</i>
+             36 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             39 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+&nbsp;
+ 68          40 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             43 LOAD_CONST               4 ('xyzzy')   <i>// skutečný parametr funkce uložit na TOS</i>
+             46 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             49 POP_TOP                                <i>// odstranit prvek (návratovou hodnotu) z TOS</i>
+             50 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             53 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>Z&nbsp;tohoto výpisu bajtkódu je způsob volání funkcí jasně patrný:</p>
+
+<ol>
+<li>Reference na volanou funkci je uložena na zásobník operandů</li>
+<li>Skutečné parametry jsou před voláním funkce předány (uloženy) na zásobník operandů</li>
+<li>Funkce je volána pomocí instrukce <strong>CALL_FUNCTION</strong></li>
+<li>Návrat z&nbsp;funkce je řešen přes instrukci <strong>RETURN_VALUE</strong></li>
+<li>Návratová hodnota je po návratu z&nbsp;volané funkce opět uložena na TOS zásobníku operandů</li>
+</ol>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad <strong>Test29.py</strong>: volání funkcí v&nbsp;Pythonu</h2>
+
+<p>Dnešní druhý demonstrační příklad, který je nazvaný
+<strong>Test29.py</strong>, je již naprogramován korektně, tj.&nbsp;program po
+svém spuštění poběží bez chyby. V&nbsp;tomto příkladu jsou opět deklarovány tři
+funkce pojmenované <strong>function1()</strong>, <strong>function2()</strong> a
+<strong>function3()</strong>, přičemž první funkce neočekává žádné parametry,
+funkce druhá očekává jeden parametr a funkce třetí dva parametry. Způsob volání
+těchto tří funkcí je otestován v&nbsp;další trojici funkcí nazvaných
+<strong>callFunction1()</strong>, <strong>callFunction2()</strong> a
+<strong>callFunction3()</strong>. Povšimněte si, že se předávají parametry
+různého typu; konkrétně u funkce <strong>function3()</strong> je možné použít
+jakékoli dva parametry, na něž lze aplikovat operátor + (ten je zde mnohem
+flexibilnější, než operátor + v&nbsp;jazyce Lua nebo Java):</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 29.</i>
+<i>#</i>
+<i># Volani funkci v programovacim jazyce Python.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce bez parametru.</i>
+<i>#</i>
+def <strong>function1()</strong>:
+    pass
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce s jednim parametrem.</i>
+<i>#</i>
+def <strong>function2(x)</strong>:
+    return x
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce se dvema parametry.</i>
+<i>#</i>
+def <strong>function3(x, y)</strong>:
+    return x+y
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function1().</i>
+<i>#</i>
+def <strong>callFunction1()</strong>:
+    result = function1()
+    print(result)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function2().</i>
+<i>#</i>
+def <strong>callFunction2()</strong>:
+    result1 = function2(None)
+    result2 = function2(42)
+    result3 = function2("xyzzy")
+    result4 = function2([1,2,3])
+    result5 = function2((1,2,3))
+    print(result1)
+    print(result2)
+    print(result3)
+    print(result4)
+    print(result5)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function3().</i>
+<i>#</i>
+def <strong>callFunction3()</strong>:
+    result1 = function3(1, 2)
+    result2 = function3("Hello ", "world")
+    result3 = function3([1,2,3], [4,5,6])
+    result4 = function3((1,2,3), (4,5,6))
+    result5 = function3(["jedna", "dve"], ["Freddy", "jde"])
+&nbsp;
+    print(result1)
+    print(result2)
+    print(result3)
+    print(result4)
+    print(result5)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main()</strong>:
+    callFunction1()
+    callFunction2()
+    callFunction3()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble()</strong>:
+    from dis import dis
+&nbsp;
+    print("\nfunction1():")
+    dis(function1)
+&nbsp;
+    print("\nfunction2():")
+    dis(function2)
+&nbsp;
+    print("\nfunction3():")
+    dis(function3)
+&nbsp;
+    print("\ncallFunction1():")
+    dis(callFunction1)
+&nbsp;
+    print("\ncallFunction2():")
+    dis(callFunction2)
+&nbsp;
+    print("\ncallFunction3():")
+    dis(callFunction3)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Spuštění tohoto demonstračního příkladu již proběhne bez problémů, což je
+ostatně patrné i z&nbsp;následujícího výpisu:</p>
+
+<pre>
+None
+None
+42
+xyzzy
+[1, 2, 3]
+(1, 2, 3)
+3
+Hello world
+[1, 2, 3, 4, 5, 6]
+(1, 2, 3, 4, 5, 6)
+['jedna', 'dve', 'Freddy', 'jde']
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Překlad demonstračního příkladu <strong>Test29.py</strong> do bajtkódu Python VM</h2>
+
+<p>Opět se podívejme na způsob překladu tohoto demonstračního příkladu do
+bajtkódu Python VM:</p>
+
+<pre>
+<strong>function1</strong>():
+ 13           0 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+              3 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<pre>
+<strong>function2</strong>():
+ 21           0 LOAD_FAST                0 (x)         <i>// uložit první (a jediný) parametr funkce na TOS</i>
+              3 RETURN_VALUE                           <i>// vrátit tuto hodnotu</i>
+</pre>
+
+<pre>
+<strong>function3</strong>():
+ 29           0 LOAD_FAST                0 (x)         <i>// uložit první parametr funkce na TOS</i>
+              3 LOAD_FAST                1 (y)         <i>// uložit druhý parametr funkce na TOS</i>
+              6 BINARY_ADD                             <i>// aplikovat operátor + na oba operandy (parametry)</i>
+              7 RETURN_VALUE                           <i>// vrátit výsledek operace +</i>
+</pre>
+
+<p>Způsob volání těchto funkcí:</p>
+
+<pre>
+<strong>callFunction1</strong>():
+ 37           0 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+              3 CALL_FUNCTION            0             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+              6 STORE_FAST               0 (result)    <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 38           9 LOAD_FAST                0 (result)    <i>// načíst výsledek předchozího volání funkce</i>
+             12 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             13 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             14 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             17 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<pre>
+<strong>callFunction2</strong>():
+ 46           0 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+              3 LOAD_CONST               0 (None)      <i>// skutečný parametr funkce uložit na TOS</i>
+              6 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+              9 STORE_FAST               0 (result1)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 47          12 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             15 LOAD_CONST               1 (42)        <i>// skutečný parametr funkce uložit na TOS</i>
+             18 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             21 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 48          24 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             27 LOAD_CONST               2 ('xyzzy')   <i>// skutečný parametr funkce uložit na TOS</i>
+             30 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             33 STORE_FAST               2 (result3)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 49          36 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             39 LOAD_CONST               3 (1)
+             42 LOAD_CONST               4 (2)
+             45 LOAD_CONST               5 (3)
+             48 BUILD_LIST               3             <i>// vytvoření seznamu ze tří prvků</i>
+             51 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             54 STORE_FAST               3 (result4)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 50          57 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             60 LOAD_CONST               6 ((1, 2, 3)) <i>// skutečný parametr funkce uložit na TOS</i>
+             63 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             66 STORE_FAST               4 (result5)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 51          69 LOAD_FAST                0 (result1)   <i>// načíst výsledek předchozího volání funkce</i>
+             72 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             73 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 52          74 LOAD_FAST                1 (result2)   <i>// načíst výsledek předchozího volání funkce</i>
+             77 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             78 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 53          79 LOAD_FAST                2 (result3)   <i>// načíst výsledek předchozího volání funkce</i>
+             82 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             83 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 54          84 LOAD_FAST                3 (result4)   <i>// načíst výsledek předchozího volání funkce</i>
+             87 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             88 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 55          89 LOAD_FAST                4 (result5)   <i>// načíst výsledek předchozího volání funkce</i>
+             92 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             93 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             94 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             97 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>(povšimněte si, jak elegantně jsou n-tice reprezentovány konstantami,
+zatímco seznamy se musí dynamicky tvořit)</p>
+
+<pre>
+<strong>callFunction3</strong>():
+ 63           0 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+              3 LOAD_CONST               1 (1)         <i>// skutečný parametr funkce uložit na TOS</i>
+              6 LOAD_CONST               2 (2)         <i>// skutečný parametr funkce uložit na TOS</i>
+              9 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             12 STORE_FAST               0 (result1)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 64          15 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             18 LOAD_CONST               3 ('Hello ')  <i>// skutečný parametr funkce uložit na TOS</i>
+             21 LOAD_CONST               4 ('world')   <i>// skutečný parametr funkce uložit na TOS</i>
+             24 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             27 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 65          30 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             33 LOAD_CONST               1 (1)
+             36 LOAD_CONST               2 (2)
+             39 LOAD_CONST               5 (3)
+             42 BUILD_LIST               3             <i>// vytvoření seznamu ze tří prvků</i>
+             45 LOAD_CONST               6 (4)
+             48 LOAD_CONST               7 (5)
+             51 LOAD_CONST               8 (6)
+             54 BUILD_LIST               3             <i>// vytvoření seznamu ze tří prvků</i>
+             57 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             60 STORE_FAST               2 (result3)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 66          63 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             66 LOAD_CONST              13 ((1, 2, 3)) <i>// skutečný parametr funkce uložit na TOS</i>
+             69 LOAD_CONST              14 ((4, 5, 6)) <i>// skutečný parametr funkce uložit na TOS</i>
+             72 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             75 STORE_FAST               3 (result4)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 67          78 LOAD_GLOBAL              0 (function3) <i>// načíst referenci volané funkce</i>
+             81 LOAD_CONST               9 ('jedna')
+             84 LOAD_CONST              10 ('dve')
+             87 BUILD_LIST               2             <i>// vytvoření seznamu ze dvou prvků</i>
+             90 LOAD_CONST              11 ('Freddy')
+             93 LOAD_CONST              12 ('jde')
+             96 BUILD_LIST               2             <i>// vytvoření seznamu ze dvou prvků</i>
+             99 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+            102 STORE_FAST               4 (result5)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 69         105 LOAD_FAST                0 (result1)   <i>// načíst výsledek předchozího volání funkce</i>
+            108 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            109 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 70         110 LOAD_FAST                1 (result2)   <i>// načíst výsledek předchozího volání funkce</i>
+            113 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            114 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 71         115 LOAD_FAST                2 (result3)   <i>// načíst výsledek předchozího volání funkce</i>
+            118 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            119 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 72         120 LOAD_FAST                3 (result4)   <i>// načíst výsledek předchozího volání funkce</i>
+            123 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            124 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 73         125 LOAD_FAST                4 (result5)   <i>// načíst výsledek předchozího volání funkce</i>
+            128 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            129 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+            130 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+            133 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad <strong>Test30.py</strong>: funkce s&nbsp;pojmenovanými parametry</h2>
+
+<p>Dnešní třetí demonstrační příklad, jenž nese jméno
+<strong>Test30.py</strong>, bude využit pro zjištění, jakým způsobem se bude do
+bajtkódu Python VM překládat volání funkcí s&nbsp;využitím pojmenovaných
+parametrů. Volané funkce jsou v&nbsp;tomto příkladu dvě &ndash; funkce
+<strong>function1()</strong> očekávající jeden parametr a funkce
+<strong>function2()</strong> očekávající parametry dva. Volání těchto funkcí
+různými způsoby je realizováno v&nbsp;<strong>callFunction1()</strong> a
+<strong>callFunction2</strong>:</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 30.</i>
+<i>#</i>
+<i># Volani funkci s pojmenovanymi parametry v Pythonu.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce s jednim parametrem.</i>
+<i>#</i>
+def <strong>function1(x)</strong>:
+    return x
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce se dvema parametry.</i>
+<i>#</i>
+def <strong>function2(x, y)</strong>:
+    return x+y
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function1().</i>
+<i>#</i>
+def <strong>callFunction1()</strong>:
+    result1 = function1(42)
+    result2 = function1(x=42)
+    print(result1)
+    print(result2)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function2().</i>
+<i>#</i>
+def <strong>callFunction2()</strong>:
+    result1 = function2("Hello ", "world")
+    result2 = function2(x = "Hello ", y = "world")
+    result3 = function2(y = "Hello ", x = "world")
+&nbsp;
+    print(result1)
+    print(result2)
+    print(result3)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main()</strong>:
+    callFunction1()
+    callFunction2()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble()</strong>:
+    from dis import dis
+&nbsp;
+    print("\nfunction1():")
+    dis(function1)
+&nbsp;
+    print("\nfunction2():")
+    dis(function2)
+&nbsp;
+    print("\ncallFunction1():")
+    dis(callFunction1)
+&nbsp;
+    print("\ncallFunction2():")
+    dis(callFunction2)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Po spuštění tohoto příkladu se na standardním výstupu objeví následujících
+pět řádků textu:</p>
+
+<pre>
+42
+42
+Hello world
+Hello world
+worldHello 
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Překlad demonstračního příkladu <strong>Test30.py</strong> do bajtkódu Python VM</h2>
+
+<p>Opět se podívejme na způsob překladu tohoto demonstračního příkladu. Zajímat
+nás bude především technika deklarace testovacích funkcí i způsob jejich
+volání:</p>
+
+<pre>
+<strong>function1</strong>():
+ 13           0 LOAD_FAST                0 (x)         <i>// načíst první parametr</i>
+              3 RETURN_VALUE                           <i>// a vrátit ho</i>
+</pre>
+
+<pre>
+<strong>function2</strong>():
+ 21           0 LOAD_FAST                0 (x)         <i>// načíst první parametr</i>
+              3 LOAD_FAST                1 (y)         <i>// načíst druhý parametr</i>
+              6 BINARY_ADD                             <i>// sečíst hodnoty obou parametrů</i>
+              7 RETURN_VALUE                           <i>// vrátit výsledek součtu</i>
+</pre>
+
+<p>Ve způsobu deklarací obou funkcí k&nbsp;žádným změnám nedošlo (což je
+pochopitelní).</p>
+
+<pre>
+<strong>callFunction1</strong>():
+ 29           0 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+              3 LOAD_CONST               1 (42)        <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+              6 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+              9 STORE_FAST               0 (result1)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 30          12 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+             15 LOAD_CONST               2 ('x')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             18 LOAD_CONST               1 (42)        <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             21 CALL_FUNCTION          256             <i>// volat funkci, nulový počet pozičních parametrů, jeden pojmenovaný parametr</i>
+             24 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 31          27 LOAD_FAST                0 (result1)   <i>// načíst výsledek předchozího volání funkce</i>
+             30 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             31 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 32          32 LOAD_FAST                1 (result2)   <i>// načíst výsledek předchozího volání funkce</i>
+             35 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             36 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             37 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             40 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>Zde již můžeme vidět jednu velkou změnu &ndash; za instrukcí
+<strong>CALL_FUNCTION</strong> je uložena hodnota 256. Ve skutečnosti se jedná
+o dvě hodnoty, každá o šířce osmi bitů, které byly spojeny do jednoho
+šestnáctibitového slova. Hodnota spodního bajtu udává počet pozičních parametrů
+(zde 0), hodnota horního bajtu počet pojmenovaných parametrů (zde 1 - každý
+pojmenovaný parametr se skládá ze svého jména a skutečné hodnoty).</p>
+
+<pre>
+<strong>callFunction2</strong>():
+ 40           0 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+              3 LOAD_CONST               1 ('Hello ')  <i>// první parametr funkce uložit na TOS zásobníku operandů</i>
+              6 LOAD_CONST               2 ('world')   <i>// druhý parametr funkce uložit na TOS zásobníku operandů</i>
+              9 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             12 STORE_FAST               0 (result1)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 41          15 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             18 LOAD_CONST               3 ('x')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             21 LOAD_CONST               1 ('Hello ')  <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             24 LOAD_CONST               4 ('y')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             27 LOAD_CONST               2 ('world')   <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             30 CALL_FUNCTION          512             <i>// volat funkci se dvěma pojmenovanými parametry (512=256*2)</i>
+             33 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 42          36 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             39 LOAD_CONST               4 ('y')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             42 LOAD_CONST               1 ('Hello ')  <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             45 LOAD_CONST               3 ('x')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             48 LOAD_CONST               2 ('world')   <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             51 CALL_FUNCTION          512             <i>// volat funkci se dvěma pojmenovanými parametry (512=256*2)</i>
+             54 STORE_FAST               2 (result3)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 44          57 LOAD_FAST                0 (result1)   <i>// načíst výsledek předchozího volání funkce</i>
+             60 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             61 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 45          62 LOAD_FAST                1 (result2)   <i>// načíst výsledek předchozího volání funkce</i>
+             65 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             66 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 46          67 LOAD_FAST                2 (result3)   <i>// načíst výsledek předchozího volání funkce</i>
+             70 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             71 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             72 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             75 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační příklad <strong>Test31.py</strong>: parametry s&nbsp;implicitní hodnotou</h2>
+
+<p>Dnešní čtvrtý a současně i poslední demonstrační příklad pojmenovaný
+<strong>Test31.py</strong> používá v&nbsp;testovacích funkcích
+<strong>function1()</strong> a <strong>function2()</strong> parametry
+s&nbsp;implicitní hodnotou, tj.&nbsp;pokud se tyto parametry při volání funkce
+explicitně nezadají, je namísto nich použita hodnota získaná z&nbsp;hlavičky
+funkce. Podívejme se na zdrojový kód tohoto demonstračního příkladu:</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 31.</i>
+<i>#</i>
+<i># Volani funkci s parametry s implicitni hodnotou v Pythonu.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce s jednim parametrem.</i>
+<i>#</i>
+def <strong>function1(x = 1)</strong>:
+    return x
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce se dvema parametry.</i>
+<i>#</i>
+def <strong>function2(x = 1, y = 2)</strong>:
+    return x+y
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function1().</i>
+<i>#</i>
+def <strong>callFunction1()</strong>:
+    result1 = function1()
+    result2 = function1(42)
+    result3 = function1(x=42)
+    print(result1)
+    print(result2)
+    print(result3)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Volani funkce function2().</i>
+<i>#</i>
+def <strong>callFunction2()</strong>:
+    result1 = function2()
+    result2 = function2(0)
+    result2 = function2(0,1)
+    result3 = function2("Hello ", "world")
+    result4 = function2(x = "Hello ", y = "world")
+    result5 = function2(y = "Hello ", x = "world")
+&nbsp;
+    print(result1)
+    print(result2)
+    print(result3)
+    print(result4)
+    print(result5)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main()</strong>:
+    callFunction1()
+    callFunction2()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble()</strong>:
+    from dis import dis
+&nbsp;
+    print("\nfunction1():")
+    dis(function1)
+&nbsp;
+    print("\nfunction2():")
+    dis(function2)
+&nbsp;
+    print("\ncallFunction1():")
+    dis(callFunction1)
+&nbsp;
+    print("\ncallFunction2():")
+    dis(callFunction2)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Po spuštění tohoto demonstračního příkladu by se měly na standardním výstupu
+objevit následující zprávy:</p>
+
+<pre>
+1
+42
+42
+3
+1
+Hello world
+Hello world
+worldHello 
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Překlad demonstračního příkladu <strong>Test31.py</strong> do bajtkódu Python VM</h2>
+
+<p>Deklarace obou testovacích funkcí je kupodivu stále stejná, implicitní
+hodnota parametrů je totiž specifikována při vytváření funkcí instrukcí
+<strong>MAKE_FUNCTION</strong>:</p>
+
+<pre>
+<strong>function1</strong>():
+ 13           0 LOAD_FAST                0 (x)         <i>// načíst první parametr</i>
+              3 RETURN_VALUE                           <i>// a vrátit ho</i>
+</pre>
+
+<pre>
+<strong>function2</strong>():
+ 21           0 LOAD_FAST                0 (x)         <i>// načíst první parametr</i>
+              3 LOAD_FAST                1 (y)         <i>// načíst druhý parametr</i>
+              6 BINARY_ADD                             <i>// sečíst hodnoty obou parametrů</i>
+              7 RETURN_VALUE                           <i>// vrátit výsledek součtu</i>
+</pre>
+
+<p>Volání se však již odlišuje:</p>
+
+<pre>
+<strong>callFunction1</strong>():
+ 29           0 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+              3 CALL_FUNCTION            0             <i>// volání funkce s nulovým počtem explicitně zadaných parametrů</i>
+              6 STORE_FAST               0 (result1)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 30           9 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+             12 LOAD_CONST               1 (42)        <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             15 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             18 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 31          21 LOAD_GLOBAL              0 (function1) <i>// načíst referenci volané funkce</i>
+             24 LOAD_CONST               2 ('x')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             27 LOAD_CONST               1 (42)        <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             30 CALL_FUNCTION          256             <i>// volat funkci, nulový počet pozičních parametrů, jeden pojmenovaný parametr</i>
+             33 STORE_FAST               2 (result3)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 32          36 LOAD_FAST                0 (result1)   <i>// načíst výsledek předchozího volání funkce</i>
+             39 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             40 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 33          41 LOAD_FAST                1 (result2)   <i>// načíst výsledek předchozího volání funkce</i>
+             44 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             45 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 34          46 LOAD_FAST                2 (result3)   <i>// načíst výsledek předchozího volání funkce</i>
+             49 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             50 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             51 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             54 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>Ještě zajímavější jsou možnosti volání funkce
+<strong>function2()</strong>:</p>
+
+<pre>
+<strong>callFunction2</strong>():
+ 42           0 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+              3 CALL_FUNCTION            0             <i>// volání funkce s nulovým počtem explicitně zadaných parametrů</i>
+              6 STORE_FAST               0 (result1)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 43           9 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             12 LOAD_CONST               1 (0)         <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             15 CALL_FUNCTION            1             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+                                                       <i>// druhý parametr má implicitní hodnotu</i>
+             18 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 44          21 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             24 LOAD_CONST               1 (0)         <i>// první parametr funkce uložit na TOS zásobníku operandů</i>
+             27 LOAD_CONST               2 (1)         <i>// druhý parametr funkce uložit na TOS zásobníku operandů</i>
+             30 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             33 STORE_FAST               1 (result2)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 45          36 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             39 LOAD_CONST               3 ('Hello ')  <i>// první parametr funkce uložit na TOS zásobníku operandů</i>
+             42 LOAD_CONST               4 ('world')   <i>// druhý parametr funkce uložit na TOS zásobníku operandů</i>
+             45 CALL_FUNCTION            2             <i>// volat funkci (konstanta udává počet skutečně předávaných parametrů)</i>
+             48 STORE_FAST               2 (result3)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 46          51 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             54 LOAD_CONST               5 ('x')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             57 LOAD_CONST               3 ('Hello ')  <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             60 LOAD_CONST               6 ('y')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             63 LOAD_CONST               4 ('world')   <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             66 CALL_FUNCTION          512             <i>// volat funkci se dvěma pojmenovanými parametry (512=256*2)</i>
+             69 STORE_FAST               3 (result4)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 47          72 LOAD_GLOBAL              0 (function2) <i>// načíst referenci volané funkce</i>
+             75 LOAD_CONST               6 ('y')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             78 LOAD_CONST               3 ('Hello ')  <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             81 LOAD_CONST               5 ('x')       <i>// uložit identifikátor parametru na TOS zásobníku operandů</i>
+             84 LOAD_CONST               4 ('world')   <i>// parametr funkce uložit na TOS zásobníku operandů</i>
+             87 CALL_FUNCTION          512             <i>// volat funkci se dvěma pojmenovanými parametry (512=256*2)</i>
+             90 STORE_FAST               4 (result5)   <i>// uložit výsledek volání funkce do lokální proměnné</i>
+&nbsp;
+ 49          93 LOAD_FAST                0 (result1)   <i>// načíst výsledek předchozího volání funkce</i>
+             96 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+             97 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 50          98 LOAD_FAST                1 (result2)   <i>// načíst výsledek předchozího volání funkce</i>
+            101 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            102 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 51         103 LOAD_FAST                2 (result3)   <i>// načíst výsledek předchozího volání funkce</i>
+            106 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            107 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 52         108 LOAD_FAST                3 (result4)   <i>// načíst výsledek předchozího volání funkce</i>
+            111 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            112 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 53         113 LOAD_FAST                4 (result5)   <i>// načíst výsledek předchozího volání funkce</i>
+            116 PRINT_ITEM                             <i>// tisk výsledku (návratové hodnoty volané funkce)</i>
+            117 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+            118 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+            121 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Uzávěry a generátory v&nbsp;Pythonu</h2>
+
+<p>V&nbsp;předchozích čtyřech demonstračních příkladech jsme si ukázali pouze
+základní způsoby volání funkcí. Možnosti Pythonu jsou v&nbsp;tomto směru totiž
+mnohem větší než v&nbsp;Javě a dokonce větší než v&nbsp;jazyku Lua, protože
+kromě parametrů s&nbsp;implicitní hodnotou a pojmenovaných parametrů lze při
+deklaraci a/nebo volání funkcí použít i další možnosti, například proměnný
+počet parametrů, tzv.&nbsp;keyword parametry či jejich kombinaci. Navíc i
+Python podporuje uzávěry (closures), i když ne v&nbsp;takové míře, jako je tomu
+v&nbsp;Lue, Perlu či JavaScriptu. Aby toho nebylo málo, podporuje programovací
+jazyk Python i bajtkód jeho virtuálního stroje takzvané <i>generátory</i>.
+Všechny instrukce bajtkódu Python VM související s&nbsp;voláním funkcí jsou
+vypsány v&nbsp;další tabulce, přičemž podrobnosti
+k&nbsp;<strong>MAKE_CLOSURE</strong>, <strong>YIELD_VALUE</strong> atd. si
+řekneme v&nbsp;následující části tohoto seriálu:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Stručný popis</th></tr>
+<tr><td>1</td><td>MAKE_FUNCTION</td><td>vytvoření funkce</td></tr>
+<tr><td>2</td><td>MAKE_CLOSURE</td><td>vytvoření uzávěru</td></tr>
+<tr><td>3</td><td>CALL_FUNCTION</td><td>volání funkce s pozičními a/nebo pojmenovanými parametry</td></tr>
+<tr><td>4</td><td>CALL_FUNCTION_VAR</td><td>volání funkce s&nbsp;proměnným počtem parametrů</td></tr>
+<tr><td>5</td><td>CALL_FUNCTION_KW</td><td>volání funkce s&nbsp;keyword parametry</td></tr>
+<tr><td>6</td><td>CALL_FUNCTION_VAR_KW</td><td>kombinace předchozích dvou možností</td></tr>
+<tr><td>7</td><td>YIELD_VALUE</td><td>vrácení (další) hodnoty z&nbsp;generátoru</td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými kódy všech čtyř dnešních demonstračních příkladů</h2>
+
+<p>Všechny čtyři dnes popsané a použité demonstrační příklady byly uloženy do
+Mercurial repositáře umístěného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Odkazy na prozatím poslední verze těchto čtyř příkladů naleznete v&nbsp;tabulce
+pod tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>Test28.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test28.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test28.py</a></td></tr>
+<tr><td>2</td><td>Test29.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test29.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test29.py</a></td></tr>
+<tr><td>3</td><td>Test30.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test30.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test30.py</a></td></tr>
+<tr><td>4</td><td>Test31.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test31.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test31.py</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/release/2.5.2/lib/bytecodes.html">https://docs.python.org/release/2.5.2/lib/bytecodes.html</a>
+</li>
+
+<li>Python 2.x: funkce range()<br />
+<a href="https://docs.python.org/2/library/functions.html#range">https://docs.python.org/2/library/functions.html#range</a>
+</li>
+
+<li>Python 2.x: typ iterátor<br />
+<a href="https://docs.python.org/2/library/stdtypes.html#iterator-types">https://docs.python.org/2/library/stdtypes.html#iterator-types</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>For-each Loop in Java<br />
+<a href="http://www.leepoint.net/notes-java/flow/loops/foreach.html">http://www.leepoint.net/notes-java/flow/loops/foreach.html</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
