@@ -1,0 +1,1430 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - volání funkcí a použití generátorů i uzávěrů v Python VM (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - volání funkcí a použití generátorů i uzávěrů v Python VM (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Na předchozí část seriálu o JVM (i o dalších typech virtuálních strojů), v níž jsme si popsali volání funkcí a metod v Python VM dnes navážeme, protože si vysvětlíme princip implementace generátorů a uzávěrů v Python VM. Díky podpoře uzávěrů a generátorů je možné v Pythonu psát některé algoritmy velmi elegantním způsobem.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Generátory v&nbsp;Pythonu a v&nbsp;Python VM</a></p>
+<p><a href="#k02">2. Demonstrační příklad <strong>Test32.py</strong>: jednoduchý generátor</a></p>
+<p><a href="#k03">3. Překlad demonstračního příkladu <strong>Test32.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k04">4. Demonstrační příklad <strong>Test33.py</strong>: generátor konečné sekvence hodnot</a></p>
+<p><a href="#k05">5. Překlad demonstračního příkladu <strong>Test33.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k06">6. Uzávěry v&nbsp;Pythonu a v&nbsp;Python VM</a></p>
+<p><a href="#k07">7. Demonstrační příklad <strong>Test34.py</strong>: jednoduchý uzávěr vytvořený v&nbsp;Pythonu</a></p>
+<p><a href="#k08">8. Překlad demonstračního příkladu <strong>Test34.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k09">9. Demonstrační příklad <strong>Test35.py</strong>: nefunkční implementace čítače realizovaného uzávěrem</a></p>
+<p><a href="#k10">10. Demonstrační příklad <strong>Test36.py</strong>: funkční implementace čítače realizovaného uzávěrem</a></p>
+<p><a href="#k11">11. Překlad demonstračního příkladu <strong>Test36.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k12">12. Repositář se zdrojovými kódy všech pěti dnešních demonstračních příkladů</a></p>
+<p><a href="#k13">13. Generátory a uzávěry &ndash; rozdíly mezi jazyky Lua a Python</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Generátory v&nbsp;Pythonu a v&nbsp;Python VM</h2>
+
+<p>V&nbsp;předchozí části tohoto seriálu jsme si popsali princip volání funkcí
+v&nbsp;bajtkódu Python VM. Víme již, jak se volají &bdquo;běžné&ldquo; funkce
+s&nbsp;pozičními parametry, funkce, jejichž (některé) parametry mají přiřazenou
+implicitní hodnotu i funkce, při jejichž volání jsou explicitně přiřazeny
+hodnoty k&nbsp;pojmenovaným parametrům. Ovšem v&nbsp;souvislosti
+s&nbsp;funkcemi si musíme popsat dvojici konceptů &ndash; <i>uzávěrů
+(closures)</i> a <i>generátorů (generators)</i>. Zejména koncept
+<i>generátorů</i> a obecně <i>koprogramů (coroutines)</i> umožňuje tvořit
+v&nbsp;Pythonu některé algoritmy velmi elegantním způsobem bez nutnosti
+zavádění lazy sekvencí známých z&nbsp;některých funkcionálních programovacích
+jazyků. Generátory jsou v&nbsp;programech použity především v&nbsp;programových
+smyčkách typu <strong>for</strong>, ve skutečnosti je však možné volat
+koprogram (kterým je generátor většinou implementován) i z&nbsp;jiné části
+kódu. Nicméně právě použití v&nbsp;programové smyčce typu <strong>for</strong>
+je tak idiomatické, že tuto smyčku použijeme i v&nbsp;některých dnešních
+demonstračních příkladech (proto se také budeme bavit speciálně o generátorech
+a ne o obecných koprogramech).</p>
+
+<p><i>Generátorem</i> se v&nbsp;Pythonu označuje specifický typ funkce určené
+pro postupné generování nějaké sekvence hodnot, přičemž tato sekvence může být
+nekonečná. Při každém volání této funkce je však vrácena vždy jen jedna hodnota
+&ndash; to je právě důvod, proč mohou generátory generovat teoreticky
+nekonečnou sekvenci, aniž by došlo k&nbsp;zaplnění veškeré operační paměti. Aby
+bylo možné generátor vůbec vytvořit, musel být koncept <i>funkcí</i> rozšířen a
+zobecněn &ndash; funkce již nemá jeden vstupní bod a její provádění neskončí
+při výskoku z&nbsp;funkce, ale v&nbsp;případě generátorů má funkce určitou
+formu vnitřní paměti (tím se přibližuje uzávěrům, i když samotná implementace
+je odlišná).</p>
+
+<p>Aby bylo možné při každém zavolání generátoru vrátit další hodnotu
+generované posloupnosti a současně i zachovat vnitřní stav funkce, nepoužívá se
+pro vrácení a ukončení funkce klíčové slovo <strong>return</strong> ale odlišné
+klíčové slovo <strong>yield</strong>. Jakmile program při svém běhu
+(v&nbsp;průběhu vykonávání těla generátoru) narazí na toto klíčové slovo,
+<i>přeruší</i> běh generátoru a vrátí hodnotu výrazu uvedeného za tímto
+klíčovým slovem. Další volání generátoru nezačíná od začátku jeho těla, ale
+těsně za příkazem <strong>yield</strong>. Pokud se však při provádění
+generátoru dojde na konec jeho těla, ukončí se jeho běh, stejně jako je tomu u
+běžné funkce. Generátor se nevolá přímo, ale přes funkci/metodu
+<strong>next()</strong>, což vlastně znamená, že se současně jedná i o
+<i>iterátor</i>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Demonstrační příklad <strong>Test32.py</strong>: jednoduchý generátor</h2>
+
+<p>Pochopení principu práce generátorů může být možná zpočátku poněkud složité,
+proto se podívejme na &bdquo;školní&ldquo; příklad, jehož obdobu lze najít
+v&nbsp;mnoha učebnicích programovacího jazyka Python. V&nbsp;tomto příkladu je
+vytvořen generátor, který po každém svém zavolání vrátí další člen posloupnosti
+faktoriálů, tj.&nbsp;postupně se vrací hodnoty 1!=1, 2!=2, 3!=6, 4!=24 atd.
+Tělo generátoru pojmenovaného <strong>factorialGenerator()</strong> je tvořeno
+nekonečnou smyčkou (generuje se tedy alespoň teoreticky nekonečná posloupnost
+&ndash; otestujte sami!), v&nbsp;jejímž těle je použit příkaz <strong>yield
+n</strong>, který <i>přeruší</i> běh generátoru a současně i vrátí hodnotu
+dalšího vypočteného faktoriálu v&nbsp;posloupnosti. &bdquo;Paměť
+generátoru&ldquo; je zde tvořena dvojicí interních proměnných nazvaných
+<strong>n</strong> a <strong>i</strong>. Povšimněte si, že generátor se volá
+přímo přes metodu <strong>next()</strong>, což je v&nbsp;praxi poněkud
+neobvyklé (v&nbsp;dalším příkladu je ukázán jiný postup):</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 32.</i>
+<i>#</i>
+<i># Generatory v Pythonu.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Jednoduchy generator.</i>
+<i>#</i>
+def <strong>factorialGenerator()</strong>:
+    n = 1
+    i = 1
+    while True:
+        <strong>yield</strong> n
+        i = i + 1
+        n = n * i
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main()</strong>:
+    fact = factorialGenerator()
+    for i in range(10):
+        print(fact.next())
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble()</strong>:
+    from dis import dis
+&nbsp;
+    print("\nfactorialGenerator():")
+    dis(factorialGenerator)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Tento demonstrační příklad po svém spuštění vypíše na standardní výstup
+následující sekvenci hodnot:</p>
+
+<pre>
+1
+2
+6
+24
+120
+720
+5040
+40320
+362880
+3628800
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Překlad demonstračního příkladu <strong>Test32.py</strong> do bajtkódu Python VM</h2>
+
+<p>Podívejme se na způsob překladu demonstračního příkladu
+<strong>Test32.py</strong> popsaného <a href="#k03">v&nbsp;předchozí
+kapitole</a> do bajtkódu virtuálního stroje jazyka Python. Překlad funkce
+<strong>factorialGenerator()</strong> je zvláštní použitím instrukce
+<strong>YIELD_VALUE</strong>, která implementuje funkcionalitu zabezpečenou
+přímo v&nbsp;Pythonu klíčovým slovem <strong>yield</strong>. Při volání
+instrukce <strong>YIELD_VALUE</strong> se na vrcholu zásobníku operandů (TOS)
+očekává hodnota, která je předána volajícímu kódu:</p>
+
+<pre>
+<strong>factorialGenerator</strong>():
+ 13           0 LOAD_CONST               1 (1)         <i>// umístit na TOS celočíselnou konstantu 1</i>
+              3 STORE_FAST               0 (n)         <i>// a uložit ji do lokální proměnné <strong>n</strong></i>
+&nbsp;
+ 14           6 LOAD_CONST               1 (1)         <i>// opět umístit na TOS celočíselnou konstantu 1</i>
+              9 STORE_FAST               1 (i)         <i>// a uložit ji do lokální proměnné <strong>i</strong></i>
+&nbsp;
+ 15          12 SETUP_LOOP              37 (to 52)     <i>// příprava na provedení programové smyčky</i>
+             15 LOAD_GLOBAL              0 (True)      <i>// příprava pro test na tuto hodnotu (<strong>True</strong>)</i>
+             18 JUMP_IF_FALSE           29 (to 50)     <i>// tento podmíněný skok nikdy nenastane</i>
+             21 POP_TOP                                <i>// odstranit prvek (<strong>True</strong>) z TOS</i>
+&nbsp;
+ 16          22 LOAD_FAST                0 (n)         <i>// načtení hodnoty lokální proměnné <strong>n</strong></i>
+             25 YIELD_VALUE                            <i>// přerušení běhu generátoru a vrácení hodnoty <strong>n</strong></i>
+             26 POP_TOP                                <i>// odstranit prvek (hodnotu <strong>n</strong>) z TOS</i>
+&nbsp;
+ 17          27 LOAD_FAST                1 (i)         <i>// |</i>
+             30 LOAD_CONST               1 (1)         <i>// | implementace operace i = i + 1</i>
+             33 BINARY_ADD                             <i>// |</i>
+             34 STORE_FAST               1 (i)         <i>// |</i>
+&nbsp;
+ 18          37 LOAD_FAST                0 (n)         <i>// |</i>
+             40 LOAD_FAST                1 (i)         <i>// | implementace operace n = n * i</i>
+             43 BINARY_MULTIPLY                        <i>// |</i>
+             44 STORE_FAST               0 (n)         <i>// |</i>
+&nbsp;
+             47 JUMP_ABSOLUTE           15             <i>// skok na začátek programové smyčky while</i>
+&nbsp;
+             50 POP_TOP                                <i>// odstranit prvek z TOS</i>
+             51 POP_BLOCK                              <i>// (úklid po programové smyčce)</i>
+                                                       <i>// standardní výskok z funkce</i>
+             52 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             55 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>Samotné použití generátoru je velice snadné, protože explicitně voláme
+metodu <strong>fact.next()</strong>, kde <strong>fact</strong> je jméno lokální
+proměnné, do níž byla reference na generátor uložena. Veškerá další činnost je
+již zajištěna programovou smyčkou <strong>for</strong> a funkcí
+<strong>range()</strong> vracející svůj vlastní iterátor (který nemá
+s&nbsp;naším generátorem nic společného):</p>
+
+<pre>
+<strong>main</strong>():
+ 26           0 LOAD_GLOBAL              0             <i>// načtení globální reference na funkci <strong>factorialGenerator</strong></i>
+              3 CALL_FUNCTION            0             <i>// volání funkce <strong>factorialGenerator()</strong> bez parametrů</i>
+              6 STORE_FAST               0 (fact)      <i>// uložit vrácenou referenci do lokální proměnné</i>
+&nbsp;
+ 27           9 SETUP_LOOP              31 (to 43)     <i>// příprava na provedení programové smyčky</i>
+             12 LOAD_GLOBAL              1 (range)     <i>// načtení globální reference na funkci <strong>range()</strong></i>
+             15 LOAD_CONST               1 (10)        <i>// konstanta předávaná do funkce <strong>range()</strong></i>
+             18 CALL_FUNCTION            1             <i>// zavolání funkce <strong>range(10)</strong></i>
+             21 GET_ITER                               <i>// získání iterátoru vráceného funkcí <strong>range()</strong></i>
+&nbsp;
+             22 FOR_ITER                17 (to 42)     <i>// začátek programové smyčky (vstup do další iterace)</i>
+             25 STORE_FAST               1 (i)         <i>// tato lokální proměnná je počitadlem smyčky</i>
+&nbsp;
+ 28          28 LOAD_FAST                0 (fact)      <i>// příprava na volání metody <strong>fact.next()</strong></i>
+             31 LOAD_ATTR                2 (next)      <i>// příprava na volání metody <strong>fact.next()</strong></i>
+             34 CALL_FUNCTION            0             <i>// zavolání metody <strong>fact.next()</strong>, tj.&nbsp;provedení výpočtu</i>
+             37 PRINT_ITEM                             <i>// výpis hodnoty vrácené generátorem</i>
+             38 PRINT_NEWLINE                          <i>// odřádkování na standardním výstupu</i>
+&nbsp;
+             39 JUMP_ABSOLUTE           22             <i>// skok na začátek programové smyčky for</i>
+             42 POP_BLOCK                              <i>// (úklid po smyčce)</i>
+                                                       <i>// standardní výskok z funkce</i>
+             43 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             46 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad <strong>Test33.py</strong>: generátor konečné sekvence hodnot</h2>
+
+<p>Ve druhém demonstračním příkladu je původní generátor
+<strong>factorialGenerator</strong> upraven takovým způsobem, že generuje
+hodnoty faktoriálu pouze do chvíle, kdy je překročen nastavený limit předaný
+při vytváření generátoru v&nbsp;parametru <strong>maxn</strong>. Jakmile je
+limit překročen, běh generátoru je ukončen a současně se vyhodí výjimka typu
+<strong>StopIteration</strong>. To nás však nemusí příliš trápit
+v&nbsp;případě, že je generátor použit v&nbsp;programové smyčce typu
+<strong>for</strong>, neboť v&nbsp;ní se výskyt této výjimky předpokládá
+&ndash; ukončuje její běh. Naproti tomu při explicitním volání funkce
+<strong>next()</strong> by se výjimka měla zachytit (což však v&nbsp;našem
+demonstračním příkladu nemusíme dělat a také to neděláme):</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 33.</i>
+<i>#</i>
+<i># Generatory v Pythonu.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Jednoduchy generator s limitem.</i>
+<i>#</i>
+def <strong>factorialGenerator(maxn)</strong>:
+    n = 1
+    i = 1
+    while n &lt; maxn:
+        <strong>yield</strong> n
+        i = i + 1
+        n = n * i
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main()</strong>:
+    for fact in factorialGenerator(1e10):
+        print(fact)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble()</strong>:
+    from dis import dis
+&nbsp;
+    print("\nfactorialGenerator():")
+    dis(factorialGenerator)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Výstup tohoto demonstračního příkladu vypadá následovně:</p>
+
+<pre>
+1
+2
+6
+24
+120
+720
+5040
+40320
+362880
+3628800
+39916800
+479001600
+6227020800
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Překlad demonstračního příkladu <strong>Test33.py</strong> do bajtkódu Python VM</h2>
+
+<p>Funkce <strong>factorialGenerator()</strong> se opět přeloží s&nbsp;využitím
+instrukce <strong>YIELD_VALUE</strong>. Od předchozí verze stejnojmenné funkce
+se nová varianta liší především ve způsobu testu ukončení vnitřní programové
+smyčky, která již není nekonečná. Povšimněte si, že nikde není vidět generování
+výjimky <strong>StopIteration</strong> o níž jsme se <a href="#k04">zmínili
+výše</a>. To je (díky OO návrhu) zajištěno interně překladačem:</p>
+
+<pre>
+<strong>factorialGenerator</strong>():
+ 13           0 LOAD_CONST               1 (1)         <i>// umístit na TOS celočíselnou konstantu 1</i>
+              3 STORE_FAST               1 (n)         <i>// a uložit ji do lokální proměnné <strong>n</strong></i>
+&nbsp;
+ 14           6 LOAD_CONST               1 (1)         <i>// opět umístit na TOS celočíselnou konstantu 1</i>
+              9 STORE_FAST               2 (i)         <i>// a uložit ji do lokální proměnné <strong>i</strong></i>
+&nbsp;
+ 15          12 SETUP_LOOP              43 (to 58)     <i>// příprava na provedení programové smyčky</i>
+             15 LOAD_FAST                1 (n)         <i>// hodnota lokální proměnné <strong>n</strong></i>
+             18 LOAD_FAST                0 (maxn)      <i>// se bude porovnávat s&nbsp;hodnotou parametru <strong>maxn</strong></i>
+             21 COMPARE_OP               0 (&lt;)
+             24 JUMP_IF_FALSE           29 (to 56)     <i>// podmíněný skok ZA konec smyčky</i>
+             27 POP_TOP                                <i>// odstranit prvek (výsledek porovnání) z TOS</i>
+&nbsp;
+ 16          28 LOAD_FAST                1 (n)         <i>// načtení hodnoty lokální proměnné <strong>n</strong></i>
+             31 YIELD_VALUE                            <i>// přerušení běhu generátoru a vrácení hodnoty <strong>n</strong></i>
+             32 POP_TOP                                <i>// odstranit prvek (hodnotu <strong>n</strong>) z TOS</i>
+&nbsp;
+ 17          33 LOAD_FAST                2 (i)         <i>// |</i>
+             36 LOAD_CONST               1 (1)         <i>// | implementace operace i = i + 1</i>
+             39 BINARY_ADD                             <i>// |</i>
+             40 STORE_FAST               2 (i)         <i>// |</i>
+&nbsp;
+ 18          43 LOAD_FAST                1 (n)         <i>// |</i>
+             46 LOAD_FAST                2 (i)         <i>// | implementace operace n = n * i</i>
+             49 BINARY_MULTIPLY                        <i>// |</i>
+             50 STORE_FAST               1 (n)         <i>// |</i>
+&nbsp;
+             53 JUMP_ABSOLUTE           15             <i>// skok na začátek programové smyčky while</i>
+&nbsp;
+             56 POP_TOP                                <i>// odstranit prvek z TOS</i>
+             57 POP_BLOCK                              <i>// (úklid po programové smyčce)</i>
+                                                       <i>// standardní výskok z funkce</i>
+             58 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             61 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+<p>Použití nové verze generátoru v&nbsp;programové smyčce typu
+<strong>for</strong> je nyní velice snadné, protože tuto funkci využijeme pro
+získání iterátoru, pro nějž smyčka <strong>for</strong> automaticky bude volat
+metodu <strong>next()</strong> až do té chvíle, než dojde k&nbsp;výjimce:</p>
+
+<pre>
+<strong>main</strong>():
+ 26           0 SETUP_LOOP              25 (to 28)
+              3 LOAD_GLOBAL              0             <i>// načtení globální reference na funkci <strong>factorialGenerator</strong></i>
+              6 LOAD_CONST               1             <i>// jediný parametr funkce <strong>factorialGenerator</strong> &ndash; hodnota (10000000000.0</i>
+              9 CALL_FUNCTION            1             <i>// volání funkce <strong>factorialGenerator()</strong> s jedním parametrem</i>
+             12 GET_ITER                               <i>// získání iterátoru vráceného funkcí <strong>factorialGenerator()</strong></i>
+&nbsp;
+             13 FOR_ITER                11 (to 27)     <i>// začátek programové smyčky (vstup do další iterace)</i>
+             16 STORE_FAST               0 (fact)      <i>// tato proměnná je postupně naplňována hodnotami vytvářenými generátorem</i>
+&nbsp;
+ 27          19 LOAD_FAST                0 (fact)      <i>// načíst hodnotu vrácenou generátorem</i>
+             22 PRINT_ITEM                             <i>// výpis hodnoty vrácené generátorem</i>
+             23 PRINT_NEWLINE                          <i>// odřádkování na standardním výstupu</i>
+&nbsp;
+             24 JUMP_ABSOLUTE           13             <i>// skok na začátek programové smyčky for</i>
+             27 POP_BLOCK                              <i>// (úklid po smyčce)</i>
+                                                       <i>// standardní výskok z funkce</i>
+             28 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             31 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Uzávěry v&nbsp;Pythonu a v&nbsp;Python VM</h2>
+
+<p>V&nbsp;programovacím jazyku Python je kromě &bdquo;obyčejných&ldquo; funkcí
+a generátorů možné vytváře i uzávěry (<i>closures</i>). Samotné použití uzávěrů
+je sice v&nbsp;Pythonu 2.x poněkud problematické (což ostatně uvidíme
+v&nbsp;navazujících kapitolách), ovšem v&nbsp;Pythonu 3.x je již tento
+nedostatek související se sémantikou rozpoznání lokálních a nelokálních
+proměnných odstraněn a tak mají uzávěry v&nbsp;Pythonu prakticky stejnou
+vyjadřovací sílu, jako například v&nbsp;programovacích jazycích Lua či
+JavaScript; nehledě již na většinu funkcionálních jazyků, které samozřejmě
+práci s&nbsp;uzávěry ve většině případů taktéž podporují. Uzávěry jsou navíc
+tak důležitou součástí Pythonu, že pro jejich implementaci jsou v&nbsp;bajtkódu
+Python VM rezervovány dvě instrukce nazvané <strong>LOAD_CLOSURE</strong> a
+<strong>MAKE_CLOSURE</strong> s&nbsp;nimiž se setkáme v&nbsp;navazujících
+kapitolách, konkrétně ve výpisech bajtkódů demonstračních příkladů.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Demonstrační příklad <strong>Test34.py</strong>: jednoduchý uzávěr vytvořený v&nbsp;Pythonu</h2>
+
+<p>První demonstrační příklad s&nbsp;uzávěrem je velmi prostý, protože je zde
+funkce (která tvoří základ uzávěru) navázána na hodnotu parametru předaného do
+funkce, v&nbsp;níž se uzávěr vytváří. Pro lepší čitelnost je funkce tvořící
+základ uzávěru pojmenována, ve skutečnosti by však bylo možné
+v&nbsp;jednodušších případech použít i anonymní funkce vytvořené
+s&nbsp;využitím klíčového slova <strong>lambda</strong> (zde však programovací
+jazyk Python omezuje těla takových funkcí na jediný výraz, což může být někdy
+příliš striktní, ostatně právě proto si ukazujeme použití vnitřní neanonymní
+funkce):</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 34.</i>
+<i>#</i>
+<i># Jednoduchy uzaver v Pythonu.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Jednoduchy uzaver v Pythonu.</i>
+<i>#</i>
+def <strong>dummyAdder</strong>(delta):
+    def <strong>add</strong>(n):
+        return delta + n
+    return add
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main</strong>():
+    adder1 = dummyAdder(0)
+    adder2 = dummyAdder(42)
+    for i in range(1,11):
+        result1 = adder1(i)
+        result2 = adder2(i)
+        print("Iteration #%d" % i)
+        print("    Adder1: %d" % result1)
+        print("    Adder2: %d" % result2)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble</strong>():
+    from dis import dis
+&nbsp;
+    print("\ndummyAdder():")
+    dis(dummyAdder)
+&nbsp;
+    print("\nmain():")
+    dis(main)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+disassemble()
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Po spuštění tohoto demonstračního příkladu je patrné, že se skutečně každý
+uzávěr navázal na jinou hodnotu parametru předaného do funkce vytvářející
+uzávěr:</p>
+
+<pre>
+Iteration #1
+    Adder1: 1
+    Adder2: 43
+Iteration #2
+    Adder1: 2
+    Adder2: 44
+Iteration #3
+    Adder1: 3
+    Adder2: 45
+Iteration #4
+    Adder1: 4
+    Adder2: 46
+Iteration #5
+    Adder1: 5
+    Adder2: 47
+Iteration #6
+    Adder1: 6
+    Adder2: 48
+Iteration #7
+    Adder1: 7
+    Adder2: 49
+Iteration #8
+    Adder1: 8
+    Adder2: 50
+Iteration #9
+    Adder1: 9
+    Adder2: 51
+Iteration #10
+    Adder1: 10
+    Adder2: 52
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Překlad demonstračního příkladu <strong>Test34.py</strong> do bajtkódu Python VM</h2>
+
+<p>Opět nás bude zajímat, jakým způsobem se demonstrační příklad
+<strong>Test34.py</strong> přeložil do bajtkódu virtuálního stroje Pythonu.
+Nejdříve se podívejme na překlad funkce <strong>dummyAdder()</strong>,
+v&nbsp;jejímž bajtkódu můžeme vidět nové instrukce nazvané
+<strong>LOAD_CLOSURE</strong> a <strong>MAKE_CLOSURE</strong>, které se
+postarají &ndash; již na takto nízké úrovni &ndash; o vytvoření uzávěru,
+podobně jako tomu bylo s&nbsp;instrukcí <strong>CLOSURE</strong>
+v&nbsp;bajtkódu Lua VM:</p>
+
+<pre>
+<strong>dummyAdder</strong>():
+ 13           0 LOAD_CLOSURE             0 (delta)     <i>// příprava na navázání proměnné k uzávěru</i>
+              3 BUILD_TUPLE              1
+                                                       <i>// nyní se načte bajktód již přeložené vnitřní funkce</i>
+              6 LOAD_CONST               1 (code object add at 0xb77125c0, file "Test34.py", line 13)
+              9 MAKE_CLOSURE             0             <i>// vytvořit uzávěr a uložit referenci na něj na TOS</i>
+             12 STORE_FAST               1 (add)       <i>// referenci taktéž do proměnné <strong>add</strong></i>
+&nbsp;
+ 15          15 LOAD_FAST                1 (add)       <i>// na TOS uložit referenci na uzávěr z&nbsp;proměnné <strong>add</strong></i>
+             18 RETURN_VALUE                           <i>// vrátit tuto referenci</i> 
+</pre>
+
+<p>Samotné volání vytvořeného uzávěru již není vůbec složité, uzávěry se totiž
+v&nbsp;tomto ohledu chovají jako běžné funkce:</p>
+
+<pre>
+<strong>main</strong>():
+ 23           0 LOAD_GLOBAL              0 (dummyAdder)<i>// příprava na volání funkce <strong>dummyAdder</strong></i>
+              3 LOAD_CONST               1 (0)         <i>// na TOS uložit konstantu 0</i>
+              6 CALL_FUNCTION            1             <i>// zavolat funkci <strong>dummyAdder()</strong> s jedním parametrem</i>
+              9 STORE_FAST               0 (adder1)    <i>// uložit vrácený uzávěr do lokální proměnné</i>
+&nbsp;
+ 24          12 LOAD_GLOBAL              0 (dummyAdder)<i>// příprava na volání funkce <strong>dummyAdder</strong></i>
+             15 LOAD_CONST               2 (42)        <i>// na TOS uložit konstantu 42</i>
+             18 CALL_FUNCTION            1             <i>// zavolat funkci <strong>dummyAdder()</strong> s jedním parametrem</i>
+             21 STORE_FAST               1 (adder2)    <i>// uložit vrácený uzávěr do lokální proměnné</i>
+&nbsp;
+ 25          24 SETUP_LOOP              74 (to 101)    <i>// příprava na provedení programové smyčky</i>
+             27 LOAD_GLOBAL              1 (range)     <i>// načtení globální reference na funkci <strong>range()</strong></i>
+             30 LOAD_CONST               3 (1)         <i>// první konstanta předávaná do funkce <strong>range()</strong></i>
+             33 LOAD_CONST               4 (11)        <i>// druhá konstanta předávaná do funkce <strong>range()</strong></i>
+             36 CALL_FUNCTION            2             <i>// zavolání funkce <strong>range(1, 11)</strong></i>
+             39 GET_ITER                               <i>// získání iterátoru vráceného funkcí <strong>range()</strong></i>
+&nbsp;
+             40 FOR_ITER                57 (to 100)    <i>// začátek programové smyčky (vstup do další iterace)</i>
+             43 STORE_FAST               2 (i)         <i>// tato lokální proměnná je počitadlem smyčky</i>
+&nbsp;
+ 26          46 LOAD_FAST                0 (adder1)    <i>// příprava na volání prvního uzávěru</i>
+             49 LOAD_FAST                2 (i)         <i>// lokální proměnná i (počitadlo) bude parametrem uzávěru</i>
+             52 CALL_FUNCTION            1             <i>// zavolat uzávěr s jedním parametrem</i>
+             55 STORE_FAST               3 (result1)   <i>// uložit výsledek volání do lokální proměnné</i>
+&nbsp;
+ 27          58 LOAD_FAST                1 (adder2)    <i>// příprava na volání druhého uzávěru</i>
+             61 LOAD_FAST                2 (i)         <i>// lokální proměnná i (počitadlo) bude parametrem uzávěru</i>
+             64 CALL_FUNCTION            1             <i>// zavolat uzávěr s jedním parametrem</i>
+             67 STORE_FAST               4 (result2)   <i>// uložit výsledek volání do lokální proměnné</i>
+&nbsp;
+ 28          70 LOAD_CONST               5 ('Iteration #%d')
+             73 LOAD_FAST                2 (i)
+             76 BINARY_MODULO                          <i>// operátor modulo je zde použit pro formátování výstupu</i>
+             77 PRINT_ITEM                             <i>// výpis čísla iterace</i>
+             78 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 29          79 LOAD_CONST               6 ('    Adder1: %d')
+             82 LOAD_FAST                3 (result1)
+             85 BINARY_MODULO                          <i>// operátor modulo je zde použit pro formátování výstupu</i>
+             86 PRINT_ITEM                             <i>// výpis hodnoty vrácené prvním uzávěrem</i>
+             87 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 30          88 LOAD_CONST               7 ('    Adder2: %d')
+             91 LOAD_FAST                4 (result2)
+             94 BINARY_MODULO                          <i>// operátor modulo je zde použit pro formátování výstupu</i>
+             95 PRINT_ITEM                             <i>// výpis hodnoty vrácené druhým uzávěrem</i>
+             96 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             97 JUMP_ABSOLUTE           40             <i>// skok na začátek programové smyčky (další iterace)</i>
+&nbsp;
+            100 POP_BLOCK                              <i>// úklid zásobníku po provedení smyčky</i>
+            101 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+            104 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Demonstrační příklad <strong>Test35.py</strong>: nefunkční implementace čítače realizovaného uzávěrem</h2>
+
+<p>Připomeňme si, že při popisu implementace uzávěrů v&nbsp;programovacím
+jazyce Lua jsme se mj.&nbsp;zabývali i následujícím demonstračním příkladem,
+v&nbsp;němž se ve funkci <strong>createCounter()</strong> vytvořil uzávěr
+navázaný na lokální proměnnou této funkce nazvanou <strong>counter</strong>.
+Uzávěr mohl jak číst hodnotu této proměnné, tak ji dokonce mohl bez problémů
+modifikovat:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 30.</i>
+<i>--</i>
+<i>-- Vytvareni a nasledne pouziti uzaveru (closure).</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- Vytvoreni a vraceni uzaveru, tj. funkce na niz je navazana</i>
+<i>-- externi lokalni promenna - upvalue.</i>
+function <strong>createCounter</strong>()
+    <i>-- lokalni promenna, jejiz "zivotnost" presahuje</i>
+    <i>-- pouhe zavolani a provedeni bloku funkce createCounter()</i>
+    local counter = 0
+    <i>-- navratovou hodnotou funkce createCounter() je anonymni</i>
+    <i>-- funkce pracujici s promennou cnt, ktera je na tuto</i>
+    <i>-- anonymni funkci navazana</i>
+    return function()
+        <i>-- counter se oznacuje jako "externi lokalni promenna"</i>
+        <i>-- popr. v terminologii jazyka Lua "upvalue"</i>
+        counter = counter + 1
+        return counter
+    end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    <i>-- ziskame "instanci" anonymni funkce i na ni navazanou</i>
+    <i>-- externi lokalni promennou "counter"</i>
+    <i>-- -&gt; closure</i>
+    local mycounter = createCounter()
+    print(mycounter())
+    print(mycounter())
+    print(mycounter())
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Přímý přepis výše uvedeného demonstračního příkladu do Pythonu by mohl
+vypadat následovně:</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 35.</i>
+<i>#</i>
+<i># Nefunkcni implementace citace realizovaneho uzaverem.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Jednoduchy uzaver v Pythonu.</i>
+<i>#</i>
+def <strong>createCounter</strong>():
+    counter = 0
+    def <strong>next</strong>():
+        counter += 1
+        return counter
+    return next
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main</strong>():
+    counter1 = createCounter()
+    counter2 = createCounter()
+    for i in range(1,11):
+        result1 = counter1()
+        result2 = counter2()
+        print("Iteration #%d" % i)
+        print("    Counter1: %d" % result1)
+        print("    Counter2: %d" % result2)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble</strong>():
+    from dis import dis
+&nbsp;
+    print("\ncreateCounter():")
+    dis(createCounter)
+&nbsp;
+    print("\nmain():")
+    dis(main)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+disassemble()
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Ve skutečnosti však takto naprogramovaný uzávěr nebude funkční, protože
+k&nbsp;vázané proměnné <strong>counter</strong> sice může uzávěr přistupovat
+při čtení, ale nikoli už při zápisu (modifikaci). Proč dojde k&nbsp;chybě lze
+zjednodušeně řečeno vysvětlit tak, že interpret Pythonu musí mít informaci o
+tom, že proměnná <strong>counter</strong> není interní proměnnou uzávěru, ale
+vázanou (tedy nelokální) proměnnou. Z&nbsp;tohoto důvodu při spuštění tohoto
+příkladu dojde k&nbsp;běhové výjimce. Proto je zapotřebí dávat pozor na to, že
+ne všechny uzávěry implementované v&nbsp;programovacích jazycích jakými jsou
+Lua či JavaScript lze bez problémů přímo přepsat do Pythonu:</p>
+
+<pre>
+Traceback (most recent call last):
+  File "Test35.py", line 51, in &lt;module&lt;
+    main()
+  File "Test35.py", line 28, in main
+    result1 = counter1()
+  File "Test35.py", line 15, in next
+    counter += 1
+UnboundLocalError: local variable 'counter' referenced before assignment
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Demonstrační příklad <strong>Test36.py</strong>: funkční implementace čítače realizovaného uzávěrem</h2>
+
+<p>Aby bylo možné vytvářet plnohodnotné uzávěry i v&nbsp;Pythonu, bylo do verze
+3.x přidáno nové klíčové slovo <strong>nonlocal</strong>. Tímto klíčovým slovem
+je možné ve vnitřní funkci &ndash; tedy ve vlastním uzávěru &ndash; označit
+proměnnou, která nemá být chápána jako proměnná lokální. Ovšem ve skutečnosti
+můžeme uzávěr implementující čítač vytvořit i v&nbsp;Pythonu 2, a to pomocí
+malého triku: namísto skalární (celočíselné) proměnné se použije jednorozměrný
+seznam. Zde již interpret nebude mít problém s&nbsp;rozeznáním lokální proměnné
+od proměnné vázané, neboť význam řádků <strong>counter += 1</strong> a
+<strong>counter[0] += 1</strong> je sémanticky odlišný (interpret si je ve
+druhém případě jistý, že se nejedná o deklaraci nové lokální proměnné):</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 36.</i>
+<i>#</i>
+<i># Funkcni implementace citace realizovaneho uzaverem.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Jednoduchy uzaver v Pythonu.</i>
+<i>#</i>
+def <strong>createCounter</strong>():
+    counter = [0]
+    def <strong>next</strong>():
+        counter[0] += 1
+        return counter[0]
+    return next
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main</strong>():
+    counter1 = createCounter()
+    counter2 = createCounter()
+    for i in range(1,11):
+        result1 = counter1()
+        result2 = counter2()
+        print("Iteration #%d" % i)
+        print("    Counter1: %d" % result1)
+        print("    Counter2: %d" % result2)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble</strong>():
+    from dis import dis
+&nbsp;
+    print("\ncreateCounter():")
+    dis(createCounter)
+&nbsp;
+    print("\nmain():")
+    dis(main)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+disassemble()
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Z&nbsp;následujícího výpisu je patrné, že tento demonstrační příklad
+skutečně funguje, a to i v&nbsp;Pythonu 2:</p>
+
+<pre>
+Iteration #1
+    Counter1: 1
+    Counter2: 1
+Iteration #2
+    Counter1: 2
+    Counter2: 2
+Iteration #3
+    Counter1: 3
+    Counter2: 3
+Iteration #4
+    Counter1: 4
+    Counter2: 4
+Iteration #5
+    Counter1: 5
+    Counter2: 5
+Iteration #6
+    Counter1: 6
+    Counter2: 6
+Iteration #7
+    Counter1: 7
+    Counter2: 7
+Iteration #8
+    Counter1: 8
+    Counter2: 8
+Iteration #9
+    Counter1: 9
+    Counter2: 9
+Iteration #10
+    Counter1: 10
+    Counter2: 10
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Překlad demonstračního příkladu <strong>Test36.py</strong> do bajtkódu Python VM</h2>
+
+<p>Funkce <strong>createCounter()</strong>, která vytvoří nyní již funkční
+čítač tvořený uzávěrem s&nbsp;jednou vázanou proměnnou, se přeloží do bajtkódu
+virtuálního stroje programovacího jazyka Python následujícím způsobem:</p>
+
+<pre>
+<strong>createCounter</strong>():
+ 13           0 LOAD_CONST               1 (0)         <i>// první (a jediný) prvek seznamu má hodnotu 0</i>
+              3 BUILD_LIST               1             <i>// vytvořit seznam o velikosti jednoho prvku</i>
+              6 STORE_DEREF              0 (counter)   <i>// uložit seznam</i>
+&nbsp;
+ 14           9 LOAD_CLOSURE             0 (counter)   <i>// příprava na navázání proměnné k uzávěru</i>
+             12 BUILD_TUPLE              1
+                                                       <i>// nyní se načte bajktód již přeložené vnitřní funkce</i>
+             15 LOAD_CONST               2 (code object next at 0xb77175c0, file "Test36.py", line 14)
+             18 MAKE_CLOSURE             0             <i>// vytvořit uzávěr a uložit referenci na něj na TOS</i>
+             21 STORE_FAST               0 (next)      <i>// na TOS uložit referenci na uzávěr z&nbsp;proměnné <strong>add</strong></i>
+&nbsp;
+ 17          24 LOAD_FAST                0 (next)      <i>// na TOS uložit referenci na uzávěr z&nbsp;proměnné <strong>next</strong></i>
+             27 RETURN_VALUE                           <i>// vrátit tuto referenci</i> 
+</pre>
+
+<p>Samotné volání vytvořeného uzávěru se podobá volání, s&nbsp;nímž jsme se
+setkali již v&nbsp;předchozích kapitolách:</p>
+
+<pre>
+<strong>main</strong>():
+ 25           0 LOAD_GLOBAL              0 (createCounter)<i>// příprava na volání funkce <strong>createCounter</strong></i>
+              3 CALL_FUNCTION            0             <i>// zavolat funkci <strong>createCounter()</strong> bez parametrů</i>
+              6 STORE_FAST               0 (counter1)  <i>// uložit vrácený uzávěr do lokální proměnné</i>
+&nbsp;
+ 26           9 LOAD_GLOBAL              0 (createCounter)<i>// příprava na volání funkce <strong>createCounter</strong></i>
+             12 CALL_FUNCTION            0             <i>// zavolat funkci <strong>createCounter()</strong> bez parametrů</i>
+             15 STORE_FAST               1 (counter2)  <i>// uložit vrácený uzávěr do lokální proměnné</i>
+&nbsp;
+ 27          18 SETUP_LOOP              68 (to 89)     <i>// příprava na provedení programové smyčky</i>
+             21 LOAD_GLOBAL              1 (range)     <i>// načtení globální reference na funkci <strong>range()</strong></i>
+             24 LOAD_CONST               1 (1)         <i>// první konstanta předávaná do funkce <strong>range()</strong></i>
+             27 LOAD_CONST               2 (11)        <i>// druhá konstanta předávaná do funkce <strong>range()</strong></i>
+             30 CALL_FUNCTION            2             <i>// zavolání funkce <strong>range(1, 11)</strong></i>
+             33 GET_ITER                               <i>// získání iterátoru vráceného funkcí <strong>range()</strong></i>
+&nbsp;
+             34 FOR_ITER                51 (to 88)     <i>// začátek programové smyčky (vstup do další iterace)</i>
+             37 STORE_FAST               2 (i)         <i>// tato lokální proměnná je počitadlem smyčky</i>
+&nbsp;
+ 28          40 LOAD_FAST                0 (counter1)  <i>// příprava na volání prvního uzávěru</i>
+             43 CALL_FUNCTION            0             <i>// zavolat uzávěr bez předání parametrů</i>
+             46 STORE_FAST               3 (result1)   <i>// uložit výsledek volání do lokální proměnné</i>
+&nbsp;
+ 29          49 LOAD_FAST                1 (counter2)  <i>// příprava na volání prvního uzávěru</i>
+             52 CALL_FUNCTION            0             <i>// zavolat uzávěr bez předání parametrů</i>
+             55 STORE_FAST               4 (result2)   <i>// uložit výsledek volání do lokální proměnné</i>
+&nbsp;
+ 30          58 LOAD_CONST               3 ('Iteration #%d')
+             61 LOAD_FAST                2 (i)
+             64 BINARY_MODULO                          <i>// operátor modulo je zde použit pro formátování výstupu</i>
+             65 PRINT_ITEM                             <i>// výpis čísla iterace</i>
+             66 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 31          67 LOAD_CONST               4 ('    Counter1: %d')
+             70 LOAD_FAST                3 (result1)
+             73 BINARY_MODULO                          <i>// operátor modulo je zde použit pro formátování výstupu</i>
+             74 PRINT_ITEM                             <i>// výpis hodnoty vrácené prvním uzávěrem</i>
+             75 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+ 32          76 LOAD_CONST               5 ('    Counter2: %d')
+             79 LOAD_FAST                4 (result2)
+             82 BINARY_MODULO                          <i>// operátor modulo je zde použit pro formátování výstupu</i>
+             83 PRINT_ITEM                             <i>// výpis hodnoty vrácené druhým uzávěrem</i>
+             84 PRINT_NEWLINE                          <i>// odřádkování</i>
+&nbsp;
+             85 JUMP_ABSOLUTE           34             <i>// skok na začátek programové smyčky (další iterace)</i>
+&nbsp;
+             88 POP_BLOCK                              <i>// úklid zásobníku po provedení smyčky</i>
+             89 LOAD_CONST               0 (None)      <i>// uložit konstantu None na zásobník operandů</i>
+             92 RETURN_VALUE                           <i>// vrátit tuto konstantu (uloženou na TOS)</i>
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Repositář se zdrojovými kódy všech pěti dnešních demonstračních příkladů</h2>
+
+<p>Všech pět dnes popsaných a &bdquo;disasemblovaných&ldquo; demonstračních
+příkladů bylo uloženo do Mercurial repositáře umístěného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Odkazy na prozatím poslední verze těchto pěti příkladů naleznete v&nbsp;tabulce
+umístěné pod tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>Test32.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test32.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test32.py</a></td></tr>
+<tr><td>2</td><td>Test33.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test33.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83b435bb6c0f/bytecode/Python/Test33.py</a></td></tr>
+<tr><td>3</td><td>Test34.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/280bfaac435f/bytecode/Python/Test34.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/280bfaac435f/bytecode/Python/Test34.py</a></td></tr>
+<tr><td>4</td><td>Test35.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/280bfaac435f/bytecode/Python/Test35.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/280bfaac435f/bytecode/Python/Test35.py</a></td></tr>
+<tr><td>5</td><td>Test36.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/280bfaac435f/bytecode/Python/Test36.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/280bfaac435f/bytecode/Python/Test36.py</a></td></tr>
+</table>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Generátory a uzávěry &ndash; rozdíly mezi jazyky Lua a Python</h2>
+
+<p>V&nbsp;programovacím jazyce <i>Lua</i> není podpora pro práci
+s&nbsp;<i>koprogramy</i> implementována formou speciální syntaktické konstrukce
+jazyka tak, jako je tomu v&nbsp;některých dalších programovacích jazycích
+implementujících koprogramy (neexistuje zde například klíčové slovo pro
+přerušení práce koprogramu, zatímco třeba Python pro podobnou činnost rezervuje
+slovo <strong>yield</strong>, viz předchozí kapitoly), ale &ndash; jak se již
+v&nbsp;<i>Lua</i> stalo dobrým zvykem &ndash; je vše řešeno pomocí funkcí a
+asociativních polí. Samotný koprogram je ve své podstatě pojmenovaná či
+anonymní funkce s&nbsp;vlastním zásobníkem, který je oddělený od zásobníku
+volajícího programu. Pro vytváření, řízení a zjišťování stavů koprogramů lze
+využít šest funkcí ležících v&nbsp;prostoru jmen nazvaném
+<strong>coroutine</strong> (prostor jmen není nic jiného než takto pojmenované
+globální asociativní pole se šesti &bdquo;veřejnými&ldquo; funkcemi a několika
+pomocnými atributy), jejichž význam je uveden v&nbsp;následující tabulce.:</p>
+
+<table>
+<tr><th>Název funkce</th><th>Význam</th></tr>
+<tr><td>coroutine.create() </td><td>vytvoření koprogramu</td></tr>
+<tr><td>coroutine.resume() </td><td>spuštění či znovuspuštění koprogramu</td></tr>
+<tr><td>coroutine.running()</td><td>funkce vrátí právě běžící koprogram (pro hlavní vlákno se vrací <strong>nil</strong>)</td></tr>
+<tr><td>coroutine.status() </td><td>funkce vrátí aktuální stav koprogramu &ndash; zda běží, je pozastaven či zda je běh koprogramu již ukončen</td></tr>
+<tr><td>coroutine.wrap()   </td><td>vytvoření koprogramu, vrací se funkce, která koprogram spustí</td></tr>
+<tr><td>coroutine.yield()  </td><td>pozastavení koprogramu a případný přenos parametrů volajícímu programu</td></tr>
+</table>
+
+<p>Na závěr se ještě pokusme popsat společné vlastnosti a rozdíly mezi
+programovacími jazyky Lua a Python v&nbsp;oblasti generátorů a uzávěrů:</p>
+
+<table>
+<tr><th> #</th><th>Vlastnost</th><th>Lua</th><th>Python</th></tr>
+<tr><td> 1</td><td>podpora uzávěrů v jazyku</td><td>ano</td><td>ano</td></tr>
+<tr><td> 2</td><td>podpora anonymních funkcí</td><td>ano</td><td>s omezeními</td></tr>
+<tr><td> 3</td><td>funkce je plnohodnotný datový typ</td><td>ano</td><td>ano</td></tr>
+<tr><td> 4</td><td>podpora uzávěrů v bajtkódu</td><td>ano</td><td>ano</td></tr>
+<tr><td> 5</td><td>vázané &bdquo;lokální externí proměnné&ldquo;</td><td>ano</td><td>Python 2: omezení, Python 3: ano</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>podpora koprogramů/generátorů v jazyku</td><td>ano (přes funkce)</td><td>ano</td></tr>
+<tr><td> 7</td><td>pozastavení koprogramu s návratovou hodnotou</td><td>coroutine.yield(value)</td><td>yield value</td></tr>
+<tr><td> 8</td><td>podpora koprogramů/generátorů v bajtkódu</td><td>ne</td><td>ano</td></tr>
+</table>
+
+<p>(ještě &bdquo;politicky složitější&ldquo; situace nastane při porovnání
+s&nbsp;programovacím jazykem Java a především s&nbsp;bajtkódem JVM).</p>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/release/2.5.2/lib/bytecodes.html">https://docs.python.org/release/2.5.2/lib/bytecodes.html</a>
+</li>
+
+<li>Python 2.x: funkce range()<br />
+<a href="https://docs.python.org/2/library/functions.html#range">https://docs.python.org/2/library/functions.html#range</a>
+</li>
+
+<li>Python 2.x: typ iterátor<br />
+<a href="https://docs.python.org/2/library/stdtypes.html#iterator-types">https://docs.python.org/2/library/stdtypes.html#iterator-types</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Wikipedia CZ: Koprogram,<br />
+<a href="http://cs.wikipedia.org/wiki/Koprogram">http://cs.wikipedia.org/wiki/Koprogram</a>
+</li>
+
+<li>Wikipedia EN: Coroutine,<br />
+<a href="http://en.wikipedia.org/wiki/Coroutine">http://en.wikipedia.org/wiki/Coroutine</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes,<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>For-each Loop in Java<br />
+<a href="http://www.leepoint.net/notes-java/flow/loops/foreach.html">http://www.leepoint.net/notes-java/flow/loops/foreach.html</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
