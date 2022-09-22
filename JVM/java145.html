@@ -1,0 +1,1114 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Poslední porovnání virtuálního stroje Javy, VM jazyka Python a VM programovacího jazyka Lua se bude týkat způsobu zpracování výjimek. Jedná se o velmi důležitou součást prakticky všech moderních virtuálních strojů a jak vyplyne z dalšího textu, mohou být výjimky zpracovány mnohdy i značně odlišnými způsoby.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM</a></p>
+<p><a href="#k02">2. Porovnání způsobů práce s&nbsp;výjimkami v&nbsp;jazycích Java, Lua a Python</a></p>
+<p><a href="#k03">3. Výjimky v&nbsp;programovacím jazyku Java</a></p>
+<p><a href="#k04">4. Vyhození výjimky s&nbsp;využitím instrukce <strong>athrow</strong></a></p>
+<p><a href="#k05">5. Demonstrační příklad <strong>Test31.java</strong>: vyhození výjimky typu RuntimeException</a></p>
+<p><a href="#k06">6. Překlad demonstračního příkladu <strong>Test31.java</strong> do bajtkódu JVM</a></p>
+<p><a href="#k07">7. Demonstrační příklad <strong>Test32.java</strong>: vyhození výjimky typu Exception</a></p>
+<p><a href="#k08">8. Překlad demonstračního příkladu <strong>Test32.java</strong> do bajtkódu JVM</a></p>
+<p><a href="#k09">9. Demonstrační příklad <strong>Test33.java</strong>: implementace struktury try-catch</a></p>
+<p><a href="#k10">10. Překlad demonstračního příkladu <strong>Test33.java</strong> do bajtkódu JVM</a></p>
+<p><a href="#k11">11. Demonstrační příklad <strong>Test34.java</strong>: implementace struktury try-catch-finally</a></p>
+<p><a href="#k12">12. Překlad demonstračního příkladu <strong>Test34.java</strong> do bajtkódu JVM</a></p>
+<p><a href="#k13">13. Repositář se zdrojovými kódy všech sedmi dnešních demonstračních příkladů</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM</h2>
+
+<p>V&nbsp;předchozích částech <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-volani-funkci-a-pouziti-generatoru-i-uzaveru-v-python-vm-2/">tohoto
+seriálu</a> jsme si popsali již prakticky všechny skupiny instrukcí, které je
+možné najít v&nbsp;bajtkódech určených pro zpracování (běh) ve virtuálních
+strojích Javy (JVM), Pythonu (Python VM) i ve virtuálním stroji programovacího
+jazyka Lua (Lua VM). Ještě si však musíme popsat jednu velmi důležitou
+vlastnost všech tří zmíněných bajtkódů &ndash; jedná se o instrukce a o
+specializované datové struktury použité při zpracování výjimek i při
+implementaci bloků
+<strong>try</strong>-<strong>catch</strong>-<strong>finally</strong>
+popř.&nbsp;jejich ekvivalentů (to se týká především jazyka Lua, který tyto
+bloky v&nbsp;současné verzi nepodporuje). Dnes se budeme zabývat převážně
+virtuálním strojem Javy, ovšem v&nbsp;následující části tohoto seriálu si
+osvětlíme princip práce s&nbsp;výjimkami i ve virtuálním stroji Pythonu a
+taktéž Lua VM.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Porovnání způsobů práce s&nbsp;výjimkami v&nbsp;jazycích Java, Lua a Python</h2>
+
+<p>Nejprve se na problematiku výjimek, včetně způsobu jejich vyhazování i
+zachycování, podívejme z&nbsp;hlediska programátora vytvářejícího aplikace
+v&nbsp;Javě, Pythonu či v&nbsp;jazyku Lua. Teprve poté si vysvětlíme způsob
+práce s&nbsp;výjimkami přímo v&nbsp;bajtkódu.</p>
+
+<p>Začněme popisem práce s&nbsp;výjimkami v&nbsp;Javě. V&nbsp;tomto
+programovacím jazyku má vývojář k&nbsp;dispozici hned několik klíčových slov
+určených jak pro označení těch výjimek, které mohou vzniknout v&nbsp;nějaké
+metodě (klíčové slovo <strong>throws</strong>), tak i pro samotné programové
+vyhození výjimky zvoleného typu (klíčové slovo <strong>throw</strong>) i její
+zachycení (struktura tvořená dvojicí programových bloků
+<strong>try-catch</strong> popř.&nbsp;rozšířená i o blok
+<strong>finally</strong>). V&nbsp;prvním příkladu <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.java">ModuloByZero.java</a>
+je ukázáno použití bloků <strong>try-catch-finally</strong> při výpočtu zbytku
+po dělení i pro korektní reakci na stav, kdy je dělitel nulový. Pokud dojde
+k&nbsp;dělení nulou (a operace % taktéž provádí dělení), je vyhozena výjimka
+typu <strong>ArithmeticException</strong>, která je následně ve stejné metodě
+zachycena a vhodným způsobem zpracována:</p>
+
+<pre>
+public class <strong>Test</strong> {
+    public static void <strong>main</strong>(String[] args) {
+        int x = 42;
+        int y = 0;
+        <strong>try</strong> {
+            int z = x % y;
+        }
+        <strong>catch</strong> (ArithmeticException e) {
+            System.out.println("div/mod by zero detected!");
+            System.out.println(e);
+        }
+        <strong>finally</strong> {
+            System.out.println("done");
+        }
+    }
+}
+</pre>
+
+<p>Prakticky stejným způsobem jsou programové bloky
+<strong>try-catch-finally</strong> implementovány i v&nbsp;programovacím jazyku
+Python, až na jeden nepatrný (syntaktický) rozdíl &ndash; namísto klíčového
+slova <strong>catch</strong> se zde používá slovo <strong>except</strong>.
+Demonstrační příklad <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.py">ModuloByZero.py</a>,
+jehož zdrojový kód je umístěn pod tímto odstavcem, se do značné míry podobá
+výše uvedenému příkladu <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.java">ModuloByZero.java</a>,
+ovšem samotný zápis je mnohem stručnější (což se ostatně dá od Pythonu očekávat
+:-) a navíc i univerzálnější v&nbsp;případě, že bude operátor % přetížen a
+namísto číselných proměnných <strong>x</strong> a <strong>y</strong> budou
+použity objekty, které s&nbsp;operátorem % dokážou korektně pracovat:</p>
+
+<pre>
+x = 42
+y = 0
+<strong>try</strong>:
+    z = x % y
+<strong>except</strong> ZeroDivisionError, e:
+    print "div/mod by zero detected!"
+    print e
+<strong>finally</strong>:
+    print "done"
+</pre>
+
+<p>Zcela odlišná je však implementace podobného příkladu v&nbsp;programovacím
+jazyce Lua, a to z&nbsp;toho důvodu, že tento jazyk přímo neobsahuje podporu
+pro bloky <strong>try-catch-finally</strong>. Namísto toho je aplikován
+&bdquo;funkcionální&ldquo; přístup, kdy je ta část programu, v&nbsp;níž může
+nastat nějaká výjimka, umístěna do samostatné funkce, která se pak zavolá
+v&nbsp;&bdquo;sandboxu&ldquo; s&nbsp;využitím funkce <strong>pcall()</strong>
+(<i>protected call</i>). Výjimka se vyhazuje funkcí <strong>error()</strong> a
+pokud výjimka skutečně nastane, vrací funkce <strong>pcall()</strong> ve svém
+prvním výsledku hodnotu <i>false</i> (další návratová hodnota či návratové
+hodnoty již souvisí s&nbsp;volanou funkcí). V&nbsp;demonstračním příkladu <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.lua">ModuloByZero.lua</a>
+je navíc použit malý trik se zjištěním, zda při dělení či při operaci modulo
+nedošlo k&nbsp;dělení nulou, protože Lua v&nbsp;tomto případě automaticky
+výjimku nevyhazuje (zmíněný trik je založen na normě IEEE 754 tvrdící, že dvě
+hodnoty NaN si nejsou nikdy rovny):</p>
+
+<pre>
+function <strong>mod</strong>(x, y)
+    local result = x % y
+    if result ~= result then
+        <strong>error</strong>("ArithmeticException: / by zero")
+    end
+    return result
+end
+&nbsp;
+local x = 42
+local y = 0
+&nbsp;
+local status, result = <strong>pcall</strong>(mod , x, y)
+print(status, result)
+&nbsp;
+x = 10
+y = 3
+&nbsp;
+local status, result = <strong>pcall</strong>(mod , x, y)
+print(status, result)
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Výjimky v&nbsp;programovacím jazyku Java</h2>
+
+<p>V&nbsp;programovacím jazyku Java je zpracování výjimek nedílnou součástí
+syntaxe i sémantiky, a to již od první verze Javy. Totéž platí o bajtkódu JVM,
+který obsahuje podporu pro instrukci <strong>athrow</strong> popsanou <a
+href="#k04">ve čtvrté kapitole</a> a navíc se v&nbsp;bajtkódu používají i
+datové struktury popisující ty části bajtkódu, kde může vzniknout zachycovaná
+výjimka či výjimky. Díky této podpoře a taktéž s&nbsp;využitím podmíněných a
+nepodmíněných skoků lze bloky <strong>try-catch-finally</strong>
+v&nbsp;bajtkódu implementovat relativně úsporným způsobem, což bude ostatně
+ukázáno na demonstračních příkladech <a href="#k05">Test31</a>, <a
+href="#k07">Test32</a>, <a href="#k09">Test33</a> a konečně <a
+href="#k11">Test34</a>.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Vyhození výjimky s&nbsp;využitím instrukce <strong>athrow</strong></h2>
+
+<p>Velmi důležitou instrukcí, kterou můžeme v&nbsp;bajtkódu virtuálního stroje
+Javy často nalézt, je instrukce nazvaná příznačně <strong>athrow</strong>. Tato
+instrukce slouží k&nbsp;vyhození výjimky, přičemž při zavolání této instrukce
+musí být reference na objekt reprezentující výjimku uložena na vrcholu
+(<i>TOS</i>) zásobníku operandů (právě z&nbsp;tohoto důvodu začíná jméno
+instrukce znakem <strong>&bdquo;a&ldquo;</strong>, podobně jako jména prakticky
+všech instrukcí zpracovávajících <i>reference</i> na objekty a nikoli
+primitivní datové typy). Tato instrukce nemá žádné další operandy (kromě
+reference uložené na TOS), takže její celková velikost je přesně jeden
+bajt:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>athrow</td><td>0xBF</td><td>&times;</td><td>vyhození výjimky</td></tr>
+</table>
+
+<p>Bajtkód každé metody navíc může obsahovat tabulku obsahující seznam výjimek,
+které mohou nastat a adresy instrukcí, na něž se provede skok ve chvíli, kdy
+k&nbsp;dané výjimce skutečně dojde. Pokud však tato tabulka není přítomna,
+popř.&nbsp;neobsahuje záznam s&nbsp;daným typem výjimky, je výjimka vyhozena
+(<i>throw</i>) z&nbsp;metody a může být zachycena v&nbsp;nadřazených metodách,
+opět s&nbsp;využitím zmíněné tabulky. Podrobnosti si ukážeme
+v&nbsp;následujících čtyřech demonstračních příkladech.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklad <strong>Test31.java</strong>: vyhození výjimky typu RuntimeException</h2>
+
+<p>Způsob překladu Javovských programů, v&nbsp;nichž se používají a
+popř.&nbsp;i zpracovávají výjimky, si dnes ukážeme na čtveřici velmi
+jednoduchých demonstračních příkladů. V&nbsp;prvním příkladu nazvaném
+<strong>Test31</strong> se ve statické metodě pojmenované
+<strong>throwRuntimeException()</strong> programově vyhazuje výjimka typu
+<strong>RuntimeException</strong>. Tento typ výjimky není zapotřebí zmiňovat
+v&nbsp;hlavičce metody a dokonce ho není ani nutné v&nbsp;aplikaci explicitně
+zachytit (tyto kontroly provádí již překladač <strong>javac</strong>, ovšem
+<strong>RuntimeException</strong> a od ní odvozené výjimky nepatří mezi výjimky
+kontrolované &ndash; <i>checked</i>). Pokud ovšem k&nbsp;této výjimce při běhu
+programu skutečně dojde a výjimka není nikde zachycena, bude běh programu a tím
+pádem i běh virtuálního stroje Javy ukončen a na terminál se vypíše klasický
+<i>stack trace</i> (poněkud odlišné je ovšem chování takové aplikace, kde
+k&nbsp;výjimce dojde v&nbsp;jiném vláknu; zde k&nbsp;ukončení celé JVM
+nedojde). Podívejme se nyní na zdrojový kód tohoto velmi jednoduchého
+demonstračního příkladu:</p>
+
+<pre>
+<i>/**</i>
+<i> * Demonstracni priklad cislo 31.</i>
+<i> *</i>
+<i> * Vyhozeni vyjimky typu RuntimeException z testovane metody.</i>
+<i> */</i>
+public class <strong>Test31</strong> {
+&nbsp;
+    <i>/**</i>
+    <i> * Metoda, ktera vyhodi vyjimku typu RuntimeException()</i>
+    <i> */</i>
+    public static void <strong>throwRuntimeException</strong>() {
+        throw new RuntimeException();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zavolani metody throwRuntimeException().</i>
+    <i> */</i>
+    public static void <strong>main</strong>(String[] args) {
+        throwRuntimeException();
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po spuštění tohoto demonstračního příkladu se na terminálu objeví informace
+o výjimce vyhozené z&nbsp;metody <strong>throwRuntimeException</strong> a
+následně i z&nbsp;metody <strong>main</strong>. Tato informace se vypíše ještě
+předtím, než se ukončí běh virtuálního stroje Javy:</p>
+
+<pre>
+Exception in thread "main" java.lang.RuntimeException
+    at Test31.throwRuntimeException(Test31.java:12)
+    at Test31.main(Test31.java:19)
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Překlad demonstračního příkladu <strong>Test31.java</strong> do bajtkódu JVM</h2>
+
+<p>Překlad metody <strong>throwRuntimeException()</strong> do bajtkódu JVM je
+velmi jednoduchý. V&nbsp;těle této metody se nejdříve vytvoří a náležitě
+inicializuje objekt třídy <strong>RuntimeException</strong> a následně je
+použita instrukce <strong>athrow</strong> pro vyhození výjimky. Tato instrukce
+požaduje, aby na TOS byla umístěna reference na objekt představující výjimku,
+což je i důvod použití instrukce <strong>dup</strong>. Povšimněte si, že metoda
+neobsahuje žádné speciální označení ani metadata říkající, že při jejím běhu
+může k&nbsp;výjimce skutečně dojít:</p>
+
+<pre>
+  public static void <strong>throwRuntimeException</strong>();
+    Code:
+       0: new           #2;                 <i>// vytvoření instance třídy java.lang.RuntimeException</i>
+       3: dup                               <i>// kopie reference na nově vytvořený objekt</i>
+                                            <i>// inicializace objektu</i>
+       4: invokespecial #3;                 <i>// Method java/lang/RuntimeException."&lt;init&gt;":()V</i>
+       7: athrow                            <i>// objekt byl inicializován, vyhození výjimky</i>
+</pre>
+
+<p>Ani při volání metody <strong>throwRuntimeException()</strong> není
+zapotřebí žádným způsobem specifikovat, že může dojít k&nbsp;výjimce:</p>)
+
+<pre>
+  public static void <strong>main</strong>(java.lang.String[]);
+    Code:
+       0: invokestatic  #4;                 <i>// zavolání statické metody throwRuntimeException()</i>
+       3: return                            <i>// ukončení běhu metody main()</i>
+</pre>
+
+<p>Pro úplnost je ještě vypsán obsah constant poolu, protože výše uvedené
+bajtkódy používaly záznamy uložené na indexech 2, 3 a 4 (a samozřejmě i záznamy
+z&nbsp;těchto záznamů referencované):</p>
+
+<pre>
+Constant pool:
+   #1 = Methodref          #6.#16;        <i>//  java/lang/Object."&lt;init&gt;":()V</i>
+   #2 = Class              #17;           <i>//  java/lang/RuntimeException</i>
+   #3 = Methodref          #2.#16;        <i>//  java/lang/RuntimeException."&lt;init&gt;":()V</i>
+   #4 = Methodref          #5.#18;        <i>//  Test31.throwRuntimeException:()V</i>
+   #5 = Class              #19;           <i>//  Test31</i>
+   #6 = Class              #20;           <i>//  java/lang/Object</i>
+   #7 = Utf8               &lt;init&gt;;
+   #8 = Utf8               ()V;
+   #9 = Utf8               Code;
+  #10 = Utf8               LineNumberTable;
+  #11 = Utf8               throwRuntimeException;
+  #12 = Utf8               main;
+  #13 = Utf8               ([Ljava/lang/String;)V;
+  #14 = Utf8               SourceFile;
+  #15 = Utf8               Test31.java;
+  #16 = NameAndType        #7:#8;         <i>//  "&lt;init&gt;":()V</i>
+  #17 = Utf8               java/lang/RuntimeException;
+  #18 = NameAndType        #11:#8;        <i>//  throwRuntimeException:()V</i>
+  #19 = Utf8               Test31;
+  #20 = Utf8               java/lang/Object;
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Demonstrační příklad <strong>Test32.java</strong>: vyhození výjimky typu Exception</h2>
+
+<p>Zdrojový kód demonstračního příkladu <strong>Test32.java</strong> se do
+značné míry podobá zdrojovému kódu <a href="#k05">výše uvedeného</a> příkladu
+<strong>Test31.java</strong>. Najdeme zde však tři odlišnosti. První odlišnost
+spočívá v&nbsp;tom, že se namísto výjimky typu
+<strong>RuntimeException</strong> programově vyhazuje výjimka typu
+<strong>Exception</strong>. S&nbsp;tím souvisí i další dvě změny &ndash;
+výjimky typu <strong>Exception</strong> (a samozřejmě i všechny odvozené
+výjimky) je zapotřebí buď explicitně zachytit nebo (opět explicitně) u metod,
+kde může výjimka vzniknout, použít zápis <strong>throws Exception</strong>, aby
+tak vývojář dal překladači Javy najevo, že se zpracováním výjimky tohoto typu
+ve své aplikaci počítá. Právě z&nbsp;tohoto důvodu jsou v&nbsp;hlavičkách obou
+statických funkcí deklarovaných ve třídě <strong>Test32</strong> použity zápisy
+<strong>throws Exception</strong>; v&nbsp;opačném případě by nebylo možné
+provést úspěšný překlad tohoto příkladu:</p>
+
+<pre>
+<i>/**</i>
+<i> * Demonstracni priklad cislo 32.</i>
+<i> *</i>
+<i> * Vyhozeni vyjimky typu Exception z testovane metody.</i>
+<i> */</i>
+public class <strong>Test32</strong> {
+&nbsp;
+    <i>/**</i>
+    <i> * Metoda, ktera vyhodi vyjimku typu Exception()</i>
+    <i> */</i>
+    public static void <strong>throwException</strong>() throws Exception {
+        throw new Exception();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zavolani metody throwException().</i>
+    <i> */</i>
+    public static void <strong>main</strong>(String[] args) throws Exception {
+        throwException();
+    }
+&nbsp;
+}
+</pre>
+
+<p>I po spuštění tohoto demonstračního příkladu dojde k&nbsp;ukončení běhu
+virtuálního stroje Javy. Opět se vypíše i historie volání metod uložených
+v&nbsp;jednotlivých zásobníkových rámcích:</p>
+
+<pre>
+Exception in thread "main" java.lang.Exception
+    at Test32.throwException(Test32.java:12)
+    at Test32.main(Test32.java:19)
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Překlad demonstračního příkladu <strong>Test32.java</strong> do bajtkódu JVM</h2>
+
+<p>Velmi zajímavé bude zjistit, do jaké míry se budou odlišovat bajtkódy tříd
+<strong>Test31</strong> a <strong>Test32</strong>. Překlad metody
+<strong>throwException()</strong>:</p>
+
+<pre>
+  public static void <strong>throwException</strong>() throws java.lang.Exception;
+    Code:
+       0: new           #2;                 <i>// vytvoření instance třídy java.lang.Exception</i>
+       3: dup                               <i>// kopie reference na nově vytvořený objekt</i>
+                                            <i>// inicializace objektu</i>
+       4: invokespecial #3;                 <i>// Method java/lang/Exception."&lt;init&gt;":()V</i>
+       7: athrow                            <i>// objekt byl inicializován, vyhození výjimky</i>
+</pre>
+
+<p>Vidíme, že jediný rozdíl spočívá v&nbsp;přidané deklaraci &bdquo;throws
+java.lang.Exception;&ldquo;, což lze považovat za metadata bajtkódu.</p>
+
+<p>Překlad metody <strong>main()</strong>:</p>
+
+<pre>
+  public static void <strong>main</strong>(java.lang.String[]) throws java.lang.Exception;
+    Code:
+       0: invokestatic  #4;                 <i>// zavolání statické metody throwException:()V</i>
+       3: return                            <i>// ukončení běhu metody main()</i>
+</pre>
+
+<p>I zde došlo pouze k&nbsp;přidání deklarace &bdquo;throws
+java.lang.Exception&ldquo;. Žádné další změny v&nbsp;bajtkódu nenajdeme.</p>
+
+<p>Na závěr bude opět vypsán obsah constant poolu bajtkódu třídy
+<strong>Test32</strong>:</p>
+
+<pre>
+   #1 = Methodref          #6.#17;        <i>//  java/lang/Object."&lt;init&gt;":()V</i>
+   #2 = Class              #18;           <i>//  java/lang/Exception</i>
+   #3 = Methodref          #2.#17;        <i>//  java/lang/Exception."&lt;init&gt;":()V</i></i>
+   #4 = Methodref          #5.#19;        <i>//  Test32.throwException:()V</i>
+   #5 = Class              #20;           <i>//  Test32</i>
+   #6 = Class              #21;           <i>//  java/lang/Object</i>
+   #7 = Utf8               &lt;init&gt;;
+   #8 = Utf8               ()V;
+   #9 = Utf8               Code;
+  #10 = Utf8               LineNumberTable;
+  #11 = Utf8               throwException;
+  #12 = Utf8               Exceptions;    <strong>*** přidaný záznam ***</strong>
+  #13 = Utf8               main;
+  #14 = Utf8               ([Ljava/lang/String;)V;
+  #15 = Utf8               SourceFile;
+  #16 = Utf8               Test32.java;
+  #17 = NameAndType        #7:#8;         <i>//  "&lt;init&gt;":()V</i>
+  #18 = Utf8               java/lang/Exception;
+  #19 = NameAndType        #11:#8;        <i>//  throwException:()V</i>
+  #20 = Utf8               Test32;
+  #21 = Utf8               java/lang/Object;
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Demonstrační příklad <strong>Test33.java</strong>: implementace struktury try-catch</h2>
+
+<p>Demonstrační příklad nazvaný <strong>Test33.java</strong> se od obou
+předchozích demonstračních příkladů odlišuje, protože zde výjimku vyhazovanou
+z&nbsp;metody pojmenované <strong>throwException()</strong> zachycujeme, a to
+(samozřejmě) v&nbsp;bloku <strong>catch</strong>, kterému předchází blok
+<strong>try</strong>. Vzhledem k&nbsp;tomu, že výjimka je při volání statické
+metody <strong>throwException()</strong> skutečně vyhozena vždy, není příkaz
+&bdquo;System.out.println("try block");&ldquo; umístěný v&nbsp;bloku
+<strong>try</strong> nikdy proveden; namísto toho je naopak vždy proveden
+příkaz &bdquo;System.out.println("catch block");&ldquo; umístěný v&nbsp;bloku
+<strong>catch</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Demonstracni priklad cislo 33.</i>
+<i> *</i>
+<i> * Implementace struktury try-catch.</i>
+<i> */</i>
+public class <strong>Test33</strong> {
+&nbsp;
+    <i>/**</i>
+    <i> * Metoda, ktera vyhodi vyjimku typu Exception()</i>
+    <i> */</i>
+    public static void <strong>throwException</strong>() throws Exception {
+        throw new Exception();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zavolani metody throwException().</i>
+    <i> */</i>
+    public static void <strong>main</strong>(String[] args) throws Exception {
+        try {
+            throwException();
+            System.out.println("try block");
+        }
+        catch (Exception e) {
+            System.out.println("catch block");
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Při spuštění tohoto příkladu se na standardním výstupu zobrazí (podle všech
+očekávání) jediný řádek textu:</p>
+
+<pre>
+catch block
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Překlad demonstračního příkladu <strong>Test33.java</strong> do bajtkódu JVM</h2>
+
+<p>Bajtkód demonstračního příkladu <strong>Test33.java</strong> již musí
+obsahovat instrukce zajišťující zachycení a zpracování výjimky, proto bude
+velmi zajímavé ho prozkoumat. Metoda <strong>throwException()</strong> se
+přeloží naprosto stejným způsobem, jaký již známe z&nbsp;předchozího
+příkladu:</p>
+
+<pre>
+  public static void <strong>throwException</strong>() throws java.lang.Exception;
+    Code:
+       0: new           #2;                 <i>// vytvoření instance třídy java.lang.Exception</i>
+       3: dup                               <i>// kopie reference na nově vytvořený objekt</i>
+                                            <i>// inicializace objektu</i>
+       4: invokespecial #3;                 <i>// Method java/lang/Exception."&lt;init&gt;":()V</i>
+       7: athrow                            <i>// objekt byl inicializován, vyhození výjimky</i>
+</pre>
+
+<p>Ovšem bajtkód metody <strong>main()</strong> je již komplikovanější:</p>
+
+<pre>
+  public static void <strong>main</strong>(java.lang.String[]) throws java.lang.Exception;
+    Code:
+      <strong>*** blok try ***</strong>
+       0: invokestatic  #4;                 <i>// volání metody throwException:()V</i>
+                                            <i>// příprava na volání metody System.out.println()</i>
+       3: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+       6: ldc           #6;                 <i>// konstanta obsahující řetězec "try block"</i>
+       8: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+      11: goto          23                  <i>// skok ZA konec bloku <strong>catch</strong></i>
+&nbsp;
+      <strong>*** blok catch ***</strong>
+      14: astore_1                          <i>// začátek bloku <strong>catch</strong></i>
+                                            <i>// příprava na volání metody System.out.println()</i>
+      15: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+      18: ldc           #8;                 <i>// konstanta obsahujici retezec "catch block"</i>
+      20: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+&nbsp;
+    <strong>*** konec konstrukce try-catch ***</strong>
+      23: return                            <i>// ukončení běhu metody main()</i>
+&nbsp;
+    Exception table:                        <i>// tabulka obsahující seznam řádků a případných výjimek</i>
+       from    to  target type
+           0    11    14   Class java/lang/Exception
+</pre>
+
+<p>V&nbsp;tomto bajtkódu již můžeme vidět dvě novinky. První novinka je vlastně
+očekávaná &ndash; první sekvence instrukcí představuje tělo bloku
+<strong>try</strong>, druhá sekvence instrukcí pak tělo bloku
+<strong>catch</strong>. Na konci těla prvního bloku je umístěna instrukce
+<strong>goto</strong> provádějící nepodmíněný skok za účelem přeskoku celého
+bloku <strong>catch</strong>. Za jakých okolností je tělo bloku
+<strong>catch</strong> provedeno je specifikováno v&nbsp;datové struktuře
+<strong>Exception table</strong>. Zde jsou uloženy záznamy obsahující rozsah
+indexů instrukcí, kde může dojít k&nbsp;výjimce, index instrukce, na kterou se
+skočí v&nbsp;případě skutečného vzniku výjimky a samozřejmě i typ výjimky.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Demonstrační příklad <strong>Test34.java</strong>: implementace struktury try-catch-finally</h2>
+
+<p>Dnešní poslední demonstrační příklad nazvaný <strong>Test34.java</strong> je
+vlastně obdobou <a href="#k09">předchozího příkladu</a>
+<strong>Test33.java</strong>, ovšem namísto neúplné struktury
+<strong>try-catch</strong> je zde implementována úplná programová struktura
+<strong>try-catch-finally</strong>, přičemž příkazy umístěné v&nbsp;bloku
+<strong>finally</strong> jsou vykonány vždy, nezávisle na tom, zda
+k&nbsp;zachycované výjimce dojde či nikoli:</p>
+
+<pre>
+<i>/**</i>
+<i> * Demonstracni priklad cislo 34.</i>
+<i> *</i>
+<i> * Implementace struktury try-catch-finally.</i>
+<i> */</i>
+public class <strong>Test34</strong> {
+&nbsp;
+    <i>/**</i>
+    <i> * Metoda, ktera vyhodi vyjimku typu Exception()</i>
+    <i> */</i>
+    public static void <strong>throwException</strong>() throws Exception {
+        throw new Exception();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zavolani metody throwException().</i>
+    <i> */</i>
+    public static void <strong>main</strong>(String[] args) throws Exception {
+        try {
+            throwException();
+            System.out.println("try block");
+        }
+        catch (Exception e) {
+            System.out.println("catch block");
+        }
+        finally {
+            System.out.println("finally block");
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Podle očekávání dojde při spuštění tohoto příkladu k&nbsp;výpisu pouze dvou
+řetězců na standardní výstup:</p>
+
+<pre>
+catch block
+finally block
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Překlad demonstračního příkladu <strong>Test34.java</strong> do bajtkódu JVM</h2>
+
+<p>Opět si ukažme, jak se obě metody deklarované ve třídě
+<strong>Test34</strong> přeloží do bajtkódu JVM. Začneme bajtkódem metody
+<strong>throwException()</strong>, protože v&nbsp;něm nenalezneme žádné
+odlišnosti od předchozího příkladu:</p>
+
+<pre>
+  public static void <strong>throwException</strong>() throws java.lang.Exception;
+    Code:
+       0: new           #2;                 <i>// vytvoření instance třídy java.lang.Exception</i>
+       3: dup                               <i>// kopie reference na nově vytvořený objekt</i>
+                                            <i>// inicializace objektu</i>
+       4: invokespecial #3;                 <i>// Method java/lang/Exception."&lt;init&gt;":()V</i>
+       7: athrow                            <i>// objekt byl inicializován, vyhození výjimky</i>
+</pre>
+
+<p>Bajtkód metody <strong>main()</strong> je však již velmi rozsáhlý a najdeme
+zde hned několik nepodmíněných skoků realizovaných instrukcí
+<strong>goto</strong>:</p>
+
+<pre>
+  public static void <strong>main</strong>(java.lang.String[]) throws java.lang.Exception;
+    Code:
+      <strong>*** blok try ***</strong>
+       0: invokestatic  #4;                 <i>// volání metody throwException:()V</i>
+                                            <i>// příprava na volání metody System.out.println()</i>
+       3: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+       6: ldc           #6;                 <i>// konstanta obsahující řetězec "try block"</i>
+       8: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+&nbsp;
+      <strong>*** blok finally #1 ***</strong>
+                                            <i>// příprava na volání metody System.out.println()</i>
+      11: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+      14: ldc           #8;                 <i>// konstanta obsahující řetězec "finally block"</i>
+      16: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+      19: goto          53                  <i>// skok ZA konec bloku <strong>finally</strong></i>
+&nbsp;
+      <strong>*** blok catch ***</strong>
+      22: astore_1      
+      23: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+      26: ldc           #9;                 <i>// konstanta obsahující řetězec "catch block"</i>
+      28: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+&nbsp;
+      <strong>*** blok finally #2 ***</strong>
+      31: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+      34: ldc           #8;                 <i>// konstanta obsahující řetězec "finally block"</i>
+      36: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+      39: goto          53                  <i>// skok ZA konec bloku <strong>finally</strong></i>
+&nbsp;
+      <strong>*** blok finally #3 - zachycení + rethrow jiné výjimky ***</strong>
+      42: astore_2                          <i>// uložit obsah TOS do lokální proměnné</i>
+      43: getstatic     #5;                 <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+      46: ldc           #8;                 <i>// konstanta obsahující řetězec "finally block"</i>
+      48: invokevirtual #7;                 <i>// volání metody java.io.PrintStream.println:(java.lang.String)</i>
+      51: aload_2                           <i>// obnovit obsah TOS</i>
+      52: athrow                            <i>// a ihned vyvolat výjimku, kterou jsme zachytili jen dočasně</i>
+&nbsp;
+      53: return                            <i>// ukončení běhu metody main()</i>
+&nbsp;
+    Exception table:                        <i>// tabulka obsahující seznam řádků a případných výjimek</i>
+       from    to  target type
+           0    11    22   Class java/lang/Exception <i>// blok <strong>try</strong></i>
+           0    11    42   any                       <i>// bloky <strong>try+finally #1</strong></i>
+          22    31    42   any                       <i>// blok <strong>catch</strong></i>
+          42    43    42   any                       <i>// instrukce zachycení jiné výjimky</i>
+</pre>
+
+<p>Tento bajtkód sice může vypadat poněkud nepřehledně, ale ukázaný způsob
+překladu má své velmi dobré důvody. &bdquo;Běžné&ldquo; chování metody je
+implementováno v&nbsp;instrukcích umístěných na indexech 0 až 11. Zde můžeme
+vidět jak implementaci všech příkazů v&nbsp;bloku <strong>try</strong>, tak i
+implementaci všech příkazů v&nbsp;bloku <strong>finally</strong>. To je vlastně
+logické, protože když nedojde ke vzniku výjimky, vykonají se právě tyto dva
+bloky v&nbsp;uvedeném pořadí (napřed blok <strong>try</strong>, poté blok
+<strong>finally</strong>).</p>
+
+<p>V&nbsp;tabulce výjimek můžeme vidět, že instrukce od indexu 0 do indexu 11
+jsou zde zmíněny hned dvakrát &ndash; pokud zde dojde k&nbsp;výjimce
+<strong>Exception</strong> (kterou zachytáváme), provedou se bloky
+<strong>catch+finally #2</strong>, které začínají na indexu 22. To je také
+očekávané chování, které je explicitně zapsáno ve zdrojovém kódu. Zajímavější
+je předposlední blok <strong>finally</strong> vykonaný ve chvíli, kdy vznikne
+jiný typ výjimky. I v&nbsp;tomto případě je totiž nutné vypsat řetězec
+&bdquo;finally block&ldquo;, ale navíc musí neznámá výjimka
+&bdquo;probublat&ldquo; do volající metody, a to již známým způsobem:
+s&nbsp;využitím instrukce <strong>athrow</strong>.</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář se zdrojovými kódy všech sedmi dnešních demonstračních příkladů</h2>
+
+<p>Všech sedm (3+4) dnes popsaných a &bdquo;disasemblovaných&ldquo;
+demonstračních příkladů bylo uloženo do Mercurial repositáře umístěného na
+adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>
+(revize s&nbsp;kódy <a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/rev/320255fc8ed7">320255fc8ed7</a> a <a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/rev/673d8257fbd1">673d8257fbd1</a>).
+Odkazy na prozatím poslední verze těchto sedmi příkladů naleznete
+v&nbsp;tabulce umístěné pod tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>ModuloByZero.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.java</a></td></tr>
+<tr><td>2</td><td>ModuloByZero.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.lua</a></td></tr>
+<tr><td>3</td><td>ModuloByZero.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/673d8257fbd1/exceptions/ModuloByZero.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>4</td><td>Test31.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test31.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test31.java</a></td></tr>
+<tr><td>5</td><td>Test32.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test32.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test32.java</a></td></tr>
+<tr><td>6</td><td>Test33.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test33.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test33.java</a></td></tr>
+<tr><td>7</td><td>Test34.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test34.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/320255fc8ed7/bytecode/Java/Test34.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/release/2.5.2/lib/bytecodes.html">https://docs.python.org/release/2.5.2/lib/bytecodes.html</a>
+</li>
+
+<li>Python 2.x: funkce range()<br />
+<a href="https://docs.python.org/2/library/functions.html#range">https://docs.python.org/2/library/functions.html#range</a>
+</li>
+
+<li>Python 2.x: typ iterátor<br />
+<a href="https://docs.python.org/2/library/stdtypes.html#iterator-types">https://docs.python.org/2/library/stdtypes.html#iterator-types</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Wikipedia CZ: Koprogram,<br />
+<a href="http://cs.wikipedia.org/wiki/Koprogram">http://cs.wikipedia.org/wiki/Koprogram</a>
+</li>
+
+<li>Wikipedia EN: Coroutine,<br />
+<a href="http://en.wikipedia.org/wiki/Coroutine">http://en.wikipedia.org/wiki/Coroutine</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes,<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>For-each Loop in Java<br />
+<a href="http://www.leepoint.net/notes-java/flow/loops/foreach.html">http://www.leepoint.net/notes-java/flow/loops/foreach.html</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
