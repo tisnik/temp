@@ -1339,6 +1339,268 @@ href="https://github.com/tisnik/8bit-fame/blob/master/NES-ca65/Makefile">Makefil
 a příkaz <strong>make example30.nes</strong>:</p>
 
 <pre>
+; Obslužná rutina pro IRQ (maskovatelné přerušení)
+
+.proc irq
+        rti                   ; návrat z přerušení
+.endproc
+
+
+
+; Obslužná rutina pro RESET
+
+.proc reset
+        ; nastavení stavu CPU
+        setup_cpu
+
+        ; nastavení řídicích registrů
+        ldx #$40
+        stx $4017               ; zákaz IRQ z APU
+
+        ldx #$00
+        stx PPUCTRL             ; nastavení PPUCTRL = 0 (NMI)
+        stx PPUMASK             ; nastavení PPUMASK = 0
+        stx DMC_FREQ            ; zákaz DMC IRQ
+
+        ldx #$40
+        stx $4017               ; interrupt inhibit bit
+
+        ; čekání na vnitřní inicializaci PPU (dva snímky)
+        wait_for_frame
+        wait_for_frame
+
+        ; vymazání obsahu RAM
+        clear_ram
+
+        ; čekání na další snímek
+        wait_for_frame
+
+        ; nastavení tabulek jmen
+        jsr clear_nametables  ; zavolání subrutiny 
+
+        ; nastavení barvové palety
+        jsr load_palette      ; zavolání subrutiny
+
+        ; načtení tabulky jmen
+        jsr load_nametable    ; zavolání subrutiny
+
+        ; načtení atributů
+        jsr load_attributes   ; zavolání subrutiny
+
+        lda #%00001110        ; povolení zobrazení pozadí, nikoli ovšem spritů
+        sta PPUMASK
+
+        lda #0                ; vynulovat počitadlo spritů
+        sta XSCROLL
+        sta YSCROLL
+
+        cli                   ; vynulování bitu I - povolení přerušení
+        lda #%10010000      
+        sta PPUCTRL           ; při každém VBLANK se vyvolá NMI (důležité!)
+
+        ; vlastní herní smyčka je prozatím prázdná
+game_loop:
+        jmp game_loop           ; nekonečná smyčka (později rozšíříme)
+.endproc
+
+; zobrazení dvou hexadecimálních cifer na pozadí
+.macro draw_two_digits address
+        lda address           ; přečíst offset pro scrolling
+        lsr a                 ; získání horního nibblu
+        lsr a
+        lsr a
+        lsr a
+        sta PPUDATA           ; uložení tvaru (cifry) do pozadí
+
+        lda address           ; opět přečíst offset pro scrolling
+        and #$0f              ; získání horního nibblu
+        sta PPUDATA           ; uložení tvaru (cifry) do pozadí
+.endmacro
+
+; zobrazení offsetů
+.proc display_scroll_offsets
+        lda PPUSTATUS         ; reset záchytného registru
+        lda #>NAME_TABLE_0+2  ; horní bajt adresy $23c0
+        sta PPUADDR
+        lda #<NAME_TABLE_0+10 ; spodní bajt adresy $23c0
+        sta PPUADDR
+
+        draw_two_digits XSCROLL
+        
+        lda #$24              ; mezera (tvar oblohy)
+        sta PPUDATA           ; uložení tvaru (cifry) do pozadí
+
+        draw_two_digits YSCROLL
+
+        rts
+.endproc
+
+
+
+; vynulování tabulek jmen
+.proc clear_nametables
+        lda PPUSTATUS      ; reset záchytného registru
+        lda #>NAME_TABLE_0 ; horní bajt adresy
+        sta PPUADDR
+        lda #<NAME_TABLE_0 ; spodní bajt adresy
+        sta PPUADDR
+        ldx #$08           ; počitadlo stránek (8)
+        ldy #$00           ; X a Y tvoří 16bitový čítač
+        lda #$24           ; dlaždice číslo $24 představuje oblohu
+:
+        sta PPUDATA        ; zápis indexu dlaždice
+        dey                ; snížení hodnoty počitadla
+        bne :-             ; skok dokud se nezaplní celá stránka
+        dex                ; snížení hodnoty počitadla stránek
+        bne :-             ; skok dokud se nezaplní 8 stránek
+
+        rts                ; návrat ze subrutiny
+.endproc
+
+; nastavení barvové palety
+.proc load_palette
+        ppu_data_palette_address
+
+        ; $3f00-$3f0f - paleta pozadí
+        ; $3f10-$3f1f - paleta spritů
+
+        ldx #$00        ; vynulovat počitadlo a offset
+
+:
+        lda palette, x  ; načíst bajt s offsetem
+        sta PPUDATA     ; zápis barvy do PPU
+        inx             ; zvýšit počitadlo/offset
+        cpx #32         ; limit počtu barev
+        bne :-          ; opakovat smyčku 32x
+
+        rts             ; návrat ze subrutiny
+.endproc
+
+
+
+; načtení tabulky jmen
+.proc load_nametable
+        lda PPUSTATUS      ; reset záchytného registru
+        lda #>NAME_TABLE_0 ; horní bajt adresy
+        sta PPUADDR
+        lda #<NAME_TABLE_0 ; spodní bajt adresy
+        sta PPUADDR
+
+        ldx #$00           ; počitadlo
+:
+        lda nametabledata,X
+        sta PPUDATA        ; zápis indexu dlaždice
+        inx 
+        bne :-
+
+        ldx #$00           ; počitadlo
+:
+        lda nametabledata+256,X
+        sta PPUDATA        ; zápis indexu dlaždice
+        inx 
+        bne :-
+
+        ldx #$00           ; počitadlo
+:
+        lda nametabledata+512,X
+        sta PPUDATA        ; zápis indexu dlaždice
+        inx 
+        bne :-
+
+        rts                ; návrat ze subrutiny
+.endproc
+
+
+
+; načtení atributů
+.proc load_attributes
+        lda PPUSTATUS        ; reset záchytného registru
+        lda #>ATTRIB_TABLE_0 ; horní bajt adresy $23c0
+        sta PPUADDR
+        lda #<ATTRIB_TABLE_0 ; spodní bajt adresy $23c0
+        sta PPUADDR
+
+        ldx #0               ; počitadlo 64 bajtů
+
+:
+        lda attributedata,X  ; načtení čtyř atributů
+        sta PPUDATA          ; zápis indexu
+        inx                  ; snížení hodnoty počitadla
+        cpx #64
+        bne :-               ; opakování smyčky
+
+        rts                  ; návrat ze subrutiny
+.endproc
+
+
+
+; samotná barvová paleta
+palette:
+    .byte $22, $29, $1a, $0F, $22, $36, $17, $0F, $22, $30, $21, $0F, $22, $27, $17, $0F  ; barvy pozadí
+    .byte $22, $16, $27, $18, $22, $1A, $30, $27, $22, $16, $30, $27, $22, $0F, $36, $17  ; barvy spritů
+
+
+; tabulka jmen
+nametabledata:
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$D0,$E8,$D1,$D0,$D1,$DE,$D1,$D8,$D0,$D1,$26,$29,$29,$DE,$D1,$D0,$D1,$D0,$D1,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$42,$42,$DB,$42,$DB,$42,$DB,$DB,$42,$26,$29,$29,$DB,$42,$DB,$42,$DB,$42,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$DB,$DB,$DB,$DB,$DE,$DF,$DB,$DB,$DB,$26,$29,$29,$DE,$DF,$DB,$DB,$E4,$E5,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$DB,$DB,$DE,$43,$DB,$42,$DB,$DB,$DB,$26,$29,$29,$DB,$42,$DB,$DB,$E6,$E3,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$DB,$DB,$DB,$42,$DB,$DB,$DB,$D4,$D9,$26,$29,$29,$DB,$DB,$D4,$D9,$D4,$D9,$E7,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$95,$95,$95,$95,$95,$95,$95,$95,$97,$98,$78,$78,$78,$95,$95,$97,$98,$97,$98,$95,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$D0,$E8,$D1,$D0,$D1,$DE,$D1,$D8,$D0,$D1,$26,$29,$29,$DE,$D1,$D0,$D1,$D0,$D1,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$42,$42,$DB,$42,$DB,$42,$DB,$DB,$42,$26,$29,$29,$DB,$42,$DB,$42,$DB,$42,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$DB,$DB,$DB,$DB,$DE,$DF,$DB,$DB,$DB,$26,$29,$29,$DE,$DF,$DB,$DB,$E4,$E5,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$DB,$DB,$DE,$43,$DB,$42,$DB,$DB,$DB,$26,$29,$29,$DB,$42,$DB,$DB,$E6,$E3,$26,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$DB,$DB,$DB,$DB,$42,$DB,$DB,$DB,$D4,$D9,$26,$29,$29,$DB,$DB,$D4,$D9,$D4,$D9,$E7,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$95,$95,$95,$95,$95,$95,$95,$95,$97,$98,$78,$78,$78,$95,$95,$97,$98,$97,$98,$95,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+
+    .byte $24,$1b,$18,$18,$1d,$24,$25,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$a5,$a6,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$a5,$a6,$24,$24,$24,$24,$24,$24,$24,$24,$53,$54,$24,$24,$24,$a7,$a8,$24,$45,$45,$24,$24,$45,$45,$45,$45,$53,$54,$24,$24
+    .byte $24,$24,$a7,$a8,$47,$47,$24,$24,$47,$47,$47,$47,$55,$56,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$55,$56,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$a5,$a6,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24
+    .byte $24,$24,$a5,$a6,$24,$24,$24,$24,$24,$24,$24,$24,$53,$54,$24,$24,$24,$a7,$a8,$24,$45,$45,$24,$24,$45,$45,$45,$45,$53,$54,$24,$24
+    .byte $24,$24,$a7,$a8,$47,$47,$24,$24,$47,$47,$47,$47,$55,$56,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$24,$55,$56,$24,$24
+
+; tabulka atributů
+attributedata:
+    .byte %11111111, %11111111, %11111111, %11111111, %11111111, %11111111, %11111111, %11111111 ; žluto-hnědá paleta
+    .byte %11111111, %11111111, %11111111, %11111111, %11111111, %11111111, %11111111, %11111111
+    .byte %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000 ; zelená paleta
+    .byte %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000
+    .byte %10101010, %10101010, %10101010, %10111111, %11111111, %10101010, %11111111, %10101010
+    .byte %01010101, %10101010, %01010101, %11101111, %11111111, %01010101, %11111111, %01010101
+    .byte %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000 ; jen obloha - průhledné pixely
+    .byte %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000, %00000000
+
+
+
+; ---------------------------------------------------------------------
+; Tabulka vektorů CPU
+; ---------------------------------------------------------------------
+
+.segment "VECTORS"
+.addr nmi
+.addr reset
+.addr irq
+
+
+
+.segment "CHARS"
+    .incbin "mario.chr"
+
+
+
+; ---------------------------------------------------------------------
+; Finito
+; ---------------------------------------------------------------------
 </pre>
 
 
