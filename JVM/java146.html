@@ -1,0 +1,1274 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V předchozí části tohoto seriálu jsme si podrobně popsali, jakým způsobem je realizováno zpracování výjimek v bajtkódu JVM. Dnes tuto poměrně rozsáhlou problematiku dokončíme, protože si ukážeme způsob práce s výjimkami v programech, které jsou překládány do bajtkódů Lua VM a především pak Python VM.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM (2)</a></p>
+<p><a href="#k02">2. Zpracování výjimek v&nbsp;jazyku Lua</a></p>
+<p><a href="#k03">3. Demonstrační příklad <strong>Test33.lua</strong>: vyhození výjimky v&nbsp;jazyku Lua</a></p>
+<p><a href="#k04">4. Překlad demonstračního příkladu <strong>Test33.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k05">5. Demonstrační příklad <strong>Test34.lua</strong>: vyhození a následné zachycení výjimky v&nbsp;jazyku Lua</a></p>
+<p><a href="#k06">6. Překlad demonstračního příkladu <strong>Test34.lua</strong> do bajtkódu Lua VM</a></p>
+<p><a href="#k07">7. Zpracování výjimek v&nbsp;jazyku Python</a></p>
+<p><a href="#k08">8. Demonstrační příklad <strong>Test37.py</strong>: vyhození výjimky v&nbsp;jazyku Python</a></p>
+<p><a href="#k09">9. Překlad demonstračního příkladu <strong>Test37.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k10">10. Demonstrační příklad <strong>Test38.py</strong>: vyhození a následné zachycení výjimky v&nbsp;jazyku Python</a></p>
+<p><a href="#k11">11. Překlad demonstračního příkladu <strong>Test38.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k12">12. Demonstrační příklad <strong>Test39.py</strong>: implementace struktury try-catch-finally v&nbsp;jazyku Python</a></p>
+<p><a href="#k13">13. Překlad demonstračního příkladu <strong>Test39.py</strong> do bajtkódu Python VM</a></p>
+<p><a href="#k14">14. Repositář se zdrojovými kódy všech pěti dnešních demonstračních příkladů</a></p>
+<p><a href="#k15">15. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - zpracování výjimek v JVM, Python VM a Lua VM (2)</h2>
+
+<p><a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-zpracovani-vyjimek-v-jvm-python-vm-a-lua-vm/">V&nbsp;předchozí
+části</a> <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o JVM
+i o dalších virtuálních strojích</a> jsme si na několika demonstračních
+příkladech ukázali, jakým způsobem se pracuje s&nbsp;výjimkami v&nbsp;bajtkódu
+virtuálního stroje Javy (JVM). Připomeňme si, že v&nbsp;JVM slouží pro
+vytvoření výjimky (přesněji řečeno objektu představujícího výjimku) instrukce
+<strong>new</strong>, která výjimku vytvoří a taktéž uloží referenci na tuto
+výjimku na zásobník operandů (TOS &ndash; Top of Stack). Samotné vyhození
+výjimky je provedeno instrukcí <strong>athrow</strong>. Tato instrukce očekává,
+že na vrcholu zásobníku operandů bude uložena reference na výjimku. Metoda, ze
+které může být vyhozena výjimka, musí ve svých metadatech obsahovat informaci o
+typu vyhazované výjimky či o typech výjimek (pokud jich je větší počet). Toto
+pravidlo kontrolované jak překladačem, tak i classloaderem nemusí být dodrženo
+pro běhové výjimky, tj.&nbsp;pro všechny třídy přímo či nepřímo odvozené od
+třídy <strong>RuntimeException</strong>.</p>
+
+<p>Zachycení výjimek je ovšem poněkud složitější. Je řešeno jak přímo
+v&nbsp;bajtkódu (explicitní přeskakování kódu náležejícímu bloku
+<strong>catch</strong>, dvojitá implementace bloku <strong>finally</strong>
+atd.) a taktéž tabulkou přiřazenou k&nbsp;metodě, v&nbsp;níž se má výjimka
+zachytit. V&nbsp;této tabulce jsou uloženy rozsahy indexů instrukcí,
+v&nbsp;nichž může k&nbsp;výjimce dojít, index instrukce, na níž se provede skok
+při vzniku výjimky a taktéž typ výjimky (což je odkaz do <i>constant
+poolu</i>). Podívejme se na jednoduchý příklad takové tabulky. Poznámky byly
+samozřejmě dopsány ručně:</p>
+
+<pre>
+Exception table:                        <i>// tabulka obsahující seznam řádků a případných výjimek</i>
+   from    to  target type
+       0    11    22   Class java/lang/Exception <i>// blok <strong>try</strong></i>
+       0    11    42   any                       <i>// bloky <strong>try+finally #1</strong></i>
+      22    31    42   any                       <i>// blok <strong>catch</strong></i>
+      42    43    42   any                       <i>// instrukce zachycení jiné výjimky</i>
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Zpracování výjimek v&nbsp;jazyku Lua</h2>
+
+<p><a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-zpracovani-vyjimek-v-jvm-python-vm-a-lua-vm/">Minule</a>
+jsme se taktéž alespoň ve stručnosti zmínili o způsobu práce s&nbsp;výjimkami
+v&nbsp;programovacím jazyce Lua. Zde se &ndash; což je v&nbsp;moderních
+&bdquo;mainstreamových&ldquo; programovacích jazycích dosti neobvyklé &ndash;
+pro zachycení výjimky nepoužívají programové bloky typu
+<strong>try-catch</strong> či <strong>try-catch-finally</strong>, ale dvojice
+funkcí nazvaných <strong>pcall()</strong> a <strong>error()</strong>. Funkce
+<strong>error()</strong> slouží k&nbsp;vyhození výjimky, což znamená, že má
+podobný význam jako příkaz <strong>throw</strong> v&nbsp;programovacím jazyku
+Java či podobný příkaz <strong>raise</strong>, který najdeme
+v&nbsp;programovacím jazyku Python. Funkce <strong>error()</strong> může být ve
+zdrojovém kódu použita kdekoli; není tedy zapotřebí žádné zvláštní deklarace,
+která by označovala ty části kódu, kde je tato funkce použita.</p>
+
+<p>Naproti tomu funkce <strong>pcall()</strong> slouží k&nbsp;zavolání jiné
+(libovolné) funkce v&nbsp;takzvaném &bdquo;sandboxu&ldquo; (<i>pcall =
+protected call</i>). Pokud nevznikne ve volané funkci žádná výjimka, vrací
+<strong>pcall()</strong> ve svém prvním výsledku hodnotu <strong>true</strong>,
+v&nbsp;opačném případě (vznik výjimky) je vrácena hodnota
+<strong>false</strong>. Ve skutečnosti však funkce <strong>pcall()</strong>
+může vracet větší množství hodnot, přičemž další hodnoty (kromě hodnoty první)
+jsou výsledkem funkce předané do <strong>pcall()</strong>. Při vzniku výjimky
+je vrácena jen dvojice <strong>false,výjimka</strong> (samotná výjimka je
+typicky představována řetězcem, není to však nikde předepsáno).</p>
+
+<p>Ukažme si celou strukturu vyvolávání a zachycování výjimek na velmi
+jednoduchém příkladu:</p>
+
+<pre>
+function <strong>noException1</strong>()
+    return 1
+end
+&nbsp;
+function <strong>noException2</strong>()
+    return 1,2
+end
+&nbsp;
+function <strong>noException3</strong>()
+    return 1,2,3
+end
+&nbsp;
+function <strong>throwException1</strong>()
+    error(1)
+end
+&nbsp;
+function <strong>throwException2</strong>()
+    error("Exception!!!")
+end
+&nbsp;
+function <strong>main</strong>()
+    print("Status", "Return value(s)")
+    print(pcall(noException1))
+    print(pcall(noException2))
+    print(pcall(noException3))
+    print(pcall(throwException1))
+    print(pcall(throwException2))
+end
+&nbsp;
+main()
+</pre>
+
+<p>Výsledek vypsaný na standardní výstup:</p>
+
+<pre>
+Status  Return value(s)
+true    1
+true    1       2
+true    1       2       3
+false   Test.lua:14: 1
+false   Test.lua:18: Exception!!!
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad <strong>Test33.lua</strong>: vyhození výjimky v&nbsp;jazyku Lua</h2>
+
+<p>Nyní se již můžeme podívat na způsob překladu dvojice funkcí
+<strong>pcall()</strong> a <strong>error()</strong> do bajtkódu programovacího
+jazyka Lua. Nejprve si ukážeme velmi jednoduchý demonstrační příklad,
+v&nbsp;němž je funkce <strong>error()</strong> volána s&nbsp;libovolným
+parametrem &ndash; hodnota tohoto parametru bude představovat výjimku. Jak jsme
+si již řekli v&nbsp;předchozí kapitole, může výjimku představovat jakákoli
+hodnota, typicky řetězec, ale může se jednat i o tabulku, celé či desetinné
+číslo atd.:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 33.</i>
+<i>--</i>
+<i>-- Vyhozeni vyjimky s vyuzitim funkce error().</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce, ktera vyhodi vyjimku.</i>
+<i>--</i>
+function <strong>throwNewException</strong>(message)
+    <strong>error</strong>(message)
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    print("Calling function 'throwNewException()'")
+    throwNewException("Hello world!")
+    print("Returned from function 'throwNewException()'")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Výjimka, která je vyhozena funkcí <strong>error()</strong>, není nikde
+zachycena, takže nás pravděpodobně nepřekvapí, že demonstrační příklad
+<strong>Test33.lua</strong> vypíše na terminál následující zprávy:</p>
+
+<pre>
+lua: Test33.lua:13: Hello world!
+stack traceback:
+        [C]: in function 'error'
+        Test33.lua:13: in function 'throwNewException'
+        Test33.lua:23: in function 'main'
+        Test33.lua:29: in main chunk
+        [C]: ?
+Calling function 'throwNewException()'
+</pre>
+
+<p>Jedná se o klasický výpis <i>stack trace</i>, v&nbsp;němž jsou navíc
+naznačeny nativní funkce pomocí řetězce [C].</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Překlad demonstračního příkladu <strong>Test33.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Při pohledu na bajtkód demonstračního příkladu <strong>Test33.lua</strong>
+je patrné, že se v&nbsp;něm ve skutečnosti nenachází žádné speciální instrukce
+ani metadata, která by souvisela s&nbsp;vyhozením výjimky! Můžeme zde vidět
+pouze volání funkce <strong>error()</strong>. To, že se jedná o nativní funkci
+(naprogramovanou v&nbsp;céčku), z&nbsp;bajtkódu nevyčteme; to je již
+implementační záležitost virtuálního stroje:</p>
+
+<pre>
+<strong>throwNewException():</strong>
+function &lt;Test33.lua:12,14&gt; (4 instructions, 16 bytes at 0x460f60)
+1 param, 3 slots, 0 upvalues, 1 local, 1 constant, 0 functions
+        1       [13]    GETGLOBAL       1 -1    <i>; získání reference na funkci error()</i>
+        2       [13]    MOVE            2 0     <i>; parametr předaný funkci error</i>
+        3       [13]    CALL            1 2 1   <i>; zavolání funkce error (registr R1) s předáním parametru v registru R2</i>
+&nbsp;
+        4       [14]    RETURN          0 1     <i>; návrat z funkce throwNewException</i>
+</pre>
+
+<p>Ani volání funkce nazvané <strong>throwNewException</strong> není
+v&nbsp;žádném ohledu odlišné od volání jiných funkcí:</p>
+
+<pre>
+<strong>main():</strong>
+function &lt;Test33.lua:21,25&gt; (10 instructions, 40 bytes at 0x461240)
+0 params, 2 slots, 0 upvalues, 0 locals, 5 constants, 0 functions
+        1       [22]    GETGLOBAL       0 -1    <i>; získání reference na funkci print</i>
+        2       [22]    LOADK           1 -2    <i>; řetězec "Calling function 'throwNewException'"</i>
+        3       [22]    CALL            0 2 1   <i>; zavolání funkce print() s předáním parametru v registru R1</i>
+&nbsp;
+        4       [23]    GETGLOBAL       0 -3    <i>; získání reference na funkci throwNewException</i>
+        5       [23]    LOADK           1 -4    <i>; řetězec "Hello world!"</i>
+        6       [23]    CALL            0 2 1   <i>; zavolat funkci throwNewException</i>
+&nbsp;
+        7       [24]    GETGLOBAL       0 -1    <i>; získání reference na funkci print</i>
+        8       [24]    LOADK           1 -5    <i>; řetězec "Returned from function 'throwNewException()'"</i>
+        9       [24]    CALL            0 2 1   <i>; zavolání funkce print s předáním parametru v registru R1</i>
+&nbsp;
+        10      [25]    RETURN          0 1     <i>; návrat z funkce main</i>
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklad <strong>Test34.lua</strong>: vyhození a následné zachycení výjimky v&nbsp;jazyku Lua</h2>
+
+<p>Dnešní druhý demonstrační příklad nazvaný <strong>Test34.lua</strong> je již
+poněkud složitější než příklad předchozí, a to z&nbsp;toho důvodu, že se zde
+funkce <strong>throwNewException</strong> nevolá přímo. Namísto přímého volání
+se používá &bdquo;sandbox&ldquo; vytvořený funkcí <strong>pcall</strong>
+(<i>protected call</i>). Povšimněte si způsobu použití této funkce &ndash;
+namísto <strong>throwNewException("Hello world!")</strong> se použije volání
+<strong>pcall(throwNewException, "Hello world!)</strong>, tj.&nbsp;volaná
+funkce je zde předávána jako parametr &ndash; funkce jsou totiž
+v&nbsp;programovacím jazyku Lua plnohodnotnými datovými typy. Funkce
+<strong>pcall()</strong> vrací v&nbsp;prvním výsledku stav volání
+&bdquo;sandboxované&ldquo; funkce:</p>
+
+<pre>
+<i>--</i>
+<i>-- Demonstracni priklad cislo 34.</i>
+<i>--</i>
+<i>-- Vyhozeni vyjimky s vyuzitim funkce error()</i>
+<i>-- s naslednym zachycenim teze vyjimky funkci pcall().</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Funkce, ktera vyhodi vyjimku.</i>
+<i>--</i>
+function <strong>throwNewException</strong>(message)
+    <strong>error</strong>(message)
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Spusteni testu.</i>
+<i>--</i>
+function <strong>main</strong>()
+    print("Calling function 'throwNewException()'")
+    local status, message = <strong>pcall</strong>(throwNewException, "Hello world!")
+    print("Returned from function 'throwNewException()'")
+    print("    Status  = ", status)
+    print("    Message = ", message)
+end
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Po spuštění tohoto demonstračního příkladu se na standardní výstup vypíšou
+tyto zprávy oznamující, že při spuštění funkce
+<strong>throwNewException</strong> skutečně došlo k&nbsp;vyhození výjimky:</p>
+
+<pre>
+Calling function 'throwNewException()'
+Returned from function 'throwNewException()'
+    Status  = 	false
+    Message = 	Test34.lua:14: Hello world!
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Překlad demonstračního příkladu <strong>Test34.lua</strong> do bajtkódu Lua VM</h2>
+
+<p>Bajtkód funkce <strong>throwNewException()</strong> se (podle očekávání)
+nijak neliší od bajtkódu stejnojmenné funkce, kterou jsme již implementovali
+v&nbsp;předchozím demonstračním příkladu, o čemž se můžeme snadno
+přesvědčit:</p>
+
+<pre>
+<strong>throwNewException():</strong>
+function &lt;Test34.lua:13,15&gt; (4 instructions, 16 bytes at 0x175af60)
+1 param, 3 slots, 0 upvalues, 1 local, 1 constant, 0 functions
+        1       [14]    GETGLOBAL       1 -1    <i>; získání reference na funkci error()</i>
+        2       [14]    MOVE            2 0     <i>; parametr předaný funkci error</i>
+        3       [14]    CALL            1 2 1   <i>; zavolání funkce error (registr R1) s předáním parametru v registru R2</i>
+&nbsp;
+        4       [15]    RETURN          0 1     <i>; návrat z funkce throwNewException</i>
+</pre>
+
+<p>Komplikovanější je však bajtkód funkce <strong>main</strong>, neboť zde je
+nutné implementovat volání <strong>pcall(throwNewException, message)</strong>,
+tj.&nbsp;funkce <strong>throwNewException</strong> zde vystupuje jako parametr
+funkce <strong>pcall</strong>. Povšimněte si, jak vysokoúrovňový vlastně
+bajtkód Lua VM je, zejména v&nbsp;porovnání s&nbsp;JVM:</p>
+
+<pre>
+<strong>main():</strong>
+function &lt;Test34.lua:22,28&gt; (19 instructions, 76 bytes at 0x175b240)
+0 params, 5 slots, 0 upvalues, 2 locals, 8 constants, 0 functions
+        1       [23]    GETGLOBAL       0 -1    <i>; získání reference na funkci print</i>
+        2       [23]    LOADK           1 -2    <i>; řetězec "Calling function 'throwNewException'"</i>
+        3       [23]    CALL            0 2 1   <i>; zavolání funkce print s předáním parametru v registru R1</i>
+&nbsp;
+        4       [24]    GETGLOBAL       0 -3    <i>; získání reference na funkci pcall</i>
+        5       [24]    GETGLOBAL       1 -4    <i>; získání reference na funkci throwNewException</i>
+        6       [24]    LOADK           2 -5    <i>; řetězec "Hello world!"</i>
+        7       [24]    CALL            0 3 3   <i>; zavolání funkce pcall s dvojicí parametrů (throwNewException, "Hello world!"</i>
+&nbsp;
+        8       [25]    GETGLOBAL       2 -1    <i>; získání reference na funkci print</i>
+        9       [25]    LOADK           3 -6    <i>; řetězec "Returned from function 'throwNewException()'"</i>
+        10      [25]    CALL            2 2 1   <i>; zavolání funkce print</i>
+&nbsp;
+        11      [26]    GETGLOBAL       2 -1    <i>; získání reference na funkci print</i>
+        12      [26]    LOADK           3 -7    <i>; řetězec "    Status  = "</i>
+        13      [26]    MOVE            4 0     <i>; první návratová hodnota funkce pcall</i>
+        14      [26]    CALL            2 3 1   <i>; zavolání funkce print se dvěma parametry (registry R3 a R4)</i>
+&nbsp;
+        15      [27]    GETGLOBAL       2 -1    <i>; získání reference na funkci print</i>
+        16      [27]    LOADK           3 -8    <i>; řetězec "    Message = "</i>
+        17      [27]    MOVE            4 1     <i>; druhá návratová hodnota funkce pcall</i>
+        18      [27]    CALL            2 3 1   <i>; zavolání funkce print se dvěma parametry (registry R3 a R4)</i>
+&nbsp;
+        19      [28]    RETURN          0 1     <i>; návrat z funkce main</i>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zpracování výjimek v&nbsp;jazyku Python</h2>
+
+<p>Způsob práce s&nbsp;výjimkami v&nbsp;programovacím jazyce Python se ze
+syntaktického i sémantického hlediska do značné míry podobá způsobu zpracování
+výjimek v&nbsp;programovacím jazyce Java, samozřejmě s&nbsp;ohledem na to, že
+Python používá dynamické vyhodnocování datových typů a nevyžaduje striktně
+explicitní zachycení výjimek. Nepatrné rozdíly najdeme i v&nbsp;syntaxi zápisu,
+protože se namísto klíčového slova <strong>catch</strong> používá slovo
+<strong>except</strong>. Větší rozdíly však najdeme na úrovni bajtkódu, neboť
+v&nbsp;Pythonu se nepoužívají speciální tabulky s&nbsp;informacemi o tom,
+v&nbsp;jakém místě kódu mohou nastat výjimky (tyto tabulky najdeme jen
+v&nbsp;JVM). Namísto toho se používají takzvané bloky instrukcí, přičemž
+informace o těchto blocích jsou ukládány na zásobníkový rámec. Bloky se vytváří
+a ruší dynamicky za běhu aplikace, a to s&nbsp;využitím specializovaných
+instrukcí <strong>SETUP_EXCEPT</strong>, <strong>SETUP_FINALLY</strong>,
+<strong>POP_BLOCK</strong> a <strong>END_FINALLY</strong>. </p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační příklad <strong>Test37.py</strong>: vyhození výjimky v&nbsp;jazyku Python</h2>
+
+<p>Dnešní první demonstrační příklad ukazující způsob zpracování výjimek
+v&nbsp;Pythonu nese název <strong>Test37.py</strong>. V&nbsp;tomto velmi
+jednoduchém příkladu se ve funkci <strong>throwNewException</strong> vyhodí
+nová výjimka typu <strong>Exception</strong>. Při konstrukci objektu
+představujícího výjimku se použije zpráva předaná do funkce
+<strong>throwNewException</strong>:</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 37.</i>
+<i>#</i>
+<i># Vyhozeni vyjimky.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce, ktera vyhodi vyjimku.</i>
+<i>#</i>
+def <strong>throwNewException</strong>(message):
+    <strong>raise</strong> Exception(message)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main</strong>():
+    print("Calling function 'throwNewException()'")
+    throwNewException("Hello world!")
+    print("Returned from function 'throwNewException()'")
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble</strong>():
+    from dis import dis
+&nbsp;
+    print("\nthrowNewException():")
+    dis(throwNewException)
+&nbsp;
+    print("\nmain():")
+    dis(main)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Po spuštění tohoto demonstračního příkladu vznikne (dle očekávání) výjimka,
+která není zachycena. Z&nbsp;tohoto důvodu dojde k&nbsp;ukončení běhu aplikace
+a k&nbsp;vypsání historie volání funkcí:</p>
+
+<pre>
+Calling function 'throwNewException()'
+Traceback (most recent call last):
+  File "Test37.py", line 42, in <module>
+    main()
+  File "Test37.py", line 22, in main
+    throwNewException("Hello world!")
+  File "Test37.py", line 13, in throwNewException
+    raise Exception(message)
+Exception: Hello world!
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Překlad demonstračního příkladu <strong>Test37.py</strong> do bajtkódu Python VM</h2>
+
+<p>Překlad funkce <strong>throwNewException</strong> do bajtkódu Python VM
+ukazuje, jakým způsobem je přeložen příkaz <strong>raise</strong>. Využívá se
+zde instrukce <strong>RAISE_VARARGS</strong>, které se předá aktuální počet
+parametrů od 0 do 3. V&nbsp;našem případě se předává jen jediný parametr
+&ndash; vlastní výjimka:</p>
+
+<pre>
+<strong>throwNewException</strong>():
+ 13           0 LOAD_GLOBAL              0 (Exception) <i>; příprava na vytvoření objektu představujícího výjimku</i>
+                                                       <i>; získání reference třídy, jejíž instance se bude vytvářet</i>
+              3 LOAD_FAST                0 (message)   <i>; příprava na vytvoření objektu představujícího výjimku</i>
+                                                       <i>; načtení parametru funkce</i>
+              6 CALL_FUNCTION            1             <i>; volání Exception(message) - vytvoření výjimky</i>
+&nbsp;
+              9 RAISE_VARARGS            1             <i>; vlastní vyhození výjimky</i>
+&nbsp;
+             12 LOAD_CONST               0 (None)      <i>; návratová hodnota funkce throwNewException</i>
+             15 RETURN_VALUE                           <i>; výskok z funkce throwNewException</i>
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že se výjimka z&nbsp;funkce
+<strong>throwNewException</strong> nikde nezachycuje, je bajtkód funkce
+<strong>main</strong> velmi jednoduchý a vcelku přímočaře odpovídá zdrojovému
+kódu:</p>
+
+<pre>
+<strong>main</strong>():
+ 21           0 LOAD_CONST               1             <i>; řetězec "Calling function 'throwNewException()'")</i>
+              3 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+              4 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+ 22           5 LOAD_GLOBAL              0 (throwNewException)
+                                                       <i>; získání reference funkce, která se bude volat</i>
+              8 LOAD_CONST               2             <i>; řetězec 'Hello world!'</i>
+             11 CALL_FUNCTION            1             <i>; zavolání funkce throwNewException</i>
+             14 POP_TOP                                <i>; úklid návratové hodnoty (nevyužijeme ji)</i>
+&nbsp;
+ 23          15 LOAD_CONST               3             <i>; řetězec "Returned from function 'throwNewException()'"</i>
+             18 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             19 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+             20 LOAD_CONST               0 (None)      <i>; návratová hodnota funkce main</i>
+             23 RETURN_VALUE                           <i>; výskok z funkce main</i>
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Demonstrační příklad <strong>Test38.py</strong>: vyhození a následné zachycení výjimky v&nbsp;jazyku Python</h2>
+
+<p>Ve druhém demonstračním příkladu naprogramovaném v&nbsp;Pythonu se již
+výjimka vyhazovaná z&nbsp;funkce <strong>throwNewException</strong> zachycuje,
+a to konkrétně v&nbsp;bloku <strong>catch</strong>. Zdrojový kód tohoto
+demonstračního příkladu je opět velmi jednoduchý:</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 38.</i>
+<i>#</i>
+<i># Vyhozeni vyjimky s jejim naslednym zachycenim.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce, ktera vyhodi vyjimku.</i>
+<i>#</i>
+def <strong>throwNewException</strong>(message):
+    <strong>raise</strong> Exception(message)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main</strong>():
+    <strong>try</strong>:
+        print("Calling function 'throwNewException()'")
+        throwNewException("Hello world!")
+        print("Returned from function 'throwNewException()'")
+    <strong>except</strong>:
+        print("Catch/except block")
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble</strong>():
+    from dis import dis
+&nbsp;
+    print("\nthrowNewException():")
+    dis(throwNewException)
+&nbsp;
+    print("\nmain():")
+    dis(main)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Po spuštění se na standardní výstup vypíšou pouze dva řádky textu, což
+znamená, že příkaz <strong>print("Returned from function
+'throwNewException()'")</strong> byl přeskočen:</p>
+
+<pre>
+Calling function 'throwNewException()'
+Catch/except block
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Překlad demonstračního příkladu <strong>Test38.py</strong> do bajtkódu Python VM</h2>
+
+<p>Opět se podívejme na bajtkód demonstračního příkladu
+<strong>Test38.py</strong>.</p>
+
+<p>Překlad funkce <strong>throwNewException</strong> do bajtkódu Python VM je
+zcela stejný, jako tomu bylo v&nbsp;předchozím demonstračním příkladu:</p>
+
+<pre>
+<strong>throwNewException</strong>():
+ 13           0 LOAD_GLOBAL              0 (Exception) <i>; příprava na vytvoření objektu představujícího výjimku</i>
+                                                       <i>; získání reference třídy, jejíž instance se bude vytvářet</i>
+              3 LOAD_FAST                0 (message)   <i>; příprava na vytvoření objektu představujícího výjimku</i>
+                                                       <i>; načtení parametru funkce</i>
+              6 CALL_FUNCTION            1             <i>; volání Exception(message) - vytvoření výjimky</i>
+&nbsp;
+              9 RAISE_VARARGS            1             <i>; vlastní vyhození výjimky</i>
+&nbsp;
+             12 LOAD_CONST               0 (None)      <i>; návratová hodnota funkce throwNewException</i>
+             15 RETURN_VALUE                           <i>; výskok z funkce throwNewException</i>
+</pre>
+
+<p>Komplikovanější je však bajtkód funkce <strong>main</strong>. Zde se můžeme
+setkat s&nbsp;několika novými instrukcemi, zejména s&nbsp;trojicí instrukcí
+<strong>SETUP_EXCEPT</strong>, <strong>POP_BLOCK</strong> a
+<strong>END_FINALLY</strong>. První z&nbsp;těchto instrukcí slouží
+k&nbsp;vytvoření bloku (uvnitř zásobníkového rámce), v&nbsp;němž může dojít
+k&nbsp;výjimce. Tento blok se odstraňuje instrukcí <strong>POP_BLOCK</strong> a
+poslední zmíněná instrukce <strong>END_FINALLY</strong> se používá v&nbsp;bloku
+finally (i když je prázdný). Za zmínku taktéž stojí okomentovaná trojice
+instrukcí <strong>POP_TOP</strong>:</p>
+
+<pre>
+<strong>main</strong>():
+ 21           0 SETUP_EXCEPT            24 (to 27)     <i>; vytvoření bloku instrukcí, v nichž může dojít k výjimce</i>
+                                                       <i>; 27 je index první instrukce v bloku <strong>except</strong></i>
+&nbsp;
+<strong>začátek bloku *try*</strong>
+&nbsp;
+ 22           3 LOAD_CONST               1             <i>; řetězec "Calling function 'throwNewException()'")</i>
+              6 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+              7 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+ 23           8 LOAD_GLOBAL              0 (throwNewException)
+                                                       <i>; získání reference funkce, která se bude volat</i>
+             11 LOAD_CONST               2             <i>; řetězec 'Hello world!'</i>
+             14 CALL_FUNCTION            1             <i>; zavolání funkce throwNewException</i>
+             17 POP_TOP                                <i>; úklid návratové hodnoty (nevyužijeme ji)</i>
+&nbsp;
+ 24          18 LOAD_CONST               3             <i>; řetězec "Returned from function 'throwNewException()'"</i>
+             21 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             22 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+             23 POP_BLOCK                              <i>; volání proběhlo v pořádku - zrušíme celý blok</i>
+                                                       <i>; vytvořený přes SETUP_EXCEPT</i>
+             24 JUMP_FORWARD            12 (to 39)     <i>; skok na konec funkce (přeskok dalšího bloku)</i>
+&nbsp;
+<strong>konec bloku *try*</strong>
+&nbsp;
+<strong>začátek bloku *except*</strong>
+&nbsp;
+ 25          27 POP_TOP                                <i>; úklid na zásobníku operandů (vlastní výjimka)</i>
+             28 POP_TOP                                <i>; úklid na zásobníku operandů (parametr výjimky)</i>
+             29 POP_TOP                                <i>; úklid na zásobníku operandů (handler)</i>
+&nbsp;
+ 26          30 LOAD_CONST               4             <i>; řetězec "Catch/except block"</i>
+             33 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             34 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+             35 JUMP_FORWARD             1 (to 39)     <i>; skok na konec funkce (přeskok dalšího prázdného bloku)</i>
+&nbsp;
+<strong>konec bloku *except*</strong>
+&nbsp;
+<strong>začátek bloku *finally*</strong>
+&nbsp;
+             38 END_FINALLY                            <i>; ukončení bloku finally</i>
+&nbsp;
+<strong>konec bloku *finally*</strong>
+&nbsp;
+             39 LOAD_CONST               0 (None)      <i>; návratová hodnota funkce main</i>
+             42 RETURN_VALUE                           <i>; výskok z funkce main</i>
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Demonstrační příklad <strong>Test39.py</strong>: implementace struktury try-catch-finally v&nbsp;jazyku Python</h2>
+
+<p>V&nbsp;dnešním posledním demonstračním příkladu je již implementována úplná
+řídicí struktura try-catch-finally, resp.&nbsp;přesněji řečeno
+try-except-finally, pokud se budeme držet názvosloví používaného
+v&nbsp;programovacím jazyku Python:</p>
+
+<pre>
+<i>#</i>
+<i># Demonstracni priklad cislo 39.</i>
+<i>#</i>
+<i># Implementace struktury try/catch/finally v Pythonu.</i>
+<i>#</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Funkce, ktera vyhodi vyjimku.</i>
+<i>#</i>
+def <strong>throwNewException</strong>(message):
+    <strong>raise</strong> Exception(message)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Spusteni testu.</i>
+<i>#</i>
+def <strong>main</strong>():
+    <strong>try</strong>:
+        print("Calling function 'throwNewException()'")
+        throwNewException("Hello world!")
+        print("Returned from function 'throwNewException()'")
+    <strong>except</strong>:
+        print("Catch/except block")
+    <strong>finally</strong>:
+        print("Finally block")
+&nbsp;
+&nbsp;
+&nbsp;
+<i>#</i>
+<i># Ukazka disasembleru.</i>
+<i># (prekladu funkci do bajtkodu Python VM).</i>
+<i>#</i>
+def <strong>disassemble</strong>():
+    from dis import dis
+&nbsp;
+    print("\nthrowNewException():")
+    dis(throwNewException)
+&nbsp;
+    print("\nmain():")
+    dis(main)
+&nbsp;
+&nbsp;
+&nbsp;
+main()
+&nbsp;
+<i>#disassemble()</i>
+&nbsp;
+<i>#</i>
+<i># Finito.</i>
+<i>#</i>
+</pre>
+
+<p>Po spuštění tohoto příkladu se na standardním výstupu objeví následující
+trojice řádků:</p>
+
+<pre>
+Calling function 'throwNewException()'
+Catch/except block
+Finally block
+</pre>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Překlad demonstračního příkladu <strong>Test39.py</strong> do bajtkódu Python VM</h2>
+
+<p>Překlad funkce <strong>throwNewException</strong> do bajtkódu Python VM je
+opět zcela stejný, jako tomu bylo v&nbsp;minulém i předminulém demonstračním
+příkladu:</p>
+
+<pre>
+<strong>throwNewException</strong>():
+ 13           0 LOAD_GLOBAL              0 (Exception) <i>; příprava na vytvoření objektu představujícího výjimku</i>
+                                                       <i>; získání reference třídy, jejíž instance se bude vytvářet</i>
+              3 LOAD_FAST                0 (message)   <i>; příprava na vytvoření objektu představujícího výjimku</i>
+                                                       <i>; načtení parametru funkce</i>
+              6 CALL_FUNCTION            1             <i>; volání Exception(message) - vytvoření výjimky</i>
+&nbsp;
+              9 RAISE_VARARGS            1             <i>; vlastní vyhození výjimky</i>
+&nbsp;
+             12 LOAD_CONST               0 (None)      <i>; návratová hodnota funkce throwNewException</i>
+             15 RETURN_VALUE                           <i>; výskok z funkce throwNewException</i>
+</pre>
+
+<p>Bajtkód funkce <strong>main</strong> se opět stal složitějším, a to zejména
+kvůli implementaci řídicí struktury finally. Taktéž zde najdeme novou instrukci
+<strong>SETUP_FINALLY</strong>, která dynamicky vytváří na zásobníkovém rámci
+blok instrukcí odpovídajících programovým řádkům od klíčového slova try až po
+finally:</p>
+
+<pre>
+<strong>main</strong>():
+ 21           0 SETUP_FINALLY           43 (to 46)     <i>; vytvoření bloku instrukcí, v nichž jsou implementovány bloky try-finally</i>
+              3 SETUP_EXCEPT            24 (to 30)     <i>; vytvoření bloku instrukcí, v nichž může dojít k výjimce</i>
+&nbsp;
+<strong>začátek bloku *try*</strong>
+&nbsp;
+ 22           9 LOAD_CONST               1             <i>; řetězec "Calling function 'throwNewException()'")</i>
+              9 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             10 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+ 23          11 LOAD_GLOBAL              0 (throwNewException)
+                                                       <i>; získání reference funkce, která se bude volat</i>
+             14 LOAD_CONST               2             <i>; řetězec 'Hello world!'</i>
+             17 CALL_FUNCTION            1             <i>; zavolání funkce throwNewException</i>
+             20 POP_TOP                                <i>; úklid návratové hodnoty (nevyužijeme ji)</i>
+&nbsp;
+ 24          21 LOAD_CONST               3             <i>; řetězec "Returned from function 'throwNewException()'"</i>
+             24 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             25 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+             26 POP_BLOCK                              <i>; volání proběhlo v pořádku - zrušíme celý blok</i>
+                                                       <i>; vytvořený přes SETUP_EXCEPT</i>
+             27 JUMP_FORWARD            12 (to 42)     <i>; skok na konec funkce (přeskok dalšího bloku)</i>
+&nbsp;
+<strong>konec bloku *try*</strong>
+&nbsp;
+<strong>začátek bloku *except*</strong>
+&nbsp;
+ 25          30 POP_TOP                                <i>; úklid na zásobníku operandů (vlastní výjimka)</i>
+             31 POP_TOP                                <i>; úklid na zásobníku operandů (parametr výjimky)</i>
+             32 POP_TOP                                <i>; úklid na zásobníku operandů (handler)</i>
+&nbsp;
+ 26          33 LOAD_CONST               4             <i>; řetězec "Catch/except block"</i>
+             36 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             37 PRINT_NEWLINE                          <i>; odřádkování</i>
+             38 JUMP_FORWARD             1 (to 42)     <i>; skok na konec funkce (přeskok dalšího bloku)</i>
+&nbsp;
+<strong>konec bloku *except*</strong>
+&nbsp;
+             41 END_FINALLY                            <i>; ukončení prvního bloku finally</i>
+             42 POP_BLOCK                              <i>; náhrada návratové hodnoty funkce</i>
+             43 LOAD_CONST               0 (None)      <i>; náhrada návratové hodnoty funkce</i>
+&nbsp;
+<strong>začátek bloku *finally*</strong>
+&nbsp;
+ 28          46 LOAD_CONST               5             <i>; řetězec "('Finally block')"</i>
+             49 PRINT_ITEM                             <i>; tisk řetězce na standardní výstup</i>
+             50 PRINT_NEWLINE                          <i>; odřádkování</i>
+&nbsp;
+             51 END_FINALLY                            <i>; ukončení bloku finally</i>
+&nbsp;
+<strong>konec bloku *finally*</strong>
+&nbsp;
+             52 LOAD_CONST               0 (None)      <i>; návratová hodnota funkce main</i>
+             55 RETURN_VALUE                           <i>; výskok z funkce main</i>
+</pre>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Repositář se zdrojovými kódy všech pěti dnešních demonstračních příkladů</h2>
+
+<p>Všech pět dnes popsaných a &bdquo;disasemblovaných&ldquo; demonstračních
+příkladů bylo uloženo do Mercurial repositáře umístěného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>
+(revize s&nbsp;kódy
+<a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/rev/8dc74f8e40f1">8dc74f8e40f1</a> a
+<a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/rev/50d36e484ab0">50d36e484ab0</a>).
+Odkazy na prozatím poslední verze těchto pěti příkladů naleznete v&nbsp;tabulce
+umístěné pod tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>Test33.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/50d36e484ab0/bytecode/Lua/Test33.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/50d36e484ab0/bytecode/Lua/Test33.lua</a></td></tr>
+<tr><td>2</td><td>Test34.lua</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/50d36e484ab0/bytecode/Lua/Test34.lua">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/50d36e484ab0/bytecode/Lua/Test34.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>3</td><td>Test37.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8dc74f8e40f1/bytecode/Python/Test37.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8dc74f8e40f1/bytecode/Python/Test37.py</a></td></tr>
+<tr><td>4</td><td>Test38.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8dc74f8e40f1/bytecode/Python/Test38.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8dc74f8e40f1/bytecode/Python/Test38.py</a></td></tr>
+<tr><td>5</td><td>Test39.py</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8dc74f8e40f1/bytecode/Python/Test39.py">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8dc74f8e40f1/bytecode/Python/Test39.py</a></td></tr>
+</table>
+
+
+
+<p><a name="k15"></a></p>
+<h2 id="k15">15. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/release/2.5.2/lib/bytecodes.html">https://docs.python.org/release/2.5.2/lib/bytecodes.html</a>
+</li>
+
+<li>Python 2.x: funkce range()<br />
+<a href="https://docs.python.org/2/library/functions.html#range">https://docs.python.org/2/library/functions.html#range</a>
+</li>
+
+<li>Python 2.x: typ iterátor<br />
+<a href="https://docs.python.org/2/library/stdtypes.html#iterator-types">https://docs.python.org/2/library/stdtypes.html#iterator-types</a>
+</li>
+
+<li>Python break, continue and pass Statements<br />
+<a href="http://www.tutorialspoint.com/python/python_loop_control.htm">http://www.tutorialspoint.com/python/python_loop_control.htm</a>
+</li>
+
+<li>Python Bytecode: Fun With Dis<br />
+<a href="http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/">http://akaptur.github.io/blog/2013/08/14/python-bytecode-fun-with-dis/</a>
+</li>
+
+<li>Python's Innards: Hello, ceval.c!<br />
+<a href="http://tech.blog.aknin.name/category/my-projects/pythons-innards/">http://tech.blog.aknin.name/category/my-projects/pythons-innards/</a>
+</li>
+
+<li>Byterun<br />
+<a href="https://github.com/nedbat/byterun">https://github.com/nedbat/byterun</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html">http://document.ihg.uni-duisburg.de/Documentation/Python/lib/node56.html</a>
+</li>
+
+<li>Python Byte Code Instructions<br />
+<a href="https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions">https://docs.python.org/3.2/library/dis.html#python-bytecode-instructions</a>
+</li>
+
+<li>dis - Python module<br />
+<a href="https://docs.python.org/2/library/dis.html">https://docs.python.org/2/library/dis.html</a>
+</li>
+
+<li>Comparison of Python virtual machines<br />
+<a href="http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/">http://polishlinux.org/apps/cli/comparison-of-python-virtual-machines/</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Wikipedia CZ: Koprogram,<br />
+<a href="http://cs.wikipedia.org/wiki/Koprogram">http://cs.wikipedia.org/wiki/Koprogram</a>
+</li>
+
+<li>Wikipedia EN: Coroutine,<br />
+<a href="http://en.wikipedia.org/wiki/Coroutine">http://en.wikipedia.org/wiki/Coroutine</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes,<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>For-each Loop in Java<br />
+<a href="http://www.leepoint.net/notes-java/flow/loops/foreach.html">http://www.leepoint.net/notes-java/flow/loops/foreach.html</a>
+</li>
+
+<li>For Loop (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/For_loop">http://en.wikipedia.org/wiki/For_loop</a>
+</li>
+
+<li>Heinz Rutishauser<br />
+<a href="http://en.wikipedia.org/wiki/Heinz_Rutishauser">http://en.wikipedia.org/wiki/Heinz_Rutishauser</a>
+</li>
+
+<li>Parrot<br />
+<a href="http://www.parrot.org/">http://www.parrot.org/</a>
+</li>
+
+<li>Parrot languages<br />
+<a href="http://www.parrot.org/languages">http://www.parrot.org/languages</a>
+</li>
+
+<li>Parrot Primer<br />
+<a href="http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html">http://docs.parrot.org/parrot/latest/html/docs/intro.pod.html</a>
+</li>
+
+<li>Parrot Opcodes<br />
+<a href="http://docs.parrot.org/parrot/latest/html/ops.html">http://docs.parrot.org/parrot/latest/html/ops.html</a>
+</li>
+
+<li>Parrot VM<br />
+<a href="http://en.wikibooks.org/wiki/Parrot_Virtual_Machine">http://en.wikibooks.org/wiki/Parrot_Virtual_Machine</a>
+</li>
+
+<li>Parrot Assembly Language<br />
+<a href="http://www.perl6.org/archive/pdd/pdd06_pasm.html">http://www.perl6.org/archive/pdd/pdd06_pasm.html</a>
+</li>
+
+<li>Parrot Reference: Chapter 11 - Perl 6 and Parrot Essentials<br />
+<a href="http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html">http://oreilly.com/perl/excerpts/perl-6-and-parrot-essentials/parrot-reference.html</a>
+</li>
+
+<li>O-code<br />
+<a href="http://en.wikipedia.org/wiki/O-code_machine">http://en.wikipedia.org/wiki/O-code_machine</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
