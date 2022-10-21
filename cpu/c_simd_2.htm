@@ -31,20 +31,20 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Podpora SIMD operací v rozšíření GCC je ve skutečnosti pouze částečná a má mnohé nedostatky, o nichž se dnes zmíníme. Taktéž si ukážeme, že vektory zavedené v rámci tohoto rozšíření není vhodné slepě používat namísto polí, neboť to nevede k optimálnímu kódu.</p>
 
 
 
 <h2>Obsah</h2>
 
 <p><a href="#k01">1. Užitečné rozšíření GCC &ndash; podpora SIMD (vektorových) instrukcí: nedostatky</a></p>
-<p><a href="#k02">*** 2. Vyplatí se používat dlouhé vektory?</a></p>
-<p><a href="#k03">*** 3. Předání vektorů do funkce hodnotou vs.&nbsp;referencí</a></p>
-<p><a href="#k04">*** 4. Způsob překladu vektorových operací do assembleru</a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. Vektorové operace nad vektory s&nbsp;prvky typu <strong>float</strong> a <strong>double</strong></a></p>
-<p><a href="#k08">*** 8. </a></p>
+<p><a href="#k02">2. Vyplatí se používat dlouhé vektory?</a></p>
+<p><a href="#k03">3. Předání vektorů do funkce hodnotou vs.&nbsp;referencí</a></p>
+<p><a href="#k04">4. Způsob překladu vektorových operací do assembleru</a></p>
+<p><a href="#k05">5. Tytéž operace, ovšem prováděné s&nbsp;prvky se znaménkem</a></p>
+<p><a href="#k06">6. Způsob překladu vektorových operací do assembleru</a></p>
+<p><a href="#k07">7. Vektorové operace nad vektory s&nbsp;prvky typu <strong>float</strong> a <strong>double</strong></a></p>
+<p><a href="#k08">*** 8. Překlad do assembleru</a></p>
 <p><a href="#k09">9. Vektor není libovolně velké pole &ndash; omezení GCC</a></p>
 <p><a href="#k10">10. Způsob překladu operace s&nbsp;dlouhým vektorem do assembleru</a></p>
 <p><a href="#k11">11. Ne všechny operace mohou být v&nbsp;SIMD podporovány</a></p>
@@ -52,7 +52,7 @@
 <p><a href="#k13">13. Základní aritmetické operace s&nbsp;prvky vektorů typu <strong>float</strong></a></p>
 <p><a href="#k14">*** 14. Překlad bez použití instrukcí SIMD</a></p>
 <p><a href="#k15">*** 15. Překlad do strojového kódu s&nbsp;použitím instrukcí SIMD</a></p>
-<p><a href="#k16">*** 16. Zásadní omezení rozšíření GCC</a></p>
+<p><a href="#k16">16. Zásadní omezení rozšíření (sic) GCC</a></p>
 <p><a href="#k17">17. SIMD a vektorové operace na architekturách AArch64 a RISC-V</a></p>
 <p><a href="#k18">18. Příloha &ndash; soubor Makefile použitý v&nbsp;dnešním článku</a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
@@ -88,12 +88,14 @@ kódu.</p>
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Vyplatí se používat dlouhé vektory?</h2>
 
-<p></p>
+<p>Podívejme se nyní na následující demonstrační příklad, v&nbsp;němž je použit
+relativně dlouhý vektor s&nbsp;celkem 256/4 = 64 prvky typu
+<strong>float</strong>. Vektor zde tedy používáme ve funkci pole:</p>
 
 <pre>
-typedef float v256f __attribute__((vector_size(256)));
+typedef <strong>float</strong> v256f <strong>__attribute__((vector_size(256)))</strong>;
 &nbsp;
-int main(void)
+int <strong>main</strong>(void)
 {
     v256f x = { 1.0 };
     v256f y = { 1.0 };
@@ -103,43 +105,163 @@ int main(void)
 }
 </pre>
 
+<p>Tento demonstrační příklad je sice plně funkční, ovšem i tak je potenciálně
+problematický. Na jeden problém narazíme vcelku rychle &ndash; tímto způsobem
+lze totiž tvořit a používat pouze vektory s&nbsp;délkou, jenž je celočíselnou
+mocninou dvojky. O tomto omezení se můžeme snadno přesvědčit ve chvíli, kdy se
+pokusíme délku vektoru zvětšit o jeden prvek typu <strong>float</strong>, tedy
+celkem o čtyři bajty (z&nbsp;256 bajtů na 260 bajtů):</p>
+
+<pre>
+typedef <strong>float</strong> v260f <strong>__attribute__((vector_size(260)))</strong>;
+&nbsp;
+int <strong>main</strong>(void)
+{
+    v260f x = { 1.0 };
+    v260f y = { 1.0 };
+    v260f z = x + y;
+&nbsp;
+    return 0;
+}
+</pre>
+
+<p>Při pokusu o překlad tohoto zdrojového kódu nahlásí překladač chybu:</p>
+
+<pre>
+simd12B.c:1:1: error: number of components of the vector not a power of two
+    1 | typedef float v260f __attribute__((vector_size(260)));
+      | ^~~~~~~
+</pre>
+
+<p>Ovšem problémů je ve skutečnosti více &ndash; vektory se implicitně
+předávají hodnotou a nikoli referencí (jako pole), vektorové operace se (na
+x86-64) vždy provádí sekvencí instrukcí bez smyček atd. Tyto potenciální
+problémy, které vlastně rostou s&nbsp;délkou vektorů, si popíšeme
+v&nbsp;navazujících kapitolách.</p>
+
 
 
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Předání vektorů do funkce hodnotou vs.&nbsp;referencí</h2>
 
+<p>Pole se v&nbsp;programovacím jazyku C předávají referencí, o čemž se můžeme
+velmi snadno přesvědčit překladem a spuštěním následujícího demonstračního
+příkladu:</p>
+
 <pre>
 #include &lt;stdio.h&gt;
 &nbsp;
-typedef unsigned char v16ub __attribute__((vector_size(16)));
+typedef int <strong>array</strong>[4];
 &nbsp;
-void add16ub(v16ub x, v16ub y, v16ub * z)
+void <strong>foo</strong>(array a)
+{
+    a[1] = 42;
+}
+&nbsp;
+int <strong>main</strong>(void)
+{
+    array x = { 1, 2, 3, 4 };
+&nbsp;
+    printf("%d %d %d %d\n", x[0], x[1], x[2], x[3]);
+&nbsp;
+    foo(x);
+    printf("%d %d %d %d\n", x[0], x[1], x[2], x[3]);
+}
+</pre>
+
+<p>Pokud by se pole předávalo hodnotou, pracovala by funkce
+<strong>foo</strong> s&nbsp;kopií pole a zobrazené zprávy by měly vypadat
+takto:</p>
+
+<pre>
+1 2 3 4
+1 2 3 4
+</pre>
+
+<p>Ve skutečnosti se pole předává referencí a proto je možné ve funkci
+<strong>foo</strong> modifikovat jeho prvky:</p>
+
+<pre>
+1 2 3 4
+1 42 3 4
+</pre>
+
+<p>U vektorů je tomu však jinak, o čemž se opět můžeme velmi snadno
+přesvědčit:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+&nbsp;
+typedef int <strong>vector</strong> __attribute__((vector_size(16)));
+&nbsp;
+void <strong>foo</strong>(vector v)
+{
+    v[1] = 42;
+}
+&nbsp;
+int <strong>main</strong>(void)
+{
+    vector x = { 1, 2, 3, 4 };
+&nbsp;
+    printf("%d %d %d %d\n", x[0], x[1], x[2], x[3]);
+&nbsp;
+    foo(x);
+    printf("%d %d %d %d\n", x[0], x[1], x[2], x[3]);
+}
+</pre>
+
+<p>Zde při překladu a spuštění dostaneme:</p>
+
+<pre>
+1 2 3 4
+1 2 3 4
+</pre>
+
+<p>Tento výsledek ukazuje, že se vektory předávají hodnotou, což může být
+náročná operace, zejména u delších vektorů.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Způsob překladu vektorových operací do assembleru</h2>
+
+<p>Vyzkoušejme si nyní, jak se přeloží funkce provádějící součet vektorů do
+assembleru. Vše si otestujeme na funkcích, které sčítají vektory s&nbsp;prvky
+typu <strong>unsigned char</strong>, <strong>unsigned short</strong>,
+<strong>unsigned int</strong> a <strong>unsigned long</strong>:</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+&nbsp;
+typedef unsigned char <strong>v16ub</strong> __attribute__((vector_size(16)));
+&nbsp;
+void <strong>add16ub</strong>(v16ub x, v16ub y, v16ub * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef unsigned short v16us __attribute__((vector_size(16)));
+typedef unsigned short <strong>v16us</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16us(v16us x, v16us y, v16us * z)
+void <strong>add16us</strong>(v16us x, v16us y, v16us * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef unsigned int v16ui __attribute__((vector_size(16)));
+typedef unsigned int <strong>v16ui</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16ui(v16ui x, v16ui y, v16ui * z)
+void <strong>add16ui</strong>(v16ui x, v16ui y, v16ui * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef unsigned long int v16ul __attribute__((vector_size(16)));
+typedef unsigned long int <strong>v16ul</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16ul(v16ul x, v16ul y, v16ul * z)
+void <strong>add16ul</strong>(v16ul x, v16ul y, v16ul * z)
 {
     *z = x + y;
 }
 &nbsp;
-int main(void)
+int <strong>main</strong>(void)
 {
     {
         v16ub x = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
@@ -220,10 +342,56 @@ int main(void)
 }
 </pre>
 
+<p>S&nbsp;výsledky:</p>
 
+<pre>
+vector of unsigned chars
+0 255
+1 0
+2 1
+3 2
+4 3
+5 4
+6 5
+7 6
+8 7
+9 8
+10 9
+11 10
+12 11
+13 12
+14 13
+15 14
+&nbsp;
+vector of unsigned short ints
+0 65535
+1 0
+2 1
+3 2
+4 3
+5 4
+6 5
+7 6
+&nbsp;
+vector of unsigned ints
+0 4294967295
+1 0
+2 1
+3 2
+&nbsp;
+vector of unsigned longs
+0 18446744073709551615
+1 0
+</pre>
 
-<p><a name="k04"></a></p>
-<h2 id="k04">4. Způsob překladu vektorových operací do assembleru</h2>
+<p><div class="rs-tip-major">Poznámka: povšimněte si přetečení výsledků, které
+je očekávatelné.</div></p>
+
+<p>Překlad výše uvedeného kódu do assembleru vypadá takto.</p>
+
+<p>Nejdříve se při zákazu SIMD operací provede maskování bajtů, 16bitových slov
+nebo 32bitových slov a paralelní výpočty v&nbsp;rámci 64bitových registrů. Tím
+se simuluje součet po bajtech, 16bitových slovech a 32bitových slovech:</p>
 
 <pre>
    c:   48 8b 45 10             mov    rax,QWORD PTR [rbp+0x10]
@@ -232,10 +400,10 @@ int main(void)
   17:   48 31 d6                xor    rsi,rdx
   1a:   48 b9 7f 7f 7f 7f 7f    movabs rcx,0x7f7f7f7f7f7f7f7f
   21:   7f 7f 7f 
-  24:   48 21 d1                and    rcx,rdx
+  24:   48 21 d1                <strong>and    rcx,rdx</strong>
   27:   48 ba 7f 7f 7f 7f 7f    movabs rdx,0x7f7f7f7f7f7f7f7f
   2e:   7f 7f 7f 
-  31:   48 21 d0                and    rax,rdx
+  31:   48 21 d0                <strong>and    rax,rdx</strong>
   34:   48 ba 80 80 80 80 80    movabs rdx,0x8080808080808080
   3b:   80 80 80 
   3e:   48 21 f2                and    rdx,rsi
@@ -248,10 +416,10 @@ int main(void)
   55:   48 31 d7                xor    rdi,rdx
   58:   48 b9 7f 7f 7f 7f 7f    movabs rcx,0x7f7f7f7f7f7f7f7f
   5f:   7f 7f 7f 
-  62:   48 21 d1                and    rcx,rdx
+  62:   48 21 d1                <strong>and    rcx,rdx</strong>
   65:   48 ba 7f 7f 7f 7f 7f    movabs rdx,0x7f7f7f7f7f7f7f7f
   6c:   7f 7f 7f 
-  6f:   48 21 d0                and    rax,rdx
+  6f:   48 21 d0                <strong>and    rax,rdx</strong>
   72:   48 ba 80 80 80 80 80    movabs rdx,0x8080808080808080
   79:   80 80 80 
   7c:   48 21 fa                and    rdx,rdi
@@ -267,16 +435,31 @@ int main(void)
   9f:   48 89 51 08             mov    QWORD PTR [rcx+0x8],rdx
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: výše uvedená ukázka platí pro součet
+prvků typu <strong>unsigned char</strong>. Podobně &ndash; akorát se širší
+maskou &ndash; tomu bude u prvků typu <strong>unsigned short</strong> i
+<strong>unsigned int</strong>.</div></p>
+
+<p>Nás však zajímají &bdquo;vektorové&ldquo; výpočty.</p>
+
+<p>Součet vektorů s&nbsp;prvky typu <strong>unsigned char</strong> zajišťuje
+instrukce <a
+href="https://www.felixcloutier.com/x86/paddb:paddw:paddd:paddq">PADDB</a>:</p>
+
 <pre>
    8:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
    c:   0f 29 4d e0             movaps XMMWORD PTR [rbp-0x20],xmm1
   10:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   14:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  19:   66 0f fc 45 e0          paddb  xmm0,XMMWORD PTR [rbp-0x20]
+  19:   66 0f fc 45 e0          <strong>paddb  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   1e:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   22:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>Součet vektorů s&nbsp;prvky typu <strong>unsigned short</strong> (neboli
+v&nbsp;assembleru &bdquo;word&ldquo;) zajišťuje instrukce
+<strong>PADDW</strong>:</p>
 
 <pre>
   30:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
@@ -284,10 +467,13 @@ int main(void)
   38:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   3c:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  41:   66 0f fd 45 e0          paddw  xmm0,XMMWORD PTR [rbp-0x20]
+  41:   66 0f fd 45 e0          <strong>paddw  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   46:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   4a:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>Součet po 32bitových &bdquo;dvouslovech&ldquo; (&bdquo;double word&ldquo;)
+je vykonán instrukcí <strong>PADDD</strong>:</p>
 
 <pre>
   58:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
@@ -295,10 +481,13 @@ int main(void)
   60:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   64:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  69:   66 0f fe 45 e0          paddd  xmm0,XMMWORD PTR [rbp-0x20]
+  69:   66 0f fe 45 e0          <strong>paddd  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   6e:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   72:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>A konečně součet po &bdquo;čtyřslovech&ldquo; (&bdquo;quad word&ldquo;) je
+realizován instrukcí <strong>PADDQ</strong>:</p>
 
 <pre>
   80:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
@@ -311,43 +500,50 @@ int main(void)
   9a:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: zde jsou tedy vektorové operace
+přeloženy do velmi efektivního kódu.</div></p>
+
 
 
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Tytéž operace, ovšem prováděné s&nbsp;prvky se znaménkem</h2>
 
+<p>V&nbsp;této kapitole si ukážeme podobný příklad, jako byl ten <a
+href="#k04">z&nbsp;předchozí kapitoly</a>, nyní ovšem s&nbsp;vektory, jejichž
+prvky jsou typu <strong>signed char/short/int/long</strong>:</p>
+
 <pre>
 #include &lt;stdio.h&gt;
 &nbsp;
-typedef signed char v16sb __attribute__((vector_size(16)));
+typedef signed char <strong>v16sb</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16ub(v16sb x, v16sb y, v16sb * z)
+void <strong>add16ub</strong>(v16sb x, v16sb y, v16sb * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef signed short v16ss __attribute__((vector_size(16)));
+typedef signed short <strong>v16ss</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16us(v16ss x, v16ss y, v16ss * z)
+void <strong>add16us</strong>(v16ss x, v16ss y, v16ss * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef signed int v16si __attribute__((vector_size(16)));
+typedef signed int <strong>v16si</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16ui(v16si x, v16si y, v16si * z)
+void <strong>add16ui</strong>(v16si x, v16si y, v16si * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef signed long int v16sl __attribute__((vector_size(16)));
+typedef signed long int <strong>v16sl</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16ul(v16sl x, v16sl y, v16sl * z)
+void <strong>add16ul</strong>(v16sl x, v16sl y, v16sl * z)
 {
     *z = x + y;
 }
 &nbsp;
-int main(void)
+int <strong>main</strong>(void)
 {
     {
         v16sb x = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
@@ -428,10 +624,57 @@ int main(void)
 }
 </pre>
 
+<p>Výsledky všech čtyř vektorových operací vypadají následovně:</p>
+
+<pre>
+vector of signed chars
+0 -1
+1 0
+2 1
+3 2
+4 3
+5 4
+6 5
+7 6
+8 7
+9 8
+10 9
+11 10
+12 11
+13 12
+14 13
+15 14
+&nbsp;
+vector of signed short ints
+0 -1
+1 0
+2 1
+3 2
+4 3
+5 4
+6 5
+7 6
+&nbsp;
+vector of signed ints
+0 -1
+1 0
+2 1
+3 2
+&nbsp;
+vector of signed longs
+0 -1
+1 0
+</pre>
+
 
 
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Způsob překladu vektorových operací do assembleru</h2>
+
+<p>Vytištěné výsledky jsou sice značně odlišné (ostatně podle očekávání), ale
+jak se odlišuje sekvence instrukcí získaná přeložením těchto příkladů.</p>
+
+<p>&bdquo;Nevektorová varianta&ldquo;:</p>
 
 <pre>
     *z = x + y;
@@ -476,16 +719,20 @@ int main(void)
   9f:   48 89 51 08             mov    QWORD PTR [rcx+0x8],rdx
 </pre>
 
+<p>Součet vektorů s&nbsp;prvky typu <strong>signed char</strong>:</p>
+
 <pre>
    8:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
    c:   0f 29 4d e0             movaps XMMWORD PTR [rbp-0x20],xmm1
   10:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   14:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  19:   66 0f fc 45 e0          paddb  xmm0,XMMWORD PTR [rbp-0x20]
+  19:   66 0f fc 45 e0          <strong>paddb  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   1e:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   22:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>Součet vektorů s&nbsp;prvky typu <strong>signed short</strong>:</p>
 
 <pre>
   30:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
@@ -493,10 +740,12 @@ int main(void)
   38:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   3c:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  41:   66 0f fd 45 e0          paddw  xmm0,XMMWORD PTR [rbp-0x20]
+  41:   66 0f fd 45 e0          <strong>paddw  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   46:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   4a:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>Součet vektorů s&nbsp;prvky typu <strong>signed int</strong>:</p>
 
 <pre>
   58:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
@@ -504,10 +753,12 @@ int main(void)
   60:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   64:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  69:   66 0f fe 45 e0          paddd  xmm0,XMMWORD PTR [rbp-0x20]
+  69:   66 0f fe 45 e0          <strong>paddd  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   6e:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   72:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>A konečně součet vektorů s&nbsp;prvky typu <strong>signed long</strong>:</p>
 
 <pre>
   80:   0f 29 45 f0             movaps XMMWORD PTR [rbp-0x10],xmm0
@@ -515,34 +766,40 @@ int main(void)
   88:   48 89 7d d8             mov    QWORD PTR [rbp-0x28],rdi
     *z = x + y;
   8c:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
-  91:   66 0f d4 45 e0          paddq  xmm0,XMMWORD PTR [rbp-0x20]
+  91:   66 0f d4 45 e0          <strong>paddq  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   96:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   9a:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p><div class="rs-tip-major">Poznámka: na tomto příkladu je patrné, že se
+výsledné sekvence instrukcí nijak neliší.</div></p>
 
 
 
 <p><a name="k07"></a></p>
 <h2 id="k07">7. Vektorové operace nad vektory s&nbsp;prvky typu <strong>float</strong> a <strong>double</strong></h2>
 
+<p>Zbývá nám zjistit, jakým způsobem se přeloží kód s&nbsp;vektory, jejichž
+prvky jsou typu <strong>float</strong> a <strong>double</strong>:</p>
+
 <pre>
 #include &lt;stdio.h&gt;
 &nbsp;
-typedef float v16float __attribute__((vector_size(16)));
+typedef float <strong>v16float</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16float(v16float x, v16float y, v16float * z)
+void <strong>add16float</strong>(v16float x, v16float y, v16float * z)
 {
     *z = x + y;
 }
 &nbsp;
-typedef double v16double __attribute__((vector_size(16)));
+typedef double <strong>v16double</strong> __attribute__((vector_size(16)));
 &nbsp;
-void add16double(v16double x, v16double y, v16double * z)
+void <strong>add16double</strong>(v16double x, v16double y, v16double * z)
 {
     *z = x + y;
 }
 &nbsp;
-int main(void)
+int <strong>main</strong>(void)
 {
     {
         v16float x = { 0, 1, 2, 3 };
@@ -581,25 +838,42 @@ int main(void)
 }
 </pre>
 
+<p>Výsledky získané po překladu a spuštění tohoto jednoduchého demonstračního
+příkladu:</p>
+
+<pre>
+vector of floats
+0 0.100000
+1 1.100000
+2 2.100000
+3 3.100000
+&nbsp;
+vector of doubles
+0 0.100000
+1 1.100000
+</pre>
+
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Překlad do assembleru</h2>
+
+<p></p>
 
 <pre>
     *z = x + y;
    c:   d9 45 10                fld    DWORD PTR [rbp+0x10]
    f:   d9 45 20                fld    DWORD PTR [rbp+0x20]
-  12:   de c1                   faddp  st(1),st
+  12:   de c1                   <strong>faddp  st(1),st</strong>
   14:   d9 45 14                fld    DWORD PTR [rbp+0x14]
   17:   d9 45 24                fld    DWORD PTR [rbp+0x24]
-  1a:   de c1                   faddp  st(1),st
+  1a:   de c1                   <strong>faddp  st(1),st</strong>
   1c:   d9 45 18                fld    DWORD PTR [rbp+0x18]
   1f:   d9 45 28                fld    DWORD PTR [rbp+0x28]
-  22:   de c1                   faddp  st(1),st
+  22:   de c1                   <strong>faddp  st(1),st</strong>
   24:   d9 45 1c                fld    DWORD PTR [rbp+0x1c]
   27:   d9 45 2c                fld    DWORD PTR [rbp+0x2c]
-  2a:   de c1                   faddp  st(1),st
+  2a:   de c1                   <strong>faddp  st(1),st</strong>
   2c:   d9 cb                   fxch   st(3)
   2e:   d9 5d d0                fstp   DWORD PTR [rbp-0x30]
   31:   d9 c9                   fxch   st(1)
@@ -616,6 +890,8 @@ int main(void)
   57:   48 8b 55 f8             mov    rdx,QWORD PTR [rbp-0x8]
   5b:   48 89 50 08             mov    QWORD PTR [rax+0x8],rdx
 </pre>
+
+<p></p>
 
 <pre>
   6e:   dd 45 10                fld    QWORD PTR [rbp+0x10]
@@ -1263,7 +1539,7 @@ href="https://www.felixcloutier.com/x86/psubb:psubw:psubd">PSUBB</a>:</p>
   4a:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
-<p>Vektorový součin již není tak triviální, jak by se možná mohlo na první
+<p>Součin prvků vektorů již není tak triviální, jak by se možná mohlo na první
 pohled zdát, neboť je nutné zajistit, aby každý výsledný prvek měl opět pouze
 osm bitů výsledku a nikoli šestnáct bitů. Nejdříve se prvky vektorů instrukcemi
 <a
@@ -1303,6 +1579,8 @@ href="https://www.felixcloutier.com/x86/packuswb">PACKUSWB</a></p>
   c2:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   c6:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>Další operací je podíl prvků vektorů</p>
 
 <pre>
 </pre>
@@ -1405,19 +1683,19 @@ vector addition
  1    1.000 + 1.100 = 2.100
  2    2.000 + 2.100 = 4.100
  3    3.000 + 3.100 = 6.100
-
+&nbsp;
 vector subtraction
  0    0.000 - 0.100 = -0.100
  1    1.000 - 1.100 = -0.100
  2    2.000 - 2.100 = -0.100
  3    3.000 - 3.100 = -0.100
-
+&nbsp;
 vector multiply
  0    0.000 * 0.100 = 0.000
  1    1.000 * 1.100 = 1.100
  2    2.000 * 2.100 = 4.200
  3    3.000 * 3.100 = 9.300
-
+&nbsp;
 vector divide
  0    0.000 / 0.100 = 0.000
  1    1.000 / 1.100 = 0.909
@@ -1430,19 +1708,25 @@ vector divide
 <p><a name="k14"></a></p>
 <h2 id="k14">14. Překlad bez použití instrukcí SIMD</h2>
 
+<p>Nejprve se podívejme na způsob překladu tohoto demonstračního příkladu ve
+chvíli, kdy nejsou povoleny SIMD instrukce (tedy v&nbsp;našem případě SSE).
+Neoptimalizovaný kód součtu dvou čtyřprvkových vektorů je (nepřekvapivě)
+založen na instrukci <a
+href="https://www.felixcloutier.com/x86/fadd:faddp:fiadd">FADDP</a>:</p>
+
 <pre>
    c:   d9 45 10                fld    DWORD PTR [rbp+0x10]
    f:   d9 45 20                fld    DWORD PTR [rbp+0x20]
-  12:   de c1                   faddp  st(1),st
+  12:   de c1                   <strong>faddp  st(1),st</strong>
   14:   d9 45 14                fld    DWORD PTR [rbp+0x14]
   17:   d9 45 24                fld    DWORD PTR [rbp+0x24]
-  1a:   de c1                   faddp  st(1),st
+  1a:   de c1                   <strong>faddp  st(1),st</strong>
   1c:   d9 45 18                fld    DWORD PTR [rbp+0x18]
   1f:   d9 45 28                fld    DWORD PTR [rbp+0x28]
-  22:   de c1                   faddp  st(1),st
+  22:   de c1                   <strong>faddp  st(1),st</strong>
   24:   d9 45 1c                fld    DWORD PTR [rbp+0x1c]
   27:   d9 45 2c                fld    DWORD PTR [rbp+0x2c]
-  2a:   de c1                   faddp  st(1),st
+  2a:   de c1                   <strong>faddp  st(1),st</strong>
   2c:   d9 cb                   fxch   st(3)
   2e:   d9 5d d0                fstp   DWORD PTR [rbp-0x30]
   31:   d9 c9                   fxch   st(1)
@@ -1460,46 +1744,48 @@ vector divide
   5b:   48 89 50 08             mov    QWORD PTR [rax+0x8],rdx
 </pre>
 
-po optima
+<p>Po optimalizaci dostaneme tento kód:</p>
 
 <pre>
    4:   d9 44 24 08             fld    DWORD PTR [rsp+0x8]
-   8:   d8 44 24 18             fadd   DWORD PTR [rsp+0x18]
+   8:   d8 44 24 18             <strong>fadd   DWORD PTR [rsp+0x18]</strong>
    c:   d9 5c 24 d8             fstp   DWORD PTR [rsp-0x28]
   10:   d9 44 24 0c             fld    DWORD PTR [rsp+0xc]
-  14:   d8 44 24 1c             fadd   DWORD PTR [rsp+0x1c]
+  14:   d8 44 24 1c             <strong>fadd   DWORD PTR [rsp+0x1c]</strong>
   18:   d9 5c 24 dc             fstp   DWORD PTR [rsp-0x24]
   1c:   d9 44 24 10             fld    DWORD PTR [rsp+0x10]
-  20:   d8 44 24 20             fadd   DWORD PTR [rsp+0x20]
+  20:   d8 44 24 20             <strong>fadd   DWORD PTR [rsp+0x20]</strong>
   24:   48 8b 44 24 d8          mov    rax,QWORD PTR [rsp-0x28]
   29:   48 89 07                mov    QWORD PTR [rdi],rax
   2c:   d9 5c 24 e0             fstp   DWORD PTR [rsp-0x20]
   30:   d9 44 24 14             fld    DWORD PTR [rsp+0x14]
-  34:   d8 44 24 24             fadd   DWORD PTR [rsp+0x24]
+  34:   d8 44 24 24             <strong>fadd   DWORD PTR [rsp+0x24]</strong>
   38:   d9 5c 24 e4             fstp   DWORD PTR [rsp-0x1c]
   3c:   48 8b 44 24 e0          mov    rax,QWORD PTR [rsp-0x20]
   41:   48 89 47 08             mov    QWORD PTR [rdi+0x8],rax
 </pre>
 
-<p>dělení</p>
+<p>Dělení je realizováno instrukcí <a
+href="https://www.felixcloutier.com/x86/fdiv:fdivp:fidiv">FDIV</a>:</p>
 
 <pre>
-  f8:   d8 74 24 18             fdiv   DWORD PTR [rsp+0x18]
+  f8:   d8 74 24 18             <strong>fdiv   DWORD PTR [rsp+0x18]</strong>
   fc:   d9 5c 24 d8             fstp   DWORD PTR [rsp-0x28]
  100:   d9 44 24 0c             fld    DWORD PTR [rsp+0xc]
- 104:   d8 74 24 1c             fdiv   DWORD PTR [rsp+0x1c]
+ 104:   d8 74 24 1c             <strong>fdiv   DWORD PTR [rsp+0x1c]</strong>
  108:   d9 5c 24 dc             fstp   DWORD PTR [rsp-0x24]
  10c:   d9 44 24 10             fld    DWORD PTR [rsp+0x10]
- 110:   d8 74 24 20             fdiv   DWORD PTR [rsp+0x20]
+ 110:   d8 74 24 20             <strong>fdiv   DWORD PTR [rsp+0x20]</strong>
  114:   48 8b 44 24 d8          mov    rax,QWORD PTR [rsp-0x28]
  119:   48 89 07                mov    QWORD PTR [rdi],rax
  11c:   d9 5c 24 e0             fstp   DWORD PTR [rsp-0x20]
  120:   d9 44 24 14             fld    DWORD PTR [rsp+0x14]
- 124:   d8 74 24 24             fdiv   DWORD PTR [rsp+0x24]
+ 124:   d8 74 24 24             <strong>fdiv   DWORD PTR [rsp+0x24]</strong>
  128:   d9 5c 24 e4             fstp   DWORD PTR [rsp-0x1c]
  12c:   48 8b 44 24 e0          mov    rax,QWORD PTR [rsp-0x20]
  131:   48 89 47 08             mov    QWORD PTR [rdi+0x8],rax
 </pre>
+
 
 
 <p><a name="k15"></a></p>
@@ -1558,9 +1844,27 @@ po optimalizaci
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. Zásadní omezení rozšíření GCC</h2>
+<h2 id="k16">16. Zásadní omezení rozšíření (sic) GCC</h2>
 
-<p></p>
+<p>V&nbsp;instrukčním souboru všech moderních mikroprocesorů x86-64 nalezneme
+celou řadu potenciálně velmi užitečných instrukcí, například instrukci
+<strong>PMADDWS</strong>, která provádí paralelní součin čtveřice
+šestnáctibitových hodnot s&nbsp;32 bitovým mezivýsledkem, s&nbsp;následným
+součtem prvního + druhého a třetího + čtvrtého mezivýsledku. Užitečné jsou i
+původní MMX instrukce využitelné při práci s&nbsp;rastrovými obrázky nebo
+zvukovými vzorky (PACKUSWB, PACKSS, PUNPCKH, PUNPCKL). Podobně nalezneme
+v&nbsp;SSE instrukce <strong>SHUFPS, UNPCKHPS, UNPCKLPS</strong>,
+popř.&nbsp;různé výpočty:</p>
+
+<ul>
+<li>SQRTSS, SQRTPS: druhá odmocnina</li>
+<li>RSQRTSS, RSQRTPS: převrácená hodnota z druhé odmocniny</li>
+<li>MAXSS, MAXPS: výpočet maxima</li>
+<li>MINSS, MINPS: výpočet minima</li>
+</ul>
+
+<p>Pro přímé využití těchto (a mnoha dalších podobných) instrukcí se musíme
+uchýlit k&nbsp;použití <i>intrinsic</i>, což je téma na samostatný článek.</p>
 
 
 
@@ -1906,6 +2210,10 @@ Intel corporation, 1996</li>
 <a href="https://en.wikipedia.org/wiki/AArch64#Scalable_Vector_Extension_(SVE)">https://en.wikipedia.org/wiki/AArch64#Scalable_Vector_Extension_(SVE)</a>
 </li>
 
+<li>FDIV/FDIVP/FIDIV — Divide<br />
+<a href="https://www.felixcloutier.com/x86/fdiv:fdivp:fidiv">https://www.felixcloutier.com/x86/fdiv:fdivp:fidiv</a>
+</li>
+
 <li>PADDB/PADDW/PADDD/PADDQ — Add Packed Integers<br />
 <a href="https://www.felixcloutier.com/x86/paddb:paddw:paddd:paddq">https://www.felixcloutier.com/x86/paddb:paddw:paddd:paddq</a>
 </li>
@@ -1942,4 +2250,3 @@ Intel corporation, 1996</li>
 <p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2022</small></p>
 </body>
 </html>
-
