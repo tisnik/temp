@@ -44,13 +44,13 @@
 <p><a href="#k05">5. Tytéž operace, ovšem prováděné s&nbsp;prvky se znaménkem</a></p>
 <p><a href="#k06">6. Způsob překladu vektorových operací do assembleru</a></p>
 <p><a href="#k07">7. Vektorové operace nad vektory s&nbsp;prvky typu <strong>float</strong> a <strong>double</strong></a></p>
-<p><a href="#k08">*** 8. Překlad do assembleru</a></p>
+<p><a href="#k08">8. Překlad do assembleru</a></p>
 <p><a href="#k09">9. Vektor není libovolně velké pole &ndash; omezení GCC</a></p>
 <p><a href="#k10">10. Způsob překladu operace s&nbsp;dlouhým vektorem do assembleru</a></p>
 <p><a href="#k11">11. Ne všechny operace mohou být v&nbsp;SIMD podporovány</a></p>
-<p><a href="#k12">*** 12. Výsledek překladu předchozího programu do kódu se SIMD operacemi</a></p>
+<p><a href="#k12">12. Výsledek překladu předchozího programu do kódu se SIMD operacemi</a></p>
 <p><a href="#k13">13. Základní aritmetické operace s&nbsp;prvky vektorů typu <strong>float</strong></a></p>
-<p><a href="#k14">*** 14. Překlad bez použití instrukcí SIMD</a></p>
+<p><a href="#k14">14. Překlad bez použití instrukcí SIMD</a></p>
 <p><a href="#k15">*** 15. Překlad do strojového kódu s&nbsp;použitím instrukcí SIMD</a></p>
 <p><a href="#k16">16. Zásadní omezení rozšíření (sic) GCC</a></p>
 <p><a href="#k17">17. SIMD a vektorové operace na architekturách AArch64 a RISC-V</a></p>
@@ -858,7 +858,10 @@ vector of doubles
 <p><a name="k08"></a></p>
 <h2 id="k08">8. Překlad do assembleru</h2>
 
-<p></p>
+<p>Pokud jsou SIMD instrukce při překladu zakázány, jsou vektory sčítány prvek
+po prvku, zde konkrétně s&nbsp;využitím instrukce matematického koprocesoru <a
+href="https://www.felixcloutier.com/x86/fadd:faddp:fiadd">FADDP</a>. Pro
+původní prvky typu <strong>float</strong> se musí provést čtyři součty:</p>
 
 <pre>
     *z = x + y;
@@ -891,15 +894,16 @@ vector of doubles
   5b:   48 89 50 08             mov    QWORD PTR [rax+0x8],rdx
 </pre>
 
-<p></p>
+<p>Pro prvky vektorů typu <strong>double</strong> se použijí pouze dvě operace
+součtu, protože celková délka vektoru je 2&times;sizeof(double)=16 bajtů:</p>
 
 <pre>
   6e:   dd 45 10                fld    QWORD PTR [rbp+0x10]
   71:   dd 45 20                fld    QWORD PTR [rbp+0x20]
-  74:   de c1                   faddp  st(1),st
+  74:   de c1                   <strong>faddp  st(1),st</strong>
   76:   dd 45 18                fld    QWORD PTR [rbp+0x18]
   79:   dd 45 28                fld    QWORD PTR [rbp+0x28]
-  7c:   de c1                   faddp  st(1),st
+  7c:   de c1                   <strong>faddp  st(1),st</strong>
   7e:   d9 c9                   fxch   st(1)
   80:   dd 5d d0                fstp   QWORD PTR [rbp-0x30]
   83:   dd 5d d8                fstp   QWORD PTR [rbp-0x28]
@@ -914,7 +918,28 @@ vector of doubles
   a5:   48 89 50 08             mov    QWORD PTR [rax+0x8],rdx
 </pre>
 
+<p>Pro nás je dnes pochopitelně mnohem zajímavější překlad využívající SIMD
+instrukce. Součet prvků vektoru typu <strong>float</strong> je realizován takto
+&ndash; instrukcí <a href="https://www.felixcloutier.com/x86/addps">ADDPS</a>
+(viz též úvodní článek):</p>
+
 <pre>
+    *z = x + y;
+  14:   0f 28 45 f0             movaps xmm0,XMMWORD PTR [rbp-0x10]
+  18:   0f 58 45 e0             <strong>addps  xmm0,XMMWORD PTR [rbp-0x20]</strong>
+  1c:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
+  20:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
+</pre>
+
+<p>A pro vektory s&nbsp;prvky typu <strong>double</strong> vypadá jejich součet
+následovně &ndash; je realizován instrukcí <a
+href="https://www.felixcloutier.com/x86/addpd">ADDPD</a>:</p>
+
+<pre>
+  3a:   66 0f 28 45 f0          movapd xmm0,XMMWORD PTR [rbp-0x10]
+  3f:   66 0f 58 45 e0          <strong>addpd  xmm0,XMMWORD PTR [rbp-0x20]</strong>
+  44:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
+  48:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
 
@@ -1049,20 +1074,20 @@ zásobník ukládá pouze jeden z&nbsp;operandů. Ono opakování výpočtu 256&
 je zde stále použito, stejně jako oba blokové přesuny na začátku:</p>
 
 <pre>
-      4f:	d9 84 24 88 03 00 00 	fld    DWORD PTR [rsp+0x388]
-      56:	d8 84 24 88 07 00 00 	fadd   DWORD PTR [rsp+0x788]
-      5d:	d9 5c 24 88          	fstp   DWORD PTR [rsp-0x78]
-      61:	d9 84 24 8c 03 00 00 	fld    DWORD PTR [rsp+0x38c]
-      68:	d8 84 24 8c 07 00 00 	fadd   DWORD PTR [rsp+0x78c]
-      6f:	d9 5c 24 8c          	fstp   DWORD PTR [rsp-0x74]
+      4f:       d9 84 24 88 03 00 00    fld    DWORD PTR [rsp+0x388]
+      56:       d8 84 24 88 07 00 00    fadd   DWORD PTR [rsp+0x788]
+      5d:       d9 5c 24 88             fstp   DWORD PTR [rsp-0x78]
+      61:       d9 84 24 8c 03 00 00    fld    DWORD PTR [rsp+0x38c]
+      68:       d8 84 24 8c 07 00 00    fadd   DWORD PTR [rsp+0x78c]
+      6f:       d9 5c 24 8c             fstp   DWORD PTR [rsp-0x74]
 </pre>
 
 <p>až:</p>
 
 <pre>
-    147f:	d9 84 24 84 07 00 00 	fld    DWORD PTR [rsp+0x784]
-    1486:	d8 84 24 84 0b 00 00 	fadd   DWORD PTR [rsp+0xb84]
-    148d:	d9 9c 24 84 03 00 00 	fstp   DWORD PTR [rsp+0x384]
+    147f:       d9 84 24 84 07 00 00    fld    DWORD PTR [rsp+0x784]
+    1486:       d8 84 24 84 0b 00 00    fadd   DWORD PTR [rsp+0xb84]
+    148d:       d9 9c 24 84 03 00 00    fstp   DWORD PTR [rsp+0x384]
 </pre>
 
 <p>Mohlo by se zdát, že po povolení SIMD operací (zde to bude SSE) se situace
@@ -1580,22 +1605,151 @@ href="https://www.felixcloutier.com/x86/packuswb">PACKUSWB</a></p>
   c6:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
-<p>Další operací je podíl prvků vektorů</p>
+<p>Další operací je podíl prvků vektorů, který je složitý a pomalý, protože je
+realizován sekvenčně, konkrétně standardní instrukcí <a
+href="https://www.felixcloutier.com/x86/idiv">IDIV</a> (!), předtím je ještě
+nutné operand převést z&nbsp;bajtu na 16bitové slovo instrukcí <a
+href="https://www.felixcloutier.com/x86/cbw:cwde:cdqe">CBW</a> (uff):</p>
 
 <pre>
+  e9:   0f b6 45 c0             movzx  eax,BYTE PTR [rbp-0x40]
+  ed:   0f b6 55 b0             movzx  edx,BYTE PTR [rbp-0x50]
+  f1:   66 98                   <strong>cbw</strong>
+  f3:   f6 fa                   <strong>idiv   dl</strong>
+  f5:   41 89 c7                mov    r15d,eax
+  f8:   0f b6 45 c1             movzx  eax,BYTE PTR [rbp-0x3f]
+  fc:   0f b6 55 b1             movzx  edx,BYTE PTR [rbp-0x4f]
+ 100:   66 98                   <strong>cbw</strong>
+ 102:   f6 fa                   <strong>idiv   dl</strong>
+ 104:   88 45 90                mov    BYTE PTR [rbp-0x70],al
+ 107:   0f b6 45 c2             movzx  eax,BYTE PTR [rbp-0x3e]
+ 10b:   0f b6 55 b2             movzx  edx,BYTE PTR [rbp-0x4e]
+ 10f:   66 98                   <strong>cbw</strong>
+ 111:   f6 fa                   <strong>idiv   dl</strong>
+ 113:   88 45 a7                mov    BYTE PTR [rbp-0x59],al
+ 116:   0f b6 45 c3             movzx  eax,BYTE PTR [rbp-0x3d]
+ 11a:   0f b6 55 b3             movzx  edx,BYTE PTR [rbp-0x4d]
+ 11e:   66 98                   <strong>cbw</strong>
+ 120:   f6 fa                   <strong>idiv   dl</strong>
+ 122:   88 45 a6                mov    BYTE PTR [rbp-0x5a],al
+ 125:   0f b6 45 c4             movzx  eax,BYTE PTR [rbp-0x3c]
+ 129:   0f b6 55 b4             movzx  edx,BYTE PTR [rbp-0x4c]
+ 12d:   66 98                   <strong>cbw</strong>
+ 12f:   f6 fa                   <strong>idiv   dl</strong>
+ 131:   88 45 a5                mov    BYTE PTR [rbp-0x5b],al
+ 134:   0f b6 45 c5             movzx  eax,BYTE PTR [rbp-0x3b]
+ 138:   0f b6 55 b5             movzx  edx,BYTE PTR [rbp-0x4b]
+ 13c:   66 98                   <strong>cbw</strong>
+ 13e:   f6 fa                   <strong>idiv   dl</strong>
+ 140:   41 89 c2                mov    r10d,eax
+ 143:   0f b6 45 c6             movzx  eax,BYTE PTR [rbp-0x3a]
+ 147:   0f b6 55 b6             movzx  edx,BYTE PTR [rbp-0x4a]
+ 14b:   66 98                   <strong>cbw</strong>
+ 14d:   f6 fa                   <strong>idiv   dl</strong>
+ 14f:   41 89 c0                mov    r8d,eax
+ 152:   0f b6 45 c7             movzx  eax,BYTE PTR [rbp-0x39]
+ 156:   0f b6 55 b7             movzx  edx,BYTE PTR [rbp-0x49]
+ 15a:   66 98                   <strong>cbw</strong>
+ 15c:   f6 fa                   <strong>idiv   dl</strong>
+ 15e:   89 c7                   mov    edi,eax
+ 160:   0f b6 45 c8             movzx  eax,BYTE PTR [rbp-0x38]
+ 164:   0f b6 55 b8             movzx  edx,BYTE PTR [rbp-0x48]
+ 168:   66 98                   <strong>cbw</strong>
+ 16a:   f6 fa                   <strong>idiv   dl</strong>
+ 16c:   41 89 c3                mov    r11d,eax
+ 16f:   0f b6 45 c9             movzx  eax,BYTE PTR [rbp-0x37]
+ 173:   0f b6 55 b9             movzx  edx,BYTE PTR [rbp-0x47]
+ 177:   66 98                   <strong>cbw</strong>
+ 179:   f6 fa                   <strong>idiv   dl</strong>
+ 17b:   89 c3                   mov    ebx,eax
+ 17d:   0f b6 45 ca             movzx  eax,BYTE PTR [rbp-0x36]
+ 181:   0f b6 55 ba             movzx  edx,BYTE PTR [rbp-0x46]
+ 185:   66 98                   <strong>cbw</strong>
+ 187:   f6 fa                   <strong>idiv   dl</strong>
+ 189:   41 89 c4                mov    r12d,eax
+ 18c:   0f b6 45 cb             movzx  eax,BYTE PTR [rbp-0x35]
+ 190:   0f b6 55 bb             movzx  edx,BYTE PTR [rbp-0x45]
+ 194:   66 98                   <strong>cbw</strong>
+ 196:   f6 fa                   <strong>idiv   dl</strong>
+ 198:   41 89 c5                mov    r13d,eax
+ 19b:   0f b6 45 cc             movzx  eax,BYTE PTR [rbp-0x34]
+ 19f:   0f b6 55 bc             movzx  edx,BYTE PTR [rbp-0x44]
+ 1a3:   66 98                   <strong>cbw</strong>
+ 1a5:   f6 fa                   <strong>idiv   dl</strong>
+ 1a7:   41 89 c6                mov    r14d,eax
+ 1aa:   0f b6 45 cd             movzx  eax,BYTE PTR [rbp-0x33]
+ 1ae:   0f b6 55 bd             movzx  edx,BYTE PTR [rbp-0x43]
+ 1b2:   66 98                   <strong>cbw</strong>
+ 1b4:   f6 fa                   <strong>idiv   dl</strong>
+ 1b6:   41 89 c1                mov    r9d,eax
+ 1b9:   0f b6 45 ce             movzx  eax,BYTE PTR [rbp-0x32]
+ 1bd:   0f b6 55 be             movzx  edx,BYTE PTR [rbp-0x42]
+ 1c1:   66 98                   <strong>cbw</strong>
+ 1c3:   f6 fa                   <strong>idiv   dl</strong>
+ 1c5:   89 c6                   mov    esi,eax
+ 1c7:   0f b6 45 cf             movzx  eax,BYTE PTR [rbp-0x31]
+ 1cb:   0f b6 55 bf             movzx  edx,BYTE PTR [rbp-0x41]
+ 1cf:   66 98                   <strong>cbw</strong>
+ 1d1:   f6 fa                   <strong>idiv   dl</strong>
 </pre>
 
-<pre>
-</pre>
+<p>Aplikace operátoru &amp; na prvky vektoru s&nbsp;využitím instrukce <a
+href="https://www.felixcloutier.com/x86/pand">PAND</a>:</p>
 
 <pre>
+    *z = x &amp; y;
+ 4a2:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
+ 4a7:   66 0f db 45 e0          <strong>pand   xmm0,XMMWORD PTR [rbp-0x20]</strong>
+ 4ac:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
+ 4b0:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
-<pre>
-</pre>
+<p>Aplikace operátoru | na prvky vektoru s&nbsp;využitím instrukce <a
+href="https://www.felixcloutier.com/x86/por">POR</a>:</p>
 
 <pre>
+    *z = x | y;
+ 4ca:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
+ 4cf:   66 0f eb 45 e0          <strong>por    xmm0,XMMWORD PTR [rbp-0x20]</strong>
+ 4d4:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
+ 4d8:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
+
+<p>Aplikace operátoru ^ na prvky vektoru s&nbsp;využitím instrukce <a
+href="https://www.felixcloutier.com/x86/pxor">PXOR</a>:</p>
+
+<pre>
+    *z = x ^ y;
+ 4f2:   66 0f 6f 45 f0          movdqa xmm0,XMMWORD PTR [rbp-0x10]
+ 4f7:   66 0f ef 45 e0          <strong>pxor   xmm0,XMMWORD PTR [rbp-0x20]</strong>
+ 4fc:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
+ 500:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
+</pre>
+
+<p>Překlad funkce, v&nbsp;níž se provádí bitový posun prvků jednoho vektoru na
+základě hodnot uložených ve druhém vektoru, je stejně tristní, jako tomu bylo u
+dělení prvků &ndash; žádné vektorové (přesněji řečen SIMD) instrukce zde nejsou
+použity:</p>
+
+<pre>
+523:    0f b6 55 c0             movzx  edx,BYTE PTR [rbp-0x40]
+ 527:   0f b6 45 b0             movzx  eax,BYTE PTR [rbp-0x50]
+ 52b:   0f be c0                movsx  eax,al
+ 52e:   89 c1                   mov    ecx,eax
+ 530:   d2 fa                   <strong>sar    dl,cl</strong>
+ ...
+ ...
+ ...
+ 634:   0f be c0                movsx  eax,al
+ 637:   89 d7                   mov    edi,edx
+ 639:   89 c1                   mov    ecx,eax
+ 63b:   40 d2 ff                <strong>sar    dil,cl</strong>
+ 63e:   0f b6 55 cf             movzx  edx,BYTE PTR [rbp-0x31]
+ 642:   0f b6 45 bf             movzx  eax,BYTE PTR [rbp-0x41]
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: prakticky stejně je tomu v&nbsp;případě
+posunu doleva.</div></p>
 
 
 
@@ -1791,50 +1945,67 @@ href="https://www.felixcloutier.com/x86/fdiv:fdivp:fidiv">FDIV</a>:</p>
 <p><a name="k15"></a></p>
 <h2 id="k15">15. Překlad do strojového kódu s&nbsp;použitím instrukcí SIMD</h2>
 
+<p>Součet odpovídajících si prvků vektorů je realizován instrukcí <a href=""></a>:</p>
+
 <pre>
   14:   0f 28 45 f0             movaps xmm0,XMMWORD PTR [rbp-0x10]
-  18:   0f 58 45 e0             addps  xmm0,XMMWORD PTR [rbp-0x20]
+  18:   0f 58 45 e0             <strong>addps  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   1c:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   20:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
+<p>Rozdíl odpovídajících si prvků vektorů je realizován instrukcí <a href=""></a>:</p>
+
 <pre>
   3a:   0f 28 45 f0             movaps xmm0,XMMWORD PTR [rbp-0x10]
-  3e:   0f 5c 45 e0             subps  xmm0,XMMWORD PTR [rbp-0x20]
+  3e:   0f 5c 45 e0             <strong>subps  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   42:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   46:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
+<p>Součin odpovídajících si prvků vektorů je realizován instrukcí <a href=""></a>:</p>
+
 <pre>
   60:   0f 28 45 f0             movaps xmm0,XMMWORD PTR [rbp-0x10]
-  64:   0f 59 45 e0             mulps  xmm0,XMMWORD PTR [rbp-0x20]
+  64:   0f 59 45 e0             <strong>mulps  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   68:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   6c:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
+<p>Podíl odpovídajících si prvků vektorů <a href=""></a>:</p>
+
 <pre>
   86:   0f 28 45 f0             movaps xmm0,XMMWORD PTR [rbp-0x10]
-  8a:   0f 5e 45 e0             divps  xmm0,XMMWORD PTR [rbp-0x20]
+  8a:   0f 5e 45 e0             <strong>divps  xmm0,XMMWORD PTR [rbp-0x20]</strong>
   8e:   48 8b 45 d8             mov    rax,QWORD PTR [rbp-0x28]
   92:   0f 29 00                movaps XMMWORD PTR [rax],xmm0
 </pre>
 
-po optimalizaci
+<p>Po optimalizaci (-O3) se samotné výpočty zkrátí &ndash; nemusí se provádět
+zbytečné přesuny dat:</p>
+
+<p>Součet odpovídajících si prvků vektorů:</p>
 
 <pre>
    4:   0f 58 c1                <strong>addps  xmm0,xmm1</strong>
    7:   0f 29 07                movaps XMMWORD PTR [rdi],xmm0
 </pre>
 
+<p>Rozdíl odpovídajících si prvků vektorů:</p>
+
 <pre>
   14:   0f 5c c1                <strong>subps  xmm0,xmm1</strong>
   17:   0f 29 07                movaps XMMWORD PTR [rdi],xmm0
 </pre>
 
+<p>Součin odpovídajících si prvků vektorů:</p>
+
 <pre>
   24:   0f 59 c1                <strong>mulps  xmm0,xmm1</strong>
   27:   0f 29 07                movaps XMMWORD PTR [rdi],xmm0
 </pre>
+
+<p>Podíl odpovídajících si prvků vektorů:</p>
 
 <pre>
   34:   0f 5e c1                <strong>divps  xmm0,xmm1</strong>
@@ -2210,8 +2381,24 @@ Intel corporation, 1996</li>
 <a href="https://en.wikipedia.org/wiki/AArch64#Scalable_Vector_Extension_(SVE)">https://en.wikipedia.org/wiki/AArch64#Scalable_Vector_Extension_(SVE)</a>
 </li>
 
+<li>FADD/FADDP/FIADD — Add<br />
+<a href="https://www.felixcloutier.com/x86/fadd:faddp:fiadd">https://www.felixcloutier.com/x86/fadd:faddp:fiadd</a>
+</li>
+
+<li>ADDPS — Add Packed Single-Precision Floating-Point Values<br />
+<a href="https://www.felixcloutier.com/x86/addps">https://www.felixcloutier.com/x86/addps</a>
+</li>
+
+<li>ADDPD — Add Packed Double-Precision Floating-Point Values<br />
+<a href="https://www.felixcloutier.com/x86/addpd">https://www.felixcloutier.com/x86/addpd</a>
+</li>
+
 <li>FDIV/FDIVP/FIDIV — Divide<br />
 <a href="https://www.felixcloutier.com/x86/fdiv:fdivp:fidiv">https://www.felixcloutier.com/x86/fdiv:fdivp:fidiv</a>
+</li>
+
+<li>IDIV — Signed Divide<br />
+<a href="https://www.felixcloutier.com/x86/idiv">https://www.felixcloutier.com/x86/idiv</a>
 </li>
 
 <li>PADDB/PADDW/PADDD/PADDQ — Add Packed Integers<br />
@@ -2240,6 +2427,22 @@ Intel corporation, 1996</li>
 
 <li>DIVPS — Divide Packed Single-Precision Floating-Point Values<br />
 <a href="https://www.felixcloutier.com/x86/divps">https://www.felixcloutier.com/x86/divps</a>
+</li>
+
+<li>CBW/CWDE/CDQE — Convert Byte to Word/Convert Word to Doubleword/Convert Doubleword to Quadword<br />
+<a href="https://www.felixcloutier.com/x86/cbw:cwde:cdqe">https://www.felixcloutier.com/x86/cbw:cwde:cdqe</a>
+</li>
+
+<li>PAND — Logical AND<br />
+<a href="https://www.felixcloutier.com/x86/pand">https://www.felixcloutier.com/x86/pand</a>
+</li>
+
+<li>POR — Bitwise Logical OR<br />
+<a href="https://www.felixcloutier.com/x86/por">https://www.felixcloutier.com/x86/por</a>
+</li>
+
+<li>PXOR — Logical Exclusive OR<br />
+<a href="https://www.felixcloutier.com/x86/pxor">https://www.felixcloutier.com/x86/pxor</a>
 </li>
 
 </ol>
