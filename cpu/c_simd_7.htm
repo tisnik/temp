@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>V sedmé a současně i předposlední části miniseriálu o podpoře SIMD operací na platformě x86-64 se seznámíme s&nbsp;rozšířeními instrukční sady, které se jmenují F16C, FMA a AVX-512. První dvě rozšíření jsou pojata minimalisticky, ovšem AVX-512 přidává velké množství instrukcí i registrů.</p>
 
 
 
@@ -43,17 +43,17 @@
 <p><a href="#k04">4. Převod vektoru s&nbsp;prvky <i>float</i> na vektor s&nbsp;prvky <i>half</i> a zpět</a></p>
 <p><a href="#k05">5. Konverze velkých hodnot, automatický převod na nekonečna</a></p>
 <p><a href="#k06">6. Konverze malých hodnot s&nbsp;volbou režimu zaokrouhlení</a></p>
-<p><a href="#k07">*** 7. Způsob uložení hodnot typu <i>half float</i></a></p>
+<p><a href="#k07">7. Způsob uložení hodnot typu <i>half float</i></a></p>
 <p><a href="#k08">8. Využití 256bitových vektorů při převodech <i>single/float</i> na <i>half float</i> a zpět</a></p>
-<p><a href="#k09">*** 9. Rozšíření FMA</a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
-<p><a href="#k13">*** 13. </a></p>
-<p><a href="#k14">*** 14. </a></p>
+<p><a href="#k09">9. Rozšíření FMA</a></p>
+<p><a href="#k10">10. Použití intrinsic pro instrukci <strong>VFMADD</strong></a></p>
+<p><a href="#k11">11. Výpočet multiply-add s&nbsp;desetinnými hodnotami</a></p>
+<p><a href="#k12">*** 12. Výpočty s&nbsp;maximálními hodnotami typu <i>single/float</i></a></p>
+<p><a href="#k13">*** 13. Použití intrinsic pro instrukci <strong>VFNMADD</strong></a></p>
+<p><a href="#k14">*** 14. Použití intrinsic pro instrukci <strong>VFMSUB</strong></a></p>
 <p><a href="#k15">15. Rozšíření AVX-512</a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
+<p><a href="#k16">*** 16. AVX-512 jakožto několik volitelných sad rozšíření instrukcí</a></p>
+<p><a href="#k17">*** 17. Možné režimy SIMD s&nbsp;přihlédnutím k&nbsp;možnostem AVX-512</a></p>
 <p><a href="#k18">*** 18. </a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -534,6 +534,95 @@ posledního operandu funkce <strong>vcvtps2ph</strong>:</p>
 <p><a name="k07"></a></p>
 <h2 id="k07">7. Způsob uložení hodnot typu <i>half float</i></h2>
 
+<p>Hodnoty typu <i>half float</i> používají stejný systém zakódování hodnot,
+jako je tomu v&nbsp;případě známých datových typů <i>single</i> a
+<i>double</i>; pouze se snižuje počet bitů rezervovaných pro uložení mantisy i
+exponentu. Pro mantisu je rezervováno deset bitů a pro exponent pět bitů,
+přičemž posun exponentu (<i>exponent bias</i>) je 15 (dekadicky). Nejvyšší
+hodnota exponentu je rezervována pro nekonečna a NaN. Se znalostí těchto
+vlastností datového typu <i>half float</i> je snadné si vytvořit program, který
+provede dekódování 16bitové hodnoty zpět na hodnotu s&nbsp;plovoucí řádovou
+čárkou.</p>
+
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;immintrin.h&gt;
+&nbsp;
+void decode_half(unsigned short int half)
+{
+    const int exponent_bias = 15;
+    const int mantissa_base = 1024;
+    const int max_exponent = 31;
+&nbsp;
+    const int mantissa_bits = 10;
+    const int exponent_bits = 5;
+&nbsp;
+    unsigned int sign = 0x01 &amp; (half &gt;&gt; (mantissa_bits + exponent_bits));
+    unsigned int exponent = 0x1f &amp; (half &gt;&gt; mantissa_bits);
+    unsigned int mantissa = 0x03ff &amp; half;
+&nbsp;
+    if (exponent == max_exponent) {
+        printf("%c infinity\n", sign ? '-' : '+');
+    } else {
+        printf("%c %8.6f x 2^%-2d\n", sign ? '-' : '+',
+               1.0 + (float) mantissa / mantissa_base, exponent - exponent_bias);
+    }
+}
+&nbsp;
+void convert_and_decode(__v4sf x)
+{
+    __v8hi half;
+    int i;
+&nbsp;
+    <i>// konverze float -&gt; half</i>
+    half = <strong>__builtin_ia32_vcvtps2ph(x, 0)</strong>;
+&nbsp;
+    for (i = 0; i &lt; sizeof(x) / sizeof(float); i++) {
+        printf("%12.6f    %04hx    ", x[i], half[i]);
+        decode_half(half[i]);
+    }
+}
+&nbsp;
+int main(void)
+{
+    __v4sf x = { 0.0, 0.1, 1.0, 2.0 };
+    convert_and_decode(x);
+&nbsp;
+    __v4sf y = { 10000, 65400, 65504, 65600 };
+    convert_and_decode(y);
+&nbsp;
+    __v4sf z = { 1.0, -1.0, 0.01, -0.01 };
+    convert_and_decode(z);
+&nbsp;
+    __v4sf w = {0.001, 0.0001, 0.00001, 0.000001 };
+    convert_and_decode(w);
+&nbsp;
+    return 0;
+}
+</pre>
+
+<p>Z&nbsp;výsledků je patrné například i to, které hodnoty jsou již považovány
+za nekonečno atd.:</p>
+
+<pre>
+    0.000000    0000    + 1.000000 x 2^-15
+    0.100000    2e66    + 1.599609 x 2^-4
+    1.000000    3c00    + 1.000000 x 2^0 
+    2.000000    4000    + 1.000000 x 2^1 
+10000.000000    70e2    + 1.220703 x 2^13
+65400.000000    7bfc    + 1.996094 x 2^15
+65504.000000    7bff    + 1.999023 x 2^15
+65600.000000    7c00    + infinity
+    1.000000    3c00    + 1.000000 x 2^0 
+   -1.000000    bc00    - 1.000000 x 2^0 
+    0.010000    211f    + 1.280273 x 2^-7
+   -0.010000    a11f    - 1.280273 x 2^-7
+    0.001000    1419    + 1.024414 x 2^-10
+    0.000100    068e    + 1.638672 x 2^-14
+    0.000010    00a8    + 1.164062 x 2^-15
+    0.000001    0011    + 1.016602 x 2^-15
+</pre>
+
 
 
 <p><a name="k08"></a></p>
@@ -604,40 +693,106 @@ z&nbsp;operandů je vždy registr YMMx):</p>
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Rozšíření FMA</h2>
 
+<p>Druhé rozšíření instrukční sady, se kterým se v&nbsp;dnešním článku setkáme,
+se jmenuje <i>FMA</i>, což je zkratka odvozená z&nbsp;celého názvu <i>Fused
+Multiply–Add</i>. Z&nbsp;tohoto názvu je možné odvodit, že v&nbsp;tomto
+rozšíření nalezneme instrukci pro provedení operace <strong>a·b + c</strong>,
+ale i další varianty této instrukce, v&nbsp;nichž se navíc mění znaménka
+jednotlivých operandů popř.&nbsp;pořadí operandů (má význam především ve
+chvíli, kdy je jeden z&nbsp;operandů uložen v&nbsp;paměti a nikoli
+v&nbsp;pracovním registru). Účelem tohoto rozšíření je (relativně nepatrně)
+zvýšit výpočetní rychlost, ale především provést výpočet bez mezizaokrouhlení
+výsledků. Výpočty probíhají nad typem <i>single</i> či <i>double</i> (skalární
+varianta) popř.&nbsp;nad vektory s&nbsp;typy <i>single</i> a <i>double</i>.</p>
+
+<p>Ve skutečnosti <i>FMA</i> existuje ve dvou variantách &ndash; FMA3 a FMA4.
+V&nbsp;dnešním článku se zaměříme na FMA3, protože toto rozšíření je
+v&nbsp;současnosti podporováno jak čipy od AMD, tak i od Intelu (na rozdíl od
+FMA4, které je prozatím podporováno jen čipy od AMD).</p>
+
+<p>V&nbsp;rozšíření FMA3 lze nalézt jen malé množství nových instrukcí,
+k&nbsp;jejichž jménům je ještě přidán postfixový kód popsaný níže:</p>
+
+<table>
+<tr><th>Instrukce</th><th>Stručný popis instrukce</th><th>Poznámka</th></tr>
+<tr><td>VFMADD</td><td>x = +a · b + c</td><td>&nbsp;</td></tr>
+<tr><td>VFNMADD</td><td>x = -a · b + c</td><td>N - negate</td></tr>
+<tr><td>VFMSUB</td><td>x = +a · b - c</td><td>&nbsp;</td></tr>
+<tr><td>VFMADDSUB</td><td>x = +a · b + c nebo x = +a · b - c</td><td>viz další text</td></tr>
+<tr><td>VFMSUBADD</td><td>x = +a · b − c nebo x = +a · b + c</td><td>viz další text</td></tr>
+</table>
+
+<p>U konkrétních instrukcí se, jak jsme si již řekli, uvádí i postfixový kód,
+který určuje pořadí operandů. Tento postfix uvidíme i v&nbsp;následujících
+kapitolách:</p>
+
+<table>
+<tr><th>Postfixový kód</th><th>Význam</th></tr>
+<tr><td>132</td><td>a = a · c + b</td></tr>
+<tr><td>213</td><td>a = b · a + c</td></tr>
+<tr><td>231</td><td>a = b · c + a</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: z&nbsp;tabulky je patrné, že kód uvádí
+pořadí operandů oproti standardnímu pořadí, které by se zapsalo postfixem
+123.</div></p>
+
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Použití intrinsic pro instrukci <strong>VFMADD</strong></h2>
+
+<p>Podívejme se nyní na použití <i>intrinsic</i>, která v&nbsp;GCC umožňuje
+vložení instrukce <strong>VFMADD</strong> do cílového strojového kódu. Tato
+instrukce zajišťuje provedení výpočtu x = +a · b + c, tedy vynásobení dvou
+operandů s&nbsp;přičtením třetího operandu, a to pochopitelně opět pro všechny
+prvky vektoru:</p>
 
 <pre>
 #include &lt;stdio.h&gt;
 #include &lt;immintrin.h&gt;
-
+&nbsp;
 void print_results(const char *title, __v4sf * a, __v4sf * b, __v4sf * c,
                    __v4sf * result)
 {
     int i;
-
+&nbsp;
     puts(title);
     for (i = 0; i &lt; sizeof(*a) / sizeof(float); i++) {
         printf("%2d  %1.0f * %1.0f + %1.0f = %1.0f\n", i, (*a)[i], (*b)[i],
                (*c)[i], (*result)[i]);
     }
-
+&nbsp;
     putchar('\n');
 }
-
+&nbsp;
 int main(void)
 {
     __v4sf a = { 1, 2, 3, 4 };
     __v4sf b = { 2, 2, 2, 2 };
     __v4sf c = { 1, 1, 1, 1 };;
     __v4sf result;
-
+&nbsp;
     result = <strong>__builtin_ia32_vfmaddps(a, b, c)</strong>;
-    print_results(" #  a   b   c   result", &a, &b, &c, &result);
+    print_results(" #  a   b   c   result", &amp;a, &amp;b, &amp;c, &amp;result);
 }
 </pre>
+
+<p>Po překladu a spuštění tohoto demonstračního příkladu se zobrazí následující
+(očekávané) výsledky:</p>
+
+<pre>
+ #  a   b   c   result
+ 0  1 * 2 + 1 = 3
+ 1  2 * 2 + 1 = 5
+ 2  3 * 2 + 1 = 7
+ 3  4 * 2 + 1 = 9
+</pre>
+
+<p>Z&nbsp;přeloženého kódu můžeme vidět, že se použila instrukce
+<strong>VFMADD</strong> s&nbsp;postfixem 231 (pořadí operandů) a s&nbsp;určením
+datového typu <strong>ps</strong>, což značí vektory hodnot typu
+<i>single</i>:</p>
 
 <pre>
     result = __builtin_ia32_vfmaddps(a, b, c);
@@ -651,37 +806,59 @@ int main(void)
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Výpočet multiply-add s&nbsp;desetinnými hodnotami</h2>
+
+<p>Pro jistotu je dobré si zkontrolovat, že výpočty typu <i>multiply-add</i>
+proběhnou korektně (tedy se správnými výsledky) i v&nbsp;těch případech, kdy
+jsou ve vstupních vektorech uložena desetinná čísla. Předchozí demonstrační
+příklad tedy upravíme do této podoby (liší se jen hodnoty ve vektorech):</p>
 
 <pre>
 #include &lt;stdio.h&gt;
 #include &lt;immintrin.h&gt;
-
+&nbsp;
 void print_results(const char *title, __v4sf * a, __v4sf * b, __v4sf * c,
                    __v4sf * result)
 {
     int i;
-
+&nbsp;
     puts(title);
     for (i = 0; i &lt; sizeof(*a) / sizeof(float); i++) {
         printf("%2d  %3.1f * %3.1f + %3.1f = %3.1f\n", i, (*a)[i], (*b)[i],
                (*c)[i], (*result)[i]);
     }
-
+&nbsp;
     putchar('\n');
 }
-
+&nbsp;
 int main(void)
 {
-    __v4sf a = { 1, 2, 3, 4 };
-    __v4sf b = { 0.1, 0.1, 0.1, 0.1 };
-    __v4sf c = { 1, 1, 1, 1 };;
+    __v4sf a = { <u>1, 2, 3, 4</u> };
+    __v4sf b = { <u>0.1, 0.1, 0.1, 0.1</u> };
+    __v4sf c = { <u>1, 1, 1, 1</u> };;
     __v4sf result;
-
+&nbsp;
     result = <strong>__builtin_ia32_vfmaddps(a, b, c)</strong>;
-    print_results(" #   a     b     c     result", &a, &b, &c, &result);
+    print_results(" #   a     b     c     result", &amp;a, &amp;b, &amp;c, &amp;result);
 }
 </pre>
+
+<p>Ze zobrazených zpráv je patrné, že i tyto výpočty proběhnou korektně:</p>
+
+<pre>
+ #   a     b     c     result
+ 0  1.0 * 0.1 + 1.0 = 1.1
+ 1  2.0 * 0.1 + 1.0 = 1.2
+ 2  3.0 * 0.1 + 1.0 = 1.3
+ 3  4.0 * 0.1 + 1.0 = 1.4
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: ve skutečnosti je hodnota 0,1 u datových
+typů <i>single</i> a <i>double</i> velmi problematická, neboť ji nelze vyjádřit
+zcela přesně &ndash; ostatně proto se tyto datové typy u některých typů výpočtů
+(účetnictví atd.) nepoužívají.</div></p>
+
+<p>Přeložený kód:</p>
 
 <pre>
     result = __builtin_ia32_vfmaddps(a, b, c);
@@ -695,74 +872,102 @@ int main(void)
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Výpočty s&nbsp;maximálními hodnotami typu <i>single/float</i></h2>
+
+<p></p>
 
 <pre>
 #include &lt;stdio.h&gt;
 #include &lt;immintrin.h&gt;
-#include <float.h>
-
+#include &lt;float.h&gt;
+&nbsp;
 void print_results(const char *title, __v4sf * a, __v4sf * b, __v4sf * c,
                    __v4sf * result)
 {
     int i;
-
+&nbsp;
     puts(title);
     for (i = 0; i &lt; sizeof(*a) / sizeof(float); i++) {
         printf("%2d  %5.2g * %5.2g + %5.2g = %5.2g\n", i, (*a)[i], (*b)[i],
                (*c)[i], (*result)[i]);
     }
-
+&nbsp;
     putchar('\n');
 }
-
+&nbsp;
 int main(void)
 {
     __v4sf a = { 0.8, 0.9, 1.0, 1.1 };
     __v4sf b = { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX };
     __v4sf c = { 0, 0, 0, 0 };;
     __v4sf result;
-
+&nbsp;
     result = <strong>__builtin_ia32_vfmaddps(a, b, c)</strong>;
-    print_results(" #     a      b       c       result", &a, &b, &c,
-                  &result);
+    print_results(" #     a      b       c       result", &amp;a, &amp;b, &amp;c, &amp;result);
 }
+</pre>
+
+<p></p>
+
+<pre>
+ #     a      b       c       result
+ 0    0.8 * 3.4e+38 +     0 = 2.7e+38
+ 1    0.9 * 3.4e+38 +     0 = 3.1e+38
+ 2      1 * 3.4e+38 +     0 = 3.4e+38
+ 3    1.1 * 3.4e+38 +     0 =   inf
+</pre>
+
+<p></p>
+
+<pre>
 </pre>
 
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Použití intrinsic pro instrukci <strong>VFNMADD</strong></h2>
 
 <pre>
 #include &lt;stdio.h&gt;
 #include &lt;immintrin.h&gt;
-
+&nbsp;
 void print_results(const char *title, __v4sf * a, __v4sf * b, __v4sf * c,
                    __v4sf * result)
 {
     int i;
-
+&nbsp;
     puts(title);
     for (i = 0; i &lt; sizeof(*a) / sizeof(float); i++) {
         printf("%2d  -%1.0f * %1.0f + %1.0f = %1.0f\n", i, (*a)[i],
                (*b)[i], (*c)[i], (*result)[i]);
     }
-
+&nbsp;
     putchar('\n');
 }
-
+&nbsp;
 int main(void)
 {
     __v4sf a = { 1, 2, 3, 4 };
     __v4sf b = { 2, 2, 2, 2 };
     __v4sf c = { 1, 1, 1, 1 };;
     __v4sf result;
-
+&nbsp;
     result = <strong>__builtin_ia32_vfnmaddps(a, b, c)</strong>;
-    print_results(" #   a   b   c   result", &a, &b, &c, &result);
+    print_results(" #   a   b   c   result", &amp;a, &amp;b, &amp;c, &amp;result);
 }
 </pre>
+
+<p></p>
+
+<pre>
+ #   a   b   c   result
+ 0  -1 * 2 + 1 = -1
+ 1  -2 * 2 + 1 = -3
+ 2  -3 * 2 + 1 = -5
+ 3  -4 * 2 + 1 = -7
+</pre>
+
+<p></p>
 
 <pre>
     result = __builtin_ia32_vfnmaddps(a, b, c);
@@ -776,36 +981,46 @@ int main(void)
 
 
 <p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
+<h2 id="k14">14. Použití intrinsic pro instrukci <strong>VFMSUB</strong></h2>
 
 <pre>
 #include &lt;stdio.h&gt;
 #include &lt;immintrin.h&gt;
-
+&nbsp;
 void print_results(const char *title, __v4sf * a, __v4sf * b, __v4sf * c,
                    __v4sf * result)
 {
     int i;
-
+&nbsp;
     puts(title);
     for (i = 0; i &lt; sizeof(*a) / sizeof(float); i++) {
         printf("%2d  %1.0f * %1.0f - %1.0f = %1.0f\n", i, (*a)[i], (*b)[i],
                (*c)[i], (*result)[i]);
     }
-
+&nbsp;
     putchar('\n');
 }
-
+&nbsp;
 int main(void)
 {
     __v4sf a = { 1, 2, 3, 4 };
     __v4sf b = { 2, 2, 2, 2 };
     __v4sf c = { 1, 1, 1, 1 };;
     __v4sf result;
-
+&nbsp;
     result = <strong>__builtin_ia32_vfmsubps(a, b, c)</strong>;
-    print_results(" #  a   b   c   result", &a, &b, &c, &result);
+    print_results(" #  a   b   c   result", &amp;a, &amp;b, &amp;c, &amp;result);
 }
+</pre>
+
+<p></p>
+
+<pre>
+ #  a   b   c   result
+ 0  1 * 2 - 1 = 1
+ 1  2 * 2 - 1 = 3
+ 2  3 * 2 - 1 = 5
+ 3  4 * 2 - 1 = 7
 </pre>
 
 <pre>
@@ -894,7 +1109,7 @@ skutečnosti může změnit spodních 128 bitů registru <strong>YMM0</strong> i
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. AVX-512 jakožto několik volitelných sad rozšíření instrukcí</h2>
 
 <pre>
 avx5124fmapsintrin.h
@@ -1010,7 +1225,12 @@ Extension AVX512BITALG    is unsupported
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. Možné režimy SIMD</h2>
+<h2 id="k17">17. Možné režimy SIMD s&nbsp;přihlédnutím k&nbsp;možnostem AVX-512</h2>
+
+<table>
+<tr><th></th><th></th></tr>
+<tr><td></td><td></td></tr>
+</table>
 
 Name    Extension sets  Registers       Types
 SSE            SSE-SSE4.2 xmm0–xmm15  single floats. From SSE2: bytes, words, doublewords, quadwords and double floats.
@@ -1019,6 +1239,7 @@ AVX-256 (VEX)  AVX, AVX2  ymm0–ymm15  single/float, double. From AVX2: byte, w
 AVX-128 (EVEX) AVX-512VL  xmm0–xmm31 (k0–k7)  doubleword, quadword, single/float, double. AVX512BW: byte, word. AVX512-FP16: half float
 AVX-256 (EVEX) AVX-512VL  ymm0–ymm31 (k0–k7)  doubleword, quadword, single/float, double. AVX512BW: byte, word. AVX512-FP16: half float
 AVX-512 (EVEX) AVX-512F   zmm0–zmm31 (k0–k7)  doubleword, quadword, single/float, double. AVX512BW: byte, word. AVX512-FP16: half float
+
 
 
 <p><a name="k18"></a></p>
@@ -1096,7 +1317,9 @@ jednotlivě bez nutnosti klonovat celý (dnes již velmi rozsáhlý) repositář
 <tr><td>51</td><td>intrinsic_fma3_4.c</td><td>využití instrukce pro provedení vektorové operace x = -a*b+c</td><td><a href="https://github.com/tisnik/presentations/blob/master/SIMD/intrinsic_fma3_4.c">https://github.com/tisnik/presentations/blob/master/SIMD/intrinsic_fma3_4.c</a></td></tr>
 <tr><td>52</td><td>intrinsic_fma3_5.c</td><td>využití instrukce pro provedení vektorové operace x = a*b-c</td><td><a href="https://github.com/tisnik/presentations/blob/master/SIMD/intrinsic_fma3_5.c">https://github.com/tisnik/presentations/blob/master/SIMD/intrinsic_fma3_5.c</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>53</td><td>Makefile</td><td>Makefile pro překlad všech výše uvedených demonstračních příkladů</td><td><a href="https://github.com/tisnik/presentations/blob/master/SIMD/Makefile">https://github.com/tisnik/presentations/blob/master/SIMD/Makefile</a></td></tr>
+<tr><td>53</td><td>decode_half_float.c</td><td>dekódování hodnot s&nbsp;plovoucí řádovou čárkou uložených ve formátu <i>half float</i></td><td><a href="https://github.com/tisnik/presentations/blob/master/SIMD/decode_half_float.c">https://github.com/tisnik/presentations/blob/master/SIMD/decode_half_float.c</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>54</td><td>Makefile</td><td>Makefile pro překlad všech výše uvedených demonstračních příkladů</td><td><a href="https://github.com/tisnik/presentations/blob/master/SIMD/Makefile">https://github.com/tisnik/presentations/blob/master/SIMD/Makefile</a></td></tr>
 </table>
 
 <p>Soubory vzniklé překladem z&nbsp;jazyka C do assembleru procesorů x86-64:</p>
