@@ -41,7 +41,7 @@
 <p><a href="#k02">2. Struktura jednoduchého projektu pro NES založeného na jazyku C</a></p>
 <p><a href="#k03">3. Zdrojový kód kostry projektu</a></p>
 <p><a href="#k04">4. Soubor <strong>crt0.s</strong> s&nbsp;inicializačním kódem</a></p>
-<p><a href="#k05">*** 5. Knihovna <strong>neslib</strong></a></p>
+<p><a href="#k05">5. Knihovna <strong>neslib</strong></a></p>
 <p><a href="#k06">6. Překlad a slinkování celého projektu</a></p>
 <p><a href="#k07">*** 7. Výsledek překladu ve formě assembleru</a></p>
 <p><a href="#k08">*** 8. Spuštění vygenerovaného obrazu cartridge</a></p>
@@ -605,11 +605,324 @@ instrukcí jsou zcela totožné:</div></p>
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Knihovna <strong>neslib</strong></h2>
 
-<pre>
-</pre>
+<p>V&nbsp;projektu kromě nezbytného souboru <strong>crt.0</strong> nalezneme i
+soubory nazvané <strong>neslib.h</strong> a <strong>neslib.s</strong>. Jedná se
+o obdobu standardní knihovny céčka, která obsahuje konstanty a funkce používané
+při ovládání herní konzole NES. Tato knihovna je postupně rozšiřována a
+optimalizována, což je ostatně patrné i při pohledu na první řádky
+v&nbsp;hlavičkovém souboru <strong>neslib.h</strong>:</p>
 
 <pre>
+<i>//NES hardware-dependent functions by Shiru (shiru@mail.ru)</i>
+<i>//Feel free to do anything you want with this code, consider it Public Domain</i>
+&nbsp;
+<i>// for nesdoug version 1.2, 1/1/2022</i>
+<i>// changes, removed sprid from oam functions, oam_spr 11% faster, meta 5% faster</i>
+&nbsp;
+<i>//Versions history:</i>
+<i>// 050517 - pad polling code optimized, button bits order reversed</i>
+<i>// 280215 - fixed palette glitch caused by the active DMC DMA glitch</i>
+<i>// 030914 - minor fixes in the VRAM update system</i>
+<i>// 310814 - added vram_flush_update</i>
+<i>// 120414 - removed adr argument from vram_write and vram_read,</i>
+<i>//          unrle_vram renamed to vram_unrle, with adr argument removed</i>
+<i>// 060414 - many fixes and improvements, including sequential VRAM updates</i>
+<i>// previous versions were created since mid-2011, there were many updates</i>
 </pre>
+
+<p>Samotná knihovna <i>NESlib</i> je sice implementována v&nbsp;assembleru,
+ovšem vzhledem k&nbsp;tomu, že její funkce mají být volány z&nbsp;céčka,
+obsahuje i hlavičkový soubor <strong>neslib.h</strong>. Ten v&nbsp;první řadě
+obsahuje hlavičky funkcí, z&nbsp;nichž prakticky všechny používají modifikátor
+<strong>__fastcall__</strong> používaný u běžných NEvariadických funkcí (tedy u
+funkcí s&nbsp;pevným počtem parametrů). Díky tomuto modifikátoru je práce
+překladače zjednodušena, protože se zkrátí kód pro předávání parametrů.</p>
+
+<p>Nalezneme zde například funkce pro práci s&nbsp;barvovou paletou NESu, které
+využijeme v&nbsp;demonstračních příkladech (samotná paleta je představována
+polem s&nbsp;prvky typu <strong>char</strong> resp.&nbsp;<strong>unsigned
+char</strong>):</p>
+
+<pre>
+void __fastcall__ <strong>pal_all</strong>(const char *data);
+void __fastcall__ <strong>pal_bg</strong>(const char *data);
+void __fastcall__ <strong>pal_spr</strong>(const char *data);
+void __fastcall__ <strong>pal_col</strong>(unsigned char index,unsigned char color);
+void __fastcall__ <strong>pal_clear</strong>(void);
+</pre>
+
+<p>Dále využijeme funkce ovládající čip PPU, jenž generuje v&nbsp;NESu grafický
+obraz:</p>
+
+<pre>
+void __fastcall__ <strong>ppu_wait_nmi</strong>(void);
+void __fastcall__ <strong>ppu_wait_frame</strong>(void);
+void __fastcall__ <strong>ppu_off</strong>(void);
+void __fastcall__ <strong>ppu_on_all</strong>(void);
+</pre>
+
+<p>Z&nbsp;obecných funkcí jedná především o dvojici užitečných funkcí
+<strong>memcpy</strong> a <strong>memfil</strong>:</p>
+
+<pre>
+void __fastcall__ <strong>memcpy</strong>(void *dst,void *src,unsigned int len);
+void __fastcall__ <strong>memfill</strong>(void *dst,unsigned char value,unsigned int len);
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: pochopitelně zde (kvůli omezenému
+množství ROM na cartridge) nenalezneme například obdobu
+<strong>sprintf</strong> ani žádné funkce pro práci s&nbsp;hodnotami
+s&nbsp;plovoucí řádovou tečkou atd.</div></p>
+
+<p>Dále v&nbsp;hlavičkovém souboru nalezneme množství užitečných konstant,
+například masky příznaků jednotlivých tlačítek ovladačů (D-padů):</p>
+
+<pre>
+#define PAD_A                   0x80
+#define PAD_B                   0x40
+#define PAD_SELECT              0x20
+#define PAD_START               0x10
+#define PAD_UP                  0x08
+#define PAD_DOWN                0x04
+#define PAD_LEFT                0x02
+#define PAD_RIGHT               0x01
+</pre>
+
+<p>Další tři konstanty použijeme příště při práci se sprity &ndash; jedná se o
+masky atributů spritů:</p>
+
+<pre>
+#define OAM_FLIP_V              0x80
+#define OAM_FLIP_H              0x40
+#define OAM_BEHIND              0x20
+</pre>
+
+<p>V&nbsp;souboru <strong>neslib.h</strong> se taktéž nachází definice několika
+adres, například začátků paměťových regionů s&nbsp;uloženými dlaždicemi
+pozadí:</p>
+
+<pre>
+#define NAMETABLE_A             0x2000
+#define NAMETABLE_B             0x2400
+#define NAMETABLE_C             0x2800
+#define NAMETABLE_D             0x2c00
+</pre>
+
+<p>A konečně zde najdeme i několik užitečných maker, zejména makra pro výpočet
+adresy v&nbsp;paměťových regionech s&nbsp;uloženými dlaždicemi pozadí:</p>
+
+<pre>
+#define NTADR_A(x,y)    (NAMETABLE_A|(((y)&lt;&lt;5)|(x)))
+#define NTADR_B(x,y)    (NAMETABLE_B|(((y)&lt;&lt;5)|(x)))
+#define NTADR_C(x,y)    (NAMETABLE_C|(((y)&lt;&lt;5)|(x)))
+#define NTADR_D(x,y)    (NAMETABLE_D|(((y)&lt;&lt;5)|(x)))
+</pre>
+
+<p>Soubor <strong>neslib.s</strong> je napsán v&nbsp;assembleru. Všechny
+funkce, jejichž hlavičky jsou uvedeny v&nbsp;souboru <strong>neslib.h</strong>
+jsou nejprve exportovány; přesněji řečeno jsou exportovány symboly
+s&nbsp;adresami těchto funkcí:</p>
+
+<pre>
+.export _pal_all,_pal_bg,_pal_spr,_pal_col,_pal_clear
+.export _pal_bright,_pal_spr_bright,_pal_bg_bright
+.export _ppu_off,_ppu_on_all,_ppu_on_bg,_ppu_on_spr,_ppu_mask,_ppu_system
+.export _oam_clear,_oam_size,_oam_spr,_oam_meta_spr,_oam_hide_rest
+.export _ppu_wait_frame,_ppu_wait_nmi
+.export _scroll,_split
+.export _bank_spr,_bank_bg
+.export _vram_read,_vram_write
+.export _sfx_play,_sample_play
+.export _pad_poll,_pad_trigger,_pad_state
+.export _rand8,_rand16,_set_rand
+.export _vram_adr,_vram_put,_vram_fill,_vram_inc,_vram_unrle
+.export _set_vram_update,_flush_vram_update
+.export _memcpy,_memfill,_delay
+.export _flush_vram_update2, _oam_set, _oam_get
+</pre>
+
+<p>Implementace jednotlivých funkcí vždy začínají návěštím (<i>label</i>),
+jehož adresa je následně použita linkerem. Příkladem mohou být funkce
+<strong>ppu_off</strong> a <strong>ppu_on_all</strong>, jejichž implementace
+v&nbsp;assembleru vypadá takto:</p>
+
+<pre>
+<strong>_ppu_off</strong>:
+&nbsp;
+        lda &lt;PPU_MASK_VAR
+        and #%11100111
+        sta &lt;PPU_MASK_VAR
+        jmp _ppu_wait_nmi
+&nbsp;
+&nbsp;
+<strong>_ppu_on_all</strong>:
+&nbsp;
+        lda &lt;PPU_MASK_VAR
+        ora #%00011000
+</pre>
+
+<p>Implementace funkce pracující s&nbsp;barvovou paletou:</p>
+
+<pre>
+<strong>_pal_bg</strong>:
+&nbsp;
+        sta &lt;PTR
+        stx &lt;PTR+1
+        ldx #$00
+        lda #$10
+        bne pal_copy ;bra
+</pre>
+
+<p>Uvnitř některých implementovaných funkcí se používají lokální návěští:</p>
+
+<pre>
+@skipUpd:
+&nbsp;
+        lda #0
+        sta PPU_ADDR
+        sta PPU_ADDR
+&nbsp;
+        lda &lt;SCROLL_X
+        sta PPU_SCROLL
+        lda &lt;SCROLL_Y
+        sta PPU_SCROLL
+&nbsp;
+        lda &lt;PPU_CTRL_VAR
+        sta PPU_CTRL
+&nbsp;
+@skipAll:
+&nbsp;
+        lda &lt;PPU_MASK_VAR
+        sta PPU_MASK
+&nbsp;
+        inc &lt;FRAME_CNT1
+        inc &lt;FRAME_CNT2
+        lda &lt;FRAME_CNT2
+        cmp #6
+        bne @skipNtsc
+        lda #0
+        sta &lt;FRAME_CNT2
+</pre>
+
+<p>V&nbsp;navazujícím článku využijeme i funkci <strong>oam_clear</strong> pracující s&nbsp;pamětí pro sprity:</p>
+
+<pre>
+<strong>_oam_clear</strong>:
+&nbsp;
+        ldx #0
+        stx SPRID <i>; automatically sets sprid to zero</i>
+        lda #$ff
+@1:
+        sta OAM_BUF,x
+        inx
+        inx
+        inx
+        inx
+        bne @1
+        rts
+</pre>
+
+<p>A konečně se pro zajímavost podívejme na implementaci funkcí
+<strong>memcpy</strong> a <strong>memfill</strong>, u nichž se předpokládá
+velká míra optimalizace:</p>
+
+<pre>
+<i>;void __fastcall__ memcpy(void *dst,void *src,unsigned int len);</i>
+&nbsp;
+<strong>_memcpy</strong>:
+&nbsp;
+        sta &lt;LEN
+        stx &lt;LEN+1
+        jsr popax
+        sta &lt;SRC
+        stx &lt;SRC+1
+        jsr popax
+        sta &lt;DST
+        stx &lt;DST+1
+&nbsp;
+        ldx #0
+&nbsp;
+@1:
+&nbsp;
+        lda &lt;LEN+1
+        beq @2
+        jsr @3
+        dec &lt;LEN+1
+        inc &lt;SRC+1
+        inc &lt;DST+1
+        jmp @1
+&nbsp;
+@2:
+&nbsp;
+        ldx &lt;LEN
+        beq @5
+&nbsp;
+@3:
+&nbsp;
+        ldy #0
+&nbsp;
+@4:
+&nbsp;
+        lda (SRC),y
+        sta (DST),y
+        iny
+        dex
+        bne @4
+&nbsp;
+@5:
+&nbsp;
+        rts
+&nbsp;
+&nbsp;
+&nbsp;
+<i>;void __fastcall__ memfill(void *dst,unsigned char value,unsigned int len);</i>
+&nbsp;
+<strong>_memfill</strong>:
+&nbsp;
+        sta &lt;LEN
+        stx &lt;LEN+1
+        jsr popa
+        sta &lt;TEMP
+        jsr popax
+        sta &lt;DST
+        stx &lt;DST+1
+&nbsp;
+        ldx #0
+&nbsp;
+@1:
+&nbsp;
+        lda &lt;LEN+1
+        beq @2
+        jsr @3
+        dec &lt;LEN+1
+        inc &lt;DST+1
+        jmp @1
+&nbsp;
+@2:
+&nbsp;
+        ldx &lt;LEN
+        beq @5
+&nbsp;
+@3:
+&nbsp;
+        ldy #0
+        lda &lt;TEMP
+&nbsp;
+@4:
+&nbsp;
+        sta (DST),y
+        iny
+        dex
+        bne @4
+&nbsp;
+@5:
+&nbsp;
+        rts
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: obecně platí, že právě
+<strong>neslib.s</strong> může být vhodným zdrojem jak pro studium assembleru
+pro MOS 6502, tak i způsobu ovládání herní konzole NES.</div></p>
 
 
 
