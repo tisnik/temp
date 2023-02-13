@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Kafka Connect: tvorba producentů a konzumentů bez nutnosti udržovat zdrojový kód (2.část)</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Kafka Connect: tvorba producentů a konzumentů bez nutnosti udržovat zdrojový kód (2.část)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,11 +37,11 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
+<p><a href="#k01">1. Kafka Connect: tvorba producentů a konzumentů bez nutnosti udržovat zdrojový kód (2.část)</a></p>
+<p><a href="#k02">2. Konektor typu <i>sink</i>, který kontroluj schéma zpráv</a></p>
+<p><a href="#k03">3. Poslání celého souboru JSON do zvoleného tématu</a></p>
+<p><a href="#k04">*** 4. Chování konektoru pro zprávy bez schématu</a></p>
+<p><a href="#k05">*** 5. Přidání schématu přímo do zprávy</a></p>
 <p><a href="#k06">*** 6. </a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
@@ -55,43 +55,193 @@
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. </a></p>
-<p><a href="#k19">*** 19. </a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady, konfiguračními soubory a testovacími zprávami</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Kontrola formátu zpráv vůči schématu</h2>
 
-<p></p>
+<p><i>&bdquo;When I started my journey with Apache Kafka, JSON was already
+everywhere. From Javascript UIs, through API calls, and even databases &ndash;
+it became a lingua franca of data exchange.&ldquo;</i></p>
+
+<p>Na <a
+href="https://www.root.cz/clanky/kafka-connect-tvorba-producentu-a-konzumentu-bez-zdrojoveho-kodu/">úvodní
+článek</a> o frameworku <i>Kafka Connect</i> dnes navážeme. V&nbsp;úvodní části
+dnešního textu se budeme zabývat způsobem definice a kontroly schématu zpráv,
+což je v&nbsp;oblasti heterogenních architektur založených na mikroslužbách
+(které se samy postupně vyvíjí) velmi užitečná a žádaná vlastnost.</p>
+
+<p>Připomeňme si nejdříve, jakým způsobem je možné definovat konektor pro
+technologii <i>Kafka Connect</i>, který slouží pro definici konzumenta zpráv.
+Konzumované zprávy jsou ukládány do souboru nazvaného
+<strong>test.sink4.jsons</strong> a přitom se provádí kontrola, zda jak klíč
+zprávy (pokud existuje), tak i vlastní tělo zprávy jsou uloženy ve formátu
+JSON. Pokud tomu tak není, je zpráva přeposlána do takzvané <i>dead letter
+queue</i>, což je v&nbsp;našem případě konkrétně téma nazvané
+<strong>dlq_bad_jsons</strong>:</p>
+
+<pre>
+name=local-file-sink-json
+connector.class=FileStreamSink
+tasks.max=1
+file=<strong>test.sink4.jsons</strong>
+topics=connect-test-json
+<strong>key.converter=org.apache.kafka.connect.json.JsonConverter</strong>
+<strong>value.converter=org.apache.kafka.connect.json.JsonConverter</strong>
+<strong>key.converter.schemas.enable=false</strong>
+<strong>value.converter.schemas.enable=false</strong>
+errors.tolerance=all
+<strong>errors.deadletterqueue.topic.name=dlq_bad_jsons</strong>
+errors.deadletterqueue.topic.replication.factor=1
+</pre>
+
+<p>Tento konektor se spustí příkazem:</p>
+
+<pre>
+$ <strong>bin/connect-standalone.sh config/connect-standalone.properties config/connect-file-sink-4.properties</strong>
+</pre>
+
+<p>Obsah DLQ si můžeme vypsat příkazem:</p>
+
+<pre>
+$ <strong>bin/kafka-console-consumer.sh  --bootstrap-server localhost:9092 --topic dlq_bad_jsons --partition 0 --offset earliest</strong>
+</pre>
+
+<p>V&nbsp;tomto případě je ovšem výhodnější použít nástroj <i>Kafkacat</i> a
+netrápit se s&nbsp;uváděním offsetů a oddílů:</p>
+
+<pre>
+$ <strong>kafkacat -b localhost:9092 -t dlq_bad_jsons -C</strong>
+</pre>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Konektor typu <i>sink</i>, který kontroluj schéma zpráv</h2>
 
-<p></p>
+<p>Další konektor, který nakonfigurujeme v&nbsp;rámci této kapitoly, se od
+konektoru popsaného <a href="#k01">v&nbsp;úvodní kapitole</a> odlišuje
+především tím, že má vlastnosti <strong>key.converter.schemas.enable</strong> a
+<strong>value.converter.schemas.enable</strong> nastaveny na hodnotu
+<strong>true</strong>, což znamená, že se konektor bude snažit zjistit, zda
+zpracovávané zprávy odpovídají schématu (samotné schéma prozatím ovšem nebudeme
+mít nikde definováno):</p>
+
+<pre>
+name=local-file-sink-json-checked
+connector.class=FileStreamSink
+tasks.max=1
+file=test.sink5.jsons
+topics=connect-test-json
+<strong>key.converter=org.apache.kafka.connect.json.JsonConverter</strong>
+<strong>value.converter=org.apache.kafka.connect.json.JsonConverter</strong>
+<strong>key.converter.schemas.enable=true</strong>
+<strong>value.converter.schemas.enable=true</strong>
+errors.tolerance=all
+errors.deadletterqueue.topic.name=dlq_bad_jsons
+errors.deadletterqueue.topic.replication.factor=1
+</pre>
+
+<p>Tento konektor, jenž je uložen v&nbsp;souboru
+<strong>connect-file-sink-4.properties</strong>, se spustí příkazem:</p>
+
+<pre>
+$ <strong>bin/connect-standalone.sh config/connect-standalone.properties config/connect-file-sink-4.properties</strong>
+</pre>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Poslání celého souboru JSON do zvoleného tématu</h2>
 
-<p></p>
+<p>Nyní se pokusíme do tématu se jménem <strong>connect-test-json</strong>
+předat zprávu ve formátu JSON, ovšem bez specifikace schématu:</p>
+
+<pre>
+{
+  "ID": 1,
+  "Name": "Linus",
+  "Surname": "Torvalds"
+}
+</pre>
+
+<p>Jak tuto operaci provedeme, pokud je zpráva uložena v&nbsp;souboru?
+V&nbsp;tomto případě <i>nemůžeme</i> obsah souboru přesměrovat přímo
+producentovi, protože ten by obsah chápal jako několik uložených zpráv &ndash;
+každá zpráva na jednom řádku. To znamená, že následující příkaz je
+nekorektní:</p>
+
+<pre>
+$ <strong>cat bad_msg.json | bin/kafka-console-producer.sh --broker-list localhost:9092 --topic connect-test-json</strong>
+</pre>
+
+<p>V&nbsp;tomto případě si budeme muset pomoci malým trikem, například použitím
+nástroje <strong>jq</strong>, který dokáže zprávu ve formátu JSON převést do
+kompaktního (jednořádkového) tvaru, pokud použijeme přepínač
+<strong>-c</strong>:</p>
+
+<p>Korektní způsob poslání obsahu souboru jako jediné zprávy tedy bude vypadat
+takto:</p>
+
+<pre>
+$ <strong>jq -c . msg3.json | bin/kafka-console-producer.sh --broker-list localhost:9092 --topic connect-test-json</strong>
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: nástroj <strong>jq</strong>, který je
+v&nbsp;praxi velmi užitečný, jsme si popsali v&nbsp;článku <a
+href="https://www.root.cz/clanky/zpracovani-dat-reprezentovanych-ve-formatu-json-nastrojem-jq/">Zpracování
+dat reprezentovaných ve formátu JSON nástrojem jq</a>.</div></p>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
-
-<p></p>
+<h2 id="k04">4. Chování konektoru pro zprávy bez schématu</h2>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Přidání schématu přímo do zprávy</h2>
+
+<pre>
+{
+  "schema": {
+    "type": "struct",
+    "optional": false,
+    "version": 1,
+    "fields": [
+      {
+        "field": "ID",
+        "type": "string",
+        "optional": false
+      },
+      {
+        "field": "Name",
+        "type": "string",
+        "optional": false
+      },
+      {
+        "field": "Surname",
+        "type": "string",
+        "optional": false
+      }
+    ]
+  },
+  "payload": {
+    "ID": "1",
+    "Name": "Linus",
+    "Surname": "Torvalds"
+  }
+}
+</pre>
 
 <p></p>
+
+<pre>
+$ <strong>jq -c . msg3.json | bin/kafka-console-producer.sh --broker-list localhost:9092 --topic connect-test-json</strong>
+</pre>
 
 
 
@@ -100,12 +250,107 @@
 
 <p></p>
 
+<pre>
+{
+  "schema": {
+    "type": "struct",
+    "optional": false,
+    "version": 1,
+    "fields": [
+      {
+        "field": "ID",
+        "type": "int64",
+        "optional": false
+      },
+      {
+        "field": "Name",
+        "type": "string",
+        "optional": false
+      },
+      {
+        "field": "Surname",
+        "type": "string",
+        "optional": false
+      }
+    ]
+  },
+  "payload": {
+    "ID": 1,
+    "Name": "Linus",
+    "Surname": "Torvalds"
+  }
+}
+</pre>
+
+
 
 
 <p><a name="k07"></a></p>
 <h2 id="k07">7. </h2>
 
 <p></p>
+
+<pre>
+{
+  "schema": {
+    "type": "struct",
+    "optional": false,
+    "version": 1,
+    "fields": [
+      {
+        "field": "ID",
+        "type": "int64",
+        "optional": false
+      },
+      {
+        "field": "Name",
+        "type": "string",
+        "optional": false
+      },
+      {
+        "field": "Surname",
+        "type": "string",
+        "optional": false
+      }
+    ]
+  },
+  "payload": {
+    "ID": 1,
+    "Surname": "Torvalds"
+  }
+}
+</pre>
+
+<pre>
+{
+  "schema": {
+    "type": "struct",
+    "optional": false,
+    "version": 1,
+    "fields": [
+      {
+        "field": "ID",
+        "type": "int64",
+        "optional": false
+      },
+      {
+        "field": "Name",
+        "type": "string",
+        "optional": true
+      },
+      {
+        "field": "Surname",
+        "type": "string",
+        "optional": false
+      }
+    ]
+  },
+  "payload": {
+    "ID": 1,
+    "Surname": "Torvalds"
+  }
+}
+</pre>
 
 
 
@@ -187,9 +432,27 @@
 
 
 <p><a name="k19"></a></p>
-<h2 id="k19">19. </h2>
+<h2 id="k19">19. Repositář s&nbsp;demonstračními příklady, konfiguračními soubory a testovacími zprávami</h2>
 
-<p></p>
+<p>Demonstrační příklady ukázané <a
+href="https://www.root.cz/clanky/kafka-connect-tvorba-producentu-a-konzumentu-bez-zdrojoveho-kodu/">minule</a>
+byly společně s&nbsp;konfiguracemi konektorů určenými pro <i>Kafka Connect</i>
+a ukázkovými zprávami uloženy do repositáře, jenž je dostupný na adrese <a
+href="https://github.com/tisnik/slides/">https://github.com/tisnik/slides/</a>.
+V&nbsp;případě, že nebudete chtít klonovat celý repositář, můžete namísto toho
+použít odkazy na jednotlivé demonstrační příklady i další soubory, které
+naleznete v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th> #</th><th>Soubor</th><th>Stručný popis</th><th>Adresa</th></tr>
+<tr><td> 1</td><td>producer.go</td><td>jednoduchý producent zpráv pro Apache Kafku naprogramovaný v&nbsp;jazyku Go</td><td><a href="https://github.com/tisnik/slides/blob/master/files/kafka/producer.go">https://github.com/tisnik/slides/blob/master/files/kafka/producer.go</a></td></tr>
+<tr><td> 2</td><td>consumer.go</td><td>jednoduchý konzument zpráv pro Apache Kafku naprogramovaný v&nbsp;jazyku Go</td><td><a href="https://github.com/tisnik/slides/blob/master/files/kafka/consumer.go">https://github.com/tisnik/slides/blob/master/files/kafka/consumer.go</a></td></tr>
+<tr><td> 3</td><td>producer.py</td><td>jednoduchý producent zpráv pro Apache Kafku naprogramovaný v&nbsp;jazyku Python</td><td><a href="https://github.com/tisnik/slides/blob/master/files/kafka/producer.py">https://github.com/tisnik/slides/blob/master/files/kafka/producer.py</a></td></tr>
+<tr><td> 4</td><td>consumer.py</td><td>jednoduchý konzument zpráv pro Apache Kafku naprogramovaný v&nbsp;jazyku Python</td><td><a href="https://github.com/tisnik/slides/blob/master/files/kafka/consumer.py">https://github.com/tisnik/slides/blob/master/files/kafka/consumer.py</a></td></tr>
+<tr><td> 5</td><td>SimpleProducer.java</td><td>jednoduchý producent zpráv pro Apache Kafku naprogramovaný v&nbsp;jazyku Java</td><td><a href="https://github.com/tisnik/slides/blob/master/files/kafka/SimpleProducer.java">https://github.com/tisnik/slides/blob/master/files/kafka/SimpleProducer.java</a></td></tr>
+<tr><td> 6</td><td>SimpleConsumer.java</td><td>jednoduchý konzument zpráv npro Apache Kafku aprogramovaný v&nbsp;jazyku Java</td><td><a href="https://github.com/tisnik/slides/blob/master/files/kafka/SimpleConsumer.java">https://github.com/tisnik/slides/blob/master/files/kafka/SimpleConsumer.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+</table>
 
 
 
