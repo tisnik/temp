@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Základní optimalizace v Go aneb pomáháme překladači (3)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,8 +37,8 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Základní optimalizace v&nbsp;Go aneb pomáháme překladači (3)</a></p>
-<p><a href="#k02">*** 2. Práce s&nbsp;řetězci v&nbsp;programovacím jazyku Go</a></p>
+<p><a href="#k01">1. Základní optimalizace v&nbsp;Go aneb pomáháme překladači (3)</a></p>
+<p><a href="#k02">2. Práce s&nbsp;řetězci v&nbsp;programovacím jazyku Go</a></p>
 <p><a href="#k03">3. Postupné skládání řetězce s&nbsp;využitím operátoru konkatenace</a></p>
 <p><a href="#k04">4. Skládání znaků do bufferu s&nbsp;následným převodem bufferu na řetězec</a></p>
 <p><a href="#k05">5. Využití objektu <strong>strings.Builder</strong></a></p>
@@ -47,14 +47,14 @@
 <p><a href="#k08">8. Která varianta je nejvýhodnější?</a></p>
 <p><a href="#k09">9. Realizace benchmarků pro skládání řetězce znak po znaku</a></p>
 <p><a href="#k10">10. Výsledky benchmarků</a></p>
-<p><a href="#k11">*** 11. Grafická vizualizace výsledků benchmarků</a></p>
-<p><a href="#k12">*** 12. Podrobnější analýza prováděných operací</a></p>
+<p><a href="#k11">11. Grafická vizualizace výsledků benchmarků</a></p>
+<p><a href="#k12">12. Podrobnější analýza prováděných operací</a></p>
 <p><a href="#k13">13. Postupné skládání řetězce z&nbsp;menších řetězců</a></p>
 <p><a href="#k14">14. Realizace konstrukce řetězce s&nbsp;využitím objektů <strong>bytes.Buffer</strong> a <strong>strings.Builder</strong></a></p>
 <p><a href="#k15">15. Realizace benchmarků pro skládání řetězce z&nbsp;menších řetězců</a></p>
 <p><a href="#k16">16. Výsledky benchmarků</a></p>
-<p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. </a></p>
+<p><a href="#k17">17. Grafická vizualizace výsledků benchmarků</a></p>
+<p><a href="#k18">18. Kde funkce pro konstrukci řetězce stráví nejvíce času?</a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -63,14 +63,103 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Základní optimalizace v&nbsp;Go aneb pomáháme překladači (3)</h2>
 
-<p></p>
+<p>V&nbsp;dnešní části <a
+href="https://www.root.cz/serialy/programovaci-jazyk-go/">seriálu o
+programovacím jazyku Go</a> se opět seznámíme s&nbsp;některými dalšími
+optimalizacemi, které je v&nbsp;mnoha případech vhodné či nutné provádět na
+úrovni zdrojového kódu. Zabývat se budeme zdánlivě triviální úlohou: jak
+efektivně zkonstruovat řetězec skládáním jednotlivých znaků a/nebo kratších
+řetězců. Podobné operace se v&nbsp;praxi skutečně provádí, i když mohou být
+poněkud skryté. Typickým příkladem je šablonovací systém, který interně
+postupně &bdquo;skládá&ldquo; výsledný řetězec (dokument); dalším příkladem
+jsou pak systémy pro generování a tisk logovacích informací &ndash; i zde je na
+konci celé činnosti nějaká forma řetězce získaná postupným skládáním
+z&nbsp;kratších statických či dynamicky počítaných částí.</p>
 
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Práce s&nbsp;řetězci v&nbsp;programovacím jazyku Go</h2>
 
-<p></p>
+<p>Interně je řetězec v&nbsp;paměti uložen jako velmi jednoduchá struktura
+s&nbsp;ukazatelem na oblast paměti se sekvencí bajtů a s&nbsp;délkou řetězce.
+Samotná sekvence bajtů může být sdílená větším množstvím řetězců, protože
+řetězce jsou v&nbsp;Go neměnné (immutable):</p>
+
+<pre>
+type <strong>stringStruct</strong> struct {
+        str unsafe.Pointer
+        len int
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: pro zjednodušení exportu ladicích
+informací existuje ještě jedna definice struktury pro řetězec. Liší se pouze
+typem ukazatele (nyní je typový):</div></p>
+
+<pre>
+<i>// Variant with *byte pointer type for DWARF debugging.</i>
+type <strong>stringStructDWARF</strong> struct {
+        str *byte
+        len int
+}
+</pre>
+
+<p>Pro zajímavost se podívejme na dvě funkce, které se v&nbsp;runtime při
+operacích s&nbsp;řetězci volají velmi často. Ostatně tyto funkce můžeme vidět i
+ve výsledcích činnosti profileru (viz benchmarky uvedené níže). Jedná se o
+funkci volanou pro alokaci paměti pro řetězec a o funkci pro spojení dvou či
+více řetězců (což je funkce volaná při použití operátoru +):</p>
+
+<pre>
+<i>// rawstring allocates storage for a new string. The returned</i>
+<i>// string and byte slice both refer to the same storage.</i>
+<i>// The storage is not zeroed. Callers should use</i>
+<i>// b to set the string contents and then drop b.</i>
+func <strong>rawstring</strong>(size int) (s string, b []byte) {
+        p := mallocgc(uintptr(size), nil, false)
+        return unsafe.String((*byte)(p), size), unsafe.Slice((*byte)(p), size)
+}
+&nbsp;
+<i>// concatstrings implements a Go string concatenation x+y+z+...</i>
+<i>// The operands are passed in the slice a.</i>
+<i>// If buf != nil, the compiler has determined that the result does not</i>
+<i>// escape the calling function, so the string data can be stored in buf</i>
+<i>// if small enough.</i>
+func <strong>concatstrings</strong>(buf *tmpBuf, a []string) string {
+        idx := 0
+        l := 0
+        count := 0
+        for i, x := range a {
+                n := len(x)
+                if n == 0 {
+                        continue
+                }
+                if l+n &lt; l {
+                        throw("string concatenation too long")
+                }
+                l += n
+                count++
+                idx = i
+        }
+        if count == 0 {
+                return ""
+        }
+&nbsp;
+        <i>// If there is just one string and either it is not on the stack</i>
+        <i>// or our result does not escape the calling frame (buf != nil),</i>
+        <i>// then we can return that string directly.</i>
+        if count == 1 &amp;&amp; (buf != nil || !stringDataOnStack(a[idx])) {
+                return a[idx]
+        }
+        s, b := rawstringtmp(buf, l)
+        for _, x := range a {
+                copy(b, x)
+                b = b[len(x):]
+        }
+        return s
+}
+</pre>
 
 
 
@@ -570,39 +659,60 @@ převést do grafické podoby, což nám umožní lepší porovnání jednotliv�
 algoritmů:</p>
 
 *** image ***
-<p><i>Obrázek 1: Grafická vizualizace výsledků benchmarků.</i></p>
+<p><i>Obrázek 1: Grafická vizualizace výsledků benchmarků pro N=1 až 10000,
+přepočteno na čas pro přidání jediného znaku.</i></p>
+
+*** image ***
+<p><i>Obrázek 2: Grafická vizualizace výsledků benchmarků pro N=1 až 1000000,
+přepočteno na čas pro přidání jediného znaku.</i></p>
+
+*** image ***
+<p><i>Obrázek 3: Kumulativní časy celkové doby trvání operace konstrukce
+řetězce pro N=1 až 10000.</i></p>
+
+<p><div class="rs-tip-major">Poznámka: z&nbsp;těchto výsledků je jasně patrné,
+že standardní konkatenace není v&nbsp;žádném případě optimálním
+řešením.</div></p>
 
 
 
 <p><a name="k12"></a></p>
 <h2 id="k12">12. Podrobnější analýza prováděných operací</h2>
 
-<p></p>
+<p>Podrobnější informace o tom, které operace (funkce) se vlastně provádí při
+konkatenaci řetězců různými algoritmy, nám podá další standardní nástroj
+programovacího jazyka Go &ndash; <i>profiler</i>. Nejdříve ale musíme spustit
+benchmarky izolovaně a specifikovat přitom, že se má vygenerovat datový soubor
+s&nbsp;informacemi o volání funkcí:</p>
 
 <pre>
-go test -bench=BenchmarkBuildStringUsingConcatenation             -benchtime=1000000x -cpuprofile concatenation.out
-go test -bench=BenchmarkBuildStringUsingStringBuffer              -benchtime=1000000x -cpuprofile string_buffer.out
-go test -bench=BenchmarkBuildStringUsingStringBuilder             -benchtime=1000000x -cpuprofile string_builder.out
-go test -bench=BenchmarkBuildStringUsingPreallocatedStringBuffer  -benchtime=1000000x -cpuprofile preallocated_string_buffer.out
-go test -bench=BenchmarkBuildStringUsingPreallocatedStringBuilder -benchtime=1000000x -cpuprofile preallocated_string_builder.out
+$ <strong>go test -bench=BenchmarkBuildStringUsingConcatenation             -benchtime=1000000x -cpuprofile concatenation.out</strong>
+$ <strong>go test -bench=BenchmarkBuildStringUsingStringBuffer              -benchtime=1000000x -cpuprofile string_buffer.out</strong>
+$ <strong>go test -bench=BenchmarkBuildStringUsingStringBuilder             -benchtime=1000000x -cpuprofile string_builder.out</strong>
+$ <strong>go test -bench=BenchmarkBuildStringUsingPreallocatedStringBuffer  -benchtime=1000000x -cpuprofile preallocated_string_buffer.out</strong>
+$ <strong>go test -bench=BenchmarkBuildStringUsingPreallocatedStringBuilder -benchtime=1000000x -cpuprofile preallocated_string_builder.out</strong>
+</pre>
+
+<p>Dále se každý z&nbsp;vygenerovaných souborů analyzuje profilerem:</p>
+
+<pre>
+$ <strong>go tool pprof -http=:6060 profile.out</strong>
 </pre>
 
 <p></p>
 
 *** image ***
-<p><i>Obrázek 2: </i></p>
+<p><i>Obrázek 4: Konkatenace řetězců s&nbsp;využitím operátoru +: nejvíce času
+se stráví ve funkci pro přesuny bloků paměti.</i></p>
 
 *** image ***
-<p><i>Obrázek 3: </i></p>
+<p><i>Obrázek 5: Při použití objektu <strong>bytes.Buffer</strong> se čas
+stráví z&nbsp;50% při přidávání znaků a dalších 50% času správcem
+paměti (což je ovšem spíše náhoda, že byl GC vůbec spuštěn).</i></p>
 
 *** image ***
-<p><i>Obrázek 4: </i></p>
-
-*** image ***
-<p><i>Obrázek 5: </i></p>
-
-*** image ***
-<p><i>Obrázek 6: </i></p>
+<p><i>Obrázek 6: Při použití objektu <strong>strings.Builder</strong> se čas
+stráví přidáváním znaků, tedy vlastním algoritmem.</i></p>
 
 
 
@@ -926,9 +1036,9 @@ goarch: amd64
 pkg: string-builders
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
 BenchmarkBuildStringUsingConcatenation-8                       1               322.0 ns/op
-BenchmarkBuildStringUsingStringBuffer-8                        1              2740 ns/op
-BenchmarkBuildStringUsingPreallocatedStringBuffer-8            1              3579 ns/op
-BenchmarkBuildStringUsingStringBuilder-8                       1              2475 ns/op
+BenchmarkBuildStringUsingStringBuffer-8                        1              2740.0 ns/op
+BenchmarkBuildStringUsingPreallocatedStringBuffer-8            1              3579.0 ns/op
+BenchmarkBuildStringUsingStringBuilder-8                       1              2475.0 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuilder-8           1               370.0 ns/op
 PASS
 ok      string-builders 0.002s
@@ -939,10 +1049,10 @@ goos: linux
 goarch: amd64
 pkg: string-builders
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
-BenchmarkBuildStringUsingConcatenation-8                      10              1890 ns/op
-BenchmarkBuildStringUsingStringBuffer-8                       10              2016 ns/op
+BenchmarkBuildStringUsingConcatenation-8                      10              1890.0 ns/op
+BenchmarkBuildStringUsingStringBuffer-8                       10              2016.0 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuffer-8           10               123.8 ns/op
-BenchmarkBuildStringUsingStringBuilder-8                      10              1013 ns/op
+BenchmarkBuildStringUsingStringBuilder-8                      10              1013.0 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuilder-8          10                92.80 ns/op
 PASS
 ok      string-builders 0.003s
@@ -957,7 +1067,7 @@ goos: linux
 goarch: amd64
 pkg: string-builders
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
-BenchmarkBuildStringUsingConcatenation-8                     100              1634 ns/op
+BenchmarkBuildStringUsingConcatenation-8                     100              1634.0 ns/op
 BenchmarkBuildStringUsingStringBuffer-8                      100               344.7 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuffer-8          100               170.3 ns/op
 BenchmarkBuildStringUsingStringBuilder-8                     100               186.3 ns/op
@@ -968,7 +1078,7 @@ goos: linux
 goarch: amd64
 pkg: string-builders
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
-BenchmarkBuildStringUsingConcatenation-8                    1000              5430 ns/op
+BenchmarkBuildStringUsingConcatenation-8                    1000              5430.0 ns/op
 BenchmarkBuildStringUsingStringBuffer-8                     1000                55.94 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuffer-8         1000                44.43 ns/op
 BenchmarkBuildStringUsingStringBuilder-8                    1000               152.4 ns/op
@@ -985,7 +1095,7 @@ goos: linux
 goarch: amd64
 pkg: string-builders
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
-BenchmarkBuildStringUsingConcatenation-8                   10000             41270 ns/op
+BenchmarkBuildStringUsingConcatenation-8                   10000             41270.0 ns/op
 BenchmarkBuildStringUsingStringBuffer-8                    10000                81.49 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuffer-8        10000                70.64 ns/op
 BenchmarkBuildStringUsingStringBuilder-8                   10000               136.1 ns/op
@@ -996,7 +1106,7 @@ goos: linux
 goarch: amd64
 pkg: string-builders
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
-BenchmarkBuildStringUsingConcatenation-8                  100000            781287 ns/op
+BenchmarkBuildStringUsingConcatenation-8                  100000            781287.0 ns/op
 BenchmarkBuildStringUsingStringBuffer-8                   100000               126.2 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuffer-8       100000                42.36 ns/op
 BenchmarkBuildStringUsingStringBuilder-8                  100000               138.0 ns/op
@@ -1006,7 +1116,7 @@ goos: linux
 goarch: amd64
 pkg: string-builders-2
 cpu: Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz
-BenchmarkBuildStringUsingConcatenation-8                 1000000           6508452 ns/op
+BenchmarkBuildStringUsingConcatenation-8                 1000000           6508452.0 ns/op
 BenchmarkBuildStringUsingStringBuffer-8                  1000000                42.56 ns/op
 BenchmarkBuildStringUsingPreallocatedStringBuffer-8      1000000                24.46 ns/op
 BenchmarkBuildStringUsingStringBuilder-8                 1000000               125.4 ns/op
@@ -1021,12 +1131,53 @@ hodiny!</div></p>
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<h2 id="k17">17. Grafická vizualizace výsledků benchmarků</h2>
+
+<p>Opět se podívejme na grafickou vizualizaci výsledků vybraných benchmarků. Na
+prvním grafu je patrné, že i pro řetězce o relativně malé délce nemá příliš
+význam uvažovat o použití operátoru +, protože se z&nbsp;časového hlediska
+jedná o velmi pomalou operaci:</p>
+
+*** image ***
+<p><i>Obrázek 7: Grafická vizualizace výsledků benchmarků pro N=1 až 10000,
+přepočteno na čas pro přidání jediného znaku.</i></p>
+
+<p>Zajímavější a užitečnější bude porovnání ostatních čtyř přístupů pro větší
+hodnoty N. Ze zobrazených výsledků můžeme vyčíst, že použití objektu
+<strong>strings.Builder</strong> má význam především tehdy, pokud dokážeme
+dopředu odhadnout délku výsledného řetězce a tudíž můžeme provést předalokaci
+paměti. Bez této předalokace se zdá být výhodnější využít objekt
+<strong>bytes.Buffer</strong>:</p>
+
+*** image ***
+<p><i>Obrázek 8: Průměrně časy připojení jednoho kratšího řetězce (sto znaků)
+ke konstruovanému řetězci. Klasická konkatenace není zobrazena vzhledem ke
+značně odlišným (mnohem delším) časům.</i></p>
 
 
 
 <p><a name="k18"></a></p>
-<h2 id="k18">18. </h2>
+<h2 id="k18">18. Kde funkce pro konstrukci řetězce stráví nejvíce času?</h2>
+
+<p>Podrobnější pohled na operace prováděné při konstrukci dlouhého řetězce
+různými způsoby nám opět zpřístupní profiler, který dokáže vypsat kumulativní
+časy strávené v&nbsp;jednotlivých funkcích ve standardní knihovně a/nebo
+v&nbsp;samotném runtime programovacího jazyka Go:</p>
+
+*** image ***
+<p><i>Obrázek 9: Konkatenace řetězců; nejvíce času se stráví v&nbsp;přesunech
+znaků mezi různými verzemi konstruovaného řetězce. Zbytek času zabere činnosti
+správce paměti (GC).</i></p>
+
+*** image ***
+<p><i>Obrázek 10: Použití <strong>strings.Builder</strong>
+s&nbsp;předalokovanou pamětí. Nejvíce času zabere převod na řetězec, který
+vyžaduje paměťový přesun (paradoxně se více času stráví v&nbsp;kontrole
+výsledků, než samotnou konstrukcí řetězce).</i></p>
+
+*** image ***
+<p><i>Obrázek 11: Použití <strong>bytes.Buffer</strong> s&nbsp;předalokovanou
+pamětí. Nejvíce času zaberou převody malých řetězců na sekvenci bajtů..</i></p>
 
 
 
@@ -1203,6 +1354,14 @@ příklady, které naleznete v&nbsp;následující tabulce:</p>
 
 <li>How to optimise your Go code<br />
 <a href="https://codeburst.io/how-to-optimise-your-go-code-c6b27d4f1452">https://codeburst.io/how-to-optimise-your-go-code-c6b27d4f1452</a>
+</li>
+
+<li>Datový typ bytes.Buffer<br />
+<a href="https://pkg.go.dev/bytes@go1.20.1#Buffer">https://pkg.go.dev/bytes@go1.20.1#Buffer</a>
+</li>
+
+<li>Datový typ strings.Builder<br />
+<a href="https://pkg.go.dev/strings@go1.20.1#Builder">https://pkg.go.dev/strings@go1.20.1#Builder</a>
 </li>
 
 </ol>
