@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p>Systému Apache Kafka jsme se již na stránkách Roota věnovali v několika článcích. Prozatím jsme si ovšem neukázali, jak se Kafka chová v případě, že se používají témata s replikovanými oddíly uloženými ve více brokerech, ve chvíli, kdy se například některý z brokerů stane nedostupným (pád, problém v síťové infrastruktuře atd.)</p>
+<p>Systému Apache Kafka jsme se již na stránkách Roota věnovali v několika článcích. Prozatím jsme si ovšem neukázali, jak se Kafka chová v případě, že se používají témata s replikovanými oddíly uloženými ve více brokerech, a to především ve chvíli, kdy se například některý z brokerů stane nedostupným (pád, problém v síťové infrastruktuře atd.)</p>
 
 
 
@@ -51,9 +51,9 @@
 <p><a href="#k12">12. Větší množství konzumentů z&nbsp;jedné skupiny vs.z&nbsp;více skupin</a></p>
 <p><a href="#k13">13. Komunikace přes téma s&nbsp;větším množstvím oddílů</a></p>
 <p><a href="#k14">14. Souběžná konzumace zpráv konzumenty z&nbsp;jedné skupiny</a></p>
-<p><a href="#k15">*** 15. Spuštění většího množství brokerů</a></p>
-<p><a href="#k16">*** 16. Vytvoření a použití tématu s&nbsp;jedním replikovaným oddílem</a></p>
-<p><a href="#k17">*** 17. Chování při nedostupnosti brokeru (brokerů)</a></p>
+<p><a href="#k15">15. Spuštění většího množství brokerů</a></p>
+<p><a href="#k16">16. Vytvoření a použití tématu s&nbsp;jedním replikovaným oddílem</a></p>
+<p><a href="#k17">17. Chování při nedostupnosti brokeru (brokerů)</a></p>
 <p><a href="#k18">*** 18. Vytvoření a použití tématu s&nbsp;několika replikovanými oddíly</a></p>
 <p><a href="#k19">19. Repositář s&nbsp;pomocnými skripty a konfiguračními soubory</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -1240,28 +1240,261 @@ zookeeper.connection.timeout.ms=18000
 group.initial.rebalance.delay.ms=0
 </pre>
 
-<p></p>
+<p>Jednotlivé instance Kafka brokerů postupně spustíme s&nbsp;využitím
+následujících skriptů:</p>
+
+<p>Skript pro první broker:</p>
+
+<pre>
+bin/kafka-server-start.sh config/server1.properties
+</pre>
+
+<p>Skript pro druhý broker:</p>
+
+<pre>
+bin/kafka-server-start.sh config/server2.properties
+</pre>
+
+<p>Skript pro třetí broker:</p>
+
+<pre>
+bin/kafka-server-start.sh config/server3.properties
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;následujících kapitolách budeme
+předpokládat, že je spuštěn jeden Zookeeper a Kafka brokery s&nbsp;výše
+uvedenou konfigurací.</div></p>
 
 
 
 <p><a name="k16"></a></p>
 <h2 id="k16">16. Vytvoření a použití tématu s&nbsp;jedním replikovaným oddílem</h2>
 
-<p></p>
+<p>Nyní, když máme spuštěny tři brokery, si vytvoříme téma s&nbsp;jediným
+oddílem, který bude replikován na dva vybrané brokery:</p>
+
+<pre>
+kafka $ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic topic5 --replica-assignment 0:1</strong>
+Created topic topic5.
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: zpráva o vytvoření nového tématu by se
+ihned měla objevit v&nbsp;logu prvního a druhého serveru. Proč tomu tak je?
+V&nbsp;parametru <strong>--replica-assignment</strong> jsme předali specifikaci
+0:1, což není číselný rozsah, ale ID prvního a druhého serveru (viz konfiguraci
+uvedenou <a href="#k15">výše</a>).</div></p>
+
+<p>Nyní si vypišme konfiguraci nového tématu tak, jak ji vidí Apache Kafka:</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic topic5</strong>
+Topic: topic5   TopicId: 3XcqjGiHT-OpkO1jIuqKcQ PartitionCount: 1       ReplicationFactor: 2    Configs: 
+        Topic: topic5   Partition: 0    Leader: 0       Replicas: 0,1   Isr: 0,1
+</pre>
+
+<p>Informace, které jsme dříve do jisté míry ignorovali, se nyní stávají
+důležité:</p>
+
+<ul>
+<li>V&nbsp;sekci <strong>Leader</strong> je uvedeno ID brokeru, který je v&nbsp;daný okamžik <i>leaderem</i></li>
+<li>V&nbsp;sekci <strong>Replicas</strong> vidíme zápis 0,1, což jsou ID brokerů, kde jsou uloženy repliky prvního oddílu (s&nbsp;indexem 0)</li>
+<li>A konečně v&nbsp;sekci <strong>Isr</strong> taktéž vidíme zápis 0,1, což jsou ID brokerů, kteří obsahují synchronizované repliky oddílů (<i>in-sync replicas</i>)</li>
+</ul>
+
+<p>Vytvořili jsme tedy téma s&nbsp;touto konfigurací:</p>
+
+<pre>
+                                     write
+                                       |
++---+---+---+---+---+---+---+---+---+  v
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | ...    (leader)
++---+---+---+---+---+---+---+---+---+
+                  ^               ^
+                  |               |
+                read              |
+                                 sync
+                                  |
+                                  |
+                                  v
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+</pre>
+
+<p>Pro zajímavost si vytvořme další téma, které bude obsahovat jeden oddíl
+replikovaný na všechny tři servery:</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic topic6 --replica-assignment 0:1:2</strong>
+Created topic topic6.
+</pre>
+
+<p>Konfigurace tohoto tématu:</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic topic6</strong>
+Topic: topic6   TopicId: 1kEi0YYaQ5uYot7xAsN3Eg PartitionCount: 1       ReplicationFactor: 3    Configs: 
+        Topic: topic6   Partition: 0    Leader: 0       Replicas: 0,1,2 Isr: 0,1,2
+</pre>
+
+<p>Jedná se tedy o tuto strukturu:</p>
+
+<pre>
+                                     write
+                                       |
++---+---+---+---+---+---+---+---+---+  v
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | ...    (leader)
++---+---+---+---+---+---+---+---+---+
+                  ^               ^
+                  |               |
+                read              |
+                                 sync
+                                  |
+                                  |
+                                  v
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+                                  ^
+                                  |
+                                  |
+                                 sync
+                                  |
+                                  |
+                                  v
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+</pre>
+
+<p>A nakonec &ndash; téma nazvané <i>topic7</i> bude taktéž obsahovat jediný
+oddíl replikovaný na všechny tři brokery, ovšem nyní zvolíme jako leadera třetí
+broker (s&nbsp;ID nastaveným na 2):</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic topic7 --replica-assignment 2:0:1</strong>
+Created topic topic7.
+</pre>
+
+<p>Konfigurace tohoto tématu:</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic topic7</strong>
+Topic: topic7   TopicId: 55pDYK4gSYSB2Cc4Me3eIA PartitionCount: 1       ReplicationFactor: 3    Configs: 
+        Topic: topic7   Partition: 0    Leader: 2       Replicas: 2,0,1 Isr: 2,0,1
+</pre>
+
+<p>V&nbsp;tomto případě se jedná o tuto strukturu:</p>
+
+<pre>
+                                     
+                                     
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+                                  ^
+                                  |
+                                  |
+                                 sync
+                                  |
+                                  |
+                                  v
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+                                  ^
+                                  |
+                                  |
+                read             sync
+                  |               |
+                  |               |   write
+                  v               v     |
++---+---+---+---+---+---+---+---+---+   v
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |  ...   (leader)
++---+---+---+---+---+---+---+---+---+
+</pre>
 
 
 
 <p><a name="k17"></a></p>
 <h2 id="k17">17. Chování při nedostupnosti brokeru (brokerů)</h2>
 
-<p></p>
+<p>V&nbsp;této kapitole použijeme téma nazvané <i>topic7</i>, které bylo
+vytvořeno v&nbsp;rámci <a href="#k16">předchozí kapitoly</a>. Do tohoto tématu
+budeme posílat zprávy konzumentem ovládaným z&nbsp;příkazové řádky:</p>
+
+<pre>
+producer $ <strong>bin/kafka-console-producer.sh --broker-list localhost:9092 --topic topic7</strong>
+&gt;<strong>foo</strong>
+&gt;<strong>bar</strong>
+&gt;<strong>baz</strong>
+</pre>
+
+<p>Konzument se připojí &ndash; což je možná zvláštní &ndash; k&nbsp;prvnímu
+brokeru, i když ve skutečnosti je leaderem třetí broker. To je však interní
+záležitost Apache Kafky:</p>
+
+<pre>
+$ <strong>bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic topic7 --group topic7-group1</strong>
+foo
+bar
+baz
+</pre>
+
+<p>Pokud nyní klávesou <strong>Ctrl+C</strong> nebo příkazem
+<strong>kill</strong> ukončíme činnost třetího brokera, který je
+<i>leaderem</i>, vypíše producent toto varování:</p>
+
+<pre>
+[2023-03-06 13:07:58,594] WARN [Producer clientId=console-producer] Connection to node 2 (unknown.home/192.168.1.34:9094) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+</pre>
+
+<p>Podobné varování vypíše i konzument:</p>
+
+<pre>
+[2023-03-06 13:07:41,241] WARN [Consumer clientId=console-consumer, groupId=topic7-group1] Connection to node 2 (unknown.home/192.168.1.34:9094) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+</pre>
+
+<p>Současně však dojde k&nbsp;přepojení na jiného brokera, který se stane
+leaderem. Který prober to je zjistíme opět z&nbsp;konfigurace tématu:</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic topic7</strong>
+Topic: topic7   TopicId: 55pDYK4gSYSB2Cc4Me3eIA PartitionCount: 1       ReplicationFactor: 3    Configs: 
+        Topic: topic7   Partition: 0    Leader: 0       Replicas: 2,0,1 Isr: 0,1
+</pre>
+
+<p>Nyní se tedy <i>leaderem</i> stává broker číslo 0, repliky jsou stále
+nakonfigurovány pro brokery 0, 1 i 2, ovšem synchronizováni jsou jen brokeři 0
+a 1 (což je logické, protože zbývající broker neběží).</p>
+
+<p>Nyní třetí broker opět nastartujeme. V&nbsp;logu brokerů by se měly objevit
+zprávy o synchronizaci témat (což může nějakou dobu trvat):</p>
+
+<pre>
+[2023-03-06 13:08:45,041] INFO [Partition topic7-0 broker=0] ISR updated to 0,1,2 and version updated to 2 (kafka.cluster.Partition)
+</pre>
+
+<p>A v&nbsp;konfiguraci tématu by opět měli být v&nbsp;sekci
+<strong>Isr</strong> vypsáni všichni brokeři (ovšem leader se už nezmění
+&ndash; není k&nbsp;tomu ostatně důvod):</p>
+
+<pre>
+$ <strong>bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic topic7</strong>
+Topic: topic7   TopicId: 55pDYK4gSYSB2Cc4Me3eIA PartitionCount: 1       ReplicationFactor: 3    Configs: 
+        Topic: topic7   Partition: 0    Leader: 0       Replicas: 2,0,1 Isr: 0,1,2
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: producenti i konzumenti budou
+v&nbsp;průběhu těchto operací stále plně funkční!</div></p>
 
 
 
 <p><a name="k18"></a></p>
 <h2 id="k18">18. Vytvoření a použití tématu s&nbsp;několika replikovanými oddíly</h2>
 
-<p></p>
+<p>V&nbsp;závěrečné kapitole si ukažme, jak se vytvoří téma s&nbsp;několika oddíly, které jsou replikovány.</p>
+
 
 
 
