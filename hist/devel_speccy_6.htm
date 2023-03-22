@@ -51,9 +51,9 @@
 <p><a href="#k12">12. Úplný zdrojový kód demonstračního příkladu pro vykreslení úsečky z&nbsp;&bdquo;pravých pixelů&ldquo;</a></p>
 <p><a href="#k13">13. Zjednodušení výpočtu masky pixelu</a></p>
 <p><a href="#k14">14. Úplný zdrojový kód upraveného demonstračního příkladu</a></p>
-<p><a href="#k15">*** 15. Vykreslení pixelů na libovolném pozadí</a></p>
-<p><a href="#k16">*** 16. Korektní zápis masky pixelu tak, aby nedošlo ke smazání pozadí</a></p>
-<p><a href="#k17">*** 17. Úplný zdrojový kód dnešního posledního demonstračního příkladu</a></p>
+<p><a href="#k15">15. Vykreslení pixelů na libovolném pozadí</a></p>
+<p><a href="#k16">16. Korektní zápis masky pixelu tak, aby nedošlo ke smazání pozadí</a></p>
+<p><a href="#k17">17. Úplný zdrojový kód dnešního posledního demonstračního příkladu</a></p>
 <p><a href="#k18">18. Příloha: upravený soubor Makefile pro překlad demonstračních příkladů</a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -1366,14 +1366,203 @@ jakoby smažou všechny znaky ležící na diagonále:</p>
 příkladu:</p>
 
 <pre>
+SCREEN_ADR      equ $4000
+CHAR_ADR        equ $3c00
+ENTRY_POINT     equ $8000
+&nbsp;
+        org ENTRY_POINT
+&nbsp;
+        <i>; Vstupní bod celého programu</i>
+start:
+        call fill_in_screen      <i>; vyplnění obrazovky ASCII tabulkami</i>
+&nbsp;
+        ld b, 0                  <i>; x-ová souřadnice vykreslovaného pixelu</i>
+        ld c, 0                  <i>; y-ová souřadnice vykreslovaného pixelu</i>
+loop:
+        call plot                <i>; vykreslení pixelu</i>
+        call delay
+        inc b                    <i>; posun na další souřadnici</i>
+        inc c
+        ld  a, b
+        cp  192                  <i>; test na ukončení smyčky</i>
+        jr nz, loop              <i>; opakovat, dokud není vykreslena celá šikmá "úsečka"</i>
+finito:
+        jr finito                <i>; ukončit program nekonečnou smyčkou</i>
+&nbsp;
+&nbsp;
+delay:
+        <i>; zpožďovací rutina</i>
+        <i>; nemění žádné registry</i>
+        push bc                  <i>; uschovat hodnoty registrů, které se používají ve smyčkách</i>
+        ld   b, 20               <i>; počitadlo vnější zpožďovací smyčky</i>
+outer_loop:
+        ld   c, 0                <i>; počitadlo vnitřní zpožďovací smyčky</i>
+inner_loop:
+        dec  c                   <i>; snížení hodnoty počitadla (v první iteraci 256->255)</i>
+        jr   NZ, inner_loop      <i>; opakovat, dokud není dosaženo nuly</i>
+        djnz outer_loop          <i>; opakovat vnější smyčku, nyní s počitadlem v B</i>
+        pop  bc                  <i>; obnovit hodnoty registrů změněných smyčkami</i>
+        ret                      <i>; návrat z podprogramu</i>
+&nbsp;
+&nbsp;
+plot:
+        <i>; druhá varianta podprogramu pro vykreslení pixelu</i>
+        <i>;</i>
+        <i>; parametry:</i>
+        <i>; B - x-ová souřadnice (v pixelech)</i>
+        <i>; C - y-ová souřadnice (v pixelech)</i>
+        call calc_pixel_address  <i>; výpočet adresy pixelu</i>
+        call calc_pixel_value    <i>; výpočet ukládané hodnoty</i>
+        ld (hl), a               <i>; zápis hodnoty pixelu</i>
+        ret                      <i>; návrat z podprogramu</i>
+&nbsp;
+&nbsp;
+calc_pixel_value:
+        <i>; parametry:</i>
+        <i>; B - x-ová souřadnice (v pixelech)</i>
+        <i>;</i>
+        <i>; návratové hodnoty:</i>
+        <i>; A - hodnota pixelu</i>
+        push bc                  <i>; zapamatovat si hodnotu v registru B</i>
+        ld   a, b                <i>; A: X7 X6 X5 X4 X3 X2 X1 X0 </i>
+        and  %00000111           <i>; A: 0  0  0  0  0  X2 X1 X0</i>
+        ld b, a                  <i>; počitadlo smyčky (neměníme příznaky)</i>
+        ld a, %10000000          <i>; výchozí maska (neměníme příznaky)</i>
+        jr z, end_calc           <i>; pokud je nyní souřadnice nulová, zapíšeme výchozí masku + konec</i>
+&nbsp;
+next_shift:
+        srl a                    <i>; posunout masku doprava</i>
+        djnz next_shift          <i>; 1x až 7x</i>
+end_calc:
+        pop bc                   <i>; obnovit hodnotu v registru B</i>
+        ret                      <i>; návrat z podprogramu</i>
+&nbsp;
+&nbsp;
+calc_pixel_address:
+        <i>; parametry:</i>
+        <i>; B - x-ová souřadnice (v pixelech)</i>
+        <i>; C - y-ová souřadnice (v pixelech)</i>
+        <i>;</i>
+        <i>; návratové hodnoty:</i>
+        <i>; HL - adresa pro zápis pixelu</i>
+        <i>;</i>
+        <i>; pozměněné registry:</i>
+        <i>; A</i>
+        <i>;</i>
+        <i>; vzor adresy:</i>
+        <i>; 0 1 0 Y7 Y6 Y2 Y1 Y0 | Y5 Y4 Y3 X4 X3 X2 X1 X0</i>
+        ld  a, c              <i>; všech osm bitů Y-ové souřadnice</i>
+        and %00000111         <i>; pouze spodní tři bity y-ové souřadnice (Y2 Y1 Y0)</i>
+                              <i>; A: 0 0 0 0 0 Y2 Y1 Y0</i>
+        or  %01000000         <i>; "posun" do obrazové paměti (na 0x4000)</i>
+        ld  h, a              <i>; část horního bajtu adresy je vypočtena</i>
+                              <i>; H: 0 1 0 0 0 Y2 Y1 Y0</i>
+&nbsp;
+        ld  a, c              <i>; všech osm bitů Y-ové souřadnice</i>
+        rra
+        rra
+        rra                   <i>; rotace doprava -> Y1 Y0 xx Y7 Y6 Y5 Y4 Y3</i>
+        and %00011000         <i>; zamaskovat</i>
+                              <i>; A: 0  0  0 Y7 Y6  0  0  0</i>
+        or  h                 <i>; a přidat k vypočtenému mezivýsledku</i>
+        ld  h, a              <i>; H: 0  1  0 Y7 Y6 Y2 Y1 Y0</i>
+&nbsp;
+        ld  a, c              <i>; všech osm bitů Y-ové souřadnice</i>
+        rla
+        rla                   <i>; A:  Y5 Y4 Y3 Y2 Y1 Y0 xx xx</i>
+        and %11100000         <i>; A:  Y5 Y4 Y3 0  0  0  0  0</i>
+        ld  l, a              <i>; část spodního bajtu adresy je vypočtena</i>
+&nbsp;
+        ld  a, b              <i>; všech osm bitů X-ové souřadnice</i>
+        rra
+        rra
+        rra                   <i>; rotace doprava -> 0  0  0  X7 X6 X5 X4</i>
+        and %00011111         <i>; A: 0  0  0  X7 X6 X5 X4 X3</i>
+        or  l                 <i>; A: Y5 Y3 Y3 X7 X6 X5 X4 X3</i>
+        ld  l, a              <i>; spodní bajt adresy je vypočten</i>
+&nbsp;
+        ret                   <i>; návrat z podprogramu</i>
+&nbsp;
+&nbsp;
+fill_in_screen:
+        <i>; Vyplnění obrazovky snadno rozpoznatelným vzorkem - ASCII tabulkami</i>
+        <i>;</i>
+        <i>; vstupy:</i>
+        <i>; žádné</i>
+        ld de, SCREEN_ADR        <i>; adresa pro vykreslení prvního bloku znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        ret                      <i>; návrat z podprogramu</i>
+&nbsp;
+&nbsp;
+draw_ascii_table:
+        <i>; Vytištění ASCII tabulky</i>
+        <i>;       </i>
+        <i>; vstupy:</i>
+        <i>; DE - adresa v obrazové paměti pro vykreslení znaku</i>
+        ld a, ' '                <i>; kód vykreslovaného znaku</i>
+next_char:
+        push af                  <i>; uschovat akumulátor na zásobník</i>
+        call draw_char           <i>; zavolat subrutinu pro vykreslení znaku</i>
+        ld a, ' '                <i>; vykreslit za znakem mezeru</i>
+        call draw_char           <i>; zavolat subrutinu pro vykreslení znaku</i>
+        pop af                   <i>; obnovit akumulátor ze zásobníku</i>
+        inc a                    <i>; ASCII kód dalšího znaku</i>
+        cp  ' ' + 96             <i>; jsme již na konci ASCII tabulky?</i>
+        jr nz, next_char         <i>; ne? potom pokračujeme</i>
+        ret                      <i>; návrat z podprogramu</i>
+&nbsp;
+&nbsp;
+draw_char:
+        <i>; Vytištění jednoho znaku na obrazovku</i>
+        <i>;</i>
+        <i>; vstupy:</i>
+        <i>; A - kód znaku pro vykreslení</i>
+        <i>; DE - adresa v obrazové paměti pro vykreslení znaku</i>
+        <i>;</i>
+        <i>; výstupy:</i>
+        <i>; DE - adresa v obrazové paměti pro vykreslení dalšího znaku</i>
+        <i>;</i>
+        <i>; změněné registry:</i>
+        <i>; všechny</i>
+        ld bc, CHAR_ADR          <i>; adresa, od níž začínají masky znaků</i>
+        ld h, c                  <i>; C je nulové, protože CHAR_ADR=0x3c00</i>
+        ld l, a                  <i>; kód znaku je nyní ve dvojici HL</i>
+&nbsp;
+        add  hl, hl              <i>; 2x</i>
+        add  hl, hl              <i>; 4x</i>
+        add  hl, hl              <i>; 8x</i>
+        add  hl, bc              <i>; přičíst bázovou adresu masek znaků</i>
+&nbsp;
+        ld b, 8                  <i>; počitadlo zapsaných bajtů</i>
+        ld c, d
+&nbsp;
+loop2:
+        ld   a,(hl)              <i>; načtení jednoho bajtu z masky</i>
+        ld   (de),a              <i>; zápis hodnoty na adresu (DE)</i>
+        inc  l                   <i>; posun na další bajt masky (nemusíme řešit přetečení do vyššího bajtu)</i>
+        inc  d                   <i>; posun na definici dalšího obrazového řádku</i>
+        djnz loop2               <i>; vnitřní smyčka: blok s osmi zápisy</i>
+        inc  e
+        ret  z                   <i>; D+=8,E=E+1=0</i>
+        ld   d, c
+        ret                      <i>; D=D,E=E+1</i>
+&nbsp;
+end ENTRY_POINT
 </pre>
 
 
 
-<p><a name="k16"></a></p>
-<h2 id="k16">16. Korektní zápis masky pixelu tak, aby nedošlo ke smazání pozadí</h2>
 
-<p></p>
+<p>Původní algoritmus příkazu <strong>PLOT</strong> nejprve zjistil adresu, na
+kterou se má zapsat bitová maska a následně tuto bitovou masku vypočítal.
+Následně se <i>celá</i> bitová maska uložila na vypočtenou adresu, což ovšem
+znamenalo, že se vždy nastavil (na barvu inkoustu) jediný pixel z&nbsp;celé
+osmice, zatímco ostatních sedm pixelů bylo smazáno na barvu papíru. Toto
+&bdquo;vykreslení+smazání&ldquo; je realizováno instrukcí <strong>ld (hl),
+a</strong>:</p>
 
 <pre>
 <strong>plot</strong>:
@@ -1422,183 +1611,183 @@ ENTRY_POINT     equ $8000
 &nbsp;
         <i>; Vstupní bod celého programu</i>
 start:
-        call fill_in_screen      ; vyplnění obrazovky ASCII tabulkami
+        call fill_in_screen      <i>; vyplnění obrazovky ASCII tabulkami</i>
 &nbsp;
-        ld b, 0                  ; x-ová souřadnice vykreslovaného pixelu
-        ld c, 0                  ; y-ová souřadnice vykreslovaného pixelu
+        ld b, 0                  <i>; x-ová souřadnice vykreslovaného pixelu</i>
+        ld c, 0                  <i>; y-ová souřadnice vykreslovaného pixelu</i>
 loop:
-        call plot                ; vykreslení pixelu
+        call plot                <i>; vykreslení pixelu</i>
         call delay
-        inc b                    ; posun na další souřadnici
+        inc b                    <i>; posun na další souřadnici</i>
         inc c
         ld  a, b
-        cp  192                  ; test na ukončení smyčky
-        jr nz, loop              ; opakovat, dokud není vykreslena celá šikmá "úsečka"
+        cp  192                  <i>; test na ukončení smyčky</i>
+        jr nz, loop              <i>; opakovat, dokud není vykreslena celá šikmá "úsečka"</i>
 finito:
-        jr finito                ; ukončit program nekonečnou smyčkou
+        jr finito                <i>; ukončit program nekonečnou smyčkou</i>
 &nbsp;
 &nbsp;
 delay:
-        ; zpožďovací rutina
-        ; nemění žádné registry
-        push bc                  ; uschovat hodnoty registrů, které se používají ve smyčkách
-        ld   b, 20               ; počitadlo vnější zpožďovací smyčky
+        <i>; zpožďovací rutina</i>
+        <i>; nemění žádné registry</i>
+        push bc                  <i>; uschovat hodnoty registrů, které se používají ve smyčkách</i>
+        ld   b, 20               <i>; počitadlo vnější zpožďovací smyčky</i>
 outer_loop:
-        ld   c, 0                ; počitadlo vnitřní zpožďovací smyčky
+        ld   c, 0                <i>; počitadlo vnitřní zpožďovací smyčky</i>
 inner_loop:
-        dec  c                   ; snížení hodnoty počitadla (v první iteraci 256->255)
-        jr   NZ, inner_loop      ; opakovat, dokud není dosaženo nuly
-        djnz outer_loop          ; opakovat vnější smyčku, nyní s počitadlem v B
-        pop  bc                  ; obnovit hodnoty registrů změněných smyčkami
-        ret                      ; návrat z podprogramu
+        dec  c                   <i>; snížení hodnoty počitadla (v první iteraci 256->255)</i>
+        jr   NZ, inner_loop      <i>; opakovat, dokud není dosaženo nuly</i>
+        djnz outer_loop          <i>; opakovat vnější smyčku, nyní s počitadlem v B</i>
+        pop  bc                  <i>; obnovit hodnoty registrů změněných smyčkami</i>
+        ret                      <i>; návrat z podprogramu</i>
 &nbsp;
 &nbsp;
 plot:
-        ; třetí varianta podprogramu pro vykreslení pixelu
-        ;
-        ; parametry:
-        ; B - x-ová souřadnice (v pixelech)
-        ; C - y-ová souřadnice (v pixelech)
-        call calc_pixel_address  ; výpočet adresy pixelu
-        call calc_pixel_value    ; výpočet ukládané hodnoty
-        ld d, (hl)               ; přečíst původní hodnotu osmice pixelů
-        or d                     ; použít vypočtenou masku pro nastavení jediného bitu
-        ld (hl), a               ; zápis hodnoty pixelu (ostatních sedm pixelů se nezmění)
-        ret                      ; návrat z podprogramu
+        <i>; třetí varianta podprogramu pro vykreslení pixelu</i>
+        <i>;</i>
+        <i>; parametry:</i>
+        <i>; B - x-ová souřadnice (v pixelech)</i>
+        <i>; C - y-ová souřadnice (v pixelech)</i>
+        call calc_pixel_address  <i>; výpočet adresy pixelu</i>
+        call calc_pixel_value    <i>; výpočet ukládané hodnoty</i>
+        ld d, (hl)               <i>; přečíst původní hodnotu osmice pixelů</i>
+        or d                     <i>; použít vypočtenou masku pro nastavení jediného bitu</i>
+        ld (hl), a               <i>; zápis hodnoty pixelu (ostatních sedm pixelů se nezmění)</i>
+        ret                      <i>; návrat z podprogramu</i>
 &nbsp;
 &nbsp;
 calc_pixel_value:
-        ; parametry:
-        ; B - x-ová souřadnice (v pixelech)
-        ;
-        ; návratové hodnoty:
-        ; A - hodnota pixelu
-        push bc                  ; zapamatovat si hodnotu v registru B
-        ld   a, b                ; A: X7 X6 X5 X4 X3 X2 X1 X0 
-        and  %00000111           ; A: 0  0  0  0  0  X2 X1 X0
-        ld b, a                  ; počitadlo smyčky (neměníme příznaky)
-        ld a, %10000000          ; výchozí maska (neměníme příznaky)
-        jr z, end_calc           ; pokud je nyní souřadnice nulová, zapíšeme výchozí masku + konec
+        <i>; parametry:</i>
+        <i>; B - x-ová souřadnice (v pixelech)</i>
+        <i>;</i>
+        <i>; návratové hodnoty:</i>
+        <i>; A - hodnota pixelu</i>
+        push bc                  <i>; zapamatovat si hodnotu v registru B</i>
+        ld   a, b                <i>; A: X7 X6 X5 X4 X3 X2 X1 X0 </i>
+        and  %00000111           <i>; A: 0  0  0  0  0  X2 X1 X0</i>
+        ld b, a                  <i>; počitadlo smyčky (neměníme příznaky)</i>
+        ld a, %10000000          <i>; výchozí maska (neměníme příznaky)</i>
+        jr z, end_calc           <i>; pokud je nyní souřadnice nulová, zapíšeme výchozí masku + konec</i>
 &nbsp;
 next_shift:
-        srl a                    ; posunout masku doprava
-        djnz next_shift          ; 1x až 7x
+        srl a                    <i>; posunout masku doprava</i>
+        djnz next_shift          <i>; 1x až 7x</i>
 end_calc:
-        pop bc                   ; obnovit hodnotu v registru B
-        ret                      ; návrat z podprogramu
+        pop bc                   <i>; obnovit hodnotu v registru B</i>
+        ret                      <i>; návrat z podprogramu</i>
 &nbsp;
 &nbsp;
 calc_pixel_address:
-        ; parametry:
-        ; B - x-ová souřadnice (v pixelech)
-        ; C - y-ová souřadnice (v pixelech)
-        ;
-        ; návratové hodnoty:
-        ; HL - adresa pro zápis pixelu
-        ;
-        ; pozměněné registry:
-        ; A
-        ;
-        ; vzor adresy:
-        ; 0 1 0 Y7 Y6 Y2 Y1 Y0 | Y5 Y4 Y3 X4 X3 X2 X1 X0
-        ld  a, c              ; všech osm bitů Y-ové souřadnice
-        and %00000111         ; pouze spodní tři bity y-ové souřadnice (Y2 Y1 Y0)
-                              ; A: 0 0 0 0 0 Y2 Y1 Y0
-        or  %01000000         ; "posun" do obrazové paměti (na 0x4000)
-        ld  h, a              ; část horního bajtu adresy je vypočtena
-                              ; H: 0 1 0 0 0 Y2 Y1 Y0
+        <i>; parametry:</i>
+        <i>; B - x-ová souřadnice (v pixelech)</i>
+        <i>; C - y-ová souřadnice (v pixelech)</i>
+        <i>;</i>
+        <i>; návratové hodnoty:</i>
+        <i>; HL - adresa pro zápis pixelu</i>
+        <i>;</i>
+        <i>; pozměněné registry:</i>
+        <i>; A</i>
+        <i>;</i>
+        <i>; vzor adresy:</i>
+        <i>; 0 1 0 Y7 Y6 Y2 Y1 Y0 | Y5 Y4 Y3 X4 X3 X2 X1 X0</i>
+        ld  a, c              <i>; všech osm bitů Y-ové souřadnice</i>
+        and %00000111         <i>; pouze spodní tři bity y-ové souřadnice (Y2 Y1 Y0)</i>
+                              <i>; A: 0 0 0 0 0 Y2 Y1 Y0</i>
+        or  %01000000         <i>; "posun" do obrazové paměti (na 0x4000)</i>
+        ld  h, a              <i>; část horního bajtu adresy je vypočtena</i>
+                              <i>; H: 0 1 0 0 0 Y2 Y1 Y0</i>
 &nbsp;
-        ld  a, c              ; všech osm bitů Y-ové souřadnice
+        ld  a, c              <i>; všech osm bitů Y-ové souřadnice</i>
         rra
         rra
-        rra                   ; rotace doprava -> Y1 Y0 xx Y7 Y6 Y5 Y4 Y3
-        and %00011000         ; zamaskovat
-                              ; A: 0  0  0 Y7 Y6  0  0  0
-        or  h                 ; a přidat k vypočtenému mezivýsledku
-        ld  h, a              ; H: 0  1  0 Y7 Y6 Y2 Y1 Y0
+        rra                   <i>; rotace doprava -> Y1 Y0 xx Y7 Y6 Y5 Y4 Y3</i>
+        and %00011000         <i>; zamaskovat</i>
+                              <i>; A: 0  0  0 Y7 Y6  0  0  0</i>
+        or  h                 <i>; a přidat k vypočtenému mezivýsledku</i>
+        ld  h, a              <i>; H: 0  1  0 Y7 Y6 Y2 Y1 Y0</i>
 &nbsp;
-        ld  a, c              ; všech osm bitů Y-ové souřadnice
+        ld  a, c              <i>; všech osm bitů Y-ové souřadnice</i>
         rla
-        rla                   ; A:  Y5 Y4 Y3 Y2 Y1 Y0 xx xx
-        and %11100000         ; A:  Y5 Y4 Y3 0  0  0  0  0
-        ld  l, a              ; část spodního bajtu adresy je vypočtena
+        rla                   <i>; A:  Y5 Y4 Y3 Y2 Y1 Y0 xx xx</i>
+        and %11100000         <i>; A:  Y5 Y4 Y3 0  0  0  0  0</i>
+        ld  l, a              <i>; část spodního bajtu adresy je vypočtena</i>
 &nbsp;
-        ld  a, b              ; všech osm bitů X-ové souřadnice
+        ld  a, b              <i>; všech osm bitů X-ové souřadnice</i>
         rra
         rra
-        rra                   ; rotace doprava -> 0  0  0  X7 X6 X5 X4
-        and %00011111         ; A: 0  0  0  X7 X6 X5 X4 X3
-        or  l                 ; A: Y5 Y3 Y3 X7 X6 X5 X4 X3
-        ld  l, a              ; spodní bajt adresy je vypočten
+        rra                   <i>; rotace doprava -> 0  0  0  X7 X6 X5 X4</i>
+        and %00011111         <i>; A: 0  0  0  X7 X6 X5 X4 X3</i>
+        or  l                 <i>; A: Y5 Y3 Y3 X7 X6 X5 X4 X3</i>
+        ld  l, a              <i>; spodní bajt adresy je vypočten</i>
 &nbsp;
-        ret                   ; návrat z podprogramu
+        ret                   <i>; návrat z podprogramu</i>
 &nbsp;
 &nbsp;
 fill_in_screen:
-        ; Vyplnění obrazovky snadno rozpoznatelným vzorkem - ASCII tabulkami
-        ;
-        ; vstupy:
-        ; žádné
-        ld de, SCREEN_ADR        ; adresa pro vykreslení prvního bloku znaků
-        call draw_ascii_table    ; vykreslení 96 znaků
-        call draw_ascii_table    ; vykreslení 96 znaků
-        call draw_ascii_table    ; vykreslení 96 znaků
-        call draw_ascii_table    ; vykreslení 96 znaků
-        ret                      ; návrat z podprogramu
+        <i>; Vyplnění obrazovky snadno rozpoznatelným vzorkem - ASCII tabulkami</i>
+        <i>;</i>
+        <i>; vstupy:</i>
+        <i>; žádné</i>
+        ld de, SCREEN_ADR        <i>; adresa pro vykreslení prvního bloku znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        call draw_ascii_table    <i>; vykreslení 96 znaků</i>
+        ret                      <i>; návrat z podprogramu</i>
 &nbsp;
 &nbsp;
 draw_ascii_table:
-        ; Vytištění ASCII tabulky
-        ;       
-        ; vstupy:
-        ; DE - adresa v obrazové paměti pro vykreslení znaku
-        ld a, ' '                ; kód vykreslovaného znaku
+        <i>; Vytištění ASCII tabulky</i>
+        <i>;       </i>
+        <i>; vstupy:</i>
+        <i>; DE - adresa v obrazové paměti pro vykreslení znaku</i>
+        ld a, ' '                <i>; kód vykreslovaného znaku</i>
 next_char:
-        push af                  ; uschovat akumulátor na zásobník
-        call draw_char           ; zavolat subrutinu pro vykreslení znaku
-        ld a, ' '                ; vykreslit za znakem mezeru
-        call draw_char           ; zavolat subrutinu pro vykreslení znaku
-        pop af                   ; obnovit akumulátor ze zásobníku
-        inc a                    ; ASCII kód dalšího znaku
-        cp  ' ' + 96             ; jsme již na konci ASCII tabulky?
-        jr nz, next_char         ; ne? potom pokračujeme
-        ret                      ; návrat z podprogramu
+        push af                  <i>; uschovat akumulátor na zásobník</i>
+        call draw_char           <i>; zavolat subrutinu pro vykreslení znaku</i>
+        ld a, ' '                <i>; vykreslit za znakem mezeru</i>
+        call draw_char           <i>; zavolat subrutinu pro vykreslení znaku</i>
+        pop af                   <i>; obnovit akumulátor ze zásobníku</i>
+        inc a                    <i>; ASCII kód dalšího znaku</i>
+        cp  ' ' + 96             <i>; jsme již na konci ASCII tabulky?</i>
+        jr nz, next_char         <i>; ne? potom pokračujeme</i>
+        ret                      <i>; návrat z podprogramu</i>
 &nbsp;
 &nbsp;
 draw_char:
-        ; Vytištění jednoho znaku na obrazovku
-        ;
-        ; vstupy:
-        ; A - kód znaku pro vykreslení
-        ; DE - adresa v obrazové paměti pro vykreslení znaku
-        ;
-        ; výstupy:
-        ; DE - adresa v obrazové paměti pro vykreslení dalšího znaku
-        ;
-        ; změněné registry:
-        ; všechny
-        ld bc, CHAR_ADR          ; adresa, od níž začínají masky znaků
-        ld h, c                  ; C je nulové, protože CHAR_ADR=0x3c00
-        ld l, a                  ; kód znaku je nyní ve dvojici HL
+        <i>; Vytištění jednoho znaku na obrazovku</i>
+        <i>;</i>
+        <i>; vstupy:</i>
+        <i>; A - kód znaku pro vykreslení</i>
+        <i>; DE - adresa v obrazové paměti pro vykreslení znaku</i>
+        <i>;</i>
+        <i>; výstupy:</i>
+        <i>; DE - adresa v obrazové paměti pro vykreslení dalšího znaku</i>
+        <i>;</i>
+        <i>; změněné registry:</i>
+        <i>; všechny</i>
+        ld bc, CHAR_ADR          <i>; adresa, od níž začínají masky znaků</i>
+        ld h, c                  <i>; C je nulové, protože CHAR_ADR=0x3c00</i>
+        ld l, a                  <i>; kód znaku je nyní ve dvojici HL</i>
 &nbsp;
-        add  hl, hl              ; 2x
-        add  hl, hl              ; 4x
-        add  hl, hl              ; 8x
-        add  hl, bc              ; přičíst bázovou adresu masek znaků
+        add  hl, hl              <i>; 2x</i>
+        add  hl, hl              <i>; 4x</i>
+        add  hl, hl              <i>; 8x</i>
+        add  hl, bc              <i>; přičíst bázovou adresu masek znaků</i>
 &nbsp;
-        ld b, 8                  ; počitadlo zapsaných bajtů
+        ld b, 8                  <i>; počitadlo zapsaných bajtů</i>
         ld c, d
 &nbsp;
 loop2:
-        ld   a,(hl)              ; načtení jednoho bajtu z masky
-        ld   (de),a              ; zápis hodnoty na adresu (DE)
-        inc  l                   ; posun na další bajt masky (nemusíme řešit přetečení do vyššího bajtu)
-        inc  d                   ; posun na definici dalšího obrazového řádku
-        djnz loop2               ; vnitřní smyčka: blok s osmi zápisy
+        ld   a,(hl)              <i>; načtení jednoho bajtu z masky</i>
+        ld   (de),a              <i>; zápis hodnoty na adresu (DE)</i>
+        inc  l                   <i>; posun na další bajt masky (nemusíme řešit přetečení do vyššího bajtu)</i>
+        inc  d                   <i>; posun na definici dalšího obrazového řádku</i>
+        djnz loop2               <i>; vnitřní smyčka: blok s osmi zápisy</i>
         inc  e
-        ret  z                   ; D+=8,E=E+1=0
+        ret  z                   <i>; D+=8,E=E+1=0</i>
         ld   d, c
-        ret                      ; D=D,E=E+1
+        ret                      <i>; D=D,E=E+1</i>
 &nbsp;
 end ENTRY_POINT
 </pre>
