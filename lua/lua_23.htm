@@ -1,0 +1,492 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Metalua - programovatelné rozšíření sémantiky jazyka Lua II</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Metalua - programovatelné rozšíření sémantiky jazyka Lua II</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Lua bude dokončen popis projektu Metalua, který umožňuje metaprogramování, tj. vývojářem řízenou modifikaci programového kódu generovaného překladačem. Popíšeme si především dvojici nástrojů &bdquo;gg&ldquo; (grammar generator) a &bdquo;mlp&ldquo; (Metalua parser).</p>
+
+
+
+<h2>Obsah</h2>
+<p>
+<a href="#k01">1. Metalua &ndash; užitečná rozšíření sémantiky jazyka Lua</a><br />
+<a href="#k02">2. Nástroje &bdquo;gg&ldquo; a &bdquo;mlp&ldquo;</a><br />
+<a href="#k03">3. gg &ndash; Grammar generator</a><br />
+<a href="#k04">4. mlp &ndash; Metalua parser</a><br />
+<a href="#k05">5. Demonstrační příklad &ndash; rozšíření jazyka o nepodmíněné skoky (goto)</a><br />
+<a href="#k06">6. Přidání nových operátorů do jazyka Lua</a><br />
+<a href="#k07">7. Přidání podpory pro zápis konstant do zdrojového kódu</a><br />
+<a href="#k08">8. Interpolace řetězců</a><br />
+<a href="#k09">9. Odkazy na Internetu</a><br />
+</p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Metalua &ndash; užitečná rozšíření sémantiky jazyka Lua</h2>
+
+<p>V&nbsp;předchozí části tohoto seriálu jsme se seznámili s&nbsp;projektem
+<i>Metalua</i>, v&nbsp;jehož rámci došlo k&nbsp;poměrně rozsáhlému a významnému
+rozšíření původního překladače jazyka <i>Lua</i> tak, aby bylo možné
+s&nbsp;využitím dvojice takzvaných <i>metaoperátorů</i> měnit syntaktický strom
+vytvářený překladačem (přesněji jeho první částí &ndash; front-endem) ještě
+předtím, než dojde ke generování výsledného bajtkódu. To znamená, že je
+programátorovi umožněno, podobně jako například v&nbsp;programovacím jazyce
+<i>Lisp</i>, aby se již v&nbsp;době překladu měnila sémantika samotného jazyka
+&ndash; není například problém vytvořit nové operátory, přidat do
+programovacího jazyka další typy smyček či rozhodovacích příkazů atd. Na
+následujícím obrázku je naznačeno, jakým způsobem probíhá překlad zdrojového
+textu programu do jemu odpovídajícího bajtkódu:</p>
+
+<pre>
+                  ______               ________
++-----------+    /      \    +---+    /        \    +--------+
+|SOURCE FILE|--&gt;&lt; Parser &gt;--&gt;|AST|--&gt;&lt; Compiler &gt;--&gt;|BYTECODE|
++-----------+    \______/    +---+    \________/    +--------+
+</pre>
+
+<p>Celý překlad se ve své podstatě dá popsat dvojí transformací &ndash; nejprve
+je zdrojový kód zpracován <i>parserem</i>, který v&nbsp;textu rozpoznává
+jednotlivé syntaktické kategorie (číslo, textový řetězec, část výrazu,
+operátor, klíčové slovo) a tvoří z&nbsp;nich abstraktní syntaktický strom
+(<i>AST</i>). Z&nbsp;tohoto stromu následně překladač (<i>compiler</i>)
+generuje bajtkód, jenž je buď uložen do externího souboru nebo ponechán
+v&nbsp;operační paměti s&nbsp;možností jeho následné interpretace. Proces
+překladu je většinou před programátorem skrytý, ovšem při použití systému
+<i>Metalua</i> lze celý překlad ovlivnit řízenou modifikací AST.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Nástroje &bdquo;gg&ldquo; a &bdquo;mlp&ldquo;</h2>
+
+<p>Autoři systému <i>Metalua</i> zavedli pro nepřímou manipulaci s&nbsp;AST
+dvojici symbolů (metaoperátorů) <strong>+{<strong> a </strong>}</strong>,
+pomocí nichž je možné zapisovat části programového kódu (výrazy, příkazy, bloky
+příkazů) v&nbsp;jazyku Lua, které se posléze samy převedou na uzly AST. Druhá
+dvojice symbolů <strong>-{</strong> a <strong>}</strong> naopak slouží
+k&nbsp;přímému vkládání části AST (získaného prakticky libovolným postupem,
+typicky právě pomocí symbolů <strong>+{}</strong>) do generovaného výsledného
+stromu, který je posléze přeložen do bajtkódu. Manipulace se syntaktickým
+stromem však při použití těchto operátorů probíhá na poměrně nízké úrovni,
+proto je jejich přímé použití při netriviálních úpravách syntaxe jazyka poměrně
+pracné. Z&nbsp;tohoto důvodu je k&nbsp;systému <i>Metalua</i> dodáváno i
+několik pomocných nástrojů (přesněji rozhraní k&nbsp;těmto nástrojům), které
+práci při metaprogramování ulehčují. Mezi dva nejdůležitější nástroje, jenž se
+ve skutečnosti podobají knihovnám používaným při programování (také proto se
+nazývají <i>metaknihovny</i>), patří nástroj nazvaný <i>gg</i> (grammar
+generator) a <i>mlp</i> (Metalua parser).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. gg &ndash; Grammar generator</h2>
+
+<p>Metaknihovna nazvaná jednoduše <i>gg</i> neboli <i>grammar generator</i>,
+slouží k&nbsp;vytváření popř.&nbsp;změně generátorů, pomocí nichž je možné
+ovlivnit chování parserů (funkci parseru jsme si vysvětlili v&nbsp;první
+kapitole, kde je uveden i ilustrační obrázek postupné transformace zdrojového
+textu přes AST až k&nbsp;výslednému bajtkódu). Možná se nyní ptáte, proč se
+zde mluví o více parserech a ne jednom parseru. Je to z&nbsp;toho důvodu, že
+systém <i>Metalua</i> umožňuje vytvořit větší množství parserů, přičemž každý
+parser je určen pro zpracování jiné části zdrojového textu programu. Toto
+modulární uspořádání je výhodné, především tehdy, pokud je zapotřebí ovlivnit
+chování pouze jednoho parseru.</p>
+
+<p>Parsery programovacího jazyka <i>Lua</i> pracují se čtyřmi třídami objektů
+&ndash; výrazy složenými ze základních elementů pospojovaných pomocí
+prefixových, infixových i postfixových operátorů, seznamy elementů stejného
+typu (seznam parametrů funkce, konstruktor pole atd.), sekvencemi příkazů a
+sekvencemi řízenými pomocí klíčových slov (jejich množinu je možné měnit
+v&nbsp;průběhu překladu zdrojového textu).  V&nbsp;demonstračních příkladech
+uvedených v&nbsp;následujících kapitolách se sice přímo s&nbsp;metaknihovnou
+<i>gg</i> nepracuje, ovšem interně je tato metaknihovna velmi intenzivně
+používána další metaknihovnou &ndash; <i>mlp</i> &ndash; popsanou dále.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. mlp &ndash; Metalua parser</h2>
+
+<p>Všechny demonstrační příklady, které (každý odlišným způsobem) rozšiřují
+syntaxi i sémantiku programovacího jazyka <i>Lua</i>, používají funkce dostupné
+z&nbsp;metaknihovny <i>mlp</i> neboli <i>Metalua parser</i>. Samotný <i>mlp</i>
+používá interně funkce či typy z&nbsp;<i>gg</i>. Mezi nejdůležitější objekty
+dostupné z&nbsp;metaknihovny <i>mlp</i> patří:</p>
+
+<ul>
+
+<li><i>mlp.expr</i> &ndash; přístup k&nbsp;funkcím parseru, který je používán
+pro zpracování výrazů. V&nbsp;demonstračních příkladech se bude přistupovat
+k&nbsp;odvozeným objektům, například <i>mlp.epxr.infix</i> či
+<i>mlp.expr.prefix</i>.</li>
+
+<li><i>mlp.table</i> &ndash; parser načítající obsah tabulky (její
+konstruktor)</li>
+
+<li><i>mlp.block</i> &ndash; parser načítající sekvenci příkazů</li>
+
+<li><i>mlp.stat</i> &ndash; parser načítající jediný příkaz. Tento parser bude
+modifikován hned v&nbsp;následujícím demonstračním příkladu a taktéž i
+v&nbsp;příkladu, který rozšiřuje jazyk Lua o možnost použití interpolace
+řetězců.</li>
+
+<li><i>mlp.lexer</i> &ndash; velmi důležitá část celého parseru &ndash; lexer.
+Lexer rozeznává ve zdrojovém textu jednotlivé syntaktické kategorie (číslo,
+řetězec, klíčové slovo apod.) a převádí je na interní reprezentaci. Při
+modifikaci sémantiky jazyka <i>Lua</i> je většinou nutné změnit také jeho
+sémantiku, například přidat nové klíčové slovo či nový typ operátoru &ndash;
+právě to je práce pro lexer.</li>
+
+</ul>
+
+
+<p><a name="k05"></a></p>
+<h2>5. Demonstrační příklad &ndash; rozšíření jazyka o nepodmíněné skoky (goto)</h2>
+
+<p>V&nbsp;dnešním prvním demonstračním příkladu, jehož zdrojový kód je vypsán
+pod tímto odstavcem, je ukázáno, jakým způsobem lze poměrně jednoduše přidat do
+syntaxe jazyka <i>Lua</i> podporu pro nepodmíněné skoky. Jedná se o (nechvalně)
+známý příkaz <strong>goto</strong>, který při svém nadužívání může vést
+k&nbsp;tvorbě špatně čitelného programu (<i>spaghetti code</i>), ovšem
+v&nbsp;některých případech vede jeho použití naopak ke zjednodušení programu,
+například při výskoku ze zanořených programových smyček (mnoho programovacích
+jazyků navíc ani neumožňuje například skok do smyčky, do jiné funkce či
+odlišného bloku kódu &ndash; viz například <i>Java</i>, kde se
+<strong>goto</strong> skrývá pod příkazem <strong>break</strong>). Níže uvedený
+kód přidává do syntaxe a sémantiky jazyka dvě nová klíčová slova
+<strong>label</strong> a <strong>goto</strong>. Za slovem
+<strong>label</strong> i <strong>goto</strong> musí být uveden identifikátor
+odkazu ve formě řetězce, což mj.&nbsp;znamená, že lze použít i měnitelné
+řetězce. Vzhledem k&nbsp;tomu, že v&nbsp;AST již existují objekty typu
+<strong>Label</strong> a <strong>Goto</strong>, je přidání nových klíčových
+slov poměrně snadné a především přímočaré:</p>
+
+<pre>
+mlp.lexer:add "label"
+mlp.stat:add {
+    "label",
+    mlp.string,
+    builder = |a| `Label{a[1]}
+}
+
+mlp.lexer:add "goto"
+mlp.stat:add {
+    "goto",
+    mlp.string,
+    builder = |a| `Goto{a[1]}
+}
+</pre>
+
+<p>Použití nových klíčových slov je velmi jednoduché, jak je ostatně patrné i
+z&nbsp;následujícího úryvku zdrojového kódu:</p>
+
+<pre>
+goto "cil"
+print("tento příkaz nebude proveden")
+label "cil"
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Přidání nových operátorů do jazyka Lua</h2>
+
+<p>Výše uvedený příkaz <strong>goto</strong> může být v&nbsp;některých
+případech užitečný, protože programovací jazyk <i>Lua</i> neobsahuje, podobně
+jako například céčko či C++, možnost &bdquo;strukturovaného&ldquo; výskoku ze
+zanořených bloků kódu, například ze dvou do sebe vnořených programových smyček
+(právě tehdy se příkaz <strong>break</strong> nahrazuje příkazem
+<strong>goto</strong>). Ovšem mnohem častěji, než na neexistenci nepodmíněného
+skoku, si programátoři, kteří s&nbsp;jazykem <i>Lua</i> pracují, stěžují na to,
+že v&nbsp;<i>Lua</i> neexistují některé operátory, na které jsou zvyklí
+z&nbsp;jiných programovacích jazyků, nebo že se tyto operátory zapisují
+odlišným způsobem. Řešení tohoto problému je při použití systému <i>Metalua</i>
+poměrně snadné, jak se ostatně můžeme přesvědčit po přečtení zdrojového kódu
+uvedeného pod tímto odstavcem. V&nbsp;kódu je ukázáno, jakým způsobem je možné
+do syntaxe jazyka <i>Lua</i> přidat další operátory, samozřejmě se správnou
+prioritou. Je přidán relační operátor <strong>!=</strong>, který odpovídá
+původnímu operátoru <strong>~=</strong>, logická negace <strong>!</strong>,
+jenž se v&nbsp;<i>Lua</i> zapisuje pomocí klíčového slova <strong>not</strong>
+a konečně dva logické operátory <strong>&amp;&amp;</strong> a
+<strong>||</strong>, které odpovídají původním operátorům <strong>and</strong>
+a <strong>or</strong>:</p>
+
+<pre>
+-- operátor "!=" bude mít stejný význam jako
+-- zabudovaný operátor "~="
+mlp.lexer:add "!="
+mlp.expr.infix:add {
+    '!=',
+    prec = 30,
+    builder = |a, _, b| +{-{a} ~= -{b}}
+}
+
+
+
+-- k operátoru "not" je přidáno nové synonymum "!"
+mlp.lexer:add "!"
+mlp.expr.prefix:add {
+    '!',
+    prec = 80,
+    builder = |_, a| +{not -{a}}
+}
+
+
+
+-- k&nbsp;operátoru "and" je přidáno synonymum "&amp;&amp;"
+mlp.lexer:add "&amp;&amp;"
+mlp.expr.infix:add {
+    '&amp;&amp;',
+    prec = 20,
+    builder = |a, _, b| +{-{a} and -{b}}
+}
+
+
+
+-- k&nbsp;operátoru "or" je přidáno synonymum "||"
+mlp.lexer:add "||"
+mlp.expr.infix:add {
+    '||',
+    prec = 10,
+    builder = |a, _, b| +{-{a} or -{b}}
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Přidání podpory pro zápis konstant do zdrojového kódu</h2>
+
+<p>Dalším syntaktickým i sémantickým prvkem, který vývojáři píšící aplikace
+v&nbsp;programovacím jazyce <i>Lua</i> mohou v&nbsp;některých případech
+postrádat, je možnost definice konstant. Z&nbsp;předchozích částí tohoto
+seriálu již víme, že <i>Lua</i> rozeznává pouze globální a lokální proměnné
+popř.&nbsp;parametry či proměnné uložené v&nbsp;uzávěru (<i>closure</i>).
+Konstanty, tj.&nbsp;neměnitelné objekty, nejsou podporovány, podobně jako
+v&nbsp;mnoha dalších skriptovacích jazycích, ovšem jejich přidání do syntaxe
+jazyka není se systémem <i>Metalua</i> problematické. V&nbsp;následujícím
+programu je ukázáno, jak lze přidat podporu pro konstanty, které se od běžných
+proměnných odlišují způsobem zápisu svého jména &ndash; pokud jméno obsahuje
+pouze velká písmena a podtržítka, je považováno za konstantu, ostatní jména
+jsou proměnné či funkce (ostatně právě tímto způsobem je v&nbsp;mnoha jazycích
+doporučováno odlišování konstant). Při pokusu o zápis nové hodnoty do konstanty
+je již při překladu vypsáno chybové hlášení, podobně jako v&nbsp;dalších
+programovacích jazycích, které konstanty podporují:</p>
+
+<pre>
+-- lokální proměnná
+local foo
+
+-- lokální konstanta
+local BAR = 10
+
+-- přiřazení nové hodnoty do proměnné - ok
+foo = 42
+
+-- výpis hodnoty proměnné - ok
+print(foo)
+
+-- výpis hodnoty konstanty - ok
+print(BAR)
+
+-- přiřazení nové hodnoty do konstanty - chyba
+BAR = 42
+
+-- vypíše se chybové hlášení:
+error: writing to constant BAR at line xxx
+</pre>
+
+<p>Zdrojový kód pro systém <i>Metalua</i> má tvar:</p>
+
+<pre>
+local function check(o)
+    if o and o.tag == 'Id' and o[1]:match('^[A-Z_]+$') then
+        error('error: writing to constant ' .. o[1] .. ' at line ' .. o.line, 3)
+    end
+end
+
+local function const_transformer(ast)
+    if not ast then return end
+    if ast.tag == 'Set' then
+        for _,v in ipairs(ast[1]) do
+            check(v)
+        end
+    end
+end
+
+mlp.stat.transformers:add(const_transformer)
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Interpolace řetězců</h2>
+
+<p>Pod možná poněkud záhadným pojmem <i>interpolace řetězců</i> (<i>string
+interpolation</i>) se skrývá velmi užitečná vlastnost &ndash; náhrada jména
+proměnné v&nbsp;řetězci její hodnotou, obecněji též náhrada výrazu jeho
+(vypočtenou) hodnotou. Interpolace řetězců je podporována například
+v&nbsp;programovacích jazycích <i>TCL</i> či <i>Perl</i>, ve kterých se velmi
+často používá například při formátování výstupu, generování souborů ve
+formátech HTML či XML a podobně (v&nbsp;<i>TCL</i> je však interpolace řetězců
+interně poměrně často používána i samotným interpretrem, především při
+vykonávání vložených bloků kódu). Přidání interpolace řetězců do programovacího
+jazyka <i>Lua</i> je sice pro tvůrce &bdquo;makra&ldquo; poněkud pracnější,
+ovšem ostatní programátoři již mohou toto makro bez dalších problémů využívat,
+například způsobem ukázaným níže (vyhodnocovaná proměnná či výraz musí být
+uvozena prefixem <strong>${</strong> a uzavřena pravou složenou závorkou
+<strong>}</strong>:</p>
+
+<pre>
+local foo = 42
+local bar = 6502
+print("result is ${foo+bar*2} or something similar")
+</pre>
+
+<p>Následuje výpis kódu, který do programovacího jazyka <i>Lua</i> přidá
+podporu pro interpolaci řetězců:</p>
+
+<pre>
+local function makeparser(f)
+    return function(...)
+        local res = f(...)
+        if res and res.tag == 'String' then
+            local s = res[1]
+            local expr
+            -- note: left-associative. desirable?
+            local function concat(o)
+                if not expr then
+                    expr = o
+                else
+                    expr = `Op{'concat', expr, o}
+                end
+            end
+            local i = 1
+            local _ = s:gsub('(.-)$(%b{})()',
+                function(text, var, pos)
+                    var = var:sub(2, var:len()-1)
+                    if text ~= '' then concat(`String{text}) end
+                    local expr2 = mlp.expr:parse(mlp.lexer:newstream(var))
+                    concat( expr2 )
+                    i = pos
+                end
+            )
+            local rest = s:sub(i)
+            if rest ~= '' then concat(`String{rest}) end
+            expr = expr or `String ''
+            return expr
+        end
+        return res
+    end
+end
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>
+Lambda the Ultimate: Metalua<br />
+<a href="http://lambda-the-ultimate.org/node/2105">http://lambda-the-ultimate.org/node/2105</a>
+</li>
+
+<li>
+Metalua: Static meta-programming for Lua<br />
+<a href="http://metalua.luaforge.net/">http://metalua.luaforge.net/</a>
+</li>
+
+<li>
+Meta Lua (lua-users wiki)<br />
+<a href="http://lua-users.org/wiki/MetaLua">http://lua-users.org/wiki/MetaLua</a>
+</li>
+
+<li>
+Meta Lua Recipes<br />
+<a href="http://lua-users.org/wiki/MetaLuaRecipes">http://lua-users.org/wiki/MetaLuaRecipes</a>
+</li>
+
+<li>
+The art of metaprogramming, Part 1: Introduction to metaprogramming<br />
+<a href="http://www.ibm.com/developerworks/linux/library/l-metaprog1.html">http://www.ibm.com/developerworks/linux/library/l-metaprog1.html</a>
+</li>
+
+<li>
+Template metaprogramming<br />
+<a href="http://en.wikipedia.org/wiki/Template_metaprogramming">http://en.wikipedia.org/wiki/Template_metaprogramming</a>
+</li>
+
+<li>
+Metaprogramming<br />
+<a href="http://en.wikipedia.org/wiki/Metaprogramming">http://en.wikipedia.org/wiki/Metaprogramming</a>
+</li>
+
+<li>
+Lua (programming language)<br />
+<a href="http://en.wikipedia.org/wiki/Lua_(programming_language)">http://en.wikipedia.org/wiki/Lua_(programming_language)</a>
+</li>
+
+<li>
+Moose (Perl)<br />
+<a href="http://www.iinteractive.com/moose/">http://www.iinteractive.com/moose/</a>
+</li>
+
+<li>
+Joose (framework)<br />
+<a href="http://code.google.com/p/joose-js/">http://code.google.com/p/joose-js/</a>
+</li>
+
+<li>
+Code Generation vs. Metaprogramming<br />
+<a href="http://qcodo.com/documentation/article.php/6">http://qcodo.com/documentation/article.php/6</a>
+</li>
+
+<li>
+LuaForge:<br />
+<a href="http://luaforge.net/">http://luaforge.net/</a>
+</li>
+
+<li>
+LuaForge project tree:<br />
+<a href="http://luaforge.net/softwaremap/trove_list.php">http://luaforge.net/softwaremap/trove_list.php</a>
+</li>
+
+</ol>
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2009</small></p>
+</body>
+</html>
+
