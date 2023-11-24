@@ -40,12 +40,12 @@
 <p><a href="#k01">*** 1. Rychlost CPythonu 3.11 a 3.12 v&nbsp;porovnání s&nbsp;JIT a AOT překladači Pythonu (2)</a></p>
 <p><a href="#k02">2. Měříme skutečně rychlost výpočtů nebo rychlost zápisu výsledného rastrového obrázku?</a></p>
 <p><a href="#k03">3. Oddělení výpočtu od kódu pro uložení výsledku benchmarku</a></p>
-<p><a href="#k04">*** 4. Vliv pomalosti I/O operací na rychlost běhu benchmarku</a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
-<p><a href="#k08">*** 8. </a></p>
-<p><a href="#k09">*** 9. </a></p>
+<p><a href="#k04">4. Vliv pomalosti I/O operací na rychlost běhu benchmarku</a></p>
+<p><a href="#k05">5. Grafy s&nbsp;časy výpočtů a I/O operací</a></p>
+<p><a href="#k06">6. Eliminace I/O operací</a></p>
+<p><a href="#k07">7. Paralelizace výsledného kódu JIT překladačem Numba</a></p>
+<p><a href="#k08">8. Paralelizace kódu nemusí být zcela triviálním úkolem</a></p>
+<p><a href="#k09">*** 9. Výsledek běhu příkladu upraveného do paralelní podoby</a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
 <p><a href="#k12">*** 12. </a></p>
@@ -54,9 +54,9 @@
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</a></p>
-<p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k18">18. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</a></p>
+<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
@@ -321,7 +321,30 @@ kapacitu alokované paměti z&nbsp;pohledu operačního systému &ndash; RSS):</
 <p>Vidíme, že rastrový obrázek s&nbsp;rozlišením 4096&times;4096 byl spočten a
 uložen za cca šestnáct sekund.</p>
 
-<p></p>
+<p>Dále si zkusme zakomentovat poslední tři příkazy ve smyčce, v&nbsp;níž se
+rastrový obrázek ukládá:</p>
+
+<pre>
+    <i># image export part</i>
+    <u>print("P3")</u>
+    <u>print(width)</u>
+    <u>print(height)</u>
+    <u>print("255")</u>
+    for y in <u>range(0, height)</u>:
+        for x in <u>range(0, width)</u>:
+            i = iters[y][x]
+            r = palette[i % 256][0]
+            g = palette[i % 256][1]
+            b = palette[i % 256][2]
+            <u># print(r)</u>
+            <u># print(g)</u>
+            <u># print(b)</u>
+</pre>
+
+<p>Nyní tedy budeme provádět celý výpočet, ovšem nebudeme vykreslovat
+jednotlivé pixely výsledného rastrového obrázku. Pokud nyní předpokládáte
+(stejně jako původně autor tohoto článku), že výsledné časy budou prakticky
+totožné, možná budete překvapeni:</p>
 
 <pre>
 16 2.93 266752
@@ -343,6 +366,39 @@ uložen za cca šestnáct sekund.</p>
 4096 4.97 266804
 </pre>
 
+<p>Z&nbsp;výsledků je patrné, že samotný FP výpočet není zdaleka tou
+nejkritičtější operací. To má dalekosáhlé důsledky, ke kterým se ještě
+vrátíme.</p>
+
+<p>Při třetím běhu naopak vynecháme výpočet a budeme ukládat prázdnou bitmapu (s&nbsp;černými pixely):</p>
+
+<pre>
+    <i># calc part</i>
+    cy = -1.5
+    for y in <u>range(0, height)</u>:
+        cx = -2.0
+        for x in <u>range(0, width)</u>:
+            zx = 0.0
+            zy = 0.0
+            i = 0
+            # while i &lt; maxiter:
+            #     zx2 = zx * zx
+            #     zy2 = zy * zy
+            #     if zx2 + zy2 &gt; 4.0:
+            #         break
+            #     zy = 2.0 * zx * zy + cy
+            #     zx = zx2 - zy2 + cx
+            #     i += 1
+            iters[y][x] = i
+&nbsp;
+            cx += 3.0/width
+        cy += 3.0/height
+</pre>
+
+<p>Nyní již dokážeme výsledek do určité míry predikovat &ndash; samotné uložení
+rastrového obrázku je tak náročná I/O operace, že bude nejenom měřitelná, ale
+překročí dobu výpočtů:</p>
+
 <pre>
 16 3.48 271076
 24 3.48 270880
@@ -362,6 +418,33 @@ uložen za cca šestnáct sekund.</p>
 3072 10.92 270868
 4096 15.37 270856
 </pre>
+
+<p>Jen pro zajímavost vynechme výpočet, ovšem uložme každý pixel dvakrát, čímž
+se počet I/O operací prakticky zdvojnásobí (výsledná bitmapa ovšem nebude
+korektní):</p>
+
+<pre>
+    <i># image export part</i>
+    <u>print("P3")</u>
+    <u>print(width)</u>
+    <u>print(height)</u>
+    <u>print("255")</u>
+    for y in <u>range(0, height)</u>:
+        for x in <u>range(0, width)</u>:
+            i = iters[y][x]
+            r = palette[i % 256][0]
+            g = palette[i % 256][1]
+            b = palette[i % 256][2]
+            <u>print(r)</u>
+            <u>print(g)</u>
+            <u>print(b)</u>
+            <u>print(r)</u>
+            <u>print(g)</u>
+            <u>print(b)</u>
+</pre>
+
+<p>Časy nebudou dvojnásobné, ale to je již možné predikovat, protože víme, že
+samotné JITování kódu trvá cca 3-4 sekundy:</p>
 
 <pre>
 16 3.46 271212
@@ -383,27 +466,127 @@ uložen za cca šestnáct sekund.</p>
 4096 25.89 271304
 </pre>
 
-<p></p>
-
-<a href="https://www.root.cz/obrazek/1110442/"><img src="https://i.iinfo.cz/images/134/numba3-2-prev.webp" class="image-1110442" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-2-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-2-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-<p><i>Obrázek 3: </i></p>
-
-<a href="https://www.root.cz/obrazek/1110443/"><img src="https://i.iinfo.cz/images/134/numba3-3-prev.webp" class="image-1110443" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-3-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-3-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-<p><i>Obrázek 4: </i></p>
-
-<a href="https://www.root.cz/obrazek/1110444/"><img src="https://i.iinfo.cz/images/134/numba3-4-prev.webp" class="image-1110444" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-4-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-4-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-<p><i>Obrázek 5: </i></p>
-
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Grafy s&nbsp;časy výpočtů a I/O operací</h2>
 
-<p></p>
+<p>Porovnání běhu benchmarků je pochopitelně výhodnější provést ve vizuální
+podobě, takže se vrátíme ke grafům. Na následujících grafech jsou zobrazeny
+časy všech čtyř variant téhož benchmarku popsaných <a
+href="#k04">v&nbsp;předchozí kapitole</a>:</p>
+
+<table>
+<tr><th>Označení</th><th>Význam</th></tr>
+<tr><td>normal</td><td>celý benchmark s&nbsp;výpočtem i exportem</td></tr>
+<tr><td>no output</td><td>pouze výpočet</td></tr>
+<tr><td>no calc</td><td>pouze export (černého) rastrového obrázku</td></tr>
+<tr><td>double output</td><td>výpočet i export, ovšem každý pixel je zapsán dvakrát</td></tr>
+</table>
+
+<p>Pro velmi malé rozměry obrázků bude největší roli hrát samotný JIT
+překladač:</p>
+
+<a href="https://www.root.cz/obrazek/1110442/"><img src="https://i.iinfo.cz/images/134/numba3-2-prev.webp" class="image-1110442" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-2-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-2-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 3: Vliv JIT překladu na dobu běhu benchmarků.</i></p>
+
+<p>Naopak pro velké rastrové obrázky vychází, že největší vliv mají I/O operace
+(tedy konkrétně funkce <strong>print</strong>) a nikoli vlastní výpočet, což je
+překvapující:</p>
+
+<a href="https://www.root.cz/obrazek/1110443/"><img src="https://i.iinfo.cz/images/134/numba3-3-prev.webp" class="image-1110443" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-3-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-3-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 4: Vliv opakovaného volání funkce <strong>print</strong> na dobu
+běhu benchmarku.</i></p>
+
+<p>A takto vypadá situace, kdy na horizontální osu vyneseme velikost výsledného
+obrázku a na osu vertikální dobu běhu benchmarku v&nbsp;sekundách. Jednotlivé
+naměřené hodnoty jsou proloženy lineárními úseky:</p>
+
+<a href="https://www.root.cz/obrazek/1110444/"><img src="https://i.iinfo.cz/images/134/numba3-4-prev.webp" class="image-1110444" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-4-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-4-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 5: Rychlosti různých benchmarků pro rozdílné velikosti výsledných
+rastrových obrázků.</i></p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Eliminace I/O operací</h2>
+
+<p>V&nbsp;dnešním článku nás v&nbsp;prvé řadě zajímá rychlost provádění výpočtů
+a nikoli to, jak rychlá či naopak pomalá je implementace funkce
+<strong>print</strong>. Z&nbsp;tohoto důvodu se budeme snažit omezit vliv I/O
+operací na rozumné minimum. Využijeme přitom faktu, že u výpočtu Mandelbrotovy
+množiny lze ponechat relativně malou velikost výsledného rastrového obrázku a
+naopak zvýšit maximální počet iterací, což povede k&nbsp;razantnímu zvýšení
+počtu FP operací.</p>
+
+<p>Konkrétně to bude v&nbsp;našem konkrétním případě bude znamenat, že
+rozlišení obrázku nastavíme na 256&times;256 pixelů, což je dostatečně velké
+rozlišení pro odhalení chyby (&bdquo;fast math&ldquo;) ve výpočtu, ale počet
+I/O operací se oproti největšímu obrázku z&nbsp;předchozích benchmarků sníží na
+1/256, což je méně než 1% (a proto bude jejich vliv malý). A počet iterací
+naopak vzroste až na 1000000, takže doby výpočtu budou v&nbsp;některých
+případech přesahovat půl hodiny. </p>
+
+<img src="https://i.iinfo.cz/images/656/numba3-1.webp" class="image-1110456" width="400" height="400" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;http://en.wikipedia.org/wiki/Rights_Managed&quot;&gt;Rights Managed&lt;/a&gt;" />
+<p><i>Obrázek 6: Výsledek výpočtu Mandelbrotovy množiny při nastavení
+maximálního množství iterací na 100&nbsp;000.</i></p>
+
+<img src="https://i.iinfo.cz/images/656/numba3-2.webp" class="image-1110457" width="400" height="400" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;http://en.wikipedia.org/wiki/Rights_Managed&quot;&gt;Rights Managed&lt;/a&gt;" />
+<p><i>Obrázek 7: Výsledek výpočtu Mandelbrotovy množiny při nastavení
+maximálního množství iterací na 1&nbsp;000&nbsp;000.</i></p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Paralelizace výsledného kódu JIT překladačem Numba</h2>
+
+<p>Další optimalizace, kterou Numba dokáže zajistit, je paralelizace části
+kódu, typicky programové smyčky nebo častého volání nějaké funkce. Pro tento
+účel se používá parametr <strong>parallel=True</strong> předaný dekorátoru
+<strong>@jit</strong> a navíc je vhodné při generování indexů atd. použít
+namísto vestavěného generátoru <strong>range</strong> jeho paralelní variantu
+<strong>prange</strong>. Jak ale takový paralelní výpočet probíhá? Kód,
+resp.&nbsp;jednotlivé iterace nebo celé volání funkce, je spouštěn ve vláknech.
+Počet vláken lze nastavit; výchozí hodnota odpovídá počtu procesorových jader.
+Co to znamená v&nbsp;praxi? Testování probíhá na počítači se šestnácti jádry a
+tudíž <strong>prange</strong> rozdělí výpočet do šestnácti vláken, která běží
+samostatně (protože v&nbsp;nativní části nemáme žádný GIL!).</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Paralelizace kódu nemusí být zcela triviálním úkolem</h2>
+
+<p>Mohlo by se zdát, že díky tomu, že nástroj Numba nabízí volbu
+<strong>parallel=True</strong> a navíc i &bdquo;paralelní&ldquo; generátor
+<strong>prange</strong> bude paralelizace kódu zcela triviální.
+V&nbsp;některých případech je to samozřejmě pravda, ovšem platí to i pro náš
+benchmark? Můžeme se o tom snadno přesvědčit jeho úpravou:</p>
+
+<ol>
+<li>Před hlavičku funkce uvedeme <strong>@jit(nopython=True, parallel=True)</strong></li>
+<li>Vnější výpočetní smyčka bude používat <strong>prange</strong> a nikoli <strong>range</strong></li>
+<li>Smyčka pro uložení bitmapy <i>nepoběží paralelně</i> (je snad zřejmé proč)</li>
+<li>Přístup do pole <strong>iters</strong> lze provést z&nbsp;více vláken, pokud se nebude jednat o stejnou buňku</li>
+</ol>
+
+<p>Vnější smyčka se tedy změní takto:</p>
 
 <pre>
-#!/usr/bin/env python
-# vim: set fileencoding=utf-8
+    <i># calc part</i>
+    cy = -1.5
+    for y in <u>prange(0, height)</u>:
+        ...
+        ...
+        ...
+        cy += 3.0/height
+</pre>
+
+<p>Upravený kód demonstračního příkladu bude vypadat následovně:</p>
+
+<pre>
+<i>#!/usr/bin/env python</i>
+<i># vim: set fileencoding=utf-8</i>
 &nbsp;
 import palette_mandmap
 from sys import argv, exit
@@ -412,13 +595,13 @@ import numpy as np
 from numba import jit, prange
 &nbsp;
 &nbsp;
-@jit(nopython=True, parallel=True)
-def calc_mandelbrot(width, height, maxiter, palette):
+<u>@jit(nopython=True, parallel=True)</u>
+def <strong>calc_mandelbrot</strong>(width, height, maxiter, palette):
     iters = np.empty((height, width), dtype=np.uint8)
 &nbsp;
-    # calc part
+    <i># calc part</i>
     cy = -1.5
-    for y in prange(0, height):
+    for y in <u>prange(0, height)</u>:
         cx = -2.0
         for x in range(0, width):
             zx = 0.0
@@ -437,7 +620,7 @@ def calc_mandelbrot(width, height, maxiter, palette):
             cx += 3.0/width
         cy += 3.0/height
 &nbsp;
-    # image export part
+    <i># image export part</i>
     print("P3")
     print(width)
     print(height)
@@ -467,15 +650,15 @@ if __name__ == "__main__":
 
 
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Výsledek běhu příkladu upraveného do paralelní podoby</h2>
 
 <p></p>
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<p><a name="k10"></a></p>
+<h2 id="k10">10. </h2>
 
 <p></p>
 
@@ -553,8 +736,8 @@ if __name__ == "__main__":
 
 
 
-<p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<p><a name="k11"></a></p>
+<h2 id="k11">11. </h2>
 
 <p></p>
 
@@ -576,15 +759,12 @@ done
 
 
 
-<p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<p><a name="k12"></a></p>
+<h2 id="k12">12. </h2>
 
 <p></p>
 
 
-<img src="https://i.iinfo.cz/images/656/numba3-1.webp" class="image-1110456" width="400" height="400" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;http://en.wikipedia.org/wiki/Rights_Managed&quot;&gt;Rights Managed&lt;/a&gt;" />
-
-<img src="https://i.iinfo.cz/images/656/numba3-2.webp" class="image-1110457" width="400" height="400" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;http://en.wikipedia.org/wiki/Rights_Managed&quot;&gt;Rights Managed&lt;/a&gt;" />
 
 
 <a href="https://www.root.cz/obrazek/1110445/"><img src="https://i.iinfo.cz/images/134/numba3-5-prev.webp" class="image-1110445" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-5-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-5-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
@@ -598,34 +778,6 @@ done
 <a href="https://www.root.cz/obrazek/1110449/"><img src="https://i.iinfo.cz/images/134/numba3-9-prev.webp" class="image-1110449" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-9-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-9-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
 
 <a href="https://www.root.cz/obrazek/1110450/"><img src="https://i.iinfo.cz/images/134/numba3-10-prev.webp" class="image-1110450" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-10-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-10-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-
-
-
-<p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
-
-<p></p>
-
-
-
-<p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
-
-<p></p>
-
-
-
-<p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
-
-<p></p>
-
-
-
-<p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
-
-<p></p>
 
 
 
@@ -667,7 +819,14 @@ done
 <p><a name="k18"></a></p>
 <h2 id="k18">18. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</h2>
 
-<p></p>
+<p>Pro změření výkonnosti různých variant spuštění projektů naprogramovaných
+v&nbsp;Pythonu bylo použito celkem deset verzí zdrojových kódů benchmarku.
+První verze je určena pro klasický CPython (my jsme využili verze 3.8 až 3.12),
+dalších šest verzí jsou určeny pro použití společně s&nbsp;JIT překladačem
+Numba (přičemž dvě verze umožní paralelní běh ve více vláknech). Následují dvě
+verze určené pro AOT překladač Mypy a konečně poslední verze byla přepsána do
+ANSI C, abychom mohli porovnat, jak může být sémanticky totožný kód rychlejší
+při použití odlišného ekosystému:</p>
 
 <table>
 <tr><th> #</th><th>Příklad</th><th>Stručný popis</th><th>Adresa</th></tr>
@@ -676,9 +835,9 @@ done
 <tr><td> 3</td><td>mandelbrot-v3</td><td>volání zjednodušených variant funkce <strong>print</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v3/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v3/</a></td></tr>
 <tr><td> 4</td><td>mandelbrot-v4</td><td>použití anotace <strong>@jit</strong> s&nbsp;parametrem <strong>nopython</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v4/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v4/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td> 5</td><td>mandelbrot-v5</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v5/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v5/</a></td></tr>
-<tr><td> 6</td><td>mandelbrot-v6</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v6/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v6/</a></td></tr>
-<tr><td> 7</td><td>mandelbrot-v7</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v7/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v7/</a></td></tr>
+<tr><td> 5</td><td>mandelbrot-v5</td><td>úprava předchozího příkladu: rozdělení části provádějící výpočet od části provádějící export obrázku</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v5/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v5/</a></td></tr>
+<tr><td> 6</td><td>mandelbrot-v6</td><td>úprava příkladu tak, aby byl umožněn jeho běh ve více vláknech (s&nbsp;nekorektním výsledkem)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v6/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v6/</a></td></tr>
+<tr><td> 7</td><td>mandelbrot-v7</td><td>přidání typových informací pro zlepšení rychlosti paralelního běhu benchmarku</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v7/">https://github.com/tisnik/most-popular-python-libs/blob/master/numba/mandelbrot-v7/</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td> 8</td><td>mypyc/mandelbrot_5</td><td>varianta benchmarku určená pro překlad s&nbsp;využitím <strong>mypyc</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mypyc/mandelbrot_5.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mypyc/mandelbrot_5.py</a></td></tr>
 <tr><td> 9</td><td>mypyc/mandelbrot_6</td><td>přidání typových informací využitelných AOT překladačem <strong>mypyc</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mypyc/mandelbrot_6.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mypyc/mandelbrot_6.py</a></td></tr>
@@ -690,6 +849,10 @@ done
 
 <p><a name="k19"></a></p>
 <h2 id="k19">19. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</h2>
+
+<p>Všechny demonstrační příklady ukazující vlastnosti nástroje Numba naleznete
+v&nbsp;repositáři <a
+href="https://github.com/tisnik/most-popular-python-libs">https://github.com/tisnik/most-popular-python-libs</a>:</p>
 
 <table>
 <tr><th> #</th><th>Příklad</th><th>Stručný popis</th><th>Adresa</th></tr>
