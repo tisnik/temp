@@ -45,18 +45,17 @@
 <p><a href="#k06">6. Eliminace I/O operací</a></p>
 <p><a href="#k07">7. Paralelizace výsledného kódu JIT překladačem Numba</a></p>
 <p><a href="#k08">8. Paralelizace kódu nemusí být zcela triviálním úkolem</a></p>
-<p><a href="#k09">*** 9. Výsledek běhu příkladu upraveného do paralelní podoby</a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
-<p><a href="#k13">*** 13. </a></p>
-<p><a href="#k14">*** 14. </a></p>
-<p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">18. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</a></p>
-<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</a></p>
-<p><a href="#k20">20. Odkazy na Internetu</a></p>
+<p><a href="#k09">9. Výsledek běhu příkladu upraveného do paralelní podoby</a></p>
+<p><a href="#k10">10. Úprava výpočtu pro paralelní běh</a></p>
+<p><a href="#k11">11. Přidání typových informací pro Numbu a refaktoring</a></p>
+<p><a href="#k12">12. Benchmarky zaměřené na FP operace, optimalizace smyček, podmínek a na paralelizaci</a></p>
+<p><a href="#k13">13. Výsledky benchmarků</a></p>
+<p><a href="#k14">14. Výsledky omezené pouze na standardní interpretry Pythonu (CPython)</a></p>
+<p><a href="#k15">*** 15. Vliv paralelizace na výsledky: Numba může překonat nativní céčkový kód</a></p>
+<p><a href="#k16">16. Krátké zamyšlení namísto závěru</a></p>
+<p><a href="#k17">17. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</a></p>
+<p><a href="#k18">18. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</a></p>
+<p><a href="#k19">19. Odkazy na Internetu</a></p>
 
 
 
@@ -653,18 +652,135 @@ if __name__ == "__main__":
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Výsledek běhu příkladu upraveného do paralelní podoby</h2>
 
-<p></p>
+<p>Podívejme se nyní na výsledný obrázek, který získáme po spuštění benchmarku
+<a href="#k08">z&nbsp;předchozí kapitoly</a>:</p>
+
+<p><img src="https://i.iinfo.cz/images/240/numba3.webp" class="image-1110482" width="400" height="400" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;http://en.wikipedia.org/wiki/Rights_Managed&quot;&gt;Rights Managed&lt;/a&gt;" /></p>
+<p><i>Obrázek 8: Výsledek &bdquo;paralelizovaného&ldquo; benchmarku.</i></p>
+
+<p>Z&nbsp;výsledků je jasně patrné, že se v&nbsp;žádném případě nejedná o
+očekávaný obrázek Mandelbrotovy množiny. Namísto toho vidíme šestnáct kopií
+části množiny začínající na nulové imaginární souřadnici
+(<strong>cy=0</strong>). Tento obrázek nám současně poměrně přesně napovídá, co
+se stalo:</p>
+
+<ul>
+
+<li>Numba skutečně výpočet rozdělila do šestnácti vláken (na mém počítači se
+šestnácti jádry &ndash; jinde to může být odlišné)</li>
+
+<li>Ovšem s&nbsp;lokální proměnnou <strong>cy</strong> se nepracuje korektně
+&ndash; je v&nbsp;každém vláknu nastavena na nulu a poté &bdquo;lokálně&ldquo;
+zvyšována, takže každé vlákno vlastně počítá stejnou část množiny</li>
+
+</ul>
+
+<p>K&nbsp;lokální skalární proměnné není možné tímto způsobem přistupovat
+z&nbsp;většího množství vláken. Proto je nutné výpočet vhodným způsobem
+upravit, což si ukážeme <a href="#k10">v&nbsp;navazující kapitole</a>.</p>
 
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Úprava výpočtu pro paralelní běh</h2>
 
-<p></p>
+<p>Ve skutečnosti je úprava výpočetní části benchmarku do takové podoby, která
+umožní paralelní výpočet, poměrně triviální (benchmark založený na
+Mandelbrotově množině je skutečně v&nbsp;tomto ohledu dosti univerzální).
+Postačuje nám, aby se imaginární hodnota komplexního čísla <strong>c</strong>
+(tedy lokální proměnná <strong>cy</strong>) explicitně vypočítala <i>uvnitř</i>
+paralelizované vnější smyčky. To znamená, že namísto:</p>
 
 <pre>
-#!/usr/bin/env python
-# vim: set fileencoding=utf-8
+    <i># calc part</i>
+    cy = -1.5
+    for y in <u>prange(0, height)</u>:
+        cx = -2.0
+        for x in range(0, width):
+        ...
+        ...
+        ...
+            cx += 3.0/width
+        cy += 3.0/height
+</pre>
+
+<p>...přesuneme proměnnou <strong>cy</strong> dovnitř smyčky, což znamená, že
+každé vlákno bude vlastnit &bdquo;svoji&ldquo; proměnnou <strong>cy</strong>
+nezávislou na ostatních vláknech:</p>
+
+<pre>
+    <i># calc part</i>
+    for y in <strong>prange(0, height)</strong>:
+        cy = -1.5 + 3.0*y/height
+        cx = -2.0
+        for x in range(0, width):
+            ...
+            ...
+            ...
+&nbsp;
+            cx += 3.0/width
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: zopakujme si, že souběžný přístup
+k&nbsp;poli <i>ndarray</i> není z&nbsp;tohoto pohledu problematický.</div></p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Přidání typových informací pro Numba a refaktoring</h2>
+
+<p>I JIT překladač implementovaný v&nbsp;Numbě dokáže zpracovat informace o
+typech parametrů překládané funkce. Ovšem tyto typové informace nejsou
+zapisovány dnes standardním způsobem (<i>type hints</i>), ale přímo
+v&nbsp;dekorátoru <strong>@jit</strong> nebo <strong>@njit</strong>.
+V&nbsp;našem konkrétním případě, tj.&nbsp;pro funkci určenou pro vykreslení
+Mandelbrotovy množiny, se předává několik parametrů:</p>
+
+<ul>
+<li>šířka obrázku &ndash; celé číslo</li>
+<li>výška obrázku &ndash; celé číslo</li>
+<li>maximální počet iterací &ndash; celé číslo</li>
+<li>barvová paleta &ndash; 256 trojic celých čísel (což je UniTuple s&nbsp;256 vnořenými UniTuple)</li>
+</ul>
+
+<p>V&nbsp;tomto konkrétním případě bude informace o typech vypadat takto:</p>
+
+<pre>
+@jit(<u>(int64, int64, int64, UniTuple(UniTuple(int64, 3), 256)</u>), nopython=True, parallel=True)
+def <strong>calc_mandelbrot</strong>(width, height, maxiter, palette):
+    ...
+    ...
+    ...
+</pre>
+
+<p>Další úprava spočívá v&nbsp;refaktoringu &ndash; ze zdrojového kódu
+&bdquo;vytáhneme&ldquo; funkci pro výpočet počtu iterací pro jediný bod
+v&nbsp;komplexní rovině. Tato funkce bude plně přeložena do nativního kódu a
+dokonce bude vložena přímo do kódu (bez jejího volání). Tato úprava opět
+(kupodivu) pomůže JIT překladači, zde konkrétně při rozbalování smyčky:</p>
+
+<pre>
+@jit(nopython=True)
+def <strong>calc_pixel</strong>(maxiter, cx, cy):
+    zx = 0.0
+    zy = 0.0
+    i = 0
+    while i &lt; maxiter:
+        zx2 = zx * zx
+        zy2 = zy * zy
+        if zx2 + zy2 &gt; 4.0:
+            break
+        zy = 2.0 * zx * zy + cy
+        zx = zx2 - zy2 + cx
+        i += 1
+    return i
+</pre>
+
+<p>Výsledný zdrojový kód bude po všech úpravách vypadat následovně:</p>
+
+<pre>
+<i>#!/usr/bin/env python</i>
+<i># vim: set fileencoding=utf-8</i>
 &nbsp;
 import palette_mandmap
 from sys import argv, exit
@@ -675,7 +791,7 @@ from numba.types import UniTuple, int64
 &nbsp;
 &nbsp;
 @jit(nopython=True)
-def calc_pixel(maxiter, cx, cy):
+def <strong>calc_pixel</strong>(maxiter, cx, cy):
     zx = 0.0
     zy = 0.0
     i = 0
@@ -691,10 +807,10 @@ def calc_pixel(maxiter, cx, cy):
 &nbsp;
 &nbsp;
 @jit((int64, int64, int64, UniTuple(UniTuple(int64, 3), 256)), nopython=True, parallel=True)
-def calc_mandelbrot(width, height, maxiter, palette):
+def <strong>calc_mandelbrot</strong>(width, height, maxiter, palette):
     iters = np.empty((height, width), dtype=np.uint8)
 &nbsp;
-    # calc part
+    <i># calc part</i>
     for y in prange(0, height):
         cy = -1.5 + 3.0*y/height
         cx = -2.0
@@ -703,9 +819,8 @@ def calc_mandelbrot(width, height, maxiter, palette):
             iters[y][x] = i
 &nbsp;
             cx += 3.0/width
-        cy += 3.0/height
 &nbsp;
-    # image export part
+    <i># image export part</i>
     print("P3")
     print(width)
     print(height)
@@ -736,8 +851,6 @@ if __name__ == "__main__":
 
 
 
-<p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
 
 <p></p>
 
@@ -760,64 +873,140 @@ done
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Benchmarky zaměřené na FP operace, optimalizace smyček, podmínek a na paralelizaci</h2>
 
-<p></p>
+<p>Podobně jako minule máme i dnes několik variant zdrojových kódů
+benchmarků:</p>
 
+<ol>
+<li>Původní zdrojový kód pro klasický interpret Pythonu</li>
+<li>Kód přepsaný do ANSI C</li>
+<li>Kód určený pro AOT překlad nástrojem mypyc bez typových informací (liší se způsobem spuštění)</li>
+<li>Kód určený pro AOT překlad nástrojem mypyc s&nbsp;přidanými typovými informacemi</li>
+<li>Numba: kód, do něhož byla pouze přidána anotace <strong>@jit</strong></li>
+<li>Numba: varianta s&nbsp;jednodušší (nativní) funkcí <strong>print</strong></li>
+<li>Numba: varianta s&nbsp;jednodušší (nativní) funkcí <strong>print</strong> a anotací <strong>@jit(nopython=True)</strong></li>
+<li>Numba: varianta používající n-rozměrné pole (<i>ndarray</i>)</li>
+<li>Numba: nekorektní &bdquo;paralelní&ldquo; varianta</li>
+<li>Numba: korektní &bdquo;paralelní&ldquo; varianta</li>
+</ol>
 
+<p>Tyto zdrojové kódy použijeme pro spuštění celkem dvanácti benchmarků,
+jejichž označení a význam je zapsán v&nbsp;tabulce:</p>
 
+<table>
+<tr><th>Označení</th><th>Stručný popis benchmarku</th></tr>
+<tr><td>native</td><td>benchmark přepsaný do ANSI C, překlad bez optimalizací</td></tr>
+<tr><td>native optim</td><td>benchmark přepsaný do ANSI C, překlad s&nbsp;optimalizacemi</td></tr>
+<tr><td>python 3.8</td><td>benchmark spuštěný standardním CPythonem verze 3.8</td></tr>
+<tr><td>python 3.9</td><td>benchmark spuštěný standardním CPythonem verze 3.9</td></tr>
+<tr><td>python 3.10</td><td>benchmark spuštěný standardním CPythonem verze 3.10</td></tr>
+<tr><td>python 3.11</td><td>benchmark spuštěný standardním CPythonem verze 3.11</td></tr>
+<tr><td>python 3.12</td><td>benchmark spuštěný standardním CPythonem verze 3.12</td></tr>
+<tr><td>mypyc no type hints</td><td>kód určený pro AOT překlad nástrojem mypyc bez typových informací</td></tr>
+<tr><td>mypyc with type hints</td><td>kód určený pro AOT překlad nástrojem mypyc s&nbsp;přidanými typovými informacemi</td></tr>
+<tr><td>numba 2</td><td>Numba: kód, do něhož byla pouze přidána anotace <strong>@jit</strong></td></tr>
+<tr><td>numba 3</td><td>Numba: varianta s&nbsp;jednodušší (nativní) funkcí <strong>print</strong></td></tr>
+<tr><td>numba 4</td><td>Numba: varianta s&nbsp;jednodušší (nativní) funkcí <strong>print</strong> a anotací <strong>@jit(nopython=True)</strong></td></tr>
+<tr><td>numba 5</td><td>Numba: varianta používající n-rozměrné pole (<i>ndarray</i>)</td></tr>
+<tr><td>numba 6</td><td>Numba: nekorektní &bdquo;paralelní&ldquo; varianta</td></tr>
+<tr><td>numba 7</td><td>Numba: korektní &bdquo;paralelní&ldquo; varianta</td></tr>
+</table>
 
-<a href="https://www.root.cz/obrazek/1110445/"><img src="https://i.iinfo.cz/images/134/numba3-5-prev.webp" class="image-1110445" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-5-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-5-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-
-<a href="https://www.root.cz/obrazek/1110446/"><img src="https://i.iinfo.cz/images/134/numba3-6-prev.webp" class="image-1110446" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-6-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-6-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-
-<a href="https://www.root.cz/obrazek/1110447/"><img src="https://i.iinfo.cz/images/134/numba3-7-prev.webp" class="image-1110447" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-7-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-7-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-
-<a href="https://www.root.cz/obrazek/1110448/"><img src="https://i.iinfo.cz/images/134/numba3-8-prev.webp" class="image-1110448" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-8-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-8-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-
-<a href="https://www.root.cz/obrazek/1110449/"><img src="https://i.iinfo.cz/images/134/numba3-9-prev.webp" class="image-1110449" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-9-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-9-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
-
-<a href="https://www.root.cz/obrazek/1110450/"><img src="https://i.iinfo.cz/images/134/numba3-10-prev.webp" class="image-1110450" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-10-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-10-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><div class="rs-tip-major">Poznámka: optimalizovaný nativní kód opět
+neprodukuje totožné výsledky! Je tomu tak kvůli použití
+<strong>-ffast-math</strong>, takže FP operace přesně neodpovídají IEEE 754.
+Všechny ostatní kódy produkují výsledky, které jsou naprosto totožné
+(z&nbsp;pohledu výsledné bitmapy s&nbsp;vypočteným obrázkem).</div></p>
 
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Výsledky benchmarků</h2>
 
-<p></p>
+<p>Na druhém grafu jsou zobrazeny časy běhu benchmarků pro malý počet iterací,
+což znamená i relativně malý počet FP operací, které se musí provést. Právě zde
+nehrají výpočty prakticky žádnou významnou roli, mnohem více se zde projeví
+inicializace procesu. To v&nbsp;případě nástroje Numba znamená JIT překlad. Jak
+je patrné, ten trvá přibližně 4 sekundy:</p>
+
+<a href="https://www.root.cz/obrazek/1110445/"><img src="https://i.iinfo.cz/images/134/numba3-5-prev.webp" class="image-1110445" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-5-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-5-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 9: Časy běhu benchmarků pro malý počet iterací. Zde se nejvíce
+projeví čas inicializace procesu a popř.&nbsp;JITování kódu.</i></p>
+
+<p>Pro větší počet iterací dostaneme zcela odlišné výsledky, protože JITovaný
+kód zde překonává jak klasické interpretry (což se dalo čekat), tak i Mypy! A
+navíc (což zde příliš dobře nevidíme) bude &bdquo;paralelní&ldquo; výpočet
+realizovaný Numbou rychlejší, než nativní kód (viz další text):</p>
+
+<a href="https://www.root.cz/obrazek/1110446/"><img src="https://i.iinfo.cz/images/134/numba3-6-prev.webp" class="image-1110446" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-6-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-6-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 10: Časy běhu benchmarků pro velký počet iterací. Zde se nejvíce
+projeví čas inicializace procesu a popř.&nbsp;JITování kódu</i></p>
+
+<p><div class="rs-tip-major">Poznámka: časy jsou stále vyneseny
+v&nbsp;sekundách! Na takovém časovém měřítku se již I/O operace prakticky vůbec
+neprojeví.</div></p>
+
+<p>Třetí graf ukazuje časy běhu všech benchmarků. Zvolil jsem liniový graf,
+který naznačuje, jak dobré či špatné jsou jednotlivé implementace nejenom pro
+dlouhé výpočty, ale i při započítání času inicializace procesu. Na horizontální
+osu jsou vyneseny maximální počty iterací, na vertikální osu pak doby běhu
+benchmarku v&nbsp;sekundách:</p>
+
+<a href="https://www.root.cz/obrazek/1110447/"><img src="https://i.iinfo.cz/images/134/numba3-7-prev.webp" class="image-1110447" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-7-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-7-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 11: Časy běhu všech benchmarků v&nbsp;závislosti na požadovaném
+maximálním počtu iterací.</i></p>
 
 
 
 <p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
+<h2 id="k14">14. Výsledky omezené pouze na standardní interpretry Pythonu (CPython)</h2>
 
-<p></p>
+<p>V&nbsp;úvodním článku jsme se taktéž zmínili o tom, že Python 3.11 (a 3.12)
+je obecně rychlejší, než předchozí interpretry Pythonu &ndash; tedy alespoň
+podle tvrzení tvůrců. Podívejme se, zda je tomu skutečně tak:</p>
+
+<a href="https://www.root.cz/obrazek/1110448/"><img src="https://i.iinfo.cz/images/134/numba3-8-prev.webp" class="image-1110448" width="360" height="270" data-prev-filename="https://i.iinfo.cz/images/134/numba3-8-prev.webp" data-prev-width="360" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/134/numba3-8-large.webp" data-large-width="700" data-large-height="525" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" /></a>
+<p><i>Obrázek 12: Porovnání rychlostí interpretrů Pythonu (CPython
+3.x).</i></p>
+
+<p><div class="rs-tip-major">Poznámka: opět platí, že Python 3.11 i Python 3.12
+jsou skutečně významně rychlejší, než předchozí verze interpretrů, což je
+zajisté dobrá zpráva i důvod pro přechod na novou verzi na produkčních
+systémech.</div></p>
 
 
 
 <p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<h2 id="k15">15. Vliv paralelizace na výsledky: Numba může překonat nativní céčkový kód</h2>
 
-<p></p>
 
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Krátké zamyšlení namísto závěru</h2>
 
-<p></p>
+<p>Je zajímavé, do jaké míry dokážou nástroje <strong>mypyc</strong> a ještě
+více nástroj <strong>Numba</strong> poměrně kvalitně překládat zdrojové kódy
+Pythonu v&nbsp;případě, že jim jsou poskytnuty typové informace (a jak špatný
+je výsledek bez nich). V&nbsp;tom spočívá jedna část úspěchu těchto nástrojů.
+Druhá část spočívá v&nbsp;tom, že nám umožňuje označit ty funkce, které lze
+přeložit do nativního kódu bez toho, aby se v&nbsp;nich interně používal
+(ne)slavný GIL. Pravděpodobně není jen náhoda, že se jedná o stejné strategie,
+jaké jsou použity v&nbsp;nástroji <i>CPython</i>, kterým jsme se zabývali
+v&nbsp;článku <a
+href="https://www.root.cz/clanky/prakticke-pouziti-nastroje-cython-pri-prekladu-pythonu-do-nativniho-kodu-1/">Praktické
+použití nástroje Cython při překladu Pythonu do nativního kódu</a> &ndash; i
+zde se v&nbsp;první řadě jednalo o zápis typových informací, odstranění volání
+Pythonovských funkcí (původní <strong>print</strong>) a tím pádem i možnost
+ignorování GILu. Pravděpodobně zde tedy vede cesta (nezávisle na tom, zda se
+jedná o JIT nebo AOT) k&nbsp;rychlejšímu Pythonu (pokud tedy vynecháme
+nekonečné diskuse o odstranění GILu přímo z&nbsp;CPythonu).</p>
 
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
-
-<p></p>
-
-
-
-<p><a name="k18"></a></p>
-<h2 id="k18">18. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</h2>
+<h2 id="k17">17. Zdrojové kódy benchmarků použitých v&nbsp;dnešním článku</h2>
 
 <p>Pro změření výkonnosti různých variant spuštění projektů naprogramovaných
 v&nbsp;Pythonu bylo použito celkem deset verzí zdrojových kódů benchmarku.
@@ -847,8 +1036,8 @@ při použití odlišného ekosystému:</p>
 
 
 
-<p><a name="k19"></a></p>
-<h2 id="k19">19. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</h2>
+<p><a name="k18"></a></p>
+<h2 id="k18">18. Repositář s&nbsp;demonstračními příklady pro nástroj Numba</h2>
 
 <p>Všechny demonstrační příklady ukazující vlastnosti nástroje Numba naleznete
 v&nbsp;repositáři <a
@@ -875,8 +1064,8 @@ href="https://github.com/tisnik/most-popular-python-libs">https://github.com/tis
 
 
 
-<p><a name="k20"></a></p>
-<h2 id="k20">20. Odkazy na Internetu</h2>
+<p><a name="k19"></a></p>
+<h2 id="k19">19. Odkazy na Internetu</h2>
 
 <ol>
 
