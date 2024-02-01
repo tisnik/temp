@@ -44,11 +44,11 @@
 <p><a href="#k05">5. Instrukce <strong>PUSH</strong> a <strong>POP</strong> v&nbsp;instrukční sadě Thumb</a></p>
 <p><a href="#k06">6. Strojové kódy funkcí popsaných minule</a></p>
 <p><a href="#k07">*** 7. Instrukce <strong>LDR</strong> a přístup k&nbsp;prvkům polí</a></p>
-<p><a href="#k08">*** 8. Instrukce nepodmíněného skoku a pseudoinstrukce <strong>label</strong></a></p>
-<p><a href="#k09">*** 9. </a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
+<p><a href="#k08">8. Instrukce nepodmíněného skoku a pseudoinstrukce <strong>label</strong></a></p>
+<p><a href="#k09">*** 9. Překlad instrukce nepodmíněného skoku na zadané návěští</a></p>
+<p><a href="#k10">*** 10. Skok zpět</a></p>
+<p><a href="#k11">11. Stavové registry na mikroprocesorech s&nbsp;architekturou ARM</a></p>
+<p><a href="#k12">12. Příznakové a stavové bity na mikroprocesorech s&nbsp;architekturou ARM</a></p>
 <p><a href="#k13">*** 13. </a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
@@ -68,10 +68,10 @@ href="https://www.root.cz/clanky/zapis-funkci-obsahujicich-instrukce-thumb-a-thu
 článek</a> o využití instrukcí z&nbsp;instrukční sady Thumb a Thumb-2
 v&nbsp;MicroPythonu dnes navážeme. Nejdříve si řekneme, jakým způsobem je možné
 prozkoumat funkce označené dekorátorem <strong>@micropython.asm_thumb</strong>,
-dále si popíšeme specifika zápisu některých funkcí a nakonec provedeme
-benchmarky pro zjištění, zda a v&nbsp;jakých situacích může být propojení
-Pythonu s&nbsp;(de facto) assemblerem výhodné a kdy je to naopak pouze ztráta
-času vývojáře.</p>
+dále si popíšeme specifika zápisu některých funkcí a nakonec
+(v&nbsp;navazujícím článku) provedeme benchmarky pro zjištění, zda a
+v&nbsp;jakých situacích může být propojení Pythonu s&nbsp;(de facto)
+assemblerem výhodné a kdy je to naopak pouze ztráta času vývojáře.</p>
 
 <p>Připomeňme si nejdříve, jaké vlastnosti musí funkce s&nbsp;instrukcemi Thumb
 a/nebo Thumb-2 splňovat:</p>
@@ -490,35 +490,241 @@ pop {r1, r4, r5, r6, r7, pc}
 <p><a name="k08"></a></p>
 <h2 id="k08">8. Instrukce nepodmíněného skoku a pseudoinstrukce <strong>label</strong></h2>
 
-<p></p>
+<p>Většina strojových instrukcí se zpracovává sekvenčně tak, jak jsou zapsány
+za sebou. Výjimkou je instrukce <strong>IT</strong> (ta však například na
+<i>Cortex-M0+</i> chybí), a dále instrukce přímo či nepřímo manipulující
+s&nbsp;obsahem registru <strong>PC</strong> (<i>Program Counter</i> neboli
+programový čítač). Jednu z&nbsp;těchto instrukcí už jsme viděli &ndash; jedná
+se o instrukci <strong>POP</strong> v&nbsp;případě, že má nastaven příznakový
+bit &bdquo;obnov registr PC&ldquo;. Ovšem kromě toho lze programový čítač
+modifikovat i instrukcemi skoku resp.&nbsp;rozeskoku, protože na architektuře
+ARM jsou tyto instrukce nazývány <i>branch</i> a nikoli <i>jump</i>.</p>
+
+<p>Nejjednodušší je v&nbsp;tomto ohledu instrukce pojmenovaná jediným písmenem:
+<strong>B</strong>. Jedná se o nepodmíněný skok na zadanou adresu.
+V&nbsp;instrukčním slovu této instrukce je uložen jedenáctibitový offset, takže
+nepodmíněné skoky jsou v&nbsp;tomto ohledu pouze &bdquo;lokální&ldquo;;
+konkrétně v&nbsp;rozsahu 2kB. To však většinou nevadí, protože se stejně
+neprovádí skoky mimo právě prováděnou proceduru (potom by se jednalo o
+instrukci <strong>BL</strong> neboli <i>branch and link</i>.</p>
+
+<p>Formát instrukce <strong>B</strong> již známe:</p>
+
+<pre>
+ 15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 |             11bitový offset               |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+</pre>
+
+<p>Cíl skoku musí být pojmenovaný. V&nbsp;klasických assemblerech se pro tento
+účel používají takzvaná návěští (<i>label</i>), z&nbsp;nichž se
+v&nbsp;MicroPythonu stala pseudofunkce pojmenovaná taktéž
+<strong>label</strong>. Způsob jejího použití je ukázán v&nbsp;navazující
+kapitole.</p>
 
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+<h2 id="k09">9. Překlad instrukce nepodmíněného skoku na zadané návěští</h2>
+
+<p>Kombinaci instrukce <strong>B</strong> s&nbsp;návěštím si ukážeme na velmi
+jednoduchém příkladu, který obsahuje instrukci skoku, jenž přeskočí druhou
+instrukci <strong>MOV</strong> (jakoby byla umístěna do větve <strong>if
+False:</strong>). Tento příklad je samozřejmě umělý, ovšem jedná se o tu
+nejjednodušší možnost, jak návěští a skok použít:</p>
+
+<pre>
+@micropython.asm_thumb
+def branch():
+    mov(r0, 42)
+    b(cil_skoku)
+    mov(r0, 99)
+    label(cil_skoku)
+</pre>
+
+<pre>
+&gt;&gt;&gt; <strong>branch()</strong>
+42
+</pre>
 
 <p></p>
+
+<pre>
+&gt;&gt;&gt; <strong>inspect(branch)</strong>
+&nbsp;
+function object at: 0x20008730
+number of args: 0
+machine code at: 0x200088c0
+-- code --
+f2 b5 2a 20 00 e0 63 20 f2 bd 00 00 00 00 00 00 
+----------
+</pre>
+
+<pre>
+push {r1, r4, r5, r6, r7, lr}
+movs r0, #0x2a
+b #8
+movs r0, #0x63
+pop {r1, r4, r5, r6, r7, pc}
+</pre>
+
+00 e0
+
+<pre>
+ 15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 |             11bitový offset               |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+</pre>
+
+<pre>
+@micropython.asm_thumb
+def branch():
+    mov(r0, 42)
+    b(cil_skoku)
+    mov(r0, 99)
+    mov(r0, 0)
+    mov(r0, 1)
+    label(cil_skoku)
+</pre>
+
+<pre>
+&gt;&gt;&gt; <strong>inspect(branch)</strong>
+&nbsp;
+function object at: 0x20008ff0
+number of args: 0
+machine code at: 0x200091b0
+-- code --
+f2 b5 2a 20 02 e0 63 20 00 20 01 20 f2 bd 00 00 
+----------
+</pre>
+
+<pre>
+push {r1, r4, r5, r6, r7, lr}
+movs r0, #0x2a
+b #0xc
+movs r0, #0x63
+movs r0, #0
+movs r0, #1
+pop {r1, r4, r5, r6, r7, pc}
+</pre>
+
+<pre>
+02 e0
+</pre>
+
+<pre>
+ 15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 |             11bitový offset               |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+</pre>
 
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Skok zpět</h2>
 
 <p></p>
+
+<pre>
+&gt;&gt;&gt; inspect(branch)
+&nbsp;
+function object at: 0x200095c0
+number of args: 0
+machine code at: 0x20009780
+-- code --
+f2 b5 2a 20 02 e0 63 20 fd e7 01 20 f2 bd 00 00 
+----------
+</pre>
+
+<pre>
+push {r1, r4, r5, r6, r7, lr}
+movs r0, #0x2a
+b #0xc
+movs r0, #0x63
+b #6
+movs r0, #1
+pop {r1, r4, r5, r6, r7, pc}
+</pre>
+
+<pre>
+fd e7
+</pre>
+
+<pre>
+ 15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 0 | 1 |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| 1 | 1 | 1 | 0 | 0 |             11bitový offset               |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+</pre>
 
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Stavové registry na mikroprocesorech s&nbsp;architekturou ARM</h2>
 
-<p></p>
+<p>Kromě patnácti 32bitových pracovních registrů a programového čítače obsahují
+mikroprocesory s&nbsp;architekturou ARM i registry, v&nbsp;nichž se uchovávají
+různé příznaky. V&nbsp;uživatelském režimu se pracuje s&nbsp;příznaky uloženými
+v&nbsp;registru nazvaném CPSR (<i>Current Program Status Register</i>) a pro
+každý další režim existuje navíc zvláštní registr nazvaný SPSR (<i>Saved
+Program Status Register</i>), v&nbsp;němž jsou uchovány původní příznaky ze
+CPSR. Podobně jako všechny pracovní registry, mají i registry CPSR a SPSR
+shodnou šířku 32 bitů, což má svoje výhody. Mimo jiné i to, že šířka 32 bitů
+ponechala konstruktérům procesorů ARM mnoho prostoru pro uložení různých
+důležitých informací do registrů CPSR/SPSR, takže se nemuseli uchylovat
+k&nbsp;nepříliš promyšleným technikám známým například z&nbsp;platformy x86,
+kde se původně šestnáctibitový registr FLAGS (8086) postupně změnil na 32bitový
+registr EFLAGS (80386), vedle něho vznikl registr MSW (80286) rozšířený na CR0
+atd.</p>
+
+<p><div class="rs-tip-major">Poznámka: na některých mikrořadičích Cortex-M se
+používá jen jediný režim a tedy i jediný registr PSR.</div></p>
 
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Příznakové a stavové bity na mikroprocesorech s&nbsp;architekturou ARM</h2>
 
-<p></p>
+<p>Ve výše zmíněných stavových registrech CPSR/SPSR mikroprocesorů ARM jsou
+uloženy především příznakové bity nastavované aritmeticko-logickou jednotkou
+při provádění základních aritmetických instrukcí či bitových operací, dále pak
+bity určující, jakou instrukční sadu mikroprocesor v&nbsp;daný okamžik
+zpracovává (ARM, Thumb, Jazelle &ndash; na Cortex-M se nemění), příznak pořadí
+zpracovávání bajtů (little/big endian) a taktéž příznaky používané u SIMD
+operací. Zdaleka ne všechny mikroprocesory ARM však skutečně pracují se všemi
+bity, což je logické, protože například příznak Q je používán jen u
+mikroprocesorů podporujících aritmetiku se saturací, příznak J u čipů
+s&nbsp;podporou technologie Jazelle atd. Pojďme si tedy jednotlivé příznakové i
+stavové bity vypsat:</p>
+
+<table>
+<tr><th>Příznak</th><th>Význam zkratky</th><th>Poznámka</th></tr>
+<tr><td>N </td><td>negative</td><td>výsledek ALU operace je záporný</td></tr>
+<tr><td>V </td><td>overflow</td><td>přetečení (znaménková aritmetika, signed)</td></tr>
+<tr><td>Z </td><td>zero</td><td>výsledek je nulový</td></tr>
+<tr><td>C </td><td>carry</td><td>přenos (bezznaménková aritmetika, unsigned)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Q </td><td>sticky overflow</td><td>aritmetika se saturací, od ARMv5e výše</td></tr>
+<tr><td>I </td><td>interrupt</td><td>zákaz IRQ (přerušení)</td></tr>
+<tr><td>F </td><td>fast interrupt</td><td>zákaz FIRQ (rychlého přerušení)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>T </td><td>thumb</td><td>příznak zpracování instrukční sady Thumb (jen u procesorů se znakem "T" v názvu)</td></tr>
+<tr><td>J </td><td>jazelle</td><td>příznak zpracování instrukční sady Jazelle (jen u procesorů se znakem "J" v názvu)</td></tr>
+<tr><td>E </td><td>endianness</td><td>pořadí bajtů při práci s RAM (big/little endian)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>GE</td><td>4 bity</td><td>použito u SIMD operací (pouze některé čipy)</td></tr>
+<tr><td>IF</td><td>5 bitů</td><td>použito u instrukcí Thumb2 (pouze některé čipy)</td></tr>
+<tr><td>M </td><td>5 bitů</td><td>režim práce mikroprocesoru (user, IRQ, FIRQ, ...)</td></tr>
+</table>
 
 
 
@@ -527,12 +733,97 @@ pop {r1, r4, r5, r6, r7, pc}
 
 <p></p>
 
+<pre>
+@micropython.asm_thumb
+def loop():
+    mov(r0, 0)
+    mov(r1, 100)
+    label(loop)
+    add(r0, r0, 4)
+    sub(r1, r1, 1)
+    cmp(r1, 0)
+    bne(loop)
+</pre>
+
+&gt;&gt;&gt; loop()
+400
+
+<pre>
+&gt;&gt;&gt; inspect(loop)
+function object at: 0x2000ace0
+number of args: 0
+machine code at: 0x2000af10
+-- code --
+f2 b5 00 20 64 21 00 1d 49 1e 00 29 fb d1 f2 bd 
+----------
+</pre>
+
+<pre>
+push {r1, r4, r5, r6, r7, lr}
+movs r0, #0
+movs r1, #0x64
+adds r0, r0, #4
+subs r1, r1, #1
+cmp r1, #0
+bne #6
+pop {r1, r4, r5, r6, r7, pc}
+</pre>
+
+<pre>
+@micropython.asm_thumb
+def loop():
+    mov(r0, 0)
+    mov(r1, 100)
+    label(loop)
+    add(r0, r0, 4)
+    sub(r1, r1, 1)
+    bne(loop)
+</pre>
+
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. </h2>
 
+<pre>
+@micropython.asm_thumb
+def loop():
+    mov(r0, 0)
+    mov(r1, 100)
+    label(outer_loop)
+    mov(r2, 100)
+    label(inner_loop)
+    add(r0, r0, 1)
+    sub(r2, r2, 1)
+    bne(inner_loop)
+    sub(r1, r1, 1)
+    bne(outer_loop)
+</pre>
 <p></p>
+
+>>> loop()
+10000
+
+>>> inspect(loop, nbytes=20)
+function object at: 0x2000bde0
+number of args: 0
+machine code at: 0x2000bfa0
+-- code --
+f2 b5 00 20 64 21 64 22 40 1c 52 1e fc d1 49 1e f9 d1 f2 bd 
+----------
+
+<pre>
+push {r1, r4, r5, r6, r7, lr}
+movs r0, #0
+movs r1, #0x64
+movs r2, #0x64
+adds r0, r0, #1
+subs r2, r2, #1
+bne #8
+subs r1, r1, #1
+bne #6
+pop {r1, r4, r5, r6, r7, pc}
+</pre>
 
 
 
