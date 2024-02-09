@@ -39,10 +39,10 @@
 
 <p><a href="#k01">*** 1. Nástroj MirrorMaker pro Apache Kafku</a></p>
 <p><a href="#k02">*** 2. Replikace oddílů v&nbsp;rámci jednoho Kafka clusteru</a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
+<p><a href="#k03">*** 3. Několik samostatně běžících Kafka clusterů</a></p>
+<p><a href="#k04">*** 4. Nástroj MirrorMaker</a></p>
+<p><a href="#k05">*** 5. Konfigurace MirrorMakeru</a></p>
+<p><a href="#k06">*** 6. Praktická část</a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
@@ -110,25 +110,162 @@ partition #3  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | ...
 
 <p>Po přijetí nové zprávy tedy může být zápis proveden do tohoto místa:</p>
 
+<pre>
+                                   write
+                                     |
+              +---+---+---+---+---+---+  v
+partition #0  | 0 | 1 | 2 | 3 | 4 | 5 | ...
+              +---+---+---+---+---+---+
+partition #1  | 0 | 1 | 2 | ...
+              +---+---+---+
+partition #2  | ...
+              +---+---+---+---+---+---+---+---+---+
+partition #3  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | ...
+              +---+---+---+---+---+---+---+---+---+
+</pre>
+
+<p>Nebo se může broker rozhodnout pro připojení zprávy do posledního oddílu
+atd. atd.:</p>
+
+<pre>
+              +---+---+---+---+---+---+
+partition #0  | 0 | 1 | 2 | 3 | 4 | 5 | ...
+              +---+---+---+---+---+---+
+partition #1  | 0 | 1 | 2 | ...
+              +---+---+---+
+partition #2  | ...
+              +---+---+---+---+---+---+---+---+---+
+partition #3  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | ...
+              +---+---+---+---+---+---+---+---+---+  ^
+                                                 |
+                                               write
+</pre>
+
+<p>Další možná konfigurace tématu může vypadat tak, že téma má sice jediný
+oddíl, ovšem tento oddíl je replikován mezi několika brokery. Příkladem může
+být oddíl replikovaný mezi trojicí brokerů. V&nbsp;takovém případě je jeden
+z&nbsp;těchto oddílů nazvaný <i>leader</i> a veškeré operace viděné zvnějšku
+Kafky (tedy posílání zpráv a jejich konzumace) probíhá právě s&nbsp;leaderem.
+Ostatní repliky jsou nazvané <i>follower(s)</i>, protože pouze sledují leadera
+a synchronizují svůj obsah s&nbsp;leaderem:</p>
+
+<pre>
+                                     write
+                                       |
++---+---+---+---+---+---+---+---+---+  v
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | ...    (leader)
++---+---+---+---+---+---+---+---+---+
+                  ^               ^
+                  |               |
+                read              |
+                                 sync
+                                  |
+                                  |
+                                  v
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+                                  ^
+                                  |
+                                  |
+                                 sync
+                                  |
+                                  |
+                                  v
++---+---+---+---+---+---+---+---+---+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |        (follower)
++---+---+---+---+---+---+---+---+---+
+</pre>
+
+<p>K&nbsp;čemu je to však dobré? V&nbsp;případě, že nějaký broker z&nbsp;celého
+Kafka clusteru zhavaruje a bude obsahovat oddíl typu <i>follower</i>, bude
+komunikace pokračovat dál a teprve po znovupřipojení brokera se <i>follower</i>
+postupně sesynchronizuje s&nbsp;<i>leaderem</i>. Zajímavější situace nastane ve
+chvíli, kdy zhavaruje samotný <i>leader</i>. V&nbsp;takovém případě Kafka
+&bdquo;povýší&ldquo;nějakého <i>followera</i> za nového <i>leadera</i>.
+V&nbsp;případě, že téma (resp.&nbsp;oddíl) je replikováno na N brokerů, může
+jich zhavarovat N-1 a systém bude stále funkční. I toto chování si pochopitelně
+postupně otestujeme.</p>
+
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Několik samostatně běžících Kafka clusterů</h2>
+
+<p>Podpora pro replikaci oddílů je v&nbsp;současnosti nedílnou součástí Apache Kafky a nebylo by bez ní možné zajistit fungování celého Kafka clusteru i v&nbsp;tom případě, kdy některý prvek clusteru zhavaruje (nebo se &bdquo;jen&ldquo; stane nedostupným). Jedná se o známou a velmi často používanou technologii, která však má své limity. Na tyto limity narazíme ve chvíli, kdy běží několik Kafka clusterů, přičemž každý z&nbsp;nich je typicky umístěn v&nbsp;samostatném datovém centru. Zatímco propojení počítačů v&nbsp;rámci jednoho datového centra bývá velmi rychlé (to je ostatně jeden z&nbsp;důvodů, i když nikoli jediný, proč tato centra vznikají), přenos dat mezi datovými centry bývá pomalejší a mívá zpoždění. Ovšem pokud by jednotlivé uzly Kafka clusteru byly umístěny v&nbsp;různých centrech, celá technologie replikace by zpomalovala zpracování zpráv a byla by zde i větší náchylnost na rozpad uzlu kvůli tomu, že spojení mezi datovými centry může být (i na chvíli) přerušeno.</p>
+
+<p>V&nbsp;takové situaci se může přistoupit k&nbsp;tomu, že se v&nbsp;každém datovém centru spustí samostatný Kafka cluster, jenž bude prakticky nezávislý na clusterech v&nbsp;jiných datových centrech. Některá témata (<i>topic</i>) mohou být skutečně lokální (například pouze pro Evropu, další téma pro jiný Kafka cluster pro severní Ameriku atd.), ale pochopitelně nastane situace vyžadující, aby bylo některé téma replikováno i mezi jednotlivými Kafka clustery. A právě v&nbsp;těchto případech lze sáhnout po nástroji nazvaném <i>MirrorMaker</i>, jímž se budeme zabývat v&nbsp;navazujících kapitolách.</p>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Nástroj MirrorMaker</h2>
+
+<p>Nástroj MirrorMaker slouží k&nbsp;propojení Kafka clusterů, přičemž se očekává, že každý takový cluster poběží v&nbsp;odděleném datovém centru, takže komunikace mezi clustery bude obecně pomalejší, než komunikace mezi uzly jediného clusteru. Samotný MirrorMaker je z&nbsp;pohledu Apache Kafky konzumentem zpráv z&nbsp;vybraného tématu producentem zpráv do jiného tématu a navíc i v&nbsp;odlišném clusteru. Nejedná se tedy o žádnou &bdquo;raketovou vědu&ldquo;, ale o konzumaci zpráv docházejících do tématu (témat) v&nbsp;jednom clusteru a o jejich přeposílání do dalšího clusteru. Samozřejmě je možné realizovat i propojení mezi několika clustery, nikoli pouze mezi dvojicí clusterů.</p>
+
+<p>Graficky můžeme nejjednodušší způsob použití MirrorMakeru znázornit takto:</p>
+
+*** image ***
+<p><i>Obrázek 2: MirrorMaker pro replikaci dat z&nbsp;prvního Kafka clusteru do clusteru druhého.</i></p>
+
+<p>Interně používá MirrorMaker standardní komunikační prostředky Apache Kafky. Konkrétně to znamená, že data (zprávy) načítá jako běžný konzument a naopak data zapisuje jako běžný producent. Z&nbsp;pohledu Kafka clusterů i jednotlivých brokerů se tedy jedná o zcela běžného klienta, který nepotřebuje využívat speciální komunikační prostředky (a navíc je relativně snadné si napsat vlastní verzi MirrorMakeru, pokud to někoho láká):</p>
+
+*** image ***
+<p><i>Obrázek 3: MirrorMaker se interně skládá z&nbsp;konzumenta a producenta zpráv.</i></p>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Konfigurace MirrorMakeru</h2>
+
+<p></p>
 
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Praktická část</h2>
+
+<p>Druhá část dnešního článku bude zaměřená více prakticky. Nejdříve vytvoříme dvě instance Kafka clusterů, přičemž každá instance se bude skládat z&nbsp;jednoho běžícího Zookeepera a jednoho brokera. Na této instanci si otestujeme způsoby vytváření témat, chování většího množství konzumentů při připojení k&nbsp;tématu, použití většího množství oddílů pro téma atd. Dále oba Kafka clustery propojíme s&nbsp;využitím MirrorMakeru a opět budeme sledovat chování producentů a konzumentů připojených k&nbsp;oběma clusterům.</p>
+
+<p>V&nbsp;praktické části budeme brokera Apache Kafky i Zookeepera spouštět lokálně (popř.&nbsp;z&nbsp;Dockeru), takže je nejdříve nutné Kafku nainstalovat. Není to vůbec nic složitého. V&nbsp;případě, že je na počítači nainstalováno JRE (běhové prostředí Javy), je instalace Kafky pro testovací účely triviální. V&nbsp;článku si ukážeme instalaci verze 3.6.1, ovšem můžete si stáhnout i prakticky libovolnou novější či některé starší verze (3.5.x nebo 3.6.x, ovšem dále popsaný postup by měl být platný i pro ještě starší verze). Tarball s&nbsp;instalací Kafky lze získat z&nbsp;adresy <a href="https://downloads.apache.org/kafka/3.6.1/kafka_2.13-3.6.1.tgz">https://downloads.apache.org/kafka/3.6.1/kafka_2.13-3.6.1.tgz</a>. Stažení a rozbalení tarballu:</p>
+
+<pre>
+$ <strong>wget https://downloads.apache.org/kafka/3.6.1/kafka_2.13-3.6.1.tgz</strong>
+$ <strong>tar xvfz kafka_2.13-3.6.1.tgz</strong>
+$ <strong>cd kafka_2.13-3.6.1/</strong>
+</pre>
+
+<p>Po rozbalení staženého tarballu získáme adresář, v&nbsp;němž se nachází všechny potřebné Java archivy (JAR), konfigurační soubory (v&nbsp;podadresáři <strong>config</strong>) a několik pomocných skriptů (v&nbsp;podadresáři <strong>bin</strong>). Pro spuštění Zookeepera a brokerů je zapotřebí mít nainstalovánu JRE (Java Runtime Environment) a samozřejmě též nějaký shell (BASH, cmd, ...).</p> 
+ 
+<pre>
+.
+├── bin
+│   └── windows
+├── config
+│   └── kraft
+├── libs
+├── licenses
+└── site-docs
+&nbsp;
+7 directories
+</pre>
+
+<p>Mezi důležité soubory, které budeme používat v&nbsp;rámci dalších kapitol, patří především skripty pro spouštění jednotlivých služeb, konfiguraci témat, produkci zpráv či pro jejich konzumaci. Tyto skripty jsou uloženy v&nbsp;podadresáři <strong>bin</strong> (a pro Windows ještě v&nbsp;dalším podadresáři <strong>windows</strong>):</p>
+
+
+<table>
+<tr><th>Skript</th><th>Stručný popis</th></tr>
+<tr><td>bin/kafka-server-start.sh</td><td>spuštění brokera</td></tr>
+<tr><td>bin/zookeeper-server-start.sh</td><td>spuštění Zookeepera</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>bin/kafka-configs.sh</td><td>konfigurace brokerů</td></tr>
+<tr><td>bin/kafka-topics.sh</td><td>konfigurace témat, zjištění informace o tématech atd.</td></tr>
+<tr><td>bin/kafka-consumer-groups.sh</td><td>konfigurace popř.&nbsp;zjištění informací o skupinách konzumentů</td></tr>
+<tr><td>bin/kafka-run-class.sh</td><td>spuštění konkrétní třídy z&nbsp;Apache Kafky (například pro zjištění informací o skupinách konzumentů)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>bin/kafka-console-producer.sh</td><td>jednoduchý producent zpráv</td></tr>
+<tr><td>bin/kafka-console-consumer.sh</td><td>jednoduchý konzument zpráv</td></tr>
+</table>
 
 
 
