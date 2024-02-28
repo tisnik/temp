@@ -399,30 +399,290 @@ void <strong>render_test_rgb_image</strong>(unsigned int width, unsigned int hei
 
 
 
-
-
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Překlad nativní funkce do dynamicky linkované knihovny</h2>
+
+<p>Zdrojový kód s&nbsp;touto funkcí musíme přeložit tak, aby vznikla dynamicky
+linkovaná knihovna (.so, .dll). Pro operační systém Linux bude příslušný
+<strong>Makefile</strong> soubor realizující překlad vypadat v&nbsp;té
+nejjednodušší podobě následovně:</p>
+
+<pre>
+.PHONY: all clean
+&nbsp;
+CC=gcc
+CFLAGS=-Wall -pedantic -ansi
+&nbsp;
+all: renderer.so
+&nbsp;
+clean:
+        rm -f renderer.so
+&nbsp;
+renderer.so:    renderer.c
+        $(CC) $(CFLAGS) -shared -Wl,-soname,renderer -o $@ -fPIC $&lt;
+</pre>
+
+<p>Překlad s&nbsp;následným vytvořením dynamicky linkované knihovny provedeme
+příkazem:</p>
+
+<pre>
+$ <strong>make</strong>
+</pre>
+
+<p>Překladem by měl vzniknout soubor <strong>renderer.so</strong>, v&nbsp;němž
+mj.&nbsp;najdeme i naši funkci <strong>render_test_rgb_image</strong>:</p>
+
+<pre>
+$ <strong>nm renderer.so </strong>
+&nbsp;
+0000000000004008 b completed.0
+                 w __cxa_finalize@GLIBC_2.2.5
+0000000000001040 t deregister_tm_clones
+00000000000010b0 t __do_global_dtors_aux
+0000000000003de8 d __do_global_dtors_aux_fini_array_entry
+0000000000003df0 d __dso_handle
+0000000000003df8 d _DYNAMIC
+000000000000117c t _fini
+00000000000010f0 t frame_dummy
+0000000000003de0 d __frame_dummy_init_array_entry
+0000000000002080 r __FRAME_END__
+0000000000003fe8 d _GLOBAL_OFFSET_TABLE_
+                 w __gmon_start__
+0000000000002000 r __GNU_EH_FRAME_HDR
+0000000000001000 t _init
+                 w _ITM_deregisterTMCloneTable
+                 w _ITM_registerTMCloneTable
+0000000000001070 t register_tm_clones
+<strong>00000000000010f9 T render_test_rgb_image</strong>
+0000000000004008 d __TMC_END__
+</pre>
 
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Zavolání nativní funkce z&nbsp;Pythonu</h2>
+
+<p>Otestujme si nyní, jak lze nativní funkci <a href="#k07">z&nbsp;předchozí
+kapitoly</a> zavolat z&nbsp;Pythonu. Nejdříve musíme načíst dynamicky
+linkovanou knihovnu, což zajistí tyto řádky:</p>
+
+<pre>
+from ctypes import CDLL
+&nbsp;
+renderer = CDLL("./renderer.so")
+</pre>
+
+<p>Následně si necháme (přímo v&nbsp;Pythonu) naalokovat buffer o takové
+velikosti, aby do něj bylo možné uložit všechny pixely obrázku. Každý pixel je
+uložen ve čtyřech bajtech, takže velikost bude rovna <strong>4 * IMAGE_WIDTH *
+IMAGE_HEIGHT</strong>. Pro alokaci bufferu použijeme funkci
+<strong>create_string_buffer</strong>, která však (i přes své jméno) akceptuje
+velikost v&nbsp;bajtech:</p>
+
+<pre>
+from ctypes import create_string_buffer
+&nbsp;
+buffer = create_string_buffer(4 * IMAGE_WIDTH * IMAGE_HEIGHT)
+</pre>
+
+<p>Nyní již můžeme naši nativní funkci zavolat a předat jí rozměry obrázku i
+právě naalokovaný buffer:</p>
+
+<pre>
+from ctypes import c_int
+&nbsp;
+renderer.render_test_rgb_image(c_int(IMAGE_WIDTH), c_int(IMAGE_HEIGHT), buffer, 0)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, jak se předají
+celočíselné parametry přes pomocnou funkci <strong>c_int</strong>.</div></p>
+
+<p>Nakonec musíme hodnoty pixelů z&nbsp;bufferu převést na obrázek,
+k&nbsp;čemuž slouží funkce <strong>pygame.image.frombytes</strong>. Ta kromě
+bufferu s&nbsp;hodnotami pixelů potřebuje znát i velikost obrázku (předává se
+formou dvojice) a jeho formát (pro naše účely RGBX):</p>
+
+<pre>
+def <strong>image_from_buffer</strong>(buffer, width, height, fmt):
+    return pygame.image.frombytes(bytes(buffer), (width, height), fmt)
+&nbsp;
+image1 = image_from_buffer(buffer, IMAGE_WIDTH, IMAGE_HEIGHT, "RGBX")
+</pre>
+
+<p>Úplný zdrojový kód takto upraveného demonstračního příkladu vypadá
+následovně:</p>
+
+<pre>
+import sys
+from ctypes import CDLL, c_int, create_string_buffer
+&nbsp;
+import pygame
+import pygame.locals
+&nbsp;
+TITLE = "Renderer"
+SCREEN_WIDTH = 600
+SCREEN_HEIGHT = 300
+IMAGE_WIDTH = 256
+IMAGE_HEIGHT = 256
+&nbsp;
+&nbsp;
+def <strong>initialize_ui</strong>(title, width, height):
+    """Initialize Pygame display, drawing surface, and clocks."""
+    <i># set window title</i>
+    pygame.display.set_caption(title)
+&nbsp;
+    <i># initialize window</i>
+    display = pygame.display.set_mode([width, height])
+    display.fill((0, 0, 0))
+&nbsp;
+    clock = pygame.time.Clock()
+&nbsp;
+    return display, clock
+&nbsp;
+&nbsp;
+def <strong>event_loop</strong>(display, image1, image2, clock):
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.locals.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.locals.KEYDOWN:
+                if event.key == pygame.locals.K_ESCAPE:
+                    pygame.quit()
+                    sys.exit()
+&nbsp;
+        <i># all events has been processed - update scene and redraw the screen</i>
+        display.blit(image1, (30, 20))
+        display.blit(image2, (60 + image1.get_width(), 20))
+&nbsp;
+        <i># and update the whole display</i>
+        pygame.display.update()
+        clock.tick(25)
+&nbsp;
+&nbsp;
+def <strong>image_from_buffer</strong>(buffer, width, height, fmt):
+    return pygame.image.frombytes(bytes(buffer), (width, height), fmt)
+&nbsp;
+&nbsp;
+def <strong>main</strong>():
+    display, clock = initialize_ui(TITLE, SCREEN_WIDTH, SCREEN_HEIGHT)
+&nbsp;
+    <i># try to load dynamically linked library</i>
+    renderer = CDLL("./renderer.so")
+&nbsp;
+    <i># create buffer for raster image</i>
+    buffer = create_string_buffer(4 * IMAGE_WIDTH * IMAGE_HEIGHT)
+&nbsp;
+    renderer.render_test_rgb_image(c_int(IMAGE_WIDTH), c_int(IMAGE_HEIGHT), buffer, 0)
+    image1 = image_from_buffer(buffer, IMAGE_WIDTH, IMAGE_HEIGHT, "RGBX")
+&nbsp;
+    renderer.render_test_rgb_image(c_int(IMAGE_WIDTH), c_int(IMAGE_HEIGHT), buffer, 255)
+    image2 = image_from_buffer(buffer, IMAGE_WIDTH, IMAGE_HEIGHT, "RGBX")
+&nbsp;
+    event_loop(display, image1, image2, clock)
+&nbsp;
+&nbsp;
+if __name__ == "__main__":
+    main()
+&nbsp;
+&nbsp;
+# finito
+</pre>
 
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+<h2 id="k09">9. Předání barvové palety do nativní funkce</h2>
+
+<p>V&nbsp;dalším kroku se pokusíme o předání barvové palety do nativní funkce.
+Barvová paleta bude obsahovat 256 barev, přičemž každá barva je reprezentována
+třemi bajty &ndash; každý bajt totiž obsahuje hodnotu jedné barvové složky
+<i>red</i>, <i>green</i> nebo <i>blue</i>. Celkem je tedy nutné do nativní
+funkce předat 256&times;3 = 768 bajtů. Ovšem vzhledem k&nbsp;tomu, že barvová
+paleta nebude ve funkci měněna, můžeme ji předat ukazatelem, což znamená, že
+namísto 768 bajtů se předají čtyři bajty nebo osm bajtů (podle šířky
+ukazatele).</p>
+
+<p>Připomeňme si, že původní nativní funkce určená pro vykreslení testovacího
+vzorku do rastrového obrázku vypadala následovně:</p>
+
+<pre>
+void <strong>render_test_rgb_image</strong>(unsigned int width, unsigned int height,
+                           unsigned char *pixels, unsigned char green) {
+    unsigned int i, j;
+    unsigned char *p = pixels;
+&nbsp;
+    for (j = 0; j &lt; height; j++) {
+        for (i = 0; i &lt; width; i++) {
+            *p++ = i;
+            *p++ = green;
+            *p++ = j;
+            p++;
+        }
+    }
+}
+</pre>
+
+<p>Tato funkce nepoužívala barvovou paletu pro přepočet nějaké celočíselné
+hodnoty na barvu z&nbsp;palety. Provedeme tedy následující úpravy:</p>
+
+<ol>
+<li>Funkce bude nově akceptovat ukazatel na první barvu v&nbsp;barvové paletě</li>
+<li>Namísto přímého výpočtu složek R, G, B použijeme barvovou paletu ve funkci LUT (<i>look-up table</i>)</li>
+</ol>
+
+<p>Pro jednoduchost odvodíme index barvy pixelu pouze z&nbsp;jeho x-ové složky.
+Výsledná funkce bude vypadat následovně:</p>
+
+<pre>
+void <strong>render_test_palette_image</strong>(unsigned int width, unsigned int height,
+                               const unsigned char *palette,
+                               unsigned char *pixels) {
+    unsigned int i, j;
+    unsigned char *p = pixels;
+&nbsp;
+    for (j = 0; j &lt; height; j++) {
+        for (i = 0; i &lt; width; i++) {
+            int color = i * 3;
+            *p++ = palette[color];
+            *p++ = palette[color + 1];
+            *p++ = palette[color + 2];
+            p++;
+        }
+    }
+}
+</pre>
+
+<p>Výsledkem by měl obrázek z&nbsp;pravé části screenshotu:</p>
+
+<img src="https://i.iinfo.cz/images/540/ctypes1-7.webp" class="image-1117025" width="628" height="366" alt="&#160;" title="Autor: Pavel Tisnovsky, podle licence: &lt;a href=&quot;http://en.wikipedia.org/wiki/Rights_Managed&quot;&gt;Rights Managed&lt;/a&gt;" /></p>
+<p><i>Obrázek 8: Pravý obrázek je vykreslen s&nbsp;využitím barvové palety.</i></p>
+
+<p>Upravená Pythonní část, která bude volat výše uvedenou funkci, bude vypadat
+následovně:</p>
 
 
 
-<p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+
+
+
+
+
 
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Výpočet Mandelbrotovy a Juliovy množiny implementovaný v&nbsp;jazyce C</h2>
+
+<p>V&nbsp;rámci této kapitoly si přepíšeme funkce pro výpočet Mandelbrotovy
+množiny a Juliovy množiny z&nbsp;Pythonu do programovacího jazyka C (pro větší
+zajímavost do ANSI C, takže nepoužijeme typ <i>komplexní číslo</i>).
+V&nbsp;Pythonu lze oba výpočty realizovat velmi snadno:</p>
+
+<p>Výše uvedené výpočty budou velmi pomalé, zejména při použití standardního
+CPythonu. Příslušné funkce přepsané do programovacího jazyka C současně provádí
+i vykreslení s&nbsp;využitím předané barvové palety, tedy podobně, jako tomu
+bylo v&nbsp;Pythonu:</p>
 
 
 
@@ -432,7 +692,13 @@ void <strong>render_test_rgb_image</strong>(unsigned int width, unsigned int hei
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Mandelbrotova množina jako &bdquo;mapa&ldquo; všech Juliových množin</h2>
+
+<p>Juliových množin existuje nekonečné množství. Liší se od sebe hodnotou
+<i>c</i>, která je použita při výpočtu bodů ležících uvnitř množiny (do nativní
+funkce jsme předávali reálnou a imaginární složku odděleně, a to
+v&nbsp;parametrech <strong>cx</strong> a <strong>cy</strong>). Juliovy množiny
+lze v&nbsp; závislosti na hodnotě c rozdělit na tři typy:</p>
 
 
 
