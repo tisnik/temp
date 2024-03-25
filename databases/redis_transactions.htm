@@ -45,16 +45,16 @@
 <p><a href="#k06">*** 6. Od samostatně probíhajících operací k&nbsp;transakcím</a></p>
 <p><a href="#k07">7. Přepis hodnot uložených pod jediným klíčem</a></p>
 <p><a href="#k08">8. Otestování chování Redisu</a></p>
-<p><a href="#k09">*** 9. Úprava producenta tak, aby po zápisu neočekávané hodnoty ihned zapsal hodnotu korektní</a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
+<p><a href="#k09">9. Úprava producenta tak, aby po zápisu neočekávané hodnoty ihned zapsal hodnotu korektní</a></p>
+<p><a href="#k10">10. Transakce realizovaná formou pipeline</a></p>
+<p><a href="#k11">*** 11. Operace typu <strong>get-and-set</strong></a></p>
+<p><a href="#k12">*** 12. Lze vytvořit pipeline pro operaci <strong>get-and-set</strong>?</a></p>
 <p><a href="#k13">*** 13. </a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k18">18. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k19">19. Odkazy na předchozí části seriálu</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -400,6 +400,7 @@ $ <strong>python3 consumer1.py</strong>
 v&nbsp;50% případů se přečte odlišná hodnota (viz zdrojový kód producenta):</p>
 
 <pre>
+     chyb čas(s) chyb/s
 ^     1   0.105  9.52
 ^     2   0.115  17.3
 ^     3   0.126  23.9
@@ -425,10 +426,130 @@ v&nbsp;50% případů se přečte odlišná hodnota (viz zdrojový kód producen
 ^    23   0.546  42.1
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: počet neočekávaných hodnot je tedy
+vysoký &ndash; přibližně 40 hodnot za sekundu (což se blíží očekávané frekvenci
+50%).</div></p>
+
 
 
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Úprava producenta tak, aby po zápisu neočekávané hodnoty ihned zapsal hodnotu korektní</h2>
+
+<p>Producenta ve druhém kroku upravíme do takové podoby, že ihned po zápisu
+hodnoty &bdquo;^&ldquo; zapíše pod stejným klíčem správnou (resp.&nbsp;přesněji
+řečeno očekávanou) hodnotu &bdquo;^$&ldquo;. Tím pochopitelně nedosáhneme
+atomicity operací, ovšem počet neočekávaných hodnot na straně konzumenta by měl
+být nižší:</p>
+
+<pre>
+import time
+import redis
+&nbsp;
+&nbsp;
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+&nbsp;
+key = "foo"
+sleep_time = 0.1
+&nbsp;
+while True:
+    v = "^"
+    redis_client.set(key, v)
+    v = "^$"
+    redis_client.set(key, v)
+    time.sleep(sleep_time)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer2.py</a>.</div></p>
+
+<p>Nyní bude po kontrole konzumentem počet chyb (neočekávaných hodnot) o dva
+řády nižší:</p>
+
+<pre>
+$ <strong>python3 consumer1.py </strong>
+&nbsp;
+     chyb čas(s) chyb/s
+^     1    15.3  0.0655
+^     2    18.9  0.106
+^     3    20.6  0.145
+^     4    23.2  0.173
+^     5    24.2  0.207
+^     6    24.7  0.243
+^     7    26.9  0.26
+^     8    29.3  0.273
+^     9    31.9  0.282
+^    10    32.4  0.309
+^    11    33.9  0.324
+^    12    35.1  0.342
+^    13    36.4  0.358
+^    14    37.9  0.37
+^    15    38.4  0.391
+^    16    38.9  0.411
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: výsledek je sice mnohem lepší, ovšem ani
+v&nbsp;tomto případě jsme nedosáhli toho, aby se oba zápisy provedly
+v&nbsp;transakci (a aby tedy nebyl první zápis vůbec viditelný pro další
+klienty).</div></p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Transakce realizovaná formou pipeline</h2>
+
+<p>Oba zápisy lze ovšem provést atomicky, tedy takovým způsobem, aby žádný jiný
+klient nemohl vidět stav uložené hodnoty mezi oběma operacemi
+<strong>set</strong>. K&nbsp;tomuto účelu se používají transakce, které jsou
+v&nbsp;klientovi pro Python realizovány formou takzvané <i>pipeline</i>.
+V&nbsp;tomto případě se nejprve vytvoří pipeline, příkazy se
+&bdquo;zapamatují&ldquo; a následně se provedou v&nbsp;jediném bloku, a to tak,
+že další klienti uvidí až celkový výsledek. Transakce se zahajuje metodou
+<strong>multi</strong> a ukončuje metodou <strong>execute</strong> (nebo
+<strong>discarc</strong>, pokud naopak potřebujeme všechny příkazy
+v&nbsp;pipeline zahodit):</p>
+
+<pre>
+import time
+import redis
+&nbsp;
+&nbsp;
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+&nbsp;
+key = "foo"
+sleep_time = 0.1
+&nbsp;
+while True:
+    pipeline = redis_client.pipeline(transaction=True)
+    pipeline.multi()
+    v = "^"
+    pipeline.set(key, v)
+    time.sleep(sleep_time)
+    v = "^$"
+    pipeline.set(key, v)
+    time.sleep(sleep_time)
+    pipeline.execute()
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer3.py</a>.</div></p>
+
+<p>Spuštěním testu (producent + konzument) je možné zjistit, že nyní již
+konzument nikdy neuvidí mezistav, tedy hodnotu &bdquo;^&ldquo;.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Operace typu <strong>get-and-set</strong></h2>
 
 <pre>
 import time
@@ -441,62 +562,276 @@ redis_client = redis.StrictRedis(
     decode_responses=True,
 )
 
-key = "foo"
+key = "bar"
 sleep_time = 0.1
 
 while True:
-    v = "^"
+    v = redis_client.get(key) or ""
+    v += "^"
     redis_client.set(key, v)
-    v = "^$"
+    # time.sleep(1.4)
+    v += "$"
     redis_client.set(key, v)
+    time.sleep(sleep_time)
+    print(v)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py</a>.</div></p>
+
+<pre>
+import redis
+import time
+
+
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+
+key = "bar"
+expected_value = "^$"
+sleep_time = 0.01
+
+start_time = time.perf_counter()
+
+errors = 0
+
+while True:
+    value = redis_client.get(key)
+    if value == "that's me":
+        continue
+    last_chars = value[-2:]
+    if last_chars != expected_value:
+        errors += 1
+        now = time.perf_counter()
+        duration = now - start_time
+        frequency = errors / duration
+        print(f"{last_chars:3} {errors:3}  {duration:6.3}  {frequency:4.3}")
     time.sleep(sleep_time)
 </pre>
 
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/consumer2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/consumer2.py</a>.</div></p>
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/consumer2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/consumer2.py</a>.</div></p>
 
-
-
-<p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
-
-
-
-<p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
-
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer2.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer3.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py</a>.</div></p>
-<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu naleznete na adrese <a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py</a>.</div></p>
+<pre>
+^     1    3.21  0.311
+$^    2    3.62  0.552
+$^    3    3.83  0.784
+$^    4    4.03  0.993
+$^    5    4.23  1.18
+$^    6    5.76  1.04
+$^    7    9.84  0.712
+$^    8    10.8  0.744
+$^    9    13.0  0.693
+$^   10    14.1  0.708
+</pre>
 
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Lze vytvořit pipeline pro operaci <strong>get-and-set</strong>?</h2>
+
+<pre>
+import time
+import redis
+
+
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+
+key = "bar"
+sleep_time = 0.1
+
+while True:
+    pipeline = redis_client.pipeline(transaction=True)
+    pipeline.multi()
+    v = pipeline.get(key) or ""
+    v += "^"
+    pipeline.set(key, v)
+    time.sleep(sleep_time)
+    v += "$"
+    pipeline.set(key, v)
+    pipeline.execute()
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py</a>.</div></p>
+
+<pre>
+$ <strong>python3 producer5.py </strong>
+&nbsp;
+Traceback (most recent call last):
+  File "producer5.py", line 18, in <module>
+    v += "^"
+TypeError: unsupported operand type(s) for +=: 'Pipeline' and 'str'
+</pre>
 
 
 
 <p><a name="k13"></a></p>
 <h2 id="k13">13. </h2>
 
+<pre>
+import time
+import redis
+
+
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+
+key = "bar"
+sleep_time = 0.1
+
+while True:
+    pipeline = redis_client.pipeline(transaction=True)
+    error_count = 0
+    v = redis_client.get(key) or ""
+    v += "^"
+    pipeline.set(key, v)
+    time.sleep(sleep_time)
+    v += "$"
+    pipeline.set(key, v)
+    pipeline.execute()
+    time.sleep(sleep_time)
+    print(v)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py</a>.</div></p>
+
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. </h2>
+
+<pre>
+import time
+import redis
+
+
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+
+key = "bar"
+sleep_time = 0.1
+
+error_count = 0
+
+while True:
+    pipeline = redis_client.pipeline(transaction=True)
+    try:
+        print("transaction started...", end="")
+        pipeline.watch(key)
+        v = redis_client.get(key) or ""
+        v += "^"
+        pipeline.multi()
+        pipeline.set(key, v)
+        time.sleep(sleep_time)
+        v += "$"
+        pipeline.set(key, v)
+        pipeline.execute()
+        pipeline.unwatch()
+        print("...commited")
+        time.sleep(sleep_time)
+    except redis.WatchError as err:
+        error_count += 1
+        print(f"Watch error #{error_count}:", err)
+print(v)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py</a>.</div></p>
 
 
 
 <p><a name="k15"></a></p>
 <h2 id="k15">15. </h2>
 
+<pre>
+import time
+import redis
+
+
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+
+key = "bar"
+sleep_time = 0.1
+
+error_count = 0
+
+while True:
+    with redis_client.pipeline(transaction=True) as pipeline:
+        try:
+            print("transaction started...", end="")
+            pipeline.watch(key)
+            v = redis_client.get(key) or ""
+            v += "^"
+            pipeline.multi()
+            pipeline.set(key, v)
+            time.sleep(sleep_time)
+            v += "$"
+            pipeline.set(key, v)
+            pipeline.execute()
+            pipeline.unwatch()
+            print("...commited")
+            time.sleep(sleep_time)
+        except redis.WatchError as err:
+            error_count += 1
+            print(f"Watch error #{error_count}:", err)
+    print(len(v))
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py</a>.</div></p>
+
 
 
 <p><a name="k16"></a></p>
 <h2 id="k16">16. </h2>
+
+<pre>
+import time
+import redis
+
+
+redis_client = redis.StrictRedis(
+    host="localhost",
+    port="6379",
+    decode_responses=True,
+)
+
+key = "bar"
+sleep_time = 0.18
+
+while True:
+    redis_client.set(key, "that's me")
+    time.sleep(sleep_time)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
+naleznete na adrese <a
+href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py</a>.</div></p>
 
 
 
@@ -528,6 +863,16 @@ href="https://github.com/tisnik/most-popular-python-libs">https://github.com/tis
 <tr><td>10</td><td>producer8.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>11</td><td>annoying_producer.py</td><td>producent, který do Redisu posílá neočekávané hodnoty</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>12</td><td>producer_consumer_test1.py</td><td>spojení prvního producenta a konzumenta do uceleného testu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test1.py</a></td></tr>
+<tr><td>13</td><td>producer_consumer_test2.py</td><td>spojení druhého producenta a konzumenta do uceleného testu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test2.py</a></td></tr>
+<tr><td>14</td><td>producer_consumer_test3.py</td><td>spojení třetího producenta a konzumenta do uceleného testu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test3.py</a></td></tr>
+<tr><td>15</td><td>producer_consumer_test4.py</td><td>spojení čtvrtého producenta a konzumenta do uceleného testu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test4.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test4.py</a></td></tr>
+<tr><td>16</td><td>producer_consumer_test6.py</td><td>spojení šestého producenta a konzumenta do uceleného testu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test6.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test6.py</a></td></tr>
+<tr><td>17</td><td>producer_consumer_test7.py</td><td>spojení sedmého producenta a konzumenta do uceleného testu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test7.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer_consumer_test7.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>18</td><td>redis_cache.py</td><td>implementace jednoduché cache založené na Redisu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/redis_cache.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/redis_cache.py</a></td></tr>
+<tr><td>19</td><td>test_atomic_redis_cache.py</td><td>test atomicity operací implementované cache</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/test_atomic_redis_cache.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/test_atomic_redis_cache.py</a></td></tr>
 </table>
 
 
