@@ -41,19 +41,19 @@
 <p><a href="#k02">2. Instalace Redisu a použití klienta <strong>redis-cli</strong></a></p>
 <p><a href="#k03">3. Transakce a atomické operace v&nbsp;Redisu</a></p>
 <p><a href="#k04">*** 4. Jak jsou transakce realizovány?</a></p>
-<p><a href="#k05">*** 5. Optimistické zamykání</a></p>
+<p><a href="#k05">5. Optimistické zamykání</a></p>
 <p><a href="#k06">*** 6. Od samostatně probíhajících operací k&nbsp;transakcím</a></p>
 <p><a href="#k07">7. Přepis hodnot uložených pod jediným klíčem</a></p>
 <p><a href="#k08">8. Otestování chování Redisu</a></p>
 <p><a href="#k09">9. Úprava producenta tak, aby po zápisu neočekávané hodnoty ihned zapsal hodnotu korektní</a></p>
 <p><a href="#k10">10. Transakce realizovaná formou pipeline</a></p>
-<p><a href="#k11">*** 11. Operace typu <strong>get-and-set</strong></a></p>
-<p><a href="#k12">*** 12. Lze vytvořit pipeline pro operaci <strong>get-and-set</strong>?</a></p>
-<p><a href="#k13">*** 13. </a></p>
+<p><a href="#k11">11. Operace typu <strong>get-and-set</strong></a></p>
+<p><a href="#k12">12. Lze vytvořit pipeline pro operaci <strong>get-and-set</strong>?</a></p>
+<p><a href="#k13">13. Operace <strong>get</strong> následovaná transakcí</a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
+<p><a href="#k17">*** 17. Konkrétní problém &ndash; atomické připojení zpráv do seznamu uloženého v&nbsp;Redisu</a></p>
 <p><a href="#k18">18. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k19">19. Odkazy na předchozí části seriálu</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -290,6 +290,18 @@ chvíli.</div></p>
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Optimistické zamykání</h2>
 
+<p>Při pokusu o práci s&nbsp;transakcemi v&nbsp;Redisu se setkáme s&nbsp;pojmem
+<i>optimistické zamykání</i> (<i>optimistic lock</i>). Jedná se o postup, kdy
+se pokusíme realizovat transakci a přitom budeme sledovat, zda jiný klient
+nepřistupuje k&nbsp;hodnotám, které v&nbsp;transakci měníme (zahájení sledování
+řeší příkaz <strong>watch</strong>, ukončení sledování pak příkaz
+<strong>unwatch</strong>). V&nbsp;případě, že se v&nbsp;průběhu zápisu
+transakce nějaká hodnota změní, provedeme transakci znovu. Jak uvidíme
+v&nbsp;dalším textu, je realizace tohoto algoritmu celkem jednoduchá, ale má
+svoje problémy &ndash; zejména se může stát, že s&nbsp;velkým množstvím zápisů
+nedojde k&nbsp;dokončení transakce nikdy nebo až po delším čase. Také musí být
+programové řešení zapsáno korektně a nesmí se zapomenout na dokončení transakce
+a taktéž se nesmí zapomenout na ukončení sledování hodnoty či hodnot.</p>
 
 
 
@@ -551,20 +563,27 @@ konzument nikdy neuvidí mezistav, tedy hodnotu &bdquo;^&ldquo;.</p>
 <p><a name="k11"></a></p>
 <h2 id="k11">11. Operace typu <strong>get-and-set</strong></h2>
 
+<p>Nyní se předchozí demonstrační příklad pokusíme upravit, a to tak, že
+naimplementujeme operaci typu <strong>get-and-set</strong>. Jedná se o operaci,
+která nejdříve přečte hodnotu z&nbsp;Redisu, nějakým způsobem ji modifikuje a
+následně ji uloží zpět (stále pod stejným klíčem). Naimplementujeme si
+například obdobu operace <strong>append</strong>, kdy budeme k&nbsp;uložené
+hodnotě přidávat znaky &bdquo;^&ldquo; a &bdquo;$&ldquo;:</p>
+
 <pre>
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 sleep_time = 0.1
-
+&nbsp;
 while True:
     v = redis_client.get(key) or ""
     v += "^"
@@ -580,28 +599,32 @@ while True:
 naleznete na adrese <a
 href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py</a>.</div></p>
 
+<p>Výsledek budeme kontrolovat upraveným konzumentem, který bude sledovat pouze
+poslední dva znaky zprávy (jestli se bude jednat o sekvenci &bdquo;^$&ldquo; či
+nikoli):</p>
+
 <pre>
 import redis
 import time
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 expected_value = "^$"
 sleep_time = 0.01
-
+&nbsp;
 start_time = time.perf_counter()
-
+&nbsp;
 errors = 0
-
+&nbsp;
 while True:
     value = redis_client.get(key)
-    if value == "that's me":
+    if value is None:
         continue
     last_chars = value[-2:]
     if last_chars != expected_value:
@@ -616,6 +639,11 @@ while True:
 <p><div class="rs-tip-major">Poznámka: úplný zdrojový kód tohoto skriptu
 naleznete na adrese <a
 href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/consumer2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/consumer2.py</a>.</div></p>
+
+<p>Konzument, opět podle očekávání, nalezne &bdquo;neočekávané&ldquo; hodnoty,
+protože přidání znaků do hodnoty uložené v&nbsp;Redisu je provedeno po
+jednotlivých znacích, takže je v&nbsp;některých okamžicích viditelný i mezistav
+mezi oběma příkazy <strong>set</strong>:</p>
 
 <pre>
 ^     1    3.21  0.311
@@ -635,20 +663,26 @@ $^   10    14.1  0.708
 <p><a name="k12"></a></p>
 <h2 id="k12">12. Lze vytvořit pipeline pro operaci <strong>get-and-set</strong>?</h2>
 
+<p>Pokusme se nyní vytvořit pipeline (a tím pádem i možnost spuštění
+v&nbsp;transakci) pro operaci <strong>get-and-set</strong>. Budeme postupovat
+naprosto stejným způsobem, jako <a href="#k10">v&nbsp;desáté kapitole</a>,
+tj.&nbsp;vytvoříme pipeline a operace <strong>get</strong> a
+<strong>set</strong> budeme volat jako metody pipeline:</p>
+
 <pre>
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 sleep_time = 0.1
-
+&nbsp;
 while True:
     pipeline = redis_client.pipeline(transaction=True)
     pipeline.multi()
@@ -665,6 +699,10 @@ while True:
 naleznete na adrese <a
 href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py</a>.</div></p>
 
+<p>Tento skript ovšem nepůjde spustit, protože se detekuje chyba na řádku,
+v&nbsp;němž se pokoušíme k&nbsp;výsledku operace <strong>get</strong> přičíst
+další část řetězce:</p>
+
 <pre>
 $ <strong>python3 producer5.py </strong>
 &nbsp;
@@ -674,25 +712,44 @@ Traceback (most recent call last):
 TypeError: unsupported operand type(s) for +=: 'Pipeline' and 'str'
 </pre>
 
+<p>Proč tomu tak je? Připomeňme si, že operace zapsané do pipeline jsou nejprve
+shromážděny a teprve poté poslány (jako jeden nedělitelný blok) do Redisu. To
+znamená, že výsledek operace <strong>get</strong> nemůžeme použít jako parametr
+do navazující funkce <strong>set</strong>.</p>
+
+<p><div class="rs-tip-major">Poznámka: jedno z&nbsp;možných řešení spočívá
+v&nbsp;zápisu transakce <a
+href="https://www.root.cz/serialy/programovaci-jazyk-lua/">v&nbsp;jazyce
+Lua</a> a spuštění tohoto příkazu přímo v&nbsp;rámci Redisu.</div></p>
+
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Operace <strong>get</strong> následovaná transakcí</h2>
+
+<p>Předchozí skript můžeme upravit takovým způsobem, že bude funkční
+v&nbsp;případě, že se použije jen jediný klient zapisující data. Toto řešení je
+postaveno na &bdquo;běžné&ldquo; operaci <strong>get</strong>, která je
+následována transakcí, v&nbsp;níž již můžeme výsledek operace
+<strong>get</strong> bez problémů použít. Jako celek se tedy sice nebude jednat
+o atomickou operaci, na druhou stranu minimálně hodnota viditelná konzumenty
+bude vždy končit správnou dvojicí znaků &bdquo;^$&ldquo; (neuvidíme tedy
+nechtěný &bdquo;mezistav&ldquo;):</p>
 
 <pre>
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 sleep_time = 0.1
-
+&nbsp;
 while True:
     pipeline = redis_client.pipeline(transaction=True)
     error_count = 0
@@ -836,7 +893,198 @@ href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoy
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<h2 id="k17">17. Konkrétní problém &ndash; atomické připojení zpráv do seznamu uloženého v&nbsp;Redisu</h2>
+
+<pre>
+"""Cache that uses Redis to store cached values."""
+
+import pickle
+import threading
+from typing import Any, Optional
+import logging
+
+import redis
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import (
+    BusyLoadingError,
+    ConnectionError,
+    RedisError,
+)
+from redis.retry import Retry
+
+
+class BaseMessage:
+    def __init__(self, content):
+        self.content = content
+
+    def __str__(self):
+        return self.content
+
+
+class RedisCache:
+    """Cache that uses Redis to store cached values."""
+
+    def __init__(self):
+        self.initialize_redis()
+
+    def initialize_redis(self) -> None:
+        """Initialize the Redis client and logging.
+
+        This method sets up the Redis client with custom configuration parameters.
+        """
+
+        # initialize Redis client
+        self.redis_client = redis.StrictRedis(
+            host="localhost",
+            port=6379,
+            decode_responses=False,  # we store serialized messages as bytes, not strings
+        )
+        # Set custom configuration parameters
+
+    def get(self, user_id: str, conversation_id: str):
+        """Get the value associated with the given key.
+
+        Args:
+            user_id: User identification.
+            conversation_id: Conversation ID unique for given user.
+
+        Returns:
+            The value associated with the key, or None if not found.
+        """
+        key = user_id + ":" + conversation_id
+
+        value = self.redis_client.get(key)
+        if value is None:
+            return None
+        return pickle.loads(value, errors="strict")  # noqa S301
+
+    def insert_or_append(self, user_id: str, conversation_id: str, value) -> None:
+        """Set the value associated with the given key.
+
+        Args:
+            user_id: User identification.
+            conversation_id: Conversation ID unique for given user.
+            value: The value to set.
+
+        Raises:
+            OutOfMemoryError: If item is evicted when Redis allocated
+                memory is higher than maxmemory.
+        """
+        key = user_id + ":" + conversation_id
+
+        while True:
+            with self.redis_client.pipeline(transaction=True) as pipeline:
+                try:
+                    logging.debug("Transaction started")
+                    pipeline.watch(key)
+                    old_value = self.get(user_id, conversation_id)
+                    pipeline.multi()
+                    if old_value:
+                        old_value.extend(value)
+                        pipeline.set(
+                            key,
+                            pickle.dumps(old_value, protocol=pickle.HIGHEST_PROTOCOL),
+                        )
+                    else:
+                        pipeline.set(
+                            key, pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+                        )
+                    pipeline.execute()
+                    pipeline.unwatch()
+                    logging.debug("Transaction finished")
+                    break
+                except redis.WatchError as err:
+                    logging.info("Watch error", err)
+</pre>
+
+<pre>
+import multiprocessing
+import time
+import redis
+
+
+PRODUCER_CYCLES = 100
+PRODUCER_SLEEP_TIME = 0.1
+
+USER_ID = "1234"
+CONVERSATION_ID = "5678"
+
+
+from redis_cache import RedisCache
+from redis_cache import BaseMessage
+
+
+def producer_1(cycles, user_id, conversation_id, sleep_time):
+    redis_cache = RedisCache()
+
+    for i in range(cycles):
+        message = [BaseMessage(f"message #{i}")]
+        redis_cache.insert_or_append(user_id, conversation_id, message)
+        time.sleep(sleep_time)
+
+
+def producer_2(cycles, user_id, conversation_id, sleep_time):
+    redis_cache = RedisCache()
+
+    for i in range(cycles):
+        message = [BaseMessage(f"second producer")]
+        redis_cache.insert_or_append(user_id, conversation_id, message)
+        time.sleep(sleep_time)
+
+
+def test_atomic_insert_or_append():
+    redis_cache = RedisCache()
+
+    # make sure the conversation is cleared before testing
+    redis_cache.redis_client.delete(USER_ID + ":" + CONVERSATION_ID)
+
+    queue = multiprocessing.Queue()
+
+    # construct both producers
+    producer_1_process = multiprocessing.Process(
+        target=producer_1,
+        args=(PRODUCER_CYCLES, USER_ID, CONVERSATION_ID, PRODUCER_SLEEP_TIME),
+    )
+    producer_2_process = multiprocessing.Process(
+        target=producer_2,
+        args=(PRODUCER_CYCLES, USER_ID, CONVERSATION_ID, PRODUCER_SLEEP_TIME),
+    )
+
+    start_time = time.perf_counter()
+
+    # start both producers
+    producer_1_process.start()
+    producer_2_process.start()
+
+    # wait for producers
+    print("Waiting for producers to finish")
+    producer_1_process.join()
+    producer_2_process.join()
+    print("Finished")
+
+    # compute duration
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+    print(f"Duration: {duration:4.3} seconds")
+
+    # read messages from cache and perform elementary checks
+    messages = redis_cache.get(USER_ID, CONVERSATION_ID)
+    assert len(messages) == PRODUCER_CYCLES * 2
+
+    # PRODUCER_CYCLES messages needs to be in cache in proper order
+    index = 0
+    for message in messages:
+        if message.content == "second producer":
+            continue
+        expected = f"message #{index}"
+        assert message.content == expected, f"Wrong message content {message.content}"
+        index += 1
+
+
+if __name__ == "__main__":
+    print("Running test")
+    test_atomic_insert_or_append()
+</pre>
 
 
 
