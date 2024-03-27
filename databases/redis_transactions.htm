@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Realizace transakcí v systému Redis</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Realizace transakcí v systému Redis</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>V dnešním článku se seznámíme s tím, jakým způsobem jsou v systému Redis realizovány (či spíše nerealizovány) transakce a jakým způsobem je možné si je naprogramovat, a to s využitím takzvané pipeline a optimistického zamykání.</p>
 
 
 
@@ -40,9 +40,9 @@
 <p><a href="#k01">1. Realizace transakcí v&nbsp;systému Redis</a></p>
 <p><a href="#k02">2. Instalace Redisu a použití klienta <strong>redis-cli</strong></a></p>
 <p><a href="#k03">3. Transakce a atomické operace v&nbsp;Redisu</a></p>
-<p><a href="#k04">*** 4. Jak jsou transakce realizovány?</a></p>
+<p><a href="#k04">4. Jak jsou transakce realizovány?</a></p>
 <p><a href="#k05">5. Optimistické zamykání</a></p>
-<p><a href="#k06">*** 6. Od samostatně probíhajících operací k&nbsp;transakcím</a></p>
+<p><a href="#k06">6. Od samostatně probíhajících operací k&nbsp;transakcím</a></p>
 <p><a href="#k07">7. Přepis hodnot uložených pod jediným klíčem</a></p>
 <p><a href="#k08">8. Otestování chování Redisu</a></p>
 <p><a href="#k09">9. Úprava producenta tak, aby po zápisu neočekávané hodnoty ihned zapsal hodnotu korektní</a></p>
@@ -50,10 +50,10 @@
 <p><a href="#k11">11. Operace typu <strong>get-and-set</strong></a></p>
 <p><a href="#k12">12. Lze vytvořit pipeline pro operaci <strong>get-and-set</strong>?</a></p>
 <p><a href="#k13">13. Operace <strong>get</strong> následovaná transakcí</a></p>
-<p><a href="#k14">*** 14. </a></p>
-<p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. Konkrétní problém &ndash; atomické připojení zpráv do seznamu uloženého v&nbsp;Redisu</a></p>
+<p><a href="#k14">14. Realizace optimistického zamykání</a></p>
+<p><a href="#k15">15. Pipeline použitá jako správce kontextu</a></p>
+<p><a href="#k16">16. Chování klienta ve chvíli, kdy běží další klient zapisující do prvku se stejným klíčem</a></p>
+<p><a href="#k17">17. Konkrétní problém &ndash; atomické připojení zpráv do seznamu uloženého v&nbsp;Redisu</a></p>
 <p><a href="#k18">18. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k19">19. Odkazy na předchozí části seriálu</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -285,6 +285,33 @@ chvíli.</div></p>
 <p><a name="k04"></a></p>
 <h2 id="k04">4. Jak jsou transakce realizovány?</h2>
 
+<p>Samotný systém Redis sice nepodporuje skutečné transakce
+(s&nbsp;plnohodnotným rollbackem), ovšem alespoň zajišťuje možnost spuštění
+několika příkazů v&nbsp;jediném nepřerušitelném bloku. Tyto příkazy jsou
+nejdříve zapamatovány a posléze spuštěny (nebo jsou jako celek zrušeny). Pro
+tento účel slouží trojice základních příkazů <strong>multi</strong>,
+<strong>exec</strong> a <strong>discard</strong>, o nichž jsme se zmínili.
+Ovšem důležitý je především fakt, že se skupina příkazů skutečně provede jako
+celek a není přerušena jinými příkazy.</p>
+
+<p>Jak se však tento koncept odlišuje od běžných databází? Například si to
+můžeme ukázat na sekvenci příkazů <a href="#k03">z&nbsp;předchozí
+kapitoly</a>:</p>
+
+<pre>
+multi
+incrbyfloat ucet1 -150.50
+incrbyfloat ucet2 +150.50
+exec
+</pre>
+
+<p>Příkaz <strong>multi</strong> ve skutečnosti nezahájí transakci (tedy
+nezamkne databázi nebo její část). Pouze se změní stav klienta, který si
+jednotlivé příkazy bude pamatovat a příkazem <strong>exec</strong> je pošle do
+Redisu jako jeden blok (takže <strong>exec</strong> je vlastně kombinací
+začátek transakce + commit). Neboli jinými slovy: mezi <strong>multi</strong> a
+<strong>exec</strong> bude Redis stále obsluhovat další klienty.</p>
+
 
 
 <p><a name="k05"></a></p>
@@ -308,7 +335,14 @@ a taktéž se nesmí zapomenout na ukončení sledování hodnoty či hodnot.</p
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Od samostatně probíhajících operací k&nbsp;transakcím</h2>
 
-<p></p>
+<p>V&nbsp;navazujících kapitolách si ukážeme postupnou změnu klienta, který do
+Redisu zapisuje nějaké údaje pod stále stejným klíčem. Původní verze klienta
+nebude používat transakce. K&nbsp;těm se dostaneme postupně a v&nbsp;závěrečné
+verzi bude klient realizovat i optimistické zamykání.</p>
+
+<p>Klient bude realizován v&nbsp;Pythonu a bude používat knihovnu <a
+href="https://github.com/redis/redis-py">Redis-Py</a>, kterou je možné
+nainstalovat přes <strong>pip</strong>.</p>
 
 
 
@@ -588,7 +622,7 @@ while True:
     v = redis_client.get(key) or ""
     v += "^"
     redis_client.set(key, v)
-    # time.sleep(1.4)
+    <i># time.sleep(1.4)</i>
     v += "$"
     redis_client.set(key, v)
     time.sleep(sleep_time)
@@ -771,24 +805,79 @@ href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/produ
 
 
 <p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
+<h2 id="k14">14. Realizace optimistického zamykání</h2>
+
+<p>V&nbsp;další verzi původního klienta ještě vylepšíme, a to konkrétně o
+algoritmus optimistického zamykání. Nejprve se vytvoří objekt typu pipeline
+(může se používat i jako správce kontextu, to uvidíme dále):</p>
+
+<pre>
+pipeline = redis_client.pipeline(transaction=True)
+</pre>
+
+<p>Dále začneme sledovat ostatní klienty, zda přistupují k&nbsp;hodnotě uložené
+pod daným klíčem:</p>
+
+<pre>
+pipeline.watch(key)
+</pre>
+
+<p>Přečteme hodnotu uloženou pod klíčem (nikoli v&nbsp;pipeline, to jíž víme,
+že není možné):</p>
+
+<pre>
+v = redis_client.get(key) or ""
+v += "^"
+</pre>
+
+<p>Samotná modifikace hodnoty je však již v&nbsp;pipeline realizována:</p>
+
+<pre>
+pipeline.multi()
+pipeline.set(key, v)
+time.sleep(sleep_time)
+v += "$"
+pipeline.set(key, v)
+pipeline.execute()
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: <strong>sleep</strong> vůbec nevadí,
+protože příkazy Redisu prozatím nejsou spuštěny, spuštění je provedeno
+v&nbsp;<strong>execute</strong>.</div></p>
+
+<p>Nyní lze pipeline zavřít popř.&nbsp;navíc přestat sledovat hodnotu uloženou
+pod daným klíčem:</p>
+
+<pre>
+pipeline.unwatch()
+</pre>
+
+<p>V&nbsp;případě zápisu jiným klientem do klíče se vyvolá výjimka:</p>
+
+<pre>
+except redis.WatchError as err:
+    error_count += 1
+    print(f"Watch error #{error_count}:", err)
+</pre>
+
+<p>A takto vypadá úplný zdrojový kód již sedmé verze klienta:</p>
 
 <pre>
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 sleep_time = 0.1
-
+&nbsp;
 error_count = 0
-
+&nbsp;
 while True:
     pipeline = redis_client.pipeline(transaction=True)
     try:
@@ -818,24 +907,43 @@ href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/produ
 
 
 <p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<h2 id="k15">15. Pipeline použitá jako správce kontextu</h2>
+
+<p><a href="#k14">V&nbsp;předchozí kapitole</a> jsme si řekli, že se objekt
+typu pipeline může použít i jako správce kontextu (<i>context manager</i>), což
+je (podle mého názoru) čitelnější řešení. Namísto zápisu:</p>
+
+<pre>
+pipeline = redis_client.pipeline(transaction=True)
+</pre>
+
+<p>tedy použijeme zápis:</p>
+
+<pre>
+with redis_client.pipeline(transaction=True) as pipeline:
+    ...
+    ...
+    ...
+</pre>
+
+<p>To vede k&nbsp;takto upravenému zdrojovému kódu klienta:</p>
 
 <pre>
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 sleep_time = 0.1
-
+&nbsp;
 error_count = 0
-
+&nbsp;
 while True:
     with redis_client.pipeline(transaction=True) as pipeline:
         try:
@@ -865,22 +973,28 @@ href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/produ
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Chování klienta ve chvíli, kdy běží další klient zapisující do prvku se stejným klíčem</h2>
+
+<p>Klient popsaný <a href="#k15">v&nbsp;předchozí kapitole</a> by se měl chovat
+korektně i v&nbsp;případě, že se během jeho transakce provede přístup
+k&nbsp;hodnotě pod stejným klíčem. Můžeme si to ověřit, když souběžně
+v&nbsp;jiném terminálu spustíme následujícího klienta. Ten se snaží hodnotu
+zcela přepsat, bez ohledu na transakce či další klienty:</p>
 
 <pre>
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 redis_client = redis.StrictRedis(
     host="localhost",
     port="6379",
     decode_responses=True,
 )
-
+&nbsp;
 key = "bar"
 sleep_time = 0.18
-
+&nbsp;
 while True:
     redis_client.set(key, "that's me")
     time.sleep(sleep_time)
@@ -890,88 +1004,117 @@ while True:
 naleznete na adrese <a
 href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py</a>.</div></p>
 
+<p>Po současném spuštění obou producentů (i testovacího konzumenta) je snadné
+zjistit, že se skutečně detekují zápisy hodnoty pod stejným klíčem a že se
+v&nbsp;tomto případě transakce (jako celek) neprovede, protože se nezavolá
+metoda <strong>exec</strong> (namísto toho se přejde do obsluhy výjimky):</p>
+
+<pre>
+transaction started...Watch error #8: Watched variable changed.
+transaction started......commited
+transaction started......commited
+transaction started......commited
+transaction started......commited
+transaction started...Watch error #9: Watched variable changed.
+transaction started......commited
+transaction started......commited
+transaction started......commited
+transaction started......commited
+transaction started...Watch error #10: Watched variable changed.
+transaction started......commited
+transaction started......commited
+transaction started......commited
+transaction started......commited
+transaction started...Watch error #11: Watched variable changed.
+transaction started......commited
+transaction started......commited
+transaction started......commited
+</pre>
+
 
 
 <p><a name="k17"></a></p>
 <h2 id="k17">17. Konkrétní problém &ndash; atomické připojení zpráv do seznamu uloženého v&nbsp;Redisu</h2>
 
-<pre>
-"""Cache that uses Redis to store cached values."""
+<p>Pro zajímavost se podívejme na konkrétní problém řešený s&nbsp;využitím
+Redisu. Jedná se o cache určenou pro úschovu konverzace (seznamu zpráv),
+přičemž kromě klasické operace <strong>get</strong> potřebujeme realizovat i
+operaci typu <strong>insert_or_append</strong> (klasický příkaz
+<strong>append</strong> nebude plně funkční). A právě tuto operaci je možné
+naprogramovat s&nbsp;využitím optimistického zamykání v&nbsp;kombinaci
+s&nbsp;pipeline:</p>
 
+<pre>
+<i>"""Cache that uses Redis to store cached values."""</i>
+&nbsp;
 import pickle
 import threading
 from typing import Any, Optional
 import logging
-
+&nbsp;
 import redis
-from redis.backoff import ExponentialBackoff
-from redis.exceptions import (
-    BusyLoadingError,
-    ConnectionError,
-    RedisError,
-)
 from redis.retry import Retry
-
-
-class BaseMessage:
-    def __init__(self, content):
+&nbsp;
+&nbsp;
+class <strong>BaseMessage</strong>:
+    def <strong>__init__</strong>(self, content):
         self.content = content
-
-    def __str__(self):
+&nbsp;
+    def <strong>__str__</strong>(self):
         return self.content
-
-
-class RedisCache:
-    """Cache that uses Redis to store cached values."""
-
-    def __init__(self):
+&nbsp;
+&nbsp;
+class <strong>RedisCache</strong>:
+    <i>"""Cache that uses Redis to store cached values."""</i>
+&nbsp;
+    def <strong>__init__</strong>(self):
         self.initialize_redis()
-
-    def initialize_redis(self) -> None:
-        """Initialize the Redis client and logging.
-
-        This method sets up the Redis client with custom configuration parameters.
-        """
-
-        # initialize Redis client
+&nbsp;
+    def <strong>initialize_redis</strong>(self) -&gt; None:
+        <i>"""Initialize the Redis client and logging.</i>
+&nbsp;
+        <i>This method sets up the Redis client with custom configuration parameters.</i>
+        <i>"""</i>
+&nbsp;
+        <i># initialize Redis client</i>
         self.redis_client = redis.StrictRedis(
             host="localhost",
             port=6379,
-            decode_responses=False,  # we store serialized messages as bytes, not strings
+            decode_responses=False,  <i># we store serialized messages as bytes, not strings</i>
         )
-        # Set custom configuration parameters
-
-    def get(self, user_id: str, conversation_id: str):
-        """Get the value associated with the given key.
-
-        Args:
-            user_id: User identification.
-            conversation_id: Conversation ID unique for given user.
-
-        Returns:
-            The value associated with the key, or None if not found.
-        """
+        <i># Set custom configuration parameters</i>
+&nbsp;
+    def <strong>get</strong>(self, user_id: str, conversation_id: str):
+        <i>"""Get the value associated with the given key.</i>
+&nbsp;
+        <i>Args:</i>
+            <i>user_id: User identification.</i>
+            <i>conversation_id: Conversation ID unique for given user.</i>
+&nbsp;
+        <i>Returns:</i>
+            <i>The value associated with the key, or None if not found.</i>
+        <i>"""</i>
         key = user_id + ":" + conversation_id
-
+&nbsp;
         value = self.redis_client.get(key)
         if value is None:
             return None
-        return pickle.loads(value, errors="strict")  # noqa S301
-
-    def insert_or_append(self, user_id: str, conversation_id: str, value) -> None:
-        """Set the value associated with the given key.
-
-        Args:
-            user_id: User identification.
-            conversation_id: Conversation ID unique for given user.
-            value: The value to set.
-
-        Raises:
-            OutOfMemoryError: If item is evicted when Redis allocated
-                memory is higher than maxmemory.
-        """
+        return pickle.loads(value, errors="strict")  <i># noqa S301</i>
+&nbsp;
+    def <strong><strong>insert_or_append</strong></strong>(self, user_id: str, conversation_id: str, value) -&gt; None:
+        <i>"""Set the value associated with the given key.</i>
+&nbsp;
+        <i>Args:</i>
+            <i>user_id: User identification.</i>
+            <i>conversation_id: Conversation ID unique for given user.</i>
+            <i>value: The value to set.</i>
+&nbsp;
+        <i>Raises:</i>
+            <i>OutOfMemoryError: If item is evicted when Redis allocated</i>
+                <i>memory is higher than maxmemory.</i>
+        <i>"""</i>
         key = user_id + ":" + conversation_id
-
+&nbsp;
         while True:
             with self.redis_client.pipeline(transaction=True) as pipeline:
                 try:
@@ -997,50 +1140,54 @@ class RedisCache:
                     logging.info("Watch error", err)
 </pre>
 
+<p>A takto vypadá test, který ověřuje atomičnost operace
+<strong>insert_or_append</strong> i ve chvíli, kdy běží dva klienti připojující
+zprávy do historie:</p>
+
 <pre>
 import multiprocessing
 import time
 import redis
-
-
+&nbsp;
+&nbsp;
 PRODUCER_CYCLES = 100
 PRODUCER_SLEEP_TIME = 0.1
-
+&nbsp;
 USER_ID = "1234"
 CONVERSATION_ID = "5678"
-
-
+&nbsp;
+&nbsp;
 from redis_cache import RedisCache
 from redis_cache import BaseMessage
-
-
+&nbsp;
+&nbsp;
 def producer_1(cycles, user_id, conversation_id, sleep_time):
     redis_cache = RedisCache()
-
+&nbsp;
     for i in range(cycles):
         message = [BaseMessage(f"message #{i}")]
         redis_cache.insert_or_append(user_id, conversation_id, message)
         time.sleep(sleep_time)
-
-
+&nbsp;
+&nbsp;
 def producer_2(cycles, user_id, conversation_id, sleep_time):
     redis_cache = RedisCache()
-
+&nbsp;
     for i in range(cycles):
         message = [BaseMessage(f"second producer")]
         redis_cache.insert_or_append(user_id, conversation_id, message)
         time.sleep(sleep_time)
-
-
+&nbsp;
+&nbsp;
 def test_atomic_insert_or_append():
     redis_cache = RedisCache()
-
-    # make sure the conversation is cleared before testing
+&nbsp;
+    <i># make sure the conversation is cleared before testing</i>
     redis_cache.redis_client.delete(USER_ID + ":" + CONVERSATION_ID)
-
+&nbsp;
     queue = multiprocessing.Queue()
-
-    # construct both producers
+&nbsp;
+    <i># construct both producers</i>
     producer_1_process = multiprocessing.Process(
         target=producer_1,
         args=(PRODUCER_CYCLES, USER_ID, CONVERSATION_ID, PRODUCER_SLEEP_TIME),
@@ -1049,29 +1196,29 @@ def test_atomic_insert_or_append():
         target=producer_2,
         args=(PRODUCER_CYCLES, USER_ID, CONVERSATION_ID, PRODUCER_SLEEP_TIME),
     )
-
+&nbsp;
     start_time = time.perf_counter()
-
-    # start both producers
+&nbsp;
+    <i># start both producers</i>
     producer_1_process.start()
     producer_2_process.start()
-
-    # wait for producers
+&nbsp;
+    <i># wait for producers</i>
     print("Waiting for producers to finish")
     producer_1_process.join()
     producer_2_process.join()
     print("Finished")
-
-    # compute duration
+&nbsp;
+    <i># compute duration</i>
     end_time = time.perf_counter()
     duration = end_time - start_time
     print(f"Duration: {duration:4.3} seconds")
-
-    # read messages from cache and perform elementary checks
+&nbsp;
+    <i># read messages from cache and perform elementary checks</i>
     messages = redis_cache.get(USER_ID, CONVERSATION_ID)
     assert len(messages) == PRODUCER_CYCLES * 2
-
-    # PRODUCER_CYCLES messages needs to be in cache in proper order
+&nbsp;
+    <i># PRODUCER_CYCLES messages needs to be in cache in proper order</i>
     index = 0
     for message in messages:
         if message.content == "second producer":
@@ -1079,8 +1226,8 @@ def test_atomic_insert_or_append():
         expected = f"message #{index}"
         assert message.content == expected, f"Wrong message content {message.content}"
         index += 1
-
-
+&nbsp;
+&nbsp;
 if __name__ == "__main__":
     print("Running test")
     test_atomic_insert_or_append()
@@ -1104,11 +1251,11 @@ href="https://github.com/tisnik/most-popular-python-libs">https://github.com/tis
 <tr><td> 3</td><td>producer1.py</td><td>producent zapisující pod stejným klíčem dvě rozdílné hodnoty</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer1.py</a></td></tr>
 <tr><td> 4</td><td>producer2.py</td><td>producent zapisující pod stejným klíčem dvě rozdílné hodnoty rychle za sebou</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer2.py</a></td></tr>
 <tr><td> 5</td><td>producer3.py</td><td>producent používající transakci (pipeline)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer3.py</a></td></tr>
-<tr><td> 6</td><td>producer4.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py</a></td></tr>
-<tr><td> 7</td><td>producer5.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py</a></td></tr>
-<tr><td> 8</td><td>producer6.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py</a></td></tr>
-<tr><td> 9</td><td>producer7.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py</a></td></tr>
-<tr><td>10</td><td>producer8.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py</a></td></tr>
+<tr><td> 6</td><td>producer4.py</td><td>operace <strong>get-and-set</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer4.py</a></td></tr>
+<tr><td> 7</td><td>producer5.py</td><td>pokus o realizaci operace <strong>get-and-set</strong> v&nbsp;pipeline</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer5.py</a></td></tr>
+<tr><td> 8</td><td>producer6.py</td><td>operace <strong>get</strong> následovaná pipeline</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer6.py</a></td></tr>
+<tr><td> 9</td><td>producer7.py</td><td>optimistické zamykání</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer7.py</a></td></tr>
+<tr><td>10</td><td>producer8.py</td><td>optimistické zamykání, pipeline je správce kontextu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/producer8.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>11</td><td>annoying_producer.py</td><td>producent, který do Redisu posílá neočekávané hodnoty</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py">https://github.com/tisnik/most-popular-python-libs/blob/master/redis/annoying_producer.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
