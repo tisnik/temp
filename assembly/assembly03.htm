@@ -1,0 +1,1103 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Použití assembleru v Linuxu: problematika systémové funkce sys_read</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Použití assembleru v Linuxu: problematika systémové funkce sys_read</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Ve třetí části článku o použití assembleru v&nbsp;Linuxu si ukážeme složitější program reagující na uživatelský vstup. Tento program bude napsán v&nbsp;několika variantách &ndash; pro architekturu i386/x86_64, dále pro architektury s/390 a s/390x a nezapomeneme ani na původní 32bitovou architekturu ARM, protože právě u této stále oblíbené architektury má význam se assemblerem podrobněji zabývat kvůli velké popularitě různých jednodeskových mikropočítačů. A právě u architektury ARM se seznámíme s&nbsp;problematikou práce s&nbsp;32bitovými konstantami.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Použití assembleru v&nbsp;Linuxu: problematika systémové funkce sys_read</a></p>
+<p><a href="#k02">2. Služba <strong>sys_read</strong>: přečtení sekvence bajtů ze souboru specifikovaného deskriptorem</a></p>
+<p><a href="#k03">3. Program, který přečte a vytiskne vstup od uživatele: verze pro GNU Assembler pro architekturu x86_64</a></p>
+<p><a href="#k04">4. Konverze programu pro architekturu s/390</a></p>
+<p><a href="#k05">5. Druhá konverze programu, tentokrát pro architekturu s/390x</a></p>
+<p><a href="#k06">6. Konverze programu pro architekturu ARM</a></p>
+<p><a href="#k07">7. Specifika původní instrukční sady ARM a způsob řešení adresování v&nbsp;assembleru</a></p>
+<p><a href="#k08">8. Výsledná podoba přeloženého binárního kódu pro ARM</a></p>
+<p><a href="#k09">9. Přepis programu pro čtení vstupu od uživatele do syntaxe NASMu</a></p>
+<p><a href="#k10">10. Otestování programu a zjištění některých problémů</a></p>
+<p><a href="#k11">11. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Použití assembleru v&nbsp;Linuxu: problematika systémové funkce sys_read</h2>
+
+<p>Ve třetí části seriálu o použití assembleru (jazyka symbolických adres) při tvorbě aplikací pro Linux navážeme na <a href="http://mojefedora.cz/pouziti-assembleru-v-linuxu/">první</a> i <a href="http://mojefedora.cz/pouziti-assembleru-v-linuxu-volani-sluzeb-nabizenych-jadrem/">druhý</a> díl, protože dokončíme problematiku volání služeb jádra (<i>syscalls</i>). Ukážeme si několik verzí jednoduchého programu, který budeme postupně vylepšovat a hledat v&nbsp;něm chyby. Tento program bude vyhotoven v&nbsp;několika variantách. První varianta bude připravena pro procesory s&nbsp;architekturou i386/x86_64, další dvě varianty pak pro architektury s/390 a s/390x a nejzajímavější bude pravděpodobně varianta určená pro 32bitové mikroprocesory s&nbsp;architekturou ARM. Zde si ukážeme několik zvláštností vyplývajících z&nbsp;RISCové instrukční sady těchto mikroprocesorů a tím i z&nbsp;nemožnosti zapsat do jediné instrukce plnou 32bitovou adresu.</p>
+
+<p>Pro připomenutí si ještě jednou uveďme tabulku se základními funkcemi jádra Linuxu, které budeme volat z&nbsp;programů napsaných v&nbsp;assembleru. První funkce nazvaná <strong>sys_exit</strong> je nejjednodušší, protože pouze program ukončí a předá shellu návratový kód. Tuto funkci musíme zavolat na konci každého programu. Funkce pojmenovaná <strong>sys_read</strong> slouží pro čtení z&nbsp;otevřeného souboru (například ze standardního vstupu), zatímco funkce nazvaná <strong>sys_write</strong> naopak dokáže zapsat data do otevřeného souboru (například do standardního či chybového výstupu):</p>
+
+<table>
+<tr><th>Syscall</th><th>Číslo</th><th>Význam</th></tr>
+<tr><td>sys_exit </td><td>1</td><td>ukončení procesu</td></tr>
+<tr><td>sys_read </td><td>3</td><td>čtení přes deskriptor souboru (například standardního vstupu)</td></tr>
+<tr><td>sys_write</td><td>4</td><td>zápis přes deskriptor souboru (například do standardního výstupu)</td></tr>
+</table>
+
+<img src="http://mojefedora.cz/wp-content/uploads/2016/06/03.png" alt="03" width="660" height="642" class="alignnone size-full wp-image-7248" />
+<p><i>Obrázek 1: Program &bdquo;Hello world!&ldquo; naprogramovaný v&nbsp;GNU Assembleru pro i386.</i></p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Služba <strong>sys_read</strong>: přečtení sekvence bajtů ze souboru specifikovaného deskriptorem</h2>
+
+<p>Podívejme se nyní podrobněji na systémovou funkci nazvanou <strong>sys_read</strong>, která je sice &bdquo;opakem&ldquo; funkce <strong>sys_write</strong>, ovšem při jejím programování si musíme dát větší pozor na to, aby nedošlo k&nbsp;přepsání jiné oblasti paměti, než jakou jsme alokovali pro vstup od uživatele. Systémová funkce <strong>sys_read</strong> vyžaduje několik parametrů, jejichž význam je vypsán v&nbsp;navazující tabulce:</p>
+
+<table>
+<tr><th>Parametr</th><th>Obsah</th><th>Registr (i386)</th><th>Registr (ARM 32bit)</th><th>Registr (s/390)</tr>
+<tr><td>číslo syscallu        </td><td>sys_read=3 </td><td>eax</td><td>r7</td><td>1</td></tr>
+<tr><td>číslo file deskriptoru</td><td>std_input=0</td><td>ebx</td><td>r0</td><td>2</td></tr>
+<tr><td>adresa bufferu        </td><td>adresa     </td><td>ecx</td><td>r1</td><td>3</td></tr>
+<tr><td>max.délka vstupu      </td><td>počet bajtů</td><td>edx</td><td>r2</td><td>4</td></tr>
+</table>
+
+<p>Poznámka: buffer je typicky alokován v&nbsp;.data sekci a musí být dostatečně rozsáhlý, aby nedošlo k&nbsp;přepsání dalších dat.</p>
+
+<p>Tato funkce v&nbsp;případě úspěchu vrátí počet přečtených bajtů v&nbsp;registru eax/r7/1, takže lze provést test, kolik bajtů bylo ve skutečnosti přečteno, zda byl vůbec nějaký vstup přečten či zda došlo k&nbsp;nějaké chybě. My dnes pro jednoduchost budeme předpokládat, že čtení ze standardního vstupu proběhne vždy bez chyby, což je možná příliš optimistické, ale prozatím nevíme, jak se v&nbsp;assembleru provádí testy a rozeskoky (větvení).</p>
+
+<img src="http://mojefedora.cz/wp-content/uploads/2016/06/04.png" alt="04" width="660" height="658" class="alignnone size-full wp-image-7249" />
+<p><i>Obrázek 2: Program &bdquo;Hello world!&ldquo; naprogramovaný v&nbsp;GNU Assembleru pro i386, tentokrát při použití Intel syntaxe.</i></p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Program, který přečte a vytiskne vstup od uživatele: verze pro GNU Assembler pro architekturu x86_64</h2>
+
+<p>Program, který si dnes ukážeme, se skládá z&nbsp;několika částí:</p>
+
+<ol>
+<li>Vytištění první zprávy uživateli: &bdquo;Enter your name: &ldquo; (i s&nbsp;mezerou na konci, ovšem bez odřádkování)</li>
+<li>Přečtení sekvence bajtů (jména) ze standardního vstupu</li>
+<li>Vytištění druhé zprávy uživateli: &bdquo;Hello &ldquo; (i s&nbsp;mezerou na konci, ovšem bez odřádkování)</li>
+<li>Vytištění jména získaného od uživatele</li>
+<li>Ukončení aplikace</li>
+</ol>
+
+<p>Pro krok číslo 1, 3 a 4 se používá funkce <strong>sys_write</strong>, pro krok číslo 2 funkce <strong>sys_read</strong> a konečně pro krok číslo 5 funkce <strong>sys_exit</strong>.</p>
+
+<p>V&nbsp;programu se objevuje novinka, se kterou jsme se doposud ještě nesetkali &ndash; je to deklarace bufferu umístěného v&nbsp;sekci <strong>.bss</strong>. Tato sekce byla v&nbsp;předchozích programech prázdná, protože jsme používali jen sekci <strong>.data</strong> pro inicializovaná data (například řetězce) a sekci <strong>.text</strong> pro vlastní strojový kód. Sekce <strong>.bss</strong> je zvláštní tím, že její obsah nemusí být ukládán do výsledného binárního souboru, takže se vlastně jedná o obdobu haldy. My zde vytvoříme místo pro buffer s&nbsp;maximálně padesáti bajty deklarací <strong>.lcomm input, 50</strong>:</p>
+
+<pre>
+# asmsyntax=as
+
+# Aplikace pro precteni dat ze standardniho vstupu
+# naprogramovana v assembleru GNU as - pouzita je "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+# Linux kernel system call table
+sys_exit  = 1
+sys_read  = 3
+sys_write = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+
+message1:
+        .ascii "Enter your name: "         # string, ktery NENI ukoncen nulou
+        message1len = $ - message1         # delka prvni zpravy
+
+message2:
+        .ascii "Hello "                    # string, ktery NENI ukoncen nulou
+        message2len = $ - message2         # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+        .lcomm input,  50                  # rezervace 50 bajtu pro vstup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start                     # tento symbol ma byt dostupny i linkeru
+
+_start:
+        # tisk prvni zpravy (vyzvy)
+        mov   eax, sys_write               # cislo syscallu pro funkci "write"
+        mov   ebx, std_output              # standardni vystup
+        mov   ecx, offset message1         # adresa retezce, ktery se ma vytisknout
+        mov   edx, message1len             # pocet znaku, ktere se maji vytisknout
+        int   0x80                         # volani Linuxoveho kernelu
+
+        # precteni vstupu od uzivatele
+        mov   eax, sys_read                # cislo syscallu pro funkci "read"
+        mov   ebx, std_input               # standardni vstup
+        mov   ecx, offset input            # adresa bufferu
+        mov   edx, 50                      # maximalni delka zpravy
+        int   0x80                         # volani Linuxoveho kernelu
+
+        # tisk druhe zpravy (zacatek odpovedi)
+        mov   eax, sys_write               # cislo syscallu pro funkci "write"
+        mov   ebx, std_output              # standardni vystup
+        mov   ecx, offset message2         # adresa retezce, ktery se ma vytisknout
+        mov   edx, message2len             # pocet znaku, ktere se maji vytisknout
+        int   0x80                         # volani Linuxoveho kernelu
+
+        # tisk vstupu od uzivatele
+        mov   eax, sys_write               # cislo syscallu pro funkci "write"
+        mov   ebx, std_output              # standardni vystup
+        mov   ecx, offset input            # adresa bufferu
+        mov   edx, 50                      # delka (max delka)
+        int   0x80                         # volani Linuxoveho kernelu
+
+        mov   eax, sys_exit                # cislo sycallu pro funkci "exit"
+        mov   ebx, 0                       # exit code = 0
+        int   0x80                         # volani Linuxoveho kernelu
+</pre>
+
+<p>Překlad proběhne stejným způsobem, jaký již známe z&nbsp;předchozích dílů:</p>
+
+<pre>
+as read_input.s -o read_input.o
+ld -s read_input.o
+</pre>
+
+<p>Pokud vás zajímá obsah vytvořeného souboru (měl by), je to velmi snadné (povšimněte si přepínače <strong>-M intel-mnemonic</strong>:</p>
+
+<pre>
+objdump -M intel-mnemonic -f -d -t -h a.out
+</pre>
+
+<pre>
+a.out:     file format elf64-x86-64
+architecture: i386:x86-64, flags 0x00000102:
+EXEC_P, D_PAGED
+start address 0x00000000004000b0
+
+Sections:
+Idx Name          Size      VMA               LMA               File off  Algn
+  0 .text         00000064  00000000004000b0  00000000004000b0  000000b0  2**0
+                  CONTENTS, ALLOC, LOAD, READONLY, CODE
+  1 .data         00000017  0000000000600114  0000000000600114  00000114  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000038  0000000000600130  0000000000600130  0000012b  2**3
+                  ALLOC
+SYMBOL TABLE:
+no symbols
+
+
+
+Disassembly of section .text:
+
+00000000004000b0 &lt;.text&gt;:
+  4000b0:       b8 04 00 00 00          mov    eax,0x4
+  4000b5:       bb 01 00 00 00          mov    ebx,0x1
+  4000ba:       b9 14 01 60 00          mov    ecx,0x600114
+  4000bf:       ba 11 00 00 00          mov    edx,0x11
+  4000c4:       cd 80                   int    0x80
+  4000c6:       b8 03 00 00 00          mov    eax,0x3
+  4000cb:       bb 00 00 00 00          mov    ebx,0x0
+  4000d0:       b9 30 01 60 00          mov    ecx,0x600130
+  4000d5:       ba 32 00 00 00          mov    edx,0x32
+  4000da:       cd 80                   int    0x80
+  4000dc:       b8 04 00 00 00          mov    eax,0x4
+  4000e1:       bb 01 00 00 00          mov    ebx,0x1
+  4000e6:       b9 25 01 60 00          mov    ecx,0x600125
+  4000eb:       ba 06 00 00 00          mov    edx,0x6
+  4000f0:       cd 80                   int    0x80
+  4000f2:       b8 04 00 00 00          mov    eax,0x4
+  4000f7:       bb 01 00 00 00          mov    ebx,0x1
+  4000fc:       b9 30 01 60 00          mov    ecx,0x600130
+  400101:       ba 32 00 00 00          mov    edx,0x32
+  400106:       cd 80                   int    0x80
+  400108:       b8 01 00 00 00          mov    eax,0x1
+  40010d:       bb 00 00 00 00          mov    ebx,0x0
+  400112:       cd 80                   int    0x80
+</pre>
+
+<p>Povšimněte si dvou maličkostí:</p>
+
+<ol>
+<li>Obě zprávy vypisované uživateli jsou uloženy na adresách 0x600114 a 0x600125 ležících v&nbsp;sekci <strong>.data</strong> (viz části &bdquo;sections&ldquo;)</li>
+<li>Naproti tomu buffer začíná na adrese 0x600130, která již náleží do sekce <strong>.bss</strong></li>
+</ol>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Konverze programu pro architekturu s/390</h2>
+
+<p>Podobně jako v&nbsp;minulé části, i v&nbsp;části dnešní si uvedeme přepis výše uvedeného programu na architekturu s/390. Tuto konverzi opět provedl <i>Dan Horák</i>, kterému tímto děkuji, a kromě odlišného instrukčního souboru, pojmenování registrů a adresování bufferu i zpráv je vlastně zbytek celé aplikace stejný, což je o to překvapivější, že architektura s/390 je od dnes pravděpodobně nejběžnější architektury i386/x86_64 velmi odlišná (ovšem podobnost programů je mj.&nbsp;způsobena i tím, že stále pouze voláme funkce jádra systému a neprovádíme žádné složitější operace):</p>
+
+<pre>
+# asmsyntax=as
+
+# Aplikace pro precteni dat ze standardniho vstupu
+# naprogramovana v assembleru GNU as.
+#
+# Autor: Pavel Tisnovsky
+#        Dan Horák
+
+
+# Linux kernel system call table
+sys_exit  = 1
+sys_read  = 3
+sys_write = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+
+message1:
+        .ascii "Enter your name: "         # string, ktery NENI ukoncen nulou
+        message1len = . - message1         # delka prvni zpravy
+
+message2:
+        .ascii "Hello "                    # string, ktery NENI ukoncen nulou
+        message2len = . - message2         # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+        .lcomm input,  50                  # rezervace 50 bajtu pro vstup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start                     # tento symbol ma byt dostupny i linkeru
+
+_start:
+        basr  13,0                         # nastaveni literal poolu
+.L0:    ahi   13,.LT0-.L0
+
+        # tisk prvni zpravy (vyzvy)
+        la    1,sys_write                  # cislo syscallu pro funkci "write"
+        la    2,std_output                 # standardni vystup
+        l     3,.LC1-.LT0(13)              # adresa retezce, ktery se ma vytisknout
+        la    4,message1len                # pocet znaku, ktere se maji vytisknout
+        svc   0                            # volani Linuxoveho kernelu
+
+        # precteni vstupu od uzivatele
+        la    1,sys_read                   # cislo syscallu pro funkci "read"
+        la    2,std_input                  # standardni vstup
+        l     3,.LC3-.LT0(13)              # adresa bufferu
+        la    4,50                         # maximalni delka zpravy
+        svc   0                            # volani Linuxoveho kernelu
+
+        # tisk druhe zpravy (zacatek odpovedi)
+        la    1,sys_write                  # cislo syscallu pro funkci "write"
+        la    2,std_output                 # standardni vystup
+        l     3,.LC2-.LT0(13)              # adresa retezce, ktery se ma vytisknout
+        la    4,message2len                # pocet znaku, ktere se maji vytisknout
+        svc   0                            # volani Linuxoveho kernelu
+
+        # tisk vstupu od uzivatele
+        la    1,sys_write                  # cislo syscallu pro funkci "write"
+        la    2,std_output                 # standardni vystup
+        l     3,.LC3-.LT0(13)              # adresa bufferu
+        la    4,50                         # delka (max delka)
+        svc   0                            # volani Linuxoveho kernelu
+
+        la    1,sys_exit                   # cislo sycallu pro funkci "exit"
+        la    2,0                          # exit code = 0
+        svc   0                            # volani Linuxoveho kernelu
+
+# literal pool
+.LT0:
+.LC1:   .long   message1
+.LC2:   .long   message2
+.LC3:   .long   input
+</pre>
+
+<p>Překlad proběhne stejným způsobem, jaký již známe z&nbsp;předchozích dílů:</p>
+
+<pre>
+as -m31 read_input-s390.s -o read_input-s390.o
+ld -melf_s390 -s read_input-s390.o
+</pre>
+
+<p>(povšimněte si nutnosti použití přepínače <strong>-m31</strong>, určující mj.&nbsp;i použití 31bitových adres)</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Druhá konverze programu, tentokrát pro architekturu s/390x</h2>
+
+<p>Verze pro 64bitovou architekturu s/390x, kterou taktéž naprogramoval <i>Dan Horák</i>, se již prakticky nijak neliší od &bdquo;intelácké&ldquo; varianty, samozřejmě pokud vezmeme v&nbsp;úvahu rozdílnou instrukční sadu a jinak pojmenované registry (viz též vizuální porovnání na konci této kapitoly):</p>
+
+<pre>
+# asmsyntax=as
+
+# Aplikace pro precteni dat ze standardniho vstupu
+# naprogramovana v assembleru GNU as.
+#
+# Autor: Pavel Tisnovsky
+#        Dan Horák
+
+
+# Linux kernel system call table
+sys_exit  = 1
+sys_read  = 3
+sys_write = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+
+message1:
+        .ascii "Enter your name: "         # string, ktery NENI ukoncen nulou
+        message1len = . - message1         # delka prvni zpravy
+
+        .align 2                           # musime zajistit zarovnani pro instrukci larl
+message2:
+        .ascii "Hello "                    # string, ktery NENI ukoncen nulou
+        message2len = . - message2         # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+        .lcomm input,  50                  # rezervace 50 bajtu pro vstup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start                     # tento symbol ma byt dostupny i linkeru
+
+_start:
+        # tisk prvni zpravy (vyzvy)
+        la    1,sys_write                  # cislo syscallu pro funkci "write"
+        la    2,std_output                 # standardni vystup
+        larl  3,message1                   # adresa retezce, ktery se ma vytisknout
+        la    4,message1len                # pocet znaku, ktere se maji vytisknout
+        svc   0                            # volani Linuxoveho kernelu
+
+        # precteni vstupu od uzivatele
+        la    1,sys_read                   # cislo syscallu pro funkci "read"
+        la    2,std_input                  # standardni vstup
+        larl  3,input                      # adresa bufferu
+        la    4,50                         # maximalni delka zpravy
+        svc   0                            # volani Linuxoveho kernelu
+
+        # tisk druhe zpravy (zacatek odpovedi)
+        la    1,sys_write                  # cislo syscallu pro funkci "write"
+        la    2,std_output                 # standardni vystup
+        larl  3,message2                   # adresa retezce, ktery se ma vytisknout
+        la    4,message2len                # pocet znaku, ktere se maji vytisknout
+        svc   0                            # volani Linuxoveho kernelu
+
+        # tisk vstupu od uzivatele
+        la    1,sys_write                  # cislo syscallu pro funkci "write"
+        la    2,std_output                 # standardni vystup
+        larl  3,input                      # adresa bufferu
+        la    4,50                         # delka (max delka)
+        svc   0                            # volani Linuxoveho kernelu
+
+        la    1,sys_exit                   # cislo sycallu pro funkci "exit"
+        la    2,0                          # exit code = 0
+        svc   0                            # volani Linuxoveho kernelu
+</pre>
+
+<p>Překlad pro architekturu s/390x zařídí tyto dva příkazy:</p>
+
+<pre>
+as read_input-s390x.s -o read_input-s390x.o
+ld -s read_input-s390x.o
+</pre>
+
+<p>Pro ilustraci se podívejme na rozdíl mezi variantou pro procesory Intel a s/390x:</p>
+
+<a href="http://mojefedora.cz/wp-content/uploads/2016/06/03-1.png"><img class="alignnone size-thumbnail wp-image-7274" src="http://mojefedora.cz/wp-content/uploads/2016/06/03-1-499x254.png" alt="03" width="499" height="254" /></a>
+<p><i>Obrázek 3: Rozdíl mezi variantou programu pro architekturu i386/x86-64 a s/390x (deklarace).</i></p>
+
+<a href="http://mojefedora.cz/wp-content/uploads/2016/06/04-1.png"><img class="alignnone size-thumbnail wp-image-7275" src="http://mojefedora.cz/wp-content/uploads/2016/06/04-1-563x254.png" alt="04" width="563" height="254" /></a>
+<p><i>Obrázek 4: Rozdíl mezi variantou programu pro architekturu i386/x86-64 a s/390x (vlastní instrukce).</i></p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Konverze programu pro architekturu ARM</h2>
+
+<p>Další konverze zdrojového kódu určeného původně pro architekturu i386 bude provedena pro stále velmi populární 32bitovou architekturu ARM, tj.&nbsp;například pro oblíbené jednodeskové mikropočítače Raspberry Pi. Ve zdrojovém kódu si povšimněte několika změn, především použití znaku . (tečka) namísto $ (dolar) pro vyjádření aktuální adresy. Dále se odlišně zapisují komentáře, a to s&nbsp;využitím zavináče. Pro načtení adresy řetězce či bufferu se využívá instrukce <strong>ldr</strong> a namísto klíčového slova <strong>offset</strong> si v&nbsp;GNU Assembleru pro procesory ARM vystačíme se znakem = (rovná se), jehož přesný význam je vysvětlen v&nbsp;navazujícím textu. Podobně, jako je tomu u architektury s/390, i zde se pro zavolání služby jádra používá instrukce pojmenovaná <strong>svc</strong> (<i>service</i>). Výsledná podoba upraveného programu vypadá následovně:</p>
+
+<pre>
+# asmsyntax=as
+
+# Aplikace pro precteni dat ze standardniho vstupu
+# naprogramovana v assembleru GNU as - priklad pro ARM Thumb
+#
+# Autor: Pavel Tisnovsky
+
+
+
+# Linux kernel system call table
+sys_exit  = 1
+sys_read  = 3
+sys_write = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+
+message1:
+        .ascii "Enter your name: "         @ string, ktery NENI ukoncen nulou
+        message1len = . - message1         @ delka prvni zpravy
+
+message2:
+        .ascii "Hello "                    @ string, ktery NENI ukoncen nulou
+        message2len = . - message2         @ delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+        .lcomm input,  50                  @ rezervace 50 bajtu pro vstup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start                     @ tento symbol ma byt dostupny i z linkeru
+
+_start:
+        @ tisk prvni zpravy (vyzvy)
+        mov   r7, $sys_write               @ cislo syscallu pro funkci "write"
+        mov   r0, $std_output              @ standardni vystup
+        ldr   r1, =message1                @ adresa retezce, ktery se ma vytisknout
+        mov   r2, $message1len             @ pocet znaku, ktere se maji vytisknout
+        svc   0                            @ volani Linuxoveho kernelu
+
+        @ precteni vstupu od uzivatele
+        mov   r7, $sys_read                @ cislo syscallu pro funkci "read"
+        mov   r0, $std_input               @ standardni vstup
+        ldr   r1, =input                   @ adresa bufferu
+        mov   r2, $50                      @ maximalni delka zpravy
+        svc   0                            @ volani Linuxoveho kernelu
+
+        @ tisk druhe zpravy (zacatek odpovedi)
+        mov   r7, $sys_write               @ cislo syscallu pro funkci "write"
+        mov   r0, $std_output              @ standardni vystup
+        ldr   r1, =message2                @ adresa retezce, ktery se ma vytisknout
+        mov   r2, $message2len             @ pocet znaku, ktere se maji vytisknout
+        svc   0                            @ volani Linuxoveho kernelu
+
+        @ tisk vstupu od uzivatele
+        mov   r7, $sys_write               @ cislo syscallu pro funkci "write"
+        mov   r0, $std_output              @ standardni vystup
+        ldr   r1, =input                   @ adresa bufferu
+        mov   r2, $50                      @ delka (max delka)
+        svc   0                            @ volani Linuxoveho kernelu
+
+        mov   r7, $sys_exit                @ cislo sycallu pro funkci "exit"
+        mov   r0, #0                       @ exit code = 0
+        svc   0                            @ volani Linuxoveho kernelu
+</pre>
+
+<p>Překlad pro 32bitovou architekturu ARM zařídí tyto dva příkazy (spuštěné například na Raspberry Pi atd.):</p>
+
+<pre>
+as read_input-arm.s -o read_input-arm.o
+ld -s read_input-arm.o
+</pre>
+
+<p>Pro ilustraci se podívejme na rozdíl mezi variantou pro procesory Intel a 32bitové procesory ARM:</p>
+
+<a href="http://mojefedora.cz/wp-content/uploads/2016/06/05-1.png"><img class="alignnone size-thumbnail wp-image-7276" src="http://mojefedora.cz/wp-content/uploads/2016/06/05-1-514x254.png" alt="05" width="514" height="254" /></a>
+<p><i>Obrázek 5: Rozdíl mezi variantou programu pro architekturu i386/x86-64 a ARM (deklarace).</i></p>
+
+<a href="http://mojefedora.cz/wp-content/uploads/2016/06/06-1.png"><img class="alignnone size-thumbnail wp-image-7277" src="http://mojefedora.cz/wp-content/uploads/2016/06/06-1-557x254.png" alt="06" width="557" height="254" /></a>
+<p><i>Obrázek 6: Rozdíl mezi variantou programu pro architekturu i386/x86-64 a ARM (vlastní instrukce).</i></p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Specifika původní instrukční sady ARM a způsob řešení adresování v&nbsp;assembleru</h2>
+
+<p>Podívejme se nyní na zpětný překlad (disassembling) strojového kódu pro 32bitové procesory ARM. Použijeme tento příkaz:</p>
+
+<pre>
+objdump -f -d -t -h a.out
+</pre>
+
+<pre>
+a.out:     file format elf32-littlearm
+architecture: armv4, flags 0x00000102:
+EXEC_P, D_PAGED
+start address 0x00008074
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000068  00008074  00008074  00000074  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, CODE
+  1 .data         00000017  000100dc  000100dc  000000dc  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000038  000100f8  000100f8  000000f3  2**3
+                  ALLOC
+  3 .ARM.attributes 00000014  00000000  00000000  000000f3  2**0
+                  CONTENTS, READONLY
+SYMBOL TABLE:
+no symbols
+
+
+
+Disassembly of section .text:
+
+00008074 &lt;.text&gt;:
+    8074:       e3a07004        mov     r7, #4
+    8078:       e3a00001        mov     r0, #1
+    807c:       e59f104c        ldr     r1, [pc, #76]   ; 0x80d0
+    8080:       e3a02011        mov     r2, #17
+    8084:       ef000000        svc     0x00000000
+    8088:       e3a07003        mov     r7, #3
+    808c:       e3a00000        mov     r0, #0
+    8090:       e59f103c        ldr     r1, [pc, #60]   ; 0x80d4
+    8094:       e3a02032        mov     r2, #50 ; 0x32
+    8098:       ef000000        svc     0x00000000
+    809c:       e3a07004        mov     r7, #4
+    80a0:       e3a00001        mov     r0, #1
+    80a4:       e59f102c        ldr     r1, [pc, #44]   ; 0x80d8
+    80a8:       e3a02006        mov     r2, #6
+    80ac:       ef000000        svc     0x00000000
+    80b0:       e3a07004        mov     r7, #4
+    80b4:       e3a00001        mov     r0, #1
+    80b8:       e59f1014        ldr     r1, [pc, #20]   ; 0x80d4
+    80bc:       e3a02032        mov     r2, #50 ; 0x32
+    80c0:       ef000000        svc     0x00000000
+    80c4:       e3a07001        mov     r7, #1
+    80c8:       e3a00000        mov     r0, #0
+    80cc:       ef000000        svc     0x00000000
+    80d0:       000100dc        ldrdeq  r0, [r1], -ip
+    80d4:       000100f8        strdeq  r0, [r1], -r8
+    80d8:       000100ed        andeq   r0, r1, sp, ror #1
+</pre>
+
+<p>Na výpisu si povšimněte dvou faktů:</p>
+
+<ol>
+<li>Všechny instrukce mají konstantní šířku čtyř bajtů (32 bitů), bez ohledu na typ instrukce (typická RISCová architektura).</li>
+<li>Na samotném konci programu se zdánlivě nachází tři nové &bdquo;instrukce&ldquo;, které v&nbsp;původním kódu nejsou obsaženy.</li>
+</ol>
+
+<p>Oba dva fakty spolu souvisí:</p>
+
+<p>Kvůli konstantní šířce všech instrukcí může být problematické uložení konstanty či adresy do některého pracovního registru. Problém je to logický a vlastně shodný pro všechny &bdquo;klasické&ldquo; RISCové mikroprocesory: šířka pracovních registrů je 32 bitů a současně je šířka instrukcí taktéž 32 bitů, tudíž není možné, aby se v&nbsp;instrukci vedle operačního kódu nacházela i 32 bitová konstanta. Tvůrci dalších RISCových mikroprocesorů se s&nbsp;touto problematikou snažili vypořádat různým způsobem, například zavedli speciální instrukci pro naplnění horních šestnácti bitů registru, zatímco pro naplnění spodních šestnácti bitů bylo možné použít například instrukci <strong>ADD</strong> s&nbsp;konstantou a nulovým registrem <i>R0</i> (zhruba takovýmto způsobem je tato problematika řešena na mikroprocesorech <i>MIPS</i>). U mikroprocesorů ARM se zdá, že jeho konstruktéři nechtěli &bdquo;obětovat&ldquo; další tranzistory na podobné typy instrukcí, takže se pro načtení konstanty používá dvojice instrukcí se stejným formátem, jako mají ostatní aritmetické a logické instrukce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Význam</th></tr>
+<tr><td>1</td><td>MOV</td><td>načtení osmibitové konstanty 0..255</td></tr>
+<tr><td>2</td><td>MVN</td><td>načtení osmibitové konstanty s&nbsp;negací -1..-256</td></tr>
+</table>
+
+<p>To je samozřejmě pro mnoho účelů zcela nedostatečné, ovšem ve skutečnosti je možné tuto konstantu pomocí <i>barrel shifteru</i> posunout o sudý počet míst 0, 2, 4, .. 30, takže se ve skutečnosti celkový počet konstant zvyšuje na hodnotu 8192 z&nbsp;celkového množství kombinací 2<sup>32</sup>. Aby programátoři mohli relativně snadno načíst <strong>libovolnou</strong> konstantu do zvoleného registru, nabízí většina assemblerů pro mikroprocesory <i>ARM</i> pseudoinstrukci <strong>LDR</strong> ve tvaru:</p>
+
+<pre>
+LDR Rx, =konstanta
+</pre>
+
+<p>Podle hodnoty použité konstanty se tato instrukce buď převede na instrukci <strong>MOV</strong>, alternativně <strong>MVN</strong>, nebo na instrukci <strong>LDR</strong> načítající konstantu uloženou někde v&nbsp;programovém kódu (například za tělem subrutiny, kde lze vyhradit prostor pomocí direktivy LTORG). Tato konstanta je potom adresována relativně k&nbsp;hodnotě registru <i>PC</i>, pouze je nutné dát pozor na to, že offset pro relativní adresování má pouze dvanáct bitů, takže tato konstanta nemůže být uložena příliš &bdquo;daleko&ldquo; (na to ostatně upozorní assembler).</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výsledná podoba přeloženého binárního kódu pro ARM</h2>
+
+<p>Zkusme si nyní provést zpětný překlad (disassembling), ovšem s&nbsp;kódem, v&nbsp;němž zůstaly uloženy ladicí informace (při překladu i linkování se použit přepínač -g). Výsledek vypadá následovně:</p>
+
+<pre>
+a.out:     file format elf32-littlearm
+architecture: armv4, flags 0x00000112:
+EXEC_P, HAS_SYMS, D_PAGED
+start address 0x00008074
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000068  00008074  00008074  00000074  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, CODE
+  1 .data         00000017  000100dc  000100dc  000000dc  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000038  000100f8  000100f8  000000f3  2**3
+                  ALLOC
+  3 .ARM.attributes 00000014  00000000  00000000  000000f3  2**0
+                  CONTENTS, READONLY
+  4 .debug_aranges 00000020  00000000  00000000  00000108  2**3
+                  CONTENTS, READONLY, DEBUGGING
+  5 .debug_info   00000072  00000000  00000000  00000128  2**0
+                  CONTENTS, READONLY, DEBUGGING
+  6 .debug_abbrev 00000014  00000000  00000000  0000019a  2**0
+                  CONTENTS, READONLY, DEBUGGING
+  7 .debug_line   0000005b  00000000  00000000  000001ae  2**0
+                  CONTENTS, READONLY, DEBUGGING
+SYMBOL TABLE:
+00008074 l    d  .text  00000000 .text
+000100dc l    d  .data  00000000 .data
+000100f8 l    d  .bss   00000000 .bss
+00000000 l    d  .ARM.attributes        00000000 .ARM.attributes
+00000000 l    d  .debug_aranges 00000000 .debug_aranges
+00000000 l    d  .debug_info    00000000 .debug_info
+00000000 l    d  .debug_abbrev  00000000 .debug_abbrev
+00000000 l    d  .debug_line    00000000 .debug_line
+00000000 l    df *ABS*  00000000 read_input-arm.o
+00000001 l       *ABS*  00000000 sys_exit
+00000003 l       *ABS*  00000000 sys_read
+00000004 l       *ABS*  00000000 sys_write
+00000000 l       *ABS*  00000000 std_input
+00000001 l       *ABS*  00000000 std_output
+000100dc l       .data  00000000 message1
+00000011 l       *ABS*  00000000 message1len
+000100ed l       .data  00000000 message2
+00000006 l       *ABS*  00000000 message2len
+000100f8 l     O .bss   00000032 input
+00010130 g       .bss   00000000 _bss_end__
+000100f3 g       .bss   00000000 __bss_start__
+00010130 g       .bss   00000000 __bss_end__
+00008074 g       .text  00000000 _start
+000100f3 g       .bss   00000000 __bss_start
+00010130 g       .bss   00000000 __end__
+000100f3 g       .data  00000000 _edata
+00010130 g       .bss   00000000 _end
+
+
+
+Disassembly of section .text:
+
+00008074 &lt;_start&gt;:
+    8074:       e3a07004        mov     r7, #4
+    8078:       e3a00001        mov     r0, #1
+    807c:       e59f104c        ldr     r1, [pc, #76]   ; 80d0 &lt;_start+0x5c&gt;
+    8080:       e3a02011        mov     r2, #17
+    8084:       ef000000        svc     0x00000000
+    8088:       e3a07003        mov     r7, #3
+    808c:       e3a00000        mov     r0, #0
+    8090:       e59f103c        ldr     r1, [pc, #60]   ; 80d4 &lt;_start+0x60&gt;
+    8094:       e3a02032        mov     r2, #50 ; 0x32
+    8098:       ef000000        svc     0x00000000
+    809c:       e3a07004        mov     r7, #4
+    80a0:       e3a00001        mov     r0, #1
+    80a4:       e59f102c        ldr     r1, [pc, #44]   ; 80d8 &lt;_start+0x64&gt;
+    80a8:       e3a02006        mov     r2, #6
+    80ac:       ef000000        svc     0x00000000
+    80b0:       e3a07004        mov     r7, #4
+    80b4:       e3a00001        mov     r0, #1
+    80b8:       e59f1014        ldr     r1, [pc, #20]   ; 80d4 &lt;_start+0x60&gt;
+    80bc:       e3a02032        mov     r2, #50 ; 0x32
+    80c0:       ef000000        svc     0x00000000
+    80c4:       e3a07001        mov     r7, #1
+    80c8:       e3a00000        mov     r0, #0
+    80cc:       ef000000        svc     0x00000000
+    80d0:       000100dc        .word   0x000100dc
+    80d4:       000100f8        .word   0x000100f8
+    80d8:       000100ed        .word   0x000100ed
+</pre>
+
+<p>Povšimněte si, že nyní jsou poslední tři 32bitová slova korektně rozpoznána jako 32bitové konstanty (adresy řetězců a bufferu) a taktéž toho, že u instrukcí <strong>ldr</strong> je nyní přímo uvedeno, že se (relativně) adresují právě tyto konstanty. Načtení je tedy nepřímé &ndash; z&nbsp;adresy řekněme PC+0x60 (absolutně 0x80d4) je načtena 32bitová konstanta chápaná jako adresa řetězce či bufferu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Přepis programu pro čtení vstupu od uživatele do syntaxe NASMu</h2>
+
+<p>Před dalšími úpravami a otestováním programu na platformě Intel (architektury i386 a x86_64) provedeme přepis celého programu do syntaxe kompatibilní s&nbsp;Netwide Assemblerem (NASM). Již z&nbsp;předchozího dílu víme, že samotný zápis je sice v&nbsp;mnoha ohledech odlišný (jiný formát komentářů či zápisů konstant, zjednodušení při práci s&nbsp;adresami), ovšem základní koncepty zůstávají (a musí zůstat) zachovány. Odlišnosti najdeme například v&nbsp;pojmenování konstant (<strong>equ</strong>), v&nbsp;adresování (není nutné používat slovo <strong>offset</strong>), v&nbsp;alokaci bufferu v&nbsp;sekci <strong>.bss</strong> pomocí pseudooperace <strong>resb</strong> (<i>reserve bytes</i>) a v&nbsp;jiném znaku určeném pro zápis jednořádkových komentářů:</p>
+
+<pre>
+; asmsyntax=nasm
+
+; Aplikace pro precteni dat ze standardniho vstupu.
+;
+; Autor: Pavel Tisnovsky
+
+
+
+; Linux kernel system call table
+sys_exit  equ 1
+sys_read  equ 3
+sys_write equ 4
+
+; Dalsi konstanty pouzite v programu - standardni streamy
+std_input  equ 0
+std_output equ 1
+
+
+
+;-----------------------------------------------------------------------------
+section .data
+        message1:   db 'Enter your name: '
+        message1len equ $-message1        ; delka prvni zpravy
+
+        message2:   db 'Hello '
+        message2len equ $-message2        ; delka druhe zpravy
+
+
+
+;-----------------------------------------------------------------------------
+section .bss
+        input  resb 50                    ; rezervace 50 bajtu pro vstup
+
+
+
+;-----------------------------------------------------------------------------
+section .text
+        global _start                     ; tento symbol ma byt dostupny i linkeru
+
+_start:
+        ; tisk prvni zpravy (vyzvy uzivateli)
+        mov   eax, sys_write              ; cislo syscallu pro funkci "write"
+        mov   ebx, std_output             ; standardni vystup
+        mov   ecx, message1               ; adresa retezce, ktery se ma vytisknout
+        mov   edx, message1len            ; pocet znaku, ktere se maji vytisknout
+        int   80h                         ; volani Linuxoveho kernelu
+
+        ; precteni vstupu od uzivatele
+        mov   eax, sys_read               ; cislo syscallu pro funkci "read"
+        mov   ebx, std_input              ; standardni vstup
+        mov   ecx, input                  ; adresa bufferu
+        mov   edx, 50                     ; maximalni delka zpravy
+        int   80h                         ; volani Linuxoveho kernelu
+
+        ; tisk druhe zpravy (zacatek odpovedi)
+        mov   eax, sys_write              ; cislo syscallu pro funkci "write"
+        mov   ebx, std_output             ; standardni vystup
+        mov   ecx, message2               ; adresa retezce, ktery se ma vytisknout
+        mov   edx, message2len            ; pocet znaku, ktere se maji vytisknout
+        int   80h                         ; volani Linuxoveho kernelu
+
+        ; tisk vstupu od uzivatele
+        mov   eax, sys_write              ; cislo syscallu pro funkci "write"
+        mov   ebx, std_output             ; standardni vystup
+        mov   ecx, input                  ; adresa bufferu
+        mov   edx, 50                     ; delka (max delka)
+        int   80h                         ; volani Linuxoveho kernelu
+
+        mov   eax, sys_exit               ; cislo sycallu pro funkci "exit"
+        mov   ebx, 0                      ; exit code = 0
+        int   80h                         ; volani Linuxoveho kernelu
+</pre>
+
+<p>Překlad a slinkování do 32bitového kódu určeného pro procesory řady i386:</p>
+
+<pre>
+nasm -felf32 read_input_1.asm
+ld -s read_input_1.o
+</pre>
+
+<p>Překlad a slinkování do 64bitového kódu:</p>
+
+<pre>
+nasm -felf64 read_input_1.asm
+ld -s read_input_1.o
+</pre>
+
+<a href="http://mojefedora.cz/wp-content/uploads/2016/06/07.png"><img class="alignnone size-thumbnail wp-image-7278" src="http://mojefedora.cz/wp-content/uploads/2016/06/07-520x254.png" alt="07" width="520" height="254" /></a>
+<p><i>Obrázek 7: Rozdíl mezi variantou programu vytvořenou v&nbsp;GNU Assembleru s&nbsp;variantou určenou pro Netwide Assembler (deklarace).</i></p>
+
+<a href="http://mojefedora.cz/wp-content/uploads/2016/06/08.png"><img class="alignnone size-thumbnail wp-image-7279" src="http://mojefedora.cz/wp-content/uploads/2016/06/08-546x254.png" alt="08" width="546" height="254" /></a>
+<p><i>Obrázek 8: Rozdíl mezi variantou programu vytvořenou v&nbsp;GNU Assembleru s&nbsp;variantou určenou pro Netwide Assembler (vlastní instrukce).</i></p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Otestování programu a zjištění některých problémů</h2>
+
+<p>Pokud si jakýkoli z&nbsp;výše uvedených programů otestujeme, zjistíme, že nepracují zcela korektně. Zkusme otestování provést takto:</p>
+
+<pre>
+echo "test1" | ./a.out &gt; check.txt
+echo "test2" | ./a.out &gt;&gt; check.txt
+echo "zprava, ktera musi byt delsi nez padesat znaku, predana programu" | ./a.out &gt;&gt; check.txt
+echo "zaverecny test" | ./a.out &gt;&gt; check.txt
+</pre>
+
+<p>Výsledný soubor si prohlédneme včetně všech skrytých znaků:</p>
+
+<pre>
+xxd -g1 check.txt
+</pre>
+
+<pre>
+0000000: 45 6e 74 65 72 20 79 6f 75 72 20 6e 61 6d 65 3a  Enter your name:
+0000010: 20 48 65 6c 6c 6f 20 74 65 73 74 31 0a 00 00 00   Hello test1....
+0000020: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+0000030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+0000040: 00 00 00 00 00 00 00 00 00 45 6e 74 65 72 20 79  .........Enter y
+0000050: 6f 75 72 20 6e 61 6d 65 3a 20 48 65 6c 6c 6f 20  our name: Hello 
+0000060: 74 65 73 74 32 0a 00 00 00 00 00 00 00 00 00 00  test2...........
+0000070: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+0000080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+0000090: 00 00 45 6e 74 65 72 20 79 6f 75 72 20 6e 61 6d  ..Enter your nam
+00000a0: 65 3a 20 48 65 6c 6c 6f 20 7a 70 72 61 76 61 2c  e: Hello zprava,
+00000b0: 20 6b 74 65 72 61 20 6d 75 73 69 20 62 79 74 20   ktera musi byt 
+00000c0: 64 65 6c 73 69 20 6e 65 7a 20 70 61 64 65 73 61  delsi nez padesa
+00000d0: 74 20 7a 6e 61 6b 75 2c 20 70 72 45 6e 74 65 72  t znaku, prEnter
+00000e0: 20 79 6f 75 72 20 6e 61 6d 65 3a 20 48 65 6c 6c   your name: Hell
+00000f0: 6f 20 7a 61 76 65 72 65 63 6e 79 20 74 65 73 74  o zaverecny test
+0000100: 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+0000110: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+0000120: 00 00 00 00                                      ....
+</pre>
+
+<p>Problém samozřejmě spočívá v&nbsp;tom, že si nikam nezapisujeme počet skutečně přečtených bajtů, takže se vytiskne vždy celý buffer, který obsahuje výplňové nuly. Způsob řešení tohoto problému si vysvětlíme příště.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny dnes popisované demonstrační příklady byly společně s&nbsp;podpůrnými skripty uloženy do GIT repositáře dostupného na adrese <a href="https://github.com/tisnik/presentations/">https://github.com/tisnik/presentations/</a>. Následuje tabulka s&nbsp;odkazy na zdrojové kódy příkladů i na již zmíněné podpůrné skripty:</p>
+
+<h3>Čtení vstupu od uživatel: verze pro i386, x86-64, s/390, s/390x a ARM s&nbsp;Thumb</h3>
+
+<table>
+<tr><th> #</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td> 1</td><td>read_input.s      </td><td>program pro i386/x86-64       </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input.s">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input.s</a></td></tr>
+<tr><td> 2</td><td>read_input-arm.s  </td><td>program pro ARM (32bit)       </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input-arm.s">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input-arm.s</a></td></tr>
+<tr><td> 3</td><td>read_input-s390.s </td><td>program pro s/390             </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input-s390.s">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input-s390.s</a></td></tr>
+<tr><td> 4</td><td>read_input-s390x.s</td><td>program pro s/390x            </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input-s390x.s">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/read_input-s390x.s</a></td></tr>
+<tr><td> 5</td><td>assemble          </td><td>skript pro překlad na i386    </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/assemble">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/assemble</a></td></tr>
+<tr><td> 6</td><td>as_arm            </td><td>skript pro překlad na ARMu    </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/as_arm">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/as_arm</a></td></tr>
+<tr><td> 7</td><td>as_ibm_s390       </td><td>skript pro překlad na s/390   </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/as_ibm_s390">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/as_ibm_s390</a></td></tr>
+<tr><td> 8</td><td>as_ibm_s390x      </td><td>skript pro překlad na s/390x  </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/as_ibm_s390x">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/as_ibm_s390x</a></td></tr>
+<tr><td> 9</td><td>disassemble       </td><td>skript pro disassembling      </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/disassemble</a></td></tr>
+<tr><td>10</td><td>disassemble-arm   </td><td>skript pro disassembling (ARM)</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/disassemble-arm">https://github.com/tisnik/presentations/blob/master/assembler/07_gas_read_input/disassemble-arm</a></td></tr>
+</table>
+
+<h3>Čtení vstupu od uživatele: první verze přepsaná do syntaxe NASMu</h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>read_input_1.asm   </td><td>program pro NASM            </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/read_input_1.asm">https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/read_input_1.asm</a></td></tr>
+<tr><td>2</td><td>assemble_i386      </td><td>skript pro překlad na i386  </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/assemble_i386">https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/assemble_i386</a></td></tr>
+<tr><td>3</td><td>assemble_x86_64    </td><td>skript pro překlad na x86/64</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/assemble_x86_64">https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/assemble_x86_64</a></td></tr>
+<tr><td>4</td><td>disassemble        </td><td>skript pro disassembling    </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/08_nasm_read_input/disassemble</a></td></tr>
+</table>
+
+<h3>Čtení vstupu od uživatele: druhá verze pro lepší otestování chování programu</h3>
+
+<p>(podrobněji bude popsána příště)</p>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>read_input_2.asm   </td><td>program pro NASM            </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/read_input_2.asm">https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/read_input_2.asm</a></td></tr>
+<tr><td>2</td><td>assemble_i386      </td><td>skript pro překlad na i386  </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/assemble_i386">https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/assemble_i386</a></td></tr>
+<tr><td>3</td><td>assemble_x86_64    </td><td>skript pro překlad na x86/64</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/assemble_x86_64">https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/assemble_x86_64</a></td></tr>
+<tr><td>4</td><td>disassemble        </td><td>skript pro disassembling    </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/disassemble</a></td></tr>
+<tr><td>5</td><td>check              </td><td>skript pro test funkčnosti  </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/check">https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/check</a></td></tr>
+<tr><td>6</td><td>check.txt          </td><td>výsledek testu              </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/check.txt">https://github.com/tisnik/presentations/blob/master/assembler/09_nasm_check_read_input/check.txt</a></td></tr>
+</table>
+
+<h3>Čtení vstupu od uživatele: třetí verze se zapamatováním délky vstupního řetězce</h3>
+
+<p>(podrobněji bude popsána příště)</p>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>read_input_3.asm   </td><td>program pro NASM            </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/read_input_3.asm">https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/read_input_3.asm</a></td></tr>
+<tr><td>2</td><td>assemble_i386      </td><td>skript pro překlad na i386  </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/assemble_i386">https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/assemble_i386</a></td></tr>
+<tr><td>3</td><td>assemble_x86_64    </td><td>skript pro překlad na x86/64</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/assemble_x86_64">https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/assemble_x86_64</a></td></tr>
+<tr><td>4</td><td>disassemble        </td><td>skript pro disassembling    </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/disassemble</a></td></tr>
+<tr><td>5</td><td>check              </td><td>skript pro test funkčnosti  </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/check">https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/check</a></td></tr>
+<tr><td>6</td><td>check.txt          </td><td>výsledek testu              </td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/check.txt">https://github.com/tisnik/presentations/blob/master/assembler/10_nasm_better_read_input/check.txt</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Linux assemblers: A comparison of GAS and NASM<br />
+<a href="http://www.ibm.com/developerworks/library/l-gas-nasm/index.html">http://www.ibm.com/developerworks/library/l-gas-nasm/index.html</a>
+</li>
+
+<li>Programovani v assembleru na OS Linux<br />
+<a href="http://www.cs.vsb.cz/grygarek/asm/asmlinux.html">http://www.cs.vsb.cz/grygarek/asm/asmlinux.html</a>
+</li>
+
+<li>Is it worthwhile to learn x86 assembly language today?<br />
+<a href="https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1">https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1</a>
+</li>
+
+<li>Why Learn Assembly Language?<br />
+<a href="http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language">http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language</a>
+</li>
+
+<li>Is Assembly still relevant?<br />
+<a href="http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant">http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant</a>
+</li>
+
+<li>Why Learning Assembly Language Is Still a Good Idea<br />
+<a href="http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html">http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html</a>
+</li>
+
+<li>Assembly language today<br />
+<a href="http://beust.com/weblog/2004/06/23/assembly-language-today/">http://beust.com/weblog/2004/06/23/assembly-language-today/</a>
+</li>
+
+<li>Assembler: Význam assembleru dnes<br />
+<a href="http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz">http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz</a>
+</li>
+
+<li>Assembler pod Linuxem<br />
+<a href="http://phoenix.inf.upol.cz/linux/prog/asm.html">http://phoenix.inf.upol.cz/linux/prog/asm.html</a>
+</li>
+
+<li>AT&amp;T Syntax versus Intel Syntax<br />
+<a href="https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html">https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html</a>
+</li>
+
+<li>Linux Assembly website<br />
+<a href="http://asm.sourceforge.net/">http://asm.sourceforge.net/</a>
+</li>
+
+<li>Using Assembly Language in Linux<br />
+<a href="http://asm.sourceforge.net/articles/linasm.html">http://asm.sourceforge.net/articles/linasm.html</a>
+</li>
+
+<li>vasm<br />
+<a href="http://sun.hasenbraten.de/vasm/">http://sun.hasenbraten.de/vasm/</a>
+</li>
+
+<li>vasm &ndash; dokumentace<br />
+<a href="http://sun.hasenbraten.de/vasm/release/vasm.html">http://sun.hasenbraten.de/vasm/release/vasm.html</a>
+</li>
+
+<li>The Yasm Modular Assembler Project<br />
+<a href="http://yasm.tortall.net/">http://yasm.tortall.net/</a>
+</li>
+
+<li>680x0:AsmOne<br />
+<a href="http://www.amigacoding.com/index.php/680x0:AsmOne">http://www.amigacoding.com/index.php/680x0:AsmOne</a>
+</li>
+
+<li>ASM-One Macro Assembler<br />
+<a href="http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler">http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler</a>
+</li>
+
+<li>ASM-One pages<br />
+<a href="http://www.theflamearrows.info/documents/asmone.html">http://www.theflamearrows.info/documents/asmone.html</a>
+</li>
+
+<li>Základní informace o ASM-One<br />
+<a href="http://www.theflamearrows.info/documents/asminfo.html">http://www.theflamearrows.info/documents/asminfo.html</a>
+</li>
+
+<li>Linux Syscall Reference<br />
+<a href="http://syscalls.kernelgrok.com/">http://syscalls.kernelgrok.com/</a>
+</li>
+
+<li>Programming from the Ground Up Book - Summary<br />
+<a href="http://savannah.nongnu.org/projects/pgubook/">http://savannah.nongnu.org/projects/pgubook/</a>
+</li>
+
+<li>IBM System 360/370 Compiler and Historical Documentation<br />
+<a href="http://www.edelweb.fr/Simula/">http://www.edelweb.fr/Simula/</a>
+</li>
+
+<li>IBM 700/7000 series<br />
+<a href="http://en.wikipedia.org/wiki/IBM_700/7000_series">http://en.wikipedia.org/wiki/IBM_700/7000_series</a>
+</li>
+
+<li>IBM System/360<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/360">http://en.wikipedia.org/wiki/IBM_System/360</a>
+</li>
+
+<li>IBM System/370<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/370">http://en.wikipedia.org/wiki/IBM_System/370</a>
+</li>
+
+<li>Mainframe family tree and chronology<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html</a>
+</li>
+
+<li>704 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html</a>
+</li>
+
+<li>705 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html</a>
+</li>
+
+<li>The IBM 704<br />
+<a href="http://www.columbia.edu/acis/history/704.html">http://www.columbia.edu/acis/history/704.html</a>
+</li>
+
+<li>IBM Mainframe album<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html</a>
+</li>
+
+<li>Osmibitové muzeum<br />
+<a href="http://osmi.tarbik.com/">http://osmi.tarbik.com/</a>
+</li>
+
+<li>Tesla PMI-80<br />
+<a href="http://osmi.tarbik.com/cssr/pmi80.html">http://osmi.tarbik.com/cssr/pmi80.html</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://en.wikipedia.org/wiki/PMI-80">http://en.wikipedia.org/wiki/PMI-80</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016">http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
