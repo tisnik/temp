@@ -1,0 +1,960 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Použití assembleru v Linuxu: volání podprogramů a použití zásobníku</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Použití assembleru v Linuxu: volání podprogramů a použití zásobníku</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V šesté části seriálu o použití assembleru v&nbsp;Linuxu se seznámíme se základními způsoby manipulace se zásobníkem na mikroprocesorech s&nbsp;architekturami i386 a x86_64. Popíšeme si především instrukce <strong>CALL</strong>, <strong>RET</strong>, <strong>PUSH</strong> a <strong>POP</strong> i použití relativního adresování při přístupu k&nbsp;parametrům volaných funkcí, což je základ pro vytváření takzvaných zásobníkových rámců &ndash; <i>stack frames</i>.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Použití assembleru v&nbsp;Linuxu: volání podprogramů a použití zásobníku</a></p>
+<p><a href="#k02">2. Strojová instrukce <strong>CALL</strong></a></p>
+<p><a href="#k03">3. Strojová instrukce <strong>RET</strong></a></p>
+<p><a href="#k04">4. Vytvoření podprogramů (subrutin) v&nbsp;assembleru</a></p>
+<p><a href="#k05">5. První demonstrační příklad: otestování chování instrukcí <strong>CALL</strong> a <strong>RET</strong></a></p>
+<p><a href="#k06">6. Použití zásobníku pro předávání parametrů volané funkci</a></p>
+<p><a href="#k07">7. Meziuložení návratové adresy podprogramu v&nbsp;pracovním registru</a></p>
+<p><a href="#k08">8. Druhý demonstrační příklad: ukládání parametrů na zásobník</a></p>
+<p><a href="#k09">9. Relativní adresování hodnot uložených na zásobníku</a></p>
+<p><a href="#k10">10. Třetí demonstrační příklad: volací sekvence, v&nbsp;níž parametry odstraňuje volající kód</a></p>
+<p><a href="#k11">11. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Použití assembleru v&nbsp;Linuxu: volání podprogramů, použití zásobníku</h2>
+
+<p>V&nbsp;předchozích částech tohoto seriálu jsme se seznámili se základními instrukcemi, které nalezneme u většiny mikroprocesorových architektur. Připomeňme si, že se jednalo především o instrukce určené pro přenosy dat mezi pracovními registry, dále pak o instrukce používané pro načítání a ukládání dat z/do operační paměti, základní aritmetické instrukce (součet, rozdíl), instrukci pro porovnání dvou operandů (v&nbsp;podstatě rozdíl bez uložení výsledku) a v&nbsp;neposlední řadě jsme se zmínili i o podmíněných a nepodmíněných skocích i o jejich použití při implementaci programových smyček a rozhodovacích struktur.</p>
+
+<p>To však samozřejmě není vše, protože nesmíme zapomenout na to, že programy, a to i mnohé programy psané v&nbsp;assembleru, jsou rozděleny do relativně samostatných subrutin (podprogramů) a procesory tedy musí obsahovat nějaké instrukce určené pro volání těchto subrutin, pro návrat ze subrutin a pro případné předání parametrů volaným subrutinám. Při volání subrutiny je nutné si nějakým způsobem zapamatovat adresu, na níž se řízení programu vrátí po provedení celé subrutiny. V&nbsp;závislosti na architektuře procesoru se návratové adresy ukládají buď na zásobník (i386, x86_64) či do takzvaného link registru (ARM a některé další RISCové architektury).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Strojová instrukce <strong>CALL</strong></h2>
+
+<p>Pro implementaci podprogramů, které je možné v&nbsp;případě potřeby volat i rekurzivně, obsahuje většina mikroprocesorových architektur speciální instrukce určené pro skok do podprogramu a taktéž instrukci či instrukce starající se o návrat z&nbsp;podprogramu. Dnes si řekneme, jak jsou tyto instrukce implementovány na mikroprocesorech s&nbsp;architekturou i386 (a odvozeně i s&nbsp;architekturou x86_64). Instrukce pro skok do podprogramu se jmenuje <strong>CALL</strong> (význam tohoto jména je pravděpodobně zřejmý) a o návrat z&nbsp;podprogramu se stará instrukce <strong>RET</strong> (odvozeno od slova <i>return</i>).</p>
+
+<p>Skok do podprogramu je realizován prakticky stejným způsobem jako běžný skok, což konkrétně znamená, že adresa zapsaná za operačním kódem instrukce je vložena do registru <strong>PC</strong>, čímž dojde k&nbsp;přemístění řízení na uvedenou adresu. Ovšem původní hodnota registru <strong>PC</strong> je ještě před provedením skoku uložena na zásobník, takže si mikroprocesor vlastně zapamatuje, na které adrese se před skokem do podprogramu nacházel (ukazatel na vrchol zásobníku je uschován v&nbsp;registru <strong>SP</strong>, s&nbsp;nímž se dnes ještě setkáme).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Strojová instrukce <strong>RET</strong></h2>
+
+<p>Instrukce <strong>RET</strong> vyjme hodnotu uloženou na vrcholu zásobníku a přenese ji do pracovního registru <strong>PC</strong> (ve skutečnosti se ovšem během operací CALL/RET do tohoto registru přenese hodnota zvýšená o konstantu 5, protože samotná instrukce <strong>CALL</strong> má v&nbsp;32bitovém režimu mikroprocesorů Intel délku přesně pěti bajtů). To znamená, že po provedení instrukce <strong>RET</strong> se řízení programu vrátí na adresu, která leží těsně <i>za</i> původní instrukcí <strong>CALL</strong>.</p>
+
+<p>Pokud se volaný podprogram postará o automatickou obnovu obsahu všech pracovních registrů, je možné takový podprogram (subrutinu) zavolat prakticky kdekoli, a to bez strachu z&nbsp;toho, že se nějakým způsobem &bdquo;pokazí&ldquo; běh hlavního programu (ostatně podobně by se měly v&nbsp;ideálním případě chovat i funkce či metody deklarované ve vyšších programovacích jazycích). Samozřejmě zbývá vyřešit problematiku předávání parametrů volným podprogramům a taktéž předávání návratové hodnoty (hodnot) zpět do volajícího kódu. Uvidíme, že se tento problém dá řešit hned několika různými způsoby.</p>
+
+<p>Poznámka: instrukci <strong>RET</strong> je možné v&nbsp;případě potřeby použít ve funkci &bdquo;aritmetického GOTO&ldquo;. Jedná se o příkaz známý například z&nbsp;některých interpretů programovacího jazyka Basic, ve kterých bylo možné provádět skok na řádek, jehož číslo bylo vypočtené pomocí aritmetického výrazu (podobně se však používá i přímý skok realizovaný instrukcí <strong>JMP</strong> s&nbsp;pracovním registrem použitým namísto konstantní adresy). V&nbsp;dobách masivního používání ručně optimalizovaného assembleru se tato technika využívala poměrně často, například při implementaci rozhodovacích tabulek (<i>decision tables</i>), popřípadě jako náhrada za strukturovaný příkaz typu <i>switch-case</i>.</p>
+
+<p>Tento způsob využití (či spíše přesněji řečeno většinou zneužití) zásobníku je v&nbsp;některých případech použit například i při pokusu o napadení nativních aplikací, kdy se útočník snaží změnit vstupní data takovým způsobem, aby se poškodila návratová adresa <a href="https://en.wikipedia.org/wiki/Buffer_overflow#Stack-based_exploitation">uložená na zásobníku</a> a následně se provedl skok na nějakou pro útočníka &bdquo;zajímavou&ldquo; funkci (login atd.).</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Vytvoření podprogramů (subrutin) v&nbsp;assembleru</h2>
+
+<p>Strojové instrukce <strong>CALL</strong> a <strong>RET</strong> jsou použity i v&nbsp;dnešním prvním demonstračním příkladu. Samotné tělo tohoto demonstračního příkladu je tvořeno pouhými třemi instrukcemi, které postupně zavolají podprogramy určené pro vytištění první zprávy na standardní výstup, následně pro vytištění druhé zprávy (opět na standardní výstup) a nakonec se zavolá podprogram, který celý proces ukončí (samozřejmě s&nbsp;využitím příslušného syscallu). Ve skutečnosti je zajištěno, že se z&nbsp;tohoto posledního podprogramu již řízení zpět nikdy nevrátí, takže by zde mohla být namísto instrukce <strong>CALL</strong> použita instrukce <strong>JMP</strong> pro provedení nepodmíněného skoku.</p>
+
+<p>Z&nbsp;úryvku zdrojového kódu je zřejmé, jak se instrukce <strong>CALL</strong> zapisuje společně s&nbsp;návěštím podprogramu (konkrétní adresa, na níž je podprogram uložen, se vypočte automaticky assemblerem a uvidíme ji při pohledu do vygenerovaného objektového kódu):</p>
+
+<pre>
+call  writeFirstMessage      # zavolani podprogramu pro vytisteni prvni zpravy
+call  writeSecondMessage     # zavolani podprogramu pro vytisteni druhe zpravy
+call  exit                   # zavolani podprogramu pro ukonceni procesu
+</pre>
+
+<p>Jednotlivé podprogramy vždy musí končit instrukcí <strong>RET</strong>, která zajistí přečtení návratové adresy ze zásobníku a skok na tuto adresu. Příkladem je podprogram určený pro vytištění první zprávy, který naplní pracovní registry <strong>ECX</strong> a <strong>EDX</strong> a nakonec zavolá další podprogram:</p>
+
+<pre>
+writeFirstMessage:
+        mov   ecx, offset message1   # adresa retezce, ktery se ma vytisknout
+        mov   edx, message1len       # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        ret                          # navrat z podprogramu
+</pre>
+
+<p>Podprogram začínající na návěští <strong>writeMessage</strong> očekává, že v&nbsp;pracovních registrech <strong>ECX</strong> a <strong>EDX</strong> bude předána adresa zprávy a její délka. Následně se naplní obsahy dalších dvou pracovních registrů <strong>EAX</strong> a <strong>EBX</strong> a provede se syscall (zavolání služby jádra operačního systému):</p>
+
+<pre>
+writeMessage:
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        ret                          # navrat z podprogramu
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. První demonstrační příklad: otestování chování instrukcí <strong>CALL</strong> a <strong>RET</strong></h2>
+
+<p>Výše uvedené fragmenty podprogramů jsou použity v&nbsp;dnešním prvním demonstračním příkladu, jehož úplný zdrojový kód je vypsán pod tímto odstavcem:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani chovani instrukci CALL a RET
+# - pouzita je "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+# Linux kernel system call table
+sys_exit   = 1
+sys_write  = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+message1:                          # adresa prvni zpravy
+        .string "Hello World\n"
+message1len = $ - message1 - 1     # delka prvni zpravy
+
+message2:                          # adresa druhe zpravy
+        .string "Assembler je fajn\n"
+message2len = $ - message2 - 1     # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start               # tento symbol ma byt dostupny i linkeru
+
+_start:
+        call  writeFirstMessage      # zavolani podprogramu pro vytisteni prvni zpravy
+        call  writeSecondMessage     # zavolani podprogramu pro vytisteni druhe zpravy
+        call  exit                   # zavolani podprogramu pro ukonceni procesu
+
+
+
+# Podprogram pro vytisteni prvni zpravy
+writeFirstMessage:
+        mov   ecx, offset message1   # adresa retezce, ktery se ma vytisknout
+        mov   edx, message1len       # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni druhe zpravy
+writeSecondMessage:
+        mov   ecx, offset message2   # adresa retezce, ktery se ma vytisknout
+        mov   edx, message2len       # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni zpravy na standardni vystup
+# Ocekava se, ze v ecx bude adresa zpravy a v edx jeji delka
+writeMessage:
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro ukonceni procesu zavolanim syscallu
+exit:
+        mov   eax, sys_exit          # cislo sycallu pro funkci "exit"
+        mov   ebx, 0                 # exit code = 0
+        int   0x80                   # volani Linuxoveho kernelu
+
+# finito
+</pre>
+
+<p>Při překladu a linkování si musíme dát pozor na to, aby se generoval 32bitový kód. Je tomu tak z&nbsp;toho důvodu, že v&nbsp;64bitovém režimu není možné na zásobník ukládat 32bitové konstanty. Příklad by samozřejmě bylo možné pro plně 64bitový systém upravit, ovšem této relativně obsáhlé problematice se budeme věnovat později (navíc bude 32bitový kód na 64bitovém systému fungovat). Povšimněte si, že v&nbsp;prvním kroku (spuštění assembleru) používáme přepínač --32 a ve druhém kroku (spuštění linkeru) naopak přepínač -m elf_i386:</p>
+
+<pre>
+as -g --32 subroutines-1.s -o subroutines-1.o
+ld -m elf_i386 -s subroutines-1.o
+</pre>
+
+<p>Zajímavé bude se podívat na obsah vygenerovaného objektového kódu, zejména na tu část, v&nbsp;níž jsou použity instrukce <strong>CALL</strong> a <strong>RET</strong>:</p>
+
+<pre>
+<strong>objdump -M intel-mnemonic -f -d -t -h subroutines-1.o</strong>
+
+subroutines-1.o:     file format elf32-i386
+architecture: i386, flags 0x00000011:
+HAS_RELOC, HAS_SYMS
+start address 0x00000000
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000048  00000000  00000000  00000034  2**0
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .data         00000020  00000000  00000000  0000007c  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000000  00000000  00000000  0000009c  2**0
+                  ALLOC
+SYMBOL TABLE:
+00000000 l    d  .text	00000000 .text
+00000000 l    d  .data	00000000 .data
+00000000 l    d  .bss	00000000 .bss
+00000001 l       *ABS*	00000000 sys_exit
+00000004 l       *ABS*	00000000 sys_write
+00000000 l       *ABS*	00000000 std_input
+00000001 l       *ABS*	00000000 std_output
+00000000 l       .data	00000000 message1
+0000000c l       *ABS*	00000000 message1len
+0000000d l       .data	00000000 message2
+00000012 l       *ABS*	00000000 message2len
+0000000f l       .text	00000000 writeFirstMessage
+0000001f l       .text	00000000 writeSecondMessage
+0000003c l       .text	00000000 exit
+0000002f l       .text	00000000 writeMessage
+00000000 g       .text	00000000 _start
+
+
+
+Disassembly of section .text:
+
+00000000 &lt;_start&gt;:
+   0:	e8 0a 00 00 00       	call   f &lt;writeFirstMessage&gt;
+   5:	e8 15 00 00 00       	call   1f &lt;writeSecondMessage&gt;
+   a:	e8 2d 00 00 00       	call   3c &lt;exit&gt;
+
+0000000f &lt;writeFirstMessage&gt;:
+   f:	b9 00 00 00 00       	mov    ecx,0x0
+  14:	ba 0c 00 00 00       	mov    edx,0xc
+  19:	e8 11 00 00 00       	call   2f &lt;writeMessage&gt;
+  1e:	c3                   	ret    
+
+0000001f &lt;writeSecondMessage&gt;:
+  1f:	b9 0d 00 00 00       	mov    ecx,0xd
+  24:	ba 12 00 00 00       	mov    edx,0x12
+  29:	e8 01 00 00 00       	call   2f &lt;writeMessage&gt;
+  2e:	c3                   	ret    
+
+0000002f &lt;writeMessage&gt;:
+  2f:	b8 04 00 00 00       	mov    eax,0x4
+  34:	bb 01 00 00 00       	mov    ebx,0x1
+  39:	cd 80                	int    0x80
+  3b:	c3                   	ret    
+
+0000003c &lt;exit&gt;:
+  3c:	b8 01 00 00 00       	mov    eax,0x1
+  41:	bb 00 00 00 00       	mov    ebx,0x0
+  46:	cd 80                	int    0x80
+</pre>
+
+<p>Povšimněte si rozdílného kódování instrukcí <strong>CALL</strong> pro volání subrutiny nazvané <strong>writeMessage</strong>. První volání nalezneme na adrese 0x00000019, druhé volání pak na adrese 0x00000029:</p>
+
+<pre>
+  19:	e8 11 00 00 00       	call   2f &lt;writeMessage&gt;
+
+  29:	e8 01 00 00 00       	call   2f &lt;writeMessage&gt;
+
+0000002f &lt;writeMessage&gt;:
+</pre>
+
+<p>Samotná subrutina <strong>writeMessage</strong> je uložena na adrese <strong>0x0000002f</strong>, ovšem v&nbsp;prvním instrukčním slovu vidíme adresu <strong>0x00000011</strong> (zakódovanou v&nbsp;sekvenci bajtů 0x11 0x00 0x00 0x00, první bajt s&nbsp;hodnotou 0xe8 je kód instrukce <strong>CALL</strong>) a ve druhém instrukčním slovu vidíme adresu <strong>0x00000001</strong>. Je tomu tak z&nbsp;toho důvodu, že se ve skutečnosti jedná o relativní adresu: v&nbsp;prvním případě 0x00000019+0x11=0x0000002a, což se od skutečné absolutní adresy 0x0000002f liší přesně o hodnotu 5, tedy o délku instrukce <strong>CALL</strong>. Podobně je tomu samozřejmě i ve druhém případě. Mimochodem &ndash; díky tomu, že se pro cíle skoků nepoužívají absolutní adresy, ale adresy relativní, je možné takové programy nebo jejich části přesouvat v&nbsp;operační paměti. Takovému kódu se říká pozičně nezávislý kód (<i>position-independent code &ndash; PIC</i>), i když je samozřejmě nutné dodržet i některé další požadavky.</p>
+
+<p>Instrukce <strong>RET</strong> je naproti tomu až absurdně jednoduchá &ndash; je zakódována v&nbsp;jediném bajtu.</p>
+
+<p>Poznámka: ve skutečnosti existuje hned několik adresovacích režimů podporovaných instrukcí <strong>CALL</strong>, viz též jejich popis na stránce <a href="https://pdos.csail.mit.edu/6.828/2007/readings/i386/CALL.htm">https://pdos.csail.mit.edu/6.828/2007/readings/i386/CALL.htm</a>.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Použití zásobníku pro předávání parametrů volané funkci</h2>
+
+<p>Problematika předávání parametrů podprogramům je většinou řešena buď předáváním parametrů na zásobníku či alternativně předáváním parametrů v&nbsp;pracovních registrech. Druhý způsob &ndash; použití pracovních registrů &ndash; jsme si již vlastně ukázali v&nbsp;předchozím demonstračním příkladu, takže se nyní podívejme, jak lze pro tento účel využít zásobník. Ve skutečnosti to není nic těžkého, protože instrukční soubor mikroprocesorů s&nbsp;architekturou i386 i x86_64 pro tento účel obsahuje dvojici instrukcí <strong>PUSH</strong> a <strong>POP</strong>. Instrukce <strong>PUSH</strong> slouží pro uložení konstanty či obsahu pracovního registru na vrchol zásobníku (ukazatel uložený v&nbsp;pracovním registru <strong>SP</strong> se automaticky změní).</p>
+
+<p>Opakem instrukce <strong>PUSH</strong> je instrukce nazvaná <strong>POP</strong>, která naopak přenese data ze zásobníku do zvoleného pracovního registru. Předpokládejme například, že podprogram <strong>writeMessage</strong> očekává, že při jeho zavolání budou na zásobníku uloženy tři hodnoty: návratová adresa (vložená instrukcí <strong>CALL</strong>), počet znaků, které se mají vytisknout (tj.&nbsp;délka zprávy) a adresa zprávy. Připomeňme si, že zásobník je struktura typu <i>LIFO (Last In, First Out)</i>, tj.&nbsp;naposledy vložená hodnota je ze zásobníku načtena jako první.</p>
+
+<p>Volání podprogramu nazvaného <strong>writeMessage</strong> je tedy ve skutečnosti velmi jednoduché, pouze si musíme dát pozor na pořadí hodnot ukládaných na zásobník:</p>
+
+<pre>
+# Podprogram pro vytisteni prvni zpravy
+writeFirstMessage:
+        push  offset message1        # adresa retezce, ktery se ma vytisknout
+        push  message1len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        ret                          # navrat z podprogramu
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Meziuložení návratové adresy podprogramu v&nbsp;pracovním registru</h2>
+
+<p>Poněkud složitější je situace uvnitř podprogramu, neboť zde potřebujeme ze zásobníku získat délku zprávy a její adresu. Při použití instrukce <strong>POP</strong> nám na vrcholu zásobníku &bdquo;přebývá&ldquo; návratová adresa, kterou nesmíme ztratit, protože bude na konci podprogramu použita instrukcí <strong>RET</strong>. Jedno z&nbsp;možných řešení je následující &ndash; návratovou adresu si na chvíli uložíme do nějakého nepoužívaného pracovního registru (například <strong>EBP</strong>) a těsně před provedením instrukce <strong>RET</strong> obsah tohoto registru opět vložíme na zásobník. Výsledek sice není ideální, ale jeho předností je, že ho lze použít i na procesorech s&nbsp;omezenými adresovacími schopnostmi:</p>
+
+<pre>
+writeMessage:
+        pop   ebp                    # ulozime na chvili navratovou adresu do EBP
+        pop   edx                    # ziskame v poradi druhy ulozeny parametr
+        pop   ecx                    # ziskame v poradi prvni ulozeny parametr
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        push  ebp                    # obnovime navratovou adresu
+        ret                          # navrat z podprogramu
+</pre>
+
+<p>Povšimněte si, že si při operaci se zásobníkem stále vystačíme pouze s&nbsp;instrukcemi <strong>PUSH</strong> a <strong>POP</strong> (nepřímo též <strong>CALL</strong> a <strong>RET</strong>). Zásobník je &bdquo;vyvážený&ldquo; v&nbsp;tom smyslu, že hodnoty uložené do něj volajícím kódem jsou v&nbsp;podprogramu nazvaném <strong>writeMessage</strong> automaticky odstraněny, takže po návratu z&nbsp;tohoto podprogramu má zásobník opět takovou kapacitu, jako před uložením parametrů tohoto podprogramu.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Druhý demonstrační příklad: ukládání parametrů na zásobník</h2>
+
+<p>Podívejme se nyní na úplný zdrojový kód dnešního druhého demonstračního příkladu, v&nbsp;němž se používá výše popsané předávání parametrů volaným subrutinám přes zásobník:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani chovani instrukci CALL a RET spolecne
+# s ukladanim parametru na zasobnik
+# - pouzita je "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+# Linux kernel system call table
+sys_exit   = 1
+sys_write  = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+message1:                          # adresa prvni zpravy
+        .string "Hello World\n"
+message1len = $ - message1 - 1     # delka prvni zpravy
+
+message2:                          # adresa druhe zpravy
+        .string "Assembler je fajn\n"
+message2len = $ - message2 - 1     # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start               # tento symbol ma byt dostupny i linkeru
+
+_start:
+        call  writeFirstMessage      # zavolani podprogramu pro vytisteni prvni zpravy
+        call  writeSecondMessage     # zavolani podprogramu pro vytisteni druhe zpravy
+        call  exit                   # zavolani podprogramu pro ukonceni procesu
+
+
+
+# Podprogram pro vytisteni prvni zpravy
+writeFirstMessage:
+        push  offset message1        # adresa retezce, ktery se ma vytisknout
+        push  message1len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni druhe zpravy
+writeSecondMessage:
+        push  offset message2        # adresa retezce, ktery se ma vytisknout
+        push  message2len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni zpravy na standardni vystup
+# Ocekava se, ze v ecx bude adresa zpravy a v edx jeji delka
+writeMessage:
+        pop   ebp                    # ulozime na chvili navratovou adresu do EBP
+        pop   edx                    # ziskame v poradi druhy ulozeny parametr
+        pop   ecx                    # ziskame v poradi prvni ulozeny parametr
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        push  ebp                    # obnovime navratovou adresu
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro ukonceni procesu zavolanim syscallu
+exit:
+        mov   eax, sys_exit          # cislo sycallu pro funkci "exit"
+        mov   ebx, 0                 # exit code = 0
+        int   0x80                   # volani Linuxoveho kernelu
+
+# finito
+</pre>
+
+<p>Překlad se opět provede v&nbsp;režimu 32bitových procesorů Intel:</p>
+
+<pre>
+as -g --32 subroutines-2.s -o subroutines-2.o
+ld -m elf_i386 -s subroutines-2.o
+</pre>
+
+<p>Na disassemblovaném výpisu se můžeme podívat na způsob kódování instrukčních slov <strong>CALL</strong>, <strong>RET</strong>, <strong>PUSH</strong>, <strong>POP</strong> atd.:</p>
+
+<pre>
+<strong>objdump -M intel-mnemonic -f -d -t -h subroutines-2.o</strong>
+
+subroutines-2.o:     file format elf32-i386
+architecture: i386, flags 0x00000011:
+HAS_RELOC, HAS_SYMS
+start address 0x00000000
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000046  00000000  00000000  00000034  2**0
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .data         00000020  00000000  00000000  0000007a  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000000  00000000  00000000  0000009a  2**0
+                  ALLOC
+SYMBOL TABLE:
+00000000 l    d  .text	00000000 .text
+00000000 l    d  .data	00000000 .data
+00000000 l    d  .bss	00000000 .bss
+00000001 l       *ABS*	00000000 sys_exit
+00000004 l       *ABS*	00000000 sys_write
+00000000 l       *ABS*	00000000 std_input
+00000001 l       *ABS*	00000000 std_output
+00000000 l       .data	00000000 message1
+0000000c l       *ABS*	00000000 message1len
+0000000d l       .data	00000000 message2
+00000012 l       *ABS*	00000000 message2len
+0000000f l       .text	00000000 writeFirstMessage
+0000001c l       .text	00000000 writeSecondMessage
+0000003a l       .text	00000000 exit
+00000029 l       .text	00000000 writeMessage
+00000000 g       .text	00000000 _start
+
+
+
+Disassembly of section .text:
+
+00000000 &lt;_start&gt;:
+   0:	e8 0a 00 00 00       	call   f &lt;writeFirstMessage&gt;
+   5:	e8 12 00 00 00       	call   1c &lt;writeSecondMessage&gt;
+   a:	e8 2b 00 00 00       	call   3a &lt;exit&gt;
+
+0000000f &lt;writeFirstMessage&gt;:
+   f:	68 00 00 00 00       	push   0x0
+  14:	6a 0c                	push   0xc
+  16:	e8 0e 00 00 00       	call   29 &lt;writeMessage&gt;
+  1b:	c3                   	ret    
+
+0000001c &lt;writeSecondMessage&gt;:
+  1c:	68 0d 00 00 00       	push   0xd
+  21:	6a 12                	push   0x12
+  23:	e8 01 00 00 00       	call   29 &lt;writeMessage&gt;
+  28:	c3                   	ret    
+
+00000029 &lt;writeMessage&gt;:
+  29:	5d                   	pop    ebp
+  2a:	5a                   	pop    edx
+  2b:	59                   	pop    ecx
+  2c:	b8 04 00 00 00       	mov    eax,0x4
+  31:	bb 01 00 00 00       	mov    ebx,0x1
+  36:	cd 80                	int    0x80
+  38:	55                   	push   ebp
+  39:	c3                   	ret    
+
+0000003a &lt;exit&gt;:
+  3a:	b8 01 00 00 00       	mov    eax,0x1
+  3f:	bb 00 00 00 00       	mov    ebx,0x0
+  44:	cd 80                	int    0x80
+</pre>
+
+<p>Za zmínku stojí fakt, že instrukce <strong>PUSH</strong> a <strong>POP</strong> pracující s&nbsp;registrem mají délku pouhý jeden bajt. Ještě zajímavější je kódování instrukce <strong>PUSH</strong> s&nbsp;konstantou:</p>
+
+<table>
+<tr><th>Instrukce</th><th>Význam</th><th>Kódování</th></tr>
+<tr><td>push offset message1</td><td>uložení 32bitové adresy/konstanty</td><td>0x6a + jeden bajt</td></tr>
+<tr><td>push message1len    </td><td>uložení 8bitové konstanty</td><td>0x68 + čtyři bajty</td></tr>
+</table>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Relativní adresování hodnot uložených na zásobníku</h2>
+
+<p>Způsobů, jak předávat parametry volaným subrutinám, existuje větší množství. Jeden ze způsobů, který je (po dalších úpravách) používán, spočívá v&nbsp;tom, že se o obnovu původního obsahu zásobníku stará volající kód. Ten tedy nejprve uloží na zásobník všechny parametry volané subrutiny, následně subrutinu skutečně zavolá (uloží na ni tedy ještě návratovou adresu) a po návratu zásobník obnoví. V&nbsp;našem případě to znamená uvolnění celkem osmi bajtů, což zajistí buď dvě operace <strong>POP</strong> nebo jednodušeji operace snižující ukazatel na vrchol zásobníku o hodnotu osm (<strong>ADD ESP, 8</strong>):</p>
+
+<pre>
+writeFirstMessage:
+        push  offset message1        # adresa retezce, ktery se ma vytisknout
+        push  message1len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        add   esp, 8                 # obnoveni puvodni adresy vrcholu zasobniku
+        ret                          # navrat z podprogramu
+</pre>
+
+<p>V&nbsp;subrutině taktéž dojde ke změně &ndash; parametry se ze zásobníku nemusí (a nesmí) odstraňovat, takže je můžeme adresovat relativně přes registr <strong>ESP</strong>. Na adrese <strong>[ESP]</strong> je uložena návratová adresa subrutiny, na adrese <strong>[ESP+4]</strong> poslední (zde druhý) parametr, na adrese <strong>[ESP+8]</strong> předposlední (zde první) parametr atd.:</p>
+
+<pre>
+# Podprogram pro vytisteni zpravy na standardni vystup
+# Ocekava se, ze v ecx bude adresa zpravy a v edx jeji delka
+writeMessage:
+        mov   edx, [esp+4]           # precteni v poradi druheho parametru ze zasobniku
+        mov   ecx, [esp+8]           # precteni v poradi prvniho parametru ze zasobniku
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        ret                          # navrat z podprogramu
+</pre>
+
+<p>Po mírných úpravách se tento způsob používá pro vytváření zásobníkových rámců, které si popíšeme příště.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Třetí demonstrační příklad: volací sekvence, v&nbsp;níž parametry odstraňuje volající kód</h2>
+
+<p>Opět se podívejme na implementaci výše popsaného předávání a čtení parametrů v&nbsp;demonstračním příkladu:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani chovani instrukci CALL a RET spolecne
+# s ukladanim parametru na zasobnik
+# - pouzita je "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+# Linux kernel system call table
+sys_exit   = 1
+sys_write  = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+message1:                          # adresa prvni zpravy
+        .string "Hello World\n"
+message1len = $ - message1 - 1     # delka prvni zpravy
+
+message2:                          # adresa druhe zpravy
+        .string "Assembler je fajn\n"
+message2len = $ - message2 - 1     # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start               # tento symbol ma byt dostupny i linkeru
+
+_start:
+        call  writeFirstMessage      # zavolani podprogramu pro vytisteni prvni zpravy
+        call  writeSecondMessage     # zavolani podprogramu pro vytisteni druhe zpravy
+        call  exit                   # zavolani podprogramu pro ukonceni procesu
+
+
+
+# Podprogram pro vytisteni prvni zpravy
+writeFirstMessage:
+        push  offset message1        # adresa retezce, ktery se ma vytisknout
+        push  message1len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        add   esp, 8                 # obnoveni puvodni adresy vrcholu zasobniku
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni druhe zpravy
+writeSecondMessage:
+        push  offset message2        # adresa retezce, ktery se ma vytisknout
+        push  message2len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        add   esp, 8                 # obnoveni puvodni adresy vrcholu zasobniku
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni zpravy na standardni vystup
+# Ocekava se, ze v ecx bude adresa zpravy a v edx jeji delka
+writeMessage:
+        mov   edx, [esp+4]           # precteni v poradi druheho parametru ze zasobniku
+        mov   ecx, [esp+8]           # precteni v poradi prvniho parametru ze zasobniku
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro ukonceni procesu zavolanim syscallu
+exit:
+        mov   eax, sys_exit          # cislo sycallu pro funkci "exit"
+        mov   ebx, 0                 # exit code = 0
+        int   0x80                   # volani Linuxoveho kernelu
+
+# finito
+</pre>
+
+<p>Překlad tohoto demonstračního příkladu se opět provede v&nbsp;režimu 32bitových procesorů Intel:</p>
+
+<pre>
+as -g --32 subroutines-3.s -o subroutines-3.o
+ld -m elf_i386 -s subroutines-3.o
+</pre>
+
+<p>Na disassemblovaném výpisu se podíváme na to, jak vlastně vypadá adresování parametrů uložených na zásobníku:</p>
+
+<pre>
+<strong>objdump -M intel-mnemonic -f -d -t -h subroutines-3.o</strong>
+
+subroutines-3.o:     file format elf32-i386
+architecture: i386, flags 0x00000011:
+HAS_RELOC, HAS_SYMS
+start address 0x00000000
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000050  00000000  00000000  00000034  2**0
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .data         00000020  00000000  00000000  00000084  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000000  00000000  00000000  000000a4  2**0
+                  ALLOC
+SYMBOL TABLE:
+00000000 l    d  .text	00000000 .text
+00000000 l    d  .data	00000000 .data
+00000000 l    d  .bss	00000000 .bss
+00000001 l       *ABS*	00000000 sys_exit
+00000004 l       *ABS*	00000000 sys_write
+00000000 l       *ABS*	00000000 std_input
+00000001 l       *ABS*	00000000 std_output
+00000000 l       .data	00000000 message1
+0000000c l       *ABS*	00000000 message1len
+0000000d l       .data	00000000 message2
+00000012 l       *ABS*	00000000 message2len
+0000000f l       .text	00000000 writeFirstMessage
+0000001f l       .text	00000000 writeSecondMessage
+00000044 l       .text	00000000 exit
+0000002f l       .text	00000000 writeMessage
+00000000 g       .text	00000000 _start
+
+
+
+Disassembly of section .text:
+
+00000000 &lt;_start&gt;:
+   0:	e8 0a 00 00 00       	call   f &lt;writeFirstMessage&gt;
+   5:	e8 15 00 00 00       	call   1f &lt;writeSecondMessage&gt;
+   a:	e8 35 00 00 00       	call   44 &lt;exit&gt;
+
+0000000f &lt;writeFirstMessage&gt;:
+   f:	68 00 00 00 00       	push   0x0
+  14:	6a 0c                	push   0xc
+  16:	e8 14 00 00 00       	call   2f &lt;writeMessage&gt;
+  1b:	83 c4 08             	add    esp,0x8
+  1e:	c3                   	ret    
+
+0000001f &lt;writeSecondMessage&gt;:
+  1f:	68 0d 00 00 00       	push   0xd
+  24:	6a 12                	push   0x12
+  26:	e8 04 00 00 00       	call   2f &lt;writeMessage&gt;
+  2b:	83 c4 08             	add    esp,0x8
+  2e:	c3                   	ret    
+
+0000002f &lt;writeMessage&gt;:
+  2f:	8b 54 24 04          	mov    edx,DWORD PTR [esp+0x4]
+  33:	8b 4c 24 08          	mov    ecx,DWORD PTR [esp+0x8]
+  37:	b8 04 00 00 00       	mov    eax,0x4
+  3c:	bb 01 00 00 00       	mov    ebx,0x1
+  41:	cd 80                	int    0x80
+  43:	c3                   	ret    
+
+00000044 &lt;exit&gt;:
+  44:	b8 01 00 00 00       	mov    eax,0x1
+  49:	bb 00 00 00 00       	mov    ebx,0x0
+  4e:	cd 80                	int    0x80
+</pre>
+
+<p>Instrukce <strong>mov edx, [esp+0x04]</strong> je zakódována do čtyř bajtů, což je vlastně relativně malá velikost, zvláště když si uvědomíme, že v&nbsp;instrukčním slovu musí být zakódován cílový registr, zdrojový registr a relativní adresa (tedy konstanta):</p>
+
+<pre>
+  2f:	8b 54 24 04          	mov    edx,DWORD PTR [esp+0x4]
+</pre>
+
+<p>Z&nbsp;referenční příručky můžeme zjistit, že kód 0x8B znamená:</p>
+
+<pre>
+MOV   r16/32   r/m16/32
+</pre>
+
+<p>Další bajt 0x54 znamená registr <strong>EDX</strong> a současně způsob zápisu druhé adresy REG+offset. Třetí bajt 0x24 specifikuje druhý registr, kterým je <strong>ESP</strong> a čtvrtý bajt 0x04 je kýžený offset (kódování instrukcí u procesorů ARM je značně jednodušší).</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny tři dnes popisované demonstrační příklady byly společně s&nbsp;podpůrnými skripty určenými pro jejich překlad či naopak pro disassembling uloženy do GIT repositáře dostupného na adrese <a href="https://github.com/tisnik/presentations/">https://github.com/tisnik/presentations/</a>. Všechny dnešní příklady jsou určené pro GNU Assembler a využívají přitom Intel syntaxi. Následuje tabulka s&nbsp;odkazy na zdrojové kódy příkladů i na již zmíněné podpůrné skripty:</p>
+
+<h3>První demonstrační příklad: otestování chování instrukcí <strong>CALL</strong> a <strong>RET</strong></h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>subroutines-1.s</td><td>program pro GNU Assembler</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/15_subroutines-1/subroutines-1.s">https://github.com/tisnik/presentations/blob/master/assembler/15_subroutines-1/subroutines-1.s</a></td></tr>
+<tr><td>2</td><td>assemble</td><td>skript pro překlad na procesorech i386</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/15_subroutines-1/assemble">https://github.com/tisnik/presentations/blob/master/assembler/15_subroutines-1/assemble</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/15_subroutines-1/assemble">https://github.com/tisnik/presentations/blob/master/assembler/15_subroutines-1/assemble</a></td></tr>
+</table>
+
+<h3>Druhý demonstrační příklad: ukládání parametrů na zásobník</h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>subroutines-2.s</td><td>program pro GNU Assembler</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/16_subroutines-2/subroutines-2.s">https://github.com/tisnik/presentations/blob/master/assembler/16_subroutines-2/subroutines-2.s</a></td></tr>
+<tr><td>2</td><td>assemble</td><td>skript pro překlad na procesorech i386</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/16_subroutines-2/assemble">https://github.com/tisnik/presentations/blob/master/assembler/16_subroutines-2/assemble</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/16_subroutines-2/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/16_subroutines-2/disassemble</a></td></tr>
+</table>
+
+<h3>Třetí demonstrační příklad: volací sekvence, v&nbsp;níž parametry odstraňuje volající kód</h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>subroutines-3.s</td><td>program pro GNU Assembler</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/17_subroutines-3/subroutines-3.s">https://github.com/tisnik/presentations/blob/master/assembler/17_subroutines-3/subroutines-3.s</a></td></tr>
+<tr><td>2</td><td>assemble</td><td>skript pro překlad na procesorech i386</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/17_subroutines-3/assemble">https://github.com/tisnik/presentations/blob/master/assembler/17_subroutines-3/assemble</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/17_subroutines-3/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/17_subroutines-3/disassemble</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>ASM Flags<br />
+<a href="http://www.cavestory.org/guides/csasm/guide/asm_flags.html">http://www.cavestory.org/guides/csasm/guide/asm_flags.html</a>
+</li>
+
+<li>Status Register<br />
+<a href="https://en.wikipedia.org/wiki/Status_register">https://en.wikipedia.org/wiki/Status_register</a>
+</li>
+
+<li>Intel x86 JUMP quick reference<br />
+<a href="http://unixwiz.net/techtips/x86-jumps.html">http://unixwiz.net/techtips/x86-jumps.html</a>
+</li>
+
+<li>Linux assemblers: A comparison of GAS and NASM<br />
+<a href="http://www.ibm.com/developerworks/library/l-gas-nasm/index.html">http://www.ibm.com/developerworks/library/l-gas-nasm/index.html</a>
+</li>
+
+<li>Programovani v assembleru na OS Linux<br />
+<a href="http://www.cs.vsb.cz/grygarek/asm/asmlinux.html">http://www.cs.vsb.cz/grygarek/asm/asmlinux.html</a>
+</li>
+
+<li>Is it worthwhile to learn x86 assembly language today?<br />
+<a href="https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1">https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1</a>
+</li>
+
+<li>Why Learn Assembly Language?<br />
+<a href="http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language">http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language</a>
+</li>
+
+<li>Is Assembly still relevant?<br />
+<a href="http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant">http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant</a>
+</li>
+
+<li>Why Learning Assembly Language Is Still a Good Idea<br />
+<a href="http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html">http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html</a>
+</li>
+
+<li>Assembly language today<br />
+<a href="http://beust.com/weblog/2004/06/23/assembly-language-today/">http://beust.com/weblog/2004/06/23/assembly-language-today/</a>
+</li>
+
+<li>Assembler: Význam assembleru dnes<br />
+<a href="http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz">http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz</a>
+</li>
+
+<li>Assembler pod Linuxem<br />
+<a href="http://phoenix.inf.upol.cz/linux/prog/asm.html">http://phoenix.inf.upol.cz/linux/prog/asm.html</a>
+</li>
+
+<li>AT&amp;T Syntax versus Intel Syntax<br />
+<a href="https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html">https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html</a>
+</li>
+
+<li>Linux Assembly website<br />
+<a href="http://asm.sourceforge.net/">http://asm.sourceforge.net/</a>
+</li>
+
+<li>Using Assembly Language in Linux<br />
+<a href="http://asm.sourceforge.net/articles/linasm.html">http://asm.sourceforge.net/articles/linasm.html</a>
+</li>
+
+<li>vasm<br />
+<a href="http://sun.hasenbraten.de/vasm/">http://sun.hasenbraten.de/vasm/</a>
+</li>
+
+<li>vasm &ndash; dokumentace<br />
+<a href="http://sun.hasenbraten.de/vasm/release/vasm.html">http://sun.hasenbraten.de/vasm/release/vasm.html</a>
+</li>
+
+<li>The Yasm Modular Assembler Project<br />
+<a href="http://yasm.tortall.net/">http://yasm.tortall.net/</a>
+</li>
+
+<li>680x0:AsmOne<br />
+<a href="http://www.amigacoding.com/index.php/680x0:AsmOne">http://www.amigacoding.com/index.php/680x0:AsmOne</a>
+</li>
+
+<li>ASM-One Macro Assembler<br />
+<a href="http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler">http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler</a>
+</li>
+
+<li>ASM-One pages<br />
+<a href="http://www.theflamearrows.info/documents/asmone.html">http://www.theflamearrows.info/documents/asmone.html</a>
+</li>
+
+<li>Základní informace o ASM-One<br />
+<a href="http://www.theflamearrows.info/documents/asminfo.html">http://www.theflamearrows.info/documents/asminfo.html</a>
+</li>
+
+<li>Linux Syscall Reference<br />
+<a href="http://syscalls.kernelgrok.com/">http://syscalls.kernelgrok.com/</a>
+</li>
+
+<li>Programming from the Ground Up Book - Summary<br />
+<a href="http://savannah.nongnu.org/projects/pgubook/">http://savannah.nongnu.org/projects/pgubook/</a>
+</li>
+
+<li>IBM System 360/370 Compiler and Historical Documentation<br />
+<a href="http://www.edelweb.fr/Simula/">http://www.edelweb.fr/Simula/</a>
+</li>
+
+<li>IBM 700/7000 series<br />
+<a href="http://en.wikipedia.org/wiki/IBM_700/7000_series">http://en.wikipedia.org/wiki/IBM_700/7000_series</a>
+</li>
+
+<li>IBM System/360<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/360">http://en.wikipedia.org/wiki/IBM_System/360</a>
+</li>
+
+<li>IBM System/370<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/370">http://en.wikipedia.org/wiki/IBM_System/370</a>
+</li>
+
+<li>Mainframe family tree and chronology<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html</a>
+</li>
+
+<li>704 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html</a>
+</li>
+
+<li>705 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html</a>
+</li>
+
+<li>The IBM 704<br />
+<a href="http://www.columbia.edu/acis/history/704.html">http://www.columbia.edu/acis/history/704.html</a>
+</li>
+
+<li>IBM Mainframe album<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html</a>
+</li>
+
+<li>Osmibitové muzeum<br />
+<a href="http://osmi.tarbik.com/">http://osmi.tarbik.com/</a>
+</li>
+
+<li>Tesla PMI-80<br />
+<a href="http://osmi.tarbik.com/cssr/pmi80.html">http://osmi.tarbik.com/cssr/pmi80.html</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://en.wikipedia.org/wiki/PMI-80">http://en.wikipedia.org/wiki/PMI-80</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016">http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016</a>
+</li>
+
+<li>The 6502 overflow flag explained mathematically <br />
+<a href="http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html">http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html</a>
+</li>
+
+<li>X86 Opcode and Instruction Reference<br />
+<a href="http://ref.x86asm.net/coder32.html">http://ref.x86asm.net/coder32.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
