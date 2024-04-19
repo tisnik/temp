@@ -1,0 +1,953 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Použití assembleru v Linuxu: zásobníkové rámce na architektuře Intel, volání podprogramů na architektuře ARM</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Použití assembleru v Linuxu: zásobníkové rámce na architektuře Intel, volání podprogramů na architektuře ARM</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;sedmé části seriálu o použití assembleru v&nbsp;Linuxu se budeme zabývat dvěma oblastmi. První oblastí je vytváření a používání zásobníkových rámců (<i>stack frames</i>) při volání subrutin, druhou oblastí pak problematiko volání subrutin na mikroprocesorech s&nbsp;architekturou ARM, která nepoužívá pro uložení návratové adresy klasický zásobník, ale takzvaný link registr (LR).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Použití assembleru v&nbsp;Linuxu: zásobníkové rámce na architektuře Intel, volání podprogramů na architektuře ARM</a></p>
+<p><a href="#k02">2. Vytvoření zásobníkového rámce</a></p>
+<p><a href="#k03">3. Demonstrační příklad: vytvoření a použití zásobníkového rámce v&nbsp;assembleru</a></p>
+<p><a href="#k04">4. Jak vypadá práce se zásobníkovým rámcem v&nbsp;přeloženém céčkovém kódu</a></p>
+<p><a href="#k05">5. Jednoduchý demonstrační příklad a jeho prozkoumání nástrojem <strong>objdump</strong></a></p>
+<p><a href="#k06">6. Výpis generovaných instrukcí přímo v&nbsp;době překladu</a></p>
+<p><a href="#k07">7. Disassemblovaný výpis kombinovaný s&nbsp;původním zdrojovým kódem</a></p>
+<p><a href="#k08">8. Použití syntaxe obvyklé na platformě procesorů Intel</a></p>
+<p><a href="#k09">9. Volání podprogramů na procesorech s&nbsp;architekturou ARM</a></p>
+<p><a href="#k10">10. Další varianty instrukcí pro skok do podprogramu s&nbsp;uložením návratové adresy</a></p>
+<p><a href="#k11">11. Skok do podprogramu při splnění určené podmínky</a></p>
+<p><a href="#k12">12. Návrat z&nbsp;podprogramu</a></p>
+<p><a href="#k13">13. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Použití assembleru v&nbsp;Linuxu: zásobníkové rámce na architektuře Intel, volání podprogramů na architektuře ARM</h2>
+
+<p>V&nbsp;první části dnešního článku si vysvětlíme, jak vypadá standardní zásobníkový rámec na architektuře i386 i x86-64. Použití zásobníkových rámců vyžaduje od programátorů a tvůrců překladačů dodržování určitých konvencí při volání subrutin a předávání parametrů těmto subrutinám, na druhou stranu se však usnadňuje ladění (zásobníkové rámce jsou mezi sebou prolinkované přes návratové adresy) i tvorba knihoven, u nichž se dodržuje jednotný standard. Ve druhé části si řekneme, jakým způsobem se na architektuře ARM využívá takzvaný Link Register (LN) při volání subrutin.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Vytvoření zásobníkového rámce</h2>
+
+<p>Podívejme se nyní na to, jak je možné zásobníkový rámec vytvořit &bdquo;ručně&ldquo; v&nbsp;assembleru. Nejprve si ukažme způsob volání subrutiny, pro kterou se zásobníkový rámec vytváří:</p>
+
+<pre>
+<strong>push</strong>  offset message1        # adresa retezce, ktery se ma vytisknout
+<strong>push</strong>  message1len            # pocet znaku, ktere se maji vytisknout
+<strong>call</strong>  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+<strong>add</strong>   esp, 8                 # obnoveni puvodni adresy vrcholu zasobniku
+</pre>
+
+<p>Vidíme, že před zavoláním subrutiny se na zásobník uloží dva parametry, z&nbsp;nichž každý má délku čtyři bajty (to sice nemusí být zcela zřejmé, ale instrukce <strong>push</strong> v&nbsp;32bitovém prostředí takto pracuje). Dále se zavolá subrutina, která &bdquo;něco&ldquo; vykoná a po návratu ze subrutiny volající kód odstraní ze zásobníku oba parametry. To lze udělat buď dvojicí instrukcí <strong>pop</strong>, ovšem posunutí ukazatele na vrchol zásobníku o osm bajtů je rychlejší i kratší.</p>
+
+<p>Samotná subrutina začíná těmito instrukcemi (<i>prologem</i>):</p>
+
+<pre>
+<strong>push</strong>  ebp                    # ulozeni registru EBP na zasobnik
+<strong>mov</strong>   ebp, esp               # s ESP je nyni mozne manipulovat
+</pre>
+
+<p>Po provedení těchto instrukcí obsahuje registr <strong>EBP</strong> adresu báze zásobníkového rámce. V&nbsp;tomto okamžiku totiž máme jistotu, že:</p>
+
+<ol>
+<li>Na adrese [EBP] je uložena původní hodnota EBP.</li>
+<li>Na adrese [EBP+4] je uložena návratová adresa ze subrutiny.</li>
+<li>Na adrese [EBP+8] je první parametr volané subrutiny atd. (parametry se ukládají v&nbsp;opačném pořadí).</li>
+<li>Na adresu [EBP-4] lze uložit první lokální proměnnou atd.</li>
+</ol>
+
+<p>Povšimněte si, že díky adresování pomocí registru <strong>EBP</strong> a offsetu je přístup k&nbsp;parametrům i k&nbsp;lokálním proměnným jednoznačný. Pokud by se měla volat jiná subrutina, lze <strong>ESP</strong> posunout operací <strong>ADD</strong> a to o takový blok, který odpovídá lokálním proměnným (a jejich zarovnání).</p>
+
+<p>Subrutina končí standardním <i>epilogem</i> sloužícího k&nbsp;obnovení hodnoty <strong>ESP</strong>, obnovení hodnoty <strong>EBP</strong> (ze zásobníku nyní adresovaného <strong>ESP</strong>) a návratu se subrutiny::</p>
+
+<pre>
+<strong>mov</strong>   esp, ebp               # obnoveni puvodni hodnoty ESP
+<strong>pop</strong>   ebp                    # obnoveni registru EBP ze zasobniku
+<strong>ret</strong>                          # navrat z podprogramu
+</pre>
+
+<p>První dvě instrukce lze nahradit speciální instrukcí <strong>LEAVE</strong>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad: vytvoření a použití zásobníkového rámce v&nbsp;assembleru</h2>
+
+<p>Zásobníkový rámec je použit v&nbsp;subrutině nazvané <strong>writeMessage</strong>, která se součástí dnešního prvního demonstračního příkladu. Zdrojový kód tohoto příkladu (používající Intel syntaxi) vypadá následovně:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani chovani instrukci CALL a RET spolecne
+# s ukladanim parametru na zasobnik. Emulace standardni volaci konvence.
+# - pouzita je "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+# Linux kernel system call table
+sys_exit   = 1
+sys_write  = 4
+
+# Dalsi konstanty pouzite v programu - standardni streamy
+std_input  = 0
+std_output = 1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+message1:                          # adresa prvni zpravy
+        .string "Hello World\n"
+message1len = $ - message1 - 1     # delka prvni zpravy
+
+message2:                          # adresa druhe zpravy
+        .string "Assembler je fajn\n"
+message2len = $ - message2 - 1     # delka druhe zpravy
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global _start               # tento symbol ma byt dostupny i linkeru
+
+_start:
+        call  writeFirstMessage      # zavolani podprogramu pro vytisteni prvni zpravy
+        call  writeSecondMessage     # zavolani podprogramu pro vytisteni druhe zpravy
+        call  exit                   # zavolani podprogramu pro ukonceni procesu
+
+
+
+# Podprogram pro vytisteni prvni zpravy
+writeFirstMessage:
+        push  offset message1        # adresa retezce, ktery se ma vytisknout
+        push  message1len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        add   esp, 8                 # obnoveni puvodni adresy vrcholu zasobniku
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni druhe zpravy
+writeSecondMessage:
+        push  offset message2        # adresa retezce, ktery se ma vytisknout
+        push  message2len            # pocet znaku, ktere se maji vytisknout
+        call  writeMessage           # zavolani podprogramu pro vytisteni zpravy
+        add   esp, 8                 # obnoveni puvodni adresy vrcholu zasobniku
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro vytisteni zpravy na standardni vystup
+# Ocekava se, ze v ecx bude adresa zpravy a v edx jeji delka
+writeMessage:
+        push  ebp                    # ulozeni registru EBP na zasobnik
+        mov   ebp, esp               # s ESP je nyni mozne manipulovat
+        mov   edx, [ebp+8]           # precteni v poradi druheho parametru ze zasobniku
+        mov   ecx, [ebp+12]          # precteni v poradi prvniho parametru ze zasobniku
+        mov   eax, sys_write         # cislo syscallu pro funkci "write"
+        mov   ebx, std_output        # standardni vystup
+        int   0x80                   # volani Linuxoveho kernelu
+        mov   esp, ebp               # obnoveni puvodni hodnoty ESP
+        pop   ebp                    # obnoveni registru EBP ze zasobniku
+        ret                          # navrat z podprogramu
+
+
+
+# Podprogram pro ukonceni procesu zavolanim syscallu
+exit:
+        mov   eax, sys_exit          # cislo sycallu pro funkci "exit"
+        mov   ebx, 0                 # exit code = 0
+        int   0x80                   # volani Linuxoveho kernelu
+
+# finito
+</pre>
+
+<p>Překlad a slinkování provedeme následujícím způsobem:</p>
+
+<pre>
+as -g --32 subroutines-4.s -o subroutines-4.o
+ld -m elf_i386 -s subroutines-4.o
+</pre>
+
+<p>Podívejme se na to, jak se tento demonstrační příklad přeložil do 32bitového objektového kódu:</p>
+
+<pre>
+<strong>objdump -M intel-mnemonic -f -d -t -h subroutines-4.o</strong>
+
+subroutines-4.o:     file format elf32-i386
+architecture: i386, flags 0x00000011:
+HAS_RELOC, HAS_SYMS
+start address 0x00000000
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000054  00000000  00000000  00000034  2**0
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .data         00000020  00000000  00000000  00000088  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000000  00000000  00000000  000000a8  2**0
+                  ALLOC
+SYMBOL TABLE:
+00000000 l    d  .text  00000000 .text
+00000000 l    d  .data  00000000 .data
+00000000 l    d  .bss   00000000 .bss
+00000001 l       *ABS*  00000000 sys_exit
+00000004 l       *ABS*  00000000 sys_write
+00000000 l       *ABS*  00000000 std_input
+00000001 l       *ABS*  00000000 std_output
+00000000 l       .data  00000000 message1
+0000000c l       *ABS*  00000000 message1len
+0000000d l       .data  00000000 message2
+00000012 l       *ABS*  00000000 message2len
+0000000f l       .text  00000000 writeFirstMessage
+0000001f l       .text  00000000 writeSecondMessage
+00000048 l       .text  00000000 exit
+0000002f l       .text  00000000 writeMessage
+00000000 g       .text  00000000 _start
+
+
+
+Disassembly of section .text:
+
+00000000 &lt;_start&gt;:
+   0:   e8 0a 00 00 00          call   f &lt;writeFirstMessage&gt;
+   5:   e8 15 00 00 00          call   1f &lt;writeSecondMessage&gt;
+   a:   e8 39 00 00 00          call   48 &lt;exit&gt;
+
+0000000f &lt;writeFirstMessage&gt;:
+   f:   68 00 00 00 00          push   0x0
+  14:   6a 0c                   push   0xc
+  16:   e8 14 00 00 00          call   2f &lt;writeMessage&gt;
+  1b:   83 c4 08                add    esp,0x8
+  1e:   c3                      ret    
+
+0000001f &lt;writeSecondMessage&gt;:
+  1f:   68 0d 00 00 00          push   0xd
+  24:   6a 12                   push   0x12
+  26:   e8 04 00 00 00          call   2f &lt;writeMessage&gt;
+  2b:   83 c4 08                add    esp,0x8
+  2e:   c3                      ret    
+
+0000002f &lt;writeMessage&gt;:
+  2f:   55                      push   ebp
+  30:   89 e5                   mov    ebp,esp
+  32:   8b 55 08                mov    edx,DWORD PTR [ebp+0x8]
+  35:   8b 4d 0c                mov    ecx,DWORD PTR [ebp+0xc]
+  38:   b8 04 00 00 00          mov    eax,0x4
+  3d:   bb 01 00 00 00          mov    ebx,0x1
+  42:   cd 80                   int    0x80
+  44:   89 ec                   mov    esp,ebp
+  46:   5d                      pop    ebp
+  47:   c3                      ret    
+
+00000048 &lt;exit&gt;:
+  48:   b8 01 00 00 00          mov    eax,0x1
+  4d:   bb 00 00 00 00          mov    ebx,0x0
+  52:   cd 80                   int    0x80
+
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Jak vypadá práce se zásobníkovým rámcem v&nbsp;přeloženém céčkovém kódu</h2>
+
+<p>Podobným způsobem, jaký jsme si popsali v&nbsp;předchozích dvou kapitolách, pracují na architekturách i386 a x86-64 se zásobníkovými rámci i mnohé překladače. Základem je použití registru <strong>EBP</strong> popř.&nbsp;<strong>RBP</strong> ve funkci ukazatele na začátek (bázi) zásobníkového rámce. Při zavolání subrutiny se nejprve původní obsah tohoto registru uloží na zásobník a posléze se naplní hodnotou <strong>ESP</strong> či <strong>RSP</strong>, tedy aktuální hodnotou ukazatele na vrchol zásobníku. Pokud se ve volané subrutině používají lokální proměnné, odečte se hodnota odpovídající počtu lokálních proměnných z&nbsp;registru <strong>ESP</strong> či <strong>RSP</strong> &ndash; takto jednoduše se pro tyto proměnné alokuje místo na zásobníku.</p>
+
+<p>Jak parametry, tak i lokální proměnné se posléze mohou adresovat pomocí <strong>EBP+offset</strong>, kde záporný offset odpovídá parametrům a kladný offset lokálním proměnným (toto adresování je tedy relativní vůči <strong>EBP</strong>, který v&nbsp;zásobníkovém rámci tvoří &bdquo;pevný bod&ldquo;). U architektury x86-64 je situace nepatrně komplikovanější, protože prvních šest parametrů se může předávat přes pracovní registry a nikoli přes zásobník. Jedná se o registry <strong>RDI</strong>, <strong>RSI</strong>, <strong>RDX</strong>, <strong>RCX</strong>, <strong>R8</strong> a <strong>R9</strong>.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Jednoduchý demonstrační příklad a jeho prozkoumání nástrojem <strong>objdump</strong></h2>
+
+<p>Podívejme se na velmi jednoduchý zdrojový kód v&nbsp;céčku, který následně přeložíme a budeme analyzovat. V&nbsp;tomto zdrojovém kódu máme dvě funkce akceptující dva resp.&nbsp;tři parametry a vracející součet hodnot těchto parametrů:</p>
+
+<pre>
+int add(int x, int y)
+{
+    return x+y;
+}
+
+int add3(int x, int y, int z)
+{
+    return x+y+z;
+}
+</pre>
+
+<p>Po překladu na architekturu i386 a následném zpětném překladu nástrojem <strong>objdump</strong> se můžeme podívat, jak čistě překladač jazyka C se zásobníkovými rámci pracuje (pokud se nepoužijí optimalizace). Na začátku se skutečně uloží obsah registru <strong>EBP</strong>, následuje vytvoření báze zásobníkového rámce, přístup k&nbsp;parametrům pomocí offsetu od báze, výpočet a obnova <strong>EBP</strong> těsně před ukončením funkce:</p>
+
+<pre>
+00000000 &lt;add&gt;:
+   0:   55                      push   ebp
+   1:   89 e5                   mov    ebp,esp
+   3:   8b 45 0c                mov    eax,DWORD PTR [ebp+0xc]
+   6:   8b 55 08                mov    edx,DWORD PTR [ebp+0x8]
+   9:   01 d0                   add    eax,edx
+   b:   5d                      pop    ebp
+   c:   c3                      ret    
+</pre>
+
+<p>Podobně je tomu u druhé funkce, která zpracovává a sčítá tři parametry:</p>
+
+<pre>
+0000000d &lt;add3&gt;:
+   d:   55                      push   ebp
+   e:   89 e5                   mov    ebp,esp
+  10:   8b 45 0c                mov    eax,DWORD PTR [ebp+0xc]
+  13:   8b 55 08                mov    edx,DWORD PTR [ebp+0x8]
+  16:   01 c2                   add    edx,eax
+  18:   8b 45 10                mov    eax,DWORD PTR [ebp+0x10]
+  1b:   01 d0                   add    eax,edx
+  1d:   5d                      pop    ebp
+  1e:   c3                      ret    
+</pre>
+
+<p>Na architektuře x86-64 vidíme použití registrů pro přenos prvních (maximálně šesti) parametrů, které se ihned uloží do lokálních proměnných. Ovšem zásobníkový rámec se vytváří naprosto stejným způsobem. U funkce se dvěma parametry se jejich hodnoty přenáší v&nbsp;registrech <strong>RDI</strong> a <strong>RSI</strong>, resp.&nbsp;zde v&nbsp;jejich 32bitových částech <strong>EDI</strong> a <strong>ESI</strong>:</p>
+
+<pre>
+0000000000000000 &lt;add&gt;:
+   0:   55                      push   rbp
+   1:   48 89 e5                mov    rbp,rsp
+   4:   89 7d fc                mov    DWORD PTR [rbp-0x4],edi
+   7:   89 75 f8                mov    DWORD PTR [rbp-0x8],esi
+   a:   8b 45 f8                mov    eax,DWORD PTR [rbp-0x8]
+   d:   8b 55 fc                mov    edx,DWORD PTR [rbp-0x4]
+  10:   01 d0                   add    eax,edx
+  12:   5d                      pop    rbp
+  13:   c3                      ret    
+</pre>
+
+<p>U funkce se třemi parametry se jejich hodnoty přenáší v&nbsp;registrech <strong>RDI</strong>, <strong>RSI</strong> a <strong>RDX</strong>, resp.&nbsp;zde v&nbsp;jejich 32bitových částech <strong>EDI</strong>, <strong>ESI</strong> a <strong>EDX</strong>:</p>
+
+<pre>
+0000000000000014 &lt;add3&gt;:
+  14:   55                      push   rbp
+  15:   48 89 e5                mov    rbp,rsp
+  18:   89 7d fc                mov    DWORD PTR [rbp-0x4],edi
+  1b:   89 75 f8                mov    DWORD PTR [rbp-0x8],esi
+  1e:   89 55 f4                mov    DWORD PTR [rbp-0xc],edx
+  21:   8b 45 f8                mov    eax,DWORD PTR [rbp-0x8]
+  24:   8b 55 fc                mov    edx,DWORD PTR [rbp-0x4]
+  27:   01 c2                   add    edx,eax
+  29:   8b 45 f4                mov    eax,DWORD PTR [rbp-0xc]
+  2c:   01 d0                   add    eax,edx
+  2e:   5d                      pop    rbp
+  2f:   c3                      ret    
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Výpis generovaných instrukcí přímo v&nbsp;době překladu</h2>
+
+<p>V&nbsp;některých situacích může být užitečné si nechat vypsat generovaný strojový kód (ve formě symbolických jmen instrukcí) přímo překladačem jazyka C či C++ a nespoléhat se na použití nástroje <strong>objdump</strong>, který jsme pro velmi podobný účel používali doposud. To je skutečně možné, protože minimálně rodina překladačů <i>GCC (GNU Compiler Collection)</i> tuto funkcionalitu podporuje. Základem je překlad zdrojového kódu z&nbsp;C/C++ do kódu použitelného GNU Assemblerem, což zajišťuje volba <strong>-S</strong>. To však není zdaleka vše, protože pokud se při překladu céčkového zdrojového kódu zadají přepínače <strong>-Wa,-adhln</strong>, znamená to, že překladač céčka (či C++) předá informace assembleru (přesněji řečeno GNU Assembleru), který na ně správně zareaguje a provede výpis:</p>
+
+<table>
+<tr><th>Přepínač (či jeho část)</th><th>Stručný popis přepínače</th></tr>
+<tr><td>-Wa,***</td><td>zbývající znaky (zde hvězdičky) budou automaticky předány assembleru (nástroj <strong>as</strong>)</td></tr>
+<tr><td>a</td><td>povolí výpis symbolických jmen generovaných instrukcí na standardní výstup</td></tr>
+<tr><td>d</td><td>do výpisu se nebudou přidávat symboly a deklarace používané ladicími nástroji (alespoň ne všechny)</td></tr>
+<tr><td>h</td><td>do výpisu se naopak přidají části původního zdrojového kódu (ovšem pokud se navíc použije <strong>-g</strong>, viz též <a href="#k07">další kapitolu</a>)</td></tr>
+<tr><td>l</td><td>do výpisu se přidají symbolická jména instrukcí a jejich kódy</td></tr>
+</table>
+
+<p>Podívejme se, jak bude vypadat výsledek následujícího příkazu, který přeloží testovací zdrojový kód do objektového kódu a vygeneruje přitom instrukce pro 32bitový režim. Výpis generovaných instrukcí se provede na standardní výstup, takže ho lze v&nbsp;případě potřeby velmi snadno přesměrovat a dále zpracovat:</p>
+
+<pre>
+<strong>gcc -m32 -Wa,-adhln -c test.c</strong>
+</pre>
+
+<p>Kromě souboru <strong>test.o</strong> (objektový kód) získáme na standardním výstupu následující řádky. Ty se samozřejmě mohou nepatrně lišit v&nbsp;závislosti na konkrétní verzi použitého překladače:</p>
+
+<pre>
+   1                    .file   "test.c"
+   2                    .text
+   3                    .globl  add
+   5                add:
+   6                .LFB0:
+   7                    .cfi_startproc
+   8 0000 55            pushl   %ebp
+   9                    .cfi_def_cfa_offset 8
+  10                    .cfi_offset 5, -8
+  11 0001 89E5          movl    %esp, %ebp
+  12                    .cfi_def_cfa_register 5
+  13 0003 8B450C        movl    12(%ebp), %eax
+  14 0006 8B5508        movl    8(%ebp), %edx
+  15 0009 01D0          addl    %edx, %eax
+  16 000b 5D            popl    %ebp
+  17                    .cfi_restore 5
+  18                    .cfi_def_cfa 4, 4
+  19 000c C3            ret
+  20                    .cfi_endproc
+  21                .LFE0:
+  23                    .globl  add3
+  25                add3:
+  26                .LFB1:
+  27                    .cfi_startproc
+  28 000d 55            pushl   %ebp
+  29                    .cfi_def_cfa_offset 8
+  30                    .cfi_offset 5, -8
+  31 000e 89E5          movl    %esp, %ebp
+  32                    .cfi_def_cfa_register 5
+  33 0010 8B450C        movl    12(%ebp), %eax
+  34 0013 8B5508        movl    8(%ebp), %edx
+  35 0016 01C2          addl    %eax, %edx
+  36 0018 8B4510        movl    16(%ebp), %eax
+  37 001b 01D0          addl    %edx, %eax
+  38 001d 5D            popl    %ebp
+  39                    .cfi_restore 5
+  40                    .cfi_def_cfa 4, 4
+  41 001e C3            ret
+  42                    .cfi_endproc
+  43                .LFE1:
+  45                    .ident  "GCC: (Ubuntu 4.8.4-2ubuntu1~14.04.1) 4.8.4"
+  46                    .section    .note.GNU-stack,"",@progbits
+</pre>
+
+<p>Pokud provedeme překlad pro 64bitový režim (volba <strong>-m64</strong> namísto <strong>-m32</strong>), bude výsledek nepatrně odlišný, protože se například namísto 32bitového registru <strong>EBP</strong> použije 64bitový registr <strong>RBP</strong> atd.:</p>
+
+<pre>
+<strong>gcc -m64 -Wa,-adhln -c test.c</strong>
+</pre>
+
+<pre>
+   1                            .file   "test.c"
+   2                            .text
+   3                            .globl  add
+   5                    add:
+   6                    .LFB0:
+   7                            .cfi_startproc
+   8 0000 55                    pushq   %rbp
+   9                            .cfi_def_cfa_offset 16
+  10                            .cfi_offset 6, -16
+  11 0001 4889E5                movq    %rsp, %rbp
+  12                            .cfi_def_cfa_register 6
+  13 0004 897DFC                movl    %edi, -4(%rbp)
+  14 0007 8975F8                movl    %esi, -8(%rbp)
+  15 000a 8B45F8                movl    -8(%rbp), %eax
+  16 000d 8B55FC                movl    -4(%rbp), %edx
+  17 0010 01D0                  addl    %edx, %eax
+  18 0012 5D                    popq    %rbp
+  19                            .cfi_def_cfa 7, 8
+  20 0013 C3                    ret
+  21                            .cfi_endproc
+  22                    .LFE0:
+  24                            .globl  add3
+  26                    add3:
+  27                    .LFB1:
+  28                            .cfi_startproc
+  29 0014 55                    pushq   %rbp
+  30                            .cfi_def_cfa_offset 16
+  31                            .cfi_offset 6, -16
+  32 0015 4889E5                movq    %rsp, %rbp
+  33                            .cfi_def_cfa_register 6
+  34 0018 897DFC                movl    %edi, -4(%rbp)
+  35 001b 8975F8                movl    %esi, -8(%rbp)
+  36 001e 8955F4                movl    %edx, -12(%rbp)
+  37 0021 8B45F8                movl    -8(%rbp), %eax
+  38 0024 8B55FC                movl    -4(%rbp), %edx
+  39 0027 01C2                  addl    %eax, %edx
+  40 0029 8B45F4                movl    -12(%rbp), %eax
+  41 002c 01D0                  addl    %edx, %eax
+  42 002e 5D                    popq    %rbp
+  43                            .cfi_def_cfa 7, 8
+  44 002f C3                    ret
+  45                            .cfi_endproc
+  46                    .LFE1:
+  48                            .ident  "GCC: (Ubuntu 4.8.4-2ubuntu1~14.04.1) 4.8.4"
+  49                            .section        .note.GNU-stack,"",@progbits
+</pre>
+
+<p>Poznámka: pokud se chcete zbavit direktiv <strong>.cfi</strong> (<i>Call Frame Information</i>), použijte přepínač <strong>-fno-asynchronous-unwind-tables</strong>.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Disassemblovaný výpis kombinovaný s&nbsp;původním zdrojovým kódem</h2>
+
+<p>Z&nbsp;ukázky uvedené <a href="#k06">v&nbsp;předchozí kapitole</a> je patrné, že sice skutečně dostaneme slíbený výpis generovaných strojových instrukcí (a několik informací navíc &ndash; například pseudoinstrukce začínající tečkou, zmíněné <i>call frame information</i> atd.), ovšem původní zdrojový kód se nám z&nbsp;tohoto výstupu ztratil. Je tomu tak z&nbsp;toho důvodu, že při překladu nemáme povoleno generování ladicích informací, takže se do assembleru již jednotlivé zdrojové řádky původního kódu a k&nbsp;nim příslušné metainformace vůbec nedostanou. Tento nedostatek je možné velmi snadno napravit použitím volby <strong>-g</strong>. Namísto příkazu:</p>
+
+<pre>
+<strong>gcc -m32 -Wa,-adhln -c test.c</strong>
+</pre>
+
+<p>použijte příkaz:</p>
+
+<pre>
+<strong>gcc -m32 -Wa,-adhln -g -c test.c</strong>
+</pre>
+
+<p>Nyní již výpis vygenerovaný assemblerem (volaným automaticky z&nbsp;GCC) vypadá jinak &ndash; dochází v&nbsp;něm ke smíchání původního zdrojového kódu a generovaných instrukcí. Povšimněte si, že každý řádek zdrojového kódu je jednoznačně identifikován jménem souboru a číslem řádku. Tyto řádky najdeme snadno &ndash; stačí hledat čtveřice hvězdiček. Povšimněte si, že se explicitně používá syntaxe AT&amp;T, takže každá instrukce obsahuje specifikaci datového typu (<strong>movl</strong> namísto <strong>mov</strong> s&nbsp;případným modifikátorem <strong>DWORD PTR</strong>) a navíc je prohozen zdrojový registr s&nbsp;registrem cílovým (u jmen registrů se používá znak procenta):</p>
+
+<pre>
+   1                            .file   "test.c"
+   9                    .Ltext0:
+  10                    .globl add
+  12                    add:
+  13                    .LFB2:
+  14                            .file 1 "test.c"
+   1:test.c        **** int add(int x, int y)
+   2:test.c        **** {
+  15                            .loc 1 2 0
+  16 0000 55                    pushl   %ebp
+  17                    .LCFI0:
+  18 0001 89E5                  movl    %esp, %ebp
+  19                    .LCFI1:
+   3:test.c        ****     return x+y;
+  20                            .loc 1 3 0
+  21 0003 8B550C                movl    12(%ebp), %edx
+  22 0006 8B4508                movl    8(%ebp), %eax
+  23 0009 01D0                  addl    %edx, %eax
+   4:test.c        **** }
+  24                            .loc 1 4 0
+  25 000b 5D                    popl    %ebp
+  26 000c C3                    ret
+  27                    .LFE2:
+  29                    .globl add3
+  31                    add3:
+  32                    .LFB3:
+   5:test.c        **** 
+   6:test.c        **** int add3(int x, int y, int z)
+   7:test.c        **** {
+  33                            .loc 1 7 0
+  34 000d 55                    pushl   %ebp
+  35                    .LCFI2:
+  36 000e 89E5                  movl    %esp, %ebp
+  37                    .LCFI3:
+   8:test.c        ****     return x+y+z;
+  38                            .loc 1 8 0
+  39 0010 8B550C                movl    12(%ebp), %edx
+  40 0013 8B4508                movl    8(%ebp), %eax
+  41 0016 01D0                  addl    %edx, %eax
+  42 0018 034510                addl    16(%ebp), %eax
+   9:test.c        **** }
+  43                            .loc 1 9 0
+  44 001b 5D                    popl    %ebp
+  45 001c C3                    ret
+  46                    .LFE3:
+ 102                    .Letext0:
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Použití syntaxe obvyklé na platformě procesorů Intel</h2>
+
+<p>Pokud preferujete, ostatně podobně jako autor tohoto článku :-), použití syntaxe používaného na platformě Intel namísto syntaxe AT&amp;T, postačuje překladači <strong>gcc</strong> přidat další přepínač. Konkrétně se jedná o přepínač <strong>-masm=intel</strong>, takže celé volání překladače bude vypadat následovně:</p>
+
+<pre>
+<strong>gcc -Wa,-adhln -masm=intel -c test.c</strong>
+</pre>
+
+<p>Po zavolání tohoto příkazu dostaneme na standardním výstupu přibližně následující text:</p>
+
+<pre>
+   1                            .file   "test.c"
+   2                            .intel_syntax noprefix
+   3                            .text
+   4                    .globl add
+   6                    add:
+   7 0000 55                    push    ebp
+   8 0001 89E5                  mov     ebp, esp
+   9 0003 8B550C                mov     edx, DWORD PTR [ebp+12]
+  10 0006 8B4508                mov     eax, DWORD PTR [ebp+8]
+  11 0009 01D0                  add     eax, edx
+  12 000b 5D                    pop     ebp
+  13 000c C3                    ret
+  15                    .globl add3
+  17                    add3:
+  18 000d 55                    push    ebp
+  19 000e 89E5                  mov     ebp, esp
+  20 0010 8B550C                mov     edx, DWORD PTR [ebp+12]
+  21 0013 8B4508                mov     eax, DWORD PTR [ebp+8]
+  22 0016 01D0                  add     eax, edx
+  23 0018 034510                add     eax, DWORD PTR [ebp+16]
+  24 001b 5D                    pop     ebp
+  25 001c C3                    ret
+  27                            .ident  "GCC: (GNU) 4.3.2 20081105 (Red Hat 4.3.2-7)"
+  28                            .section        .note.GNU-stack,"",@progbits
+</pre>
+
+<p>Kombinace zdrojového kódu a generovaných instrukcí při použití syntaxe obvyklé na platformě Intel je samozřejmě taktéž možná a vypadá následovně:</p>
+
+<pre>
+<strong>gcc -Wa,-adhln -masm=intel -c -g test.c</strong>
+</pre>
+
+<p>Výsledkem překladu bude objektový kód a současně i následující zprávy vypisované na standardní výstup:</p>
+
+<pre>
+   1                            .file   "test.c"
+   2                            .intel_syntax noprefix
+  10                    .Ltext0:
+  11                    .globl add
+  13                    add:
+  14                    .LFB2:
+  15                            .file 1 "test.c"
+   1:test.c        **** int add(int x, int y)
+   2:test.c        **** {
+  16                            .loc 1 2 0
+  17 0000 55                    push    ebp
+  18                    .LCFI0:
+  19 0001 89E5                  mov     ebp, esp
+  20                    .LCFI1:
+   3:test.c        ****     return x+y;
+  21                            .loc 1 3 0
+  22 0003 8B550C                mov     edx, DWORD PTR [ebp+12]
+  23 0006 8B4508                mov     eax, DWORD PTR [ebp+8]
+  24 0009 01D0                  add     eax, edx
+   4:test.c        **** }
+  25                            .loc 1 4 0
+  26 000b 5D                    pop     ebp
+  27 000c C3                    ret
+  28                    .LFE2:
+  30                    .globl add3
+  32                    add3:
+  33                    .LFB3:
+   5:test.c        **** 
+   6:test.c        **** int add3(int x, int y, int z)
+   7:test.c        **** {
+  34                            .loc 1 7 0
+  35 000d 55                    push    ebp
+  36                    .LCFI2:
+  37 000e 89E5                  mov     ebp, esp
+  38                    .LCFI3:
+   8:test.c        ****     return x+y+z;
+  39                            .loc 1 8 0
+  40 0010 8B550C                mov     edx, DWORD PTR [ebp+12]
+  41 0013 8B4508                mov     eax, DWORD PTR [ebp+8]
+  42 0016 01D0                  add     eax, edx
+  43 0018 034510                add     eax, DWORD PTR [ebp+16]
+   9:test.c        **** }
+  44                            .loc 1 9 0
+  45 001b 5D                    pop     ebp
+  46 001c C3                    ret
+  47                    .LFE3:
+ 103                    .Letext0:
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Volání podprogramů na procesorech s&nbsp;architekturou ARM</h2>
+
+<p>Důležitou instrukcí všech mikroprocesorů s&nbsp;architekturou ARM, které používají původní RISCovou instrukční sadu, je instrukce sloužící pro skok do podprogramu. Zatímco na mnoha jiných architekturách mikroprocesorů se implicitně ukládá návratová adresa do zásobníku (a tvoří tak základ pro zásobníkový rámec), na mikroprocesorech ARM je pro uložení návratové hodnoty použit běžný pracovní registr <i>R14</i> nazývaný z&nbsp;tohoto důvodu taktéž <i>link register</i> (v&nbsp;assembleru má proto tento registr i alias <strong>LR</strong>, což je užitečné vědět při disassemblingu i při ladění). Pro skok do podprogramu se používá instrukce <strong>BL</strong>, neboli celým jménem <i>branch and link</i>.</p>
+
+<p>Při interpretaci této instrukce provede mikroprocesor ve skutečnosti dvě operace: vypočítá adresu skoku stejným způsobem, jako tomu bylo u instrukce <strong>B</strong> (<i>branch</i>) a uloží tuto adresu do registru <i>R15/PC</i> (opět zde můžeme vidět alias). Současně však taktéž vloží adresu <i>aktuální PC-4</i> do registru <i>R14/LR</i>, protože právě hodnota <i>aktuální PC-4</i> je adresou instrukce ležící těsně ZA instrukcí skoku (nesmíme zapomenout na to, že se při provedení skoku ve skutečnosti již obsah registru <i>PC</i> stačil dvakrát zvýšit o hodnotu 4). Formát instrukce <strong>BL</strong> se až na odlišný operační kód nijak zásadně neliší od instrukce <strong>B</strong> (ve skutečnosti se liší jediným bitem ve druhém bitovém poli):</p>
+
+<pre>
+31     27     23                         0
++------+------+--------------------------+
+| cond | 1011 |       offset skoku       |
++------+------+--------------------------+
+</pre>
+
+<p>Poznámka: hodnota pracovního registru <strong>LR/R14</strong> je samozřejmě přepsána každou další instrukcí <strong>BL</strong>! Volání dalšího podprogramu z&nbsp;jiného podprogramu je tak nepatrně komplikovanější, neboť zásobník je nutné udržovat programově.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Další varianty instrukcí pro skok do podprogramu s&nbsp;uložením návratové adresy</h2>
+
+<p>U mikroprocesorů ARM podporujících šestnáctibitovou instrukční sadu Thumb, popřípadě i technologii nazývanou <i>Jazelle</i> (bajtkód JVM), existují kromě výše zmíněné dvojice skokových instrukcí i instrukce další, které dokážou na základě hodnoty adresy přepnout instrukční sady (adresa je v&nbsp;tomto případě uložena v&nbsp;pracovním registru a testuje se jeho nejnižší bit). Pro přehlednost jsou všechny možné kombinace skokových instrukcí vypsány v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Význam</th></tr>
+<tr><td>1</td><td><strong>B</strong>  </td><td>prostý skok (bez uložení návratové adresy)</td></tr>
+<tr><td>2</td><td><strong>BL</strong> </td><td>skok a současně uložení návratové hodnoty do link registru (LR)</td></tr>
+<tr><td>3</td><td><strong>BX</strong> </td><td>skok a současně přepnutí do režimu Thumb či zpět</td></tr>
+<tr><td>4</td><td><strong>BLX</strong></td><td>kombinace instrukcí BL+BX</td></tr>
+<tr><td>5</td><td><strong>BXJ</strong></td><td>skok a současně přepnutí do režimu Jazelle</td></tr>
+</table>
+
+<p>V&nbsp;praxi se nejčastěji setkáte s&nbsp;prvními dvěma instrukcemi <strong>B</strong> a <strong>BL</strong>, i když v&nbsp;některých specializovaných programech (například implementace JVM) se můžete setkat s&nbsp;kombinací klasického ARMovského kódu a kódu používajícího instrukční sadu Thumb &ndash; využívá se tak výhod obou instrukčních sad.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Skok do podprogramu při splnění určené podmínky</h2>
+
+<p>Při pohledu na <a href="#k09">formát operačního kódu</a> instrukce <strong>BL</strong> si pozorný čtenář pravděpodobně všiml toho, že první čtyři bajty jsou, podobně jako u mnoha dalších instrukcí, rezervovány pro uložení specifikace podmínky (<i>cond</i>ition). Pouze při splnění této podmínky bude skok do podprogramu skutečně proveden, což mj.&nbsp;znamená, že můžeme použít například následující sekvenci instrukcí:</p>
+
+<pre>
+    <strong>BL</strong>     subroutine_1         ; zavolání podprogramu a uložení návratové adresy do R14
+
+    <strong>CMP</strong>    R1, R2               ; porovnání obsahu registrů R1 a R2 s nastavením příznakových bitů
+    <strong>BLLT</strong>   subroutine_2         ; v případě, že platí podmínka R1 &lt; R2, zavolej podprogram subroutine_2
+    <strong>BLLE</strong>   subroutine_3         ; v případě, že platí podmínka R1 =&lt; R3, zavolej podprogram subroutine_3
+    <strong>BLGT</strong>   subroutine_4         ; v případě, že platí podmínka R1 &gt; R2, zavolej podprogram subroutine_4
+    <strong>BLGE</strong>   subroutine_5         ; v případě, že platí podmínka R1 &gt;= R2, zavolej podprogram subroutine_5
+</pre>
+
+<p>Poznámka: zde se samozřejmě jedná o dosti umělý příklad, ovšem s&nbsp;voláním nějakého podprogramu za předpokladu, že je nějaký registr (například) nulový či obsahuje zápornou hodnotu, se v&nbsp;praxi setkáme poměrně často.</p>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Návrat z&nbsp;podprogramu</h2>
+
+<p>S&nbsp;tím, jak se na mikroprocesorech s&nbsp;RISCovou architekturou ARM provádí zavolání zvoleného podprogramu, jsme se již seznámili v&nbsp;předchozích třech kapitolách, ovšem otázkou zůstává, jakým způsobem se vlastně provede návrat z&nbsp;podprogramu? Zajímavé je, že ve skutečnosti žádná speciální instrukce typu <strong>RET</strong> nebo <strong>RETURN</strong> (se kterou jsme se setkali minule) na mikroprocesorech ARM neexistuje a ani to ve skutečnosti není nutné. Vše, co musí programátor udělat, je obnovit obsah registru <i>R15/PC</i> z&nbsp;registru <i>R14</i>, a to prostým přesunem dat:</p>
+
+<pre>
+<strong>MOV</strong> PC, LR
+</pre>
+
+<p>Jak při skoku do podprogramu, tak i při výskoku z&nbsp;něho (obecně při změně hodnoty registru <i>PC</i> o hodnotu rozdílnou od +4) dojde k&nbsp;vyprázdnění instrukční pipeline a tedy i k&nbsp;pozdržení vykonávání následující instrukce. To znamená, že volání podprogramů a návrat z&nbsp;nich je časově poměrně náročná operace a nelze se tedy divit tomu, že jednou z&nbsp;často používaných optimalizačních technik je tzv.&nbsp;<i>inlining</i>, tj.&nbsp;vložení těla (většinou krátké) funkce přímo do kódu, který by jinak tuto funkci musel explicitně zavolat.</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny dnes popisované demonstrační příklady byly, podobně jako v&nbsp;předchozích dílech, společně s&nbsp;podpůrnými skripty určenými pro jejich překlad či naopak pro disassembling uloženy do GIT repositáře dostupného na adrese <a href="https://github.com/tisnik/presentations/">https://github.com/tisnik/presentations/</a>. První příklad je určený pro GNU Assembler a využívá přitom Intel syntaxi. Druhý příklad je psaný v&nbsp;C a otestován byl překladačem GCC. Následuje tabulka s&nbsp;odkazy na zdrojové kódy příkladů i na již zmíněné podpůrné skripty:</p>
+
+<h3>Použití zásobníkového rámce</h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>subroutines-4.s</td><td>program pro GNU Assembler</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/18_subroutines-4/subroutines-4.s">https://github.com/tisnik/presentations/blob/master/assembler/18_subroutines-4/subroutines-4.s</a></td></tr>
+<tr><td>2</td><td>assemble</td><td>skript pro překlad na procesorech i386</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/18_subroutines-4/assemble">https://github.com/tisnik/presentations/blob/master/assembler/18_subroutines-4/assemble</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/18_subroutines-4/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/18_subroutines-4/disassemble</a></td></tr>
+</table>
+
+<h3>Zásobníkový rámec používaný v&nbsp;céčku</h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>test.c</td><td>zdrojový kód pro GCC</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/19_stack_frame/test.c">https://github.com/tisnik/presentations/blob/master/assembler/19_stack_frame/test.c</a></td></tr>
+<tr><td>2</td><td>test_32.s</td><td>vygenerovaný kód pro 32bitovou platformu</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/19_stack_frame/test_32.s">https://github.com/tisnik/presentations/blob/master/assembler/19_stack_frame/test_32.s</a></td></tr>
+<tr><td>3</td><td>test_64.s</td><td>vygenerovaný kód pro 64bitovou platformu</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/19_stack_frame/test_64.s">https://github.com/tisnik/presentations/blob/master/assembler/19_stack_frame/test_64.s</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>ARM subroutines &amp; program stack<br />
+<a href="http://www.toves.org/books/armsub/">http://www.toves.org/books/armsub/</a>
+</li>
+
+<li>Generating Mixed Source and Assembly List using GCC<br />
+<a href="http://www.systutorials.com/240/generate-a-mixed-source-and-assembly-listing-using-gcc/">http://www.systutorials.com/240/generate-a-mixed-source-and-assembly-listing-using-gcc/</a>
+</li>
+
+<li>Calling subroutines<br />
+<a href="http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.kui0100a/armasm_cihcfigg.htm">http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.kui0100a/armasm_cihcfigg.htm</a>
+</li>
+
+<li>ARM Assembly Language Programming<br />
+<a href="http://peter-cockerell.net/aalp/html/frames.html">http://peter-cockerell.net/aalp/html/frames.html</a>
+</li>
+
+<li>ASM Flags<br />
+<a href="http://www.cavestory.org/guides/csasm/guide/asm_flags.html">http://www.cavestory.org/guides/csasm/guide/asm_flags.html</a>
+</li>
+
+<li>Status Register<br />
+<a href="https://en.wikipedia.org/wiki/Status_register">https://en.wikipedia.org/wiki/Status_register</a>
+</li>
+
+<li>Intel x86 JUMP quick reference<br />
+<a href="http://unixwiz.net/techtips/x86-jumps.html">http://unixwiz.net/techtips/x86-jumps.html</a>
+</li>
+
+<li>Linux assemblers: A comparison of GAS and NASM<br />
+<a href="http://www.ibm.com/developerworks/library/l-gas-nasm/index.html">http://www.ibm.com/developerworks/library/l-gas-nasm/index.html</a>
+</li>
+
+<li>Programovani v assembleru na OS Linux<br />
+<a href="http://www.cs.vsb.cz/grygarek/asm/asmlinux.html">http://www.cs.vsb.cz/grygarek/asm/asmlinux.html</a>
+</li>
+
+<li>Is it worthwhile to learn x86 assembly language today?<br />
+<a href="https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1">https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1</a>
+</li>
+
+<li>Why Learn Assembly Language?<br />
+<a href="http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language">http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language</a>
+</li>
+
+<li>Is Assembly still relevant?<br />
+<a href="http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant">http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant</a>
+</li>
+
+<li>Why Learning Assembly Language Is Still a Good Idea<br />
+<a href="http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html">http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html</a>
+</li>
+
+<li>Assembly language today<br />
+<a href="http://beust.com/weblog/2004/06/23/assembly-language-today/">http://beust.com/weblog/2004/06/23/assembly-language-today/</a>
+</li>
+
+<li>Assembler: Význam assembleru dnes<br />
+<a href="http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz">http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz</a>
+</li>
+
+<li>Assembler pod Linuxem<br />
+<a href="http://phoenix.inf.upol.cz/linux/prog/asm.html">http://phoenix.inf.upol.cz/linux/prog/asm.html</a>
+</li>
+
+<li>AT&amp;T Syntax versus Intel Syntax<br />
+<a href="https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html">https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html</a>
+</li>
+
+<li>Linux Assembly website<br />
+<a href="http://asm.sourceforge.net/">http://asm.sourceforge.net/</a>
+</li>
+
+<li>Using Assembly Language in Linux<br />
+<a href="http://asm.sourceforge.net/articles/linasm.html">http://asm.sourceforge.net/articles/linasm.html</a>
+</li>
+
+<li>vasm<br />
+<a href="http://sun.hasenbraten.de/vasm/">http://sun.hasenbraten.de/vasm/</a>
+</li>
+
+<li>vasm &ndash; dokumentace<br />
+<a href="http://sun.hasenbraten.de/vasm/release/vasm.html">http://sun.hasenbraten.de/vasm/release/vasm.html</a>
+</li>
+
+<li>The Yasm Modular Assembler Project<br />
+<a href="http://yasm.tortall.net/">http://yasm.tortall.net/</a>
+</li>
+
+<li>680x0:AsmOne<br />
+<a href="http://www.amigacoding.com/index.php/680x0:AsmOne">http://www.amigacoding.com/index.php/680x0:AsmOne</a>
+</li>
+
+<li>ASM-One Macro Assembler<br />
+<a href="http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler">http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler</a>
+</li>
+
+<li>ASM-One pages<br />
+<a href="http://www.theflamearrows.info/documents/asmone.html">http://www.theflamearrows.info/documents/asmone.html</a>
+</li>
+
+<li>Základní informace o ASM-One<br />
+<a href="http://www.theflamearrows.info/documents/asminfo.html">http://www.theflamearrows.info/documents/asminfo.html</a>
+</li>
+
+<li>Linux Syscall Reference<br />
+<a href="http://syscalls.kernelgrok.com/">http://syscalls.kernelgrok.com/</a>
+</li>
+
+<li>Programming from the Ground Up Book - Summary<br />
+<a href="http://savannah.nongnu.org/projects/pgubook/">http://savannah.nongnu.org/projects/pgubook/</a>
+</li>
+
+<li>IBM System 360/370 Compiler and Historical Documentation<br />
+<a href="http://www.edelweb.fr/Simula/">http://www.edelweb.fr/Simula/</a>
+</li>
+
+<li>IBM 700/7000 series<br />
+<a href="http://en.wikipedia.org/wiki/IBM_700/7000_series">http://en.wikipedia.org/wiki/IBM_700/7000_series</a>
+</li>
+
+<li>IBM System/360<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/360">http://en.wikipedia.org/wiki/IBM_System/360</a>
+</li>
+
+<li>IBM System/370<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/370">http://en.wikipedia.org/wiki/IBM_System/370</a>
+</li>
+
+<li>Mainframe family tree and chronology<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html</a>
+</li>
+
+<li>704 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html</a>
+</li>
+
+<li>705 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html</a>
+</li>
+
+<li>The IBM 704<br />
+<a href="http://www.columbia.edu/acis/history/704.html">http://www.columbia.edu/acis/history/704.html</a>
+</li>
+
+<li>IBM Mainframe album<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html</a>
+</li>
+
+<li>Osmibitové muzeum<br />
+<a href="http://osmi.tarbik.com/">http://osmi.tarbik.com/</a>
+</li>
+
+<li>Tesla PMI-80<br />
+<a href="http://osmi.tarbik.com/cssr/pmi80.html">http://osmi.tarbik.com/cssr/pmi80.html</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://en.wikipedia.org/wiki/PMI-80">http://en.wikipedia.org/wiki/PMI-80</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016">http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016</a>
+</li>
+
+<li>The 6502 overflow flag explained mathematically <br />
+<a href="http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html">http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html</a>
+</li>
+
+<li>X86 Opcode and Instruction Reference<br />
+<a href="http://ref.x86asm.net/coder32.html">http://ref.x86asm.net/coder32.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
