@@ -1,0 +1,979 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Použití assembleru v Linuxu: volání funkcí ze standardní knihovny jazyka C</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Použití assembleru v Linuxu: volání funkcí ze standardní knihovny jazyka C</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V demonstračních příkladech, které jsme si ukazovali v&nbsp;předchozích částech tohoto seriálu, jsme si prozatím vystačili s&nbsp;voláním několika funkcí jádra operačního systému (jedná se o takzvané <i>syscalls</i>). V&nbsp;praxi se však dříve či později dostaneme do situace, kdy je zapotřebí používat i další knihovny, například standardní knihovnu jazyka C. Dnes si proto ukážeme, jaké konvence je zapotřebí dodržet při volání funkcí z&nbsp;této knihovny na 64bitové platformě x86-64.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Použití assembleru v Linuxu: volání funkcí ze standardní knihovny jazyka C</a></p>
+<p><a href="#k02">2. Zjednodušení práce s&nbsp;assemblerem a linkerem &ndash; přímé použití <strong>gcc</strong></a></p>
+<p><a href="#k03">3. Vstupní bod do aplikace, předání návratové hodnoty shellu (exit code)</a></p>
+<p><a href="#k04">4. První příklad &ndash; kostra aplikace s&nbsp;funkcí <strong>main</strong> naprogramovanou v&nbsp;assembleru</a></p>
+<p><a href="#k05">5. Volání knihovní funkce <strong>puts</strong></a></p>
+<p><a href="#k06">6. Zarovnání vrcholu zásobníku na adresu dělitelnou šestnácti</a></p>
+<p><a href="#k07">7. Druhý příklad &ndash; výpis řetězce na obrazovku pomocí funkce <strong>puts</strong></a></p>
+<p><a href="#k08">8. Kontrola zarovnání v&nbsp;debuggeru (GDB)</a></p>
+<p><a href="#k09">9. Volání knihovní funkce <strong>printf</strong> a význam obsahu registru <strong>AL</strong></a></p>
+<p><a href="#k10">10. Třetí příklad &ndash; výpis řetězce na obrazovku pomocí funkce <strong>printf</strong></a></p>
+<p><a href="#k11">11. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Použití assembleru v Linuxu: volání funkcí ze standardní knihovny jazyka C</h2>
+
+<p>Prakticky jakákoli rozsáhlejší aplikace využívá funkce, které jsou dostupné v&nbsp;(nativních) knihovnách, ať již statických či dynamických. To se samozřejmě týká i jazyka symbolických instrukcí (assembleru), protože by bylo velmi pracné neustále znovu implementovat i tak základní a často používané funkce, jako je načtení celého čísla ze standardního vstupu, výpis zformátovaného čísla s&nbsp;desetinnou čárkou, otevření souboru, zápis či čtení ze souboru, uzavření souboru apod. Mnohé z&nbsp;těchto funkcí jsou implementovány ve standardní knihovně programovacího jazyka C, která je nainstalována na každém Linuxu. Dnes již sice poněkud starší, ale stále užitečný popis funkcí ze standardní céčkové knihovny lze najít na adrese <a href="https://www-s.acm.illinois.edu/webmonkeys/book/c_guide/index.html">https://www-s.acm.illinois.edu/webmonkeys/book/c_guide/index.html</a> (v&nbsp;tomto popisu nenalezneme některé změny implementované v&nbsp;rámci standardizace C99). Ve skutečnosti je možné standardní céčkovou knihovnu používat i v&nbsp;assembleru, a to poměrně jednoduchým způsobem, což je téma, kterému se budeme věnovat v&nbsp;navazujících kapitolách.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Zjednodušení práce s&nbsp;assemblerem a linkerem &ndash; přímé použití <strong>gcc</strong></h2>
+
+<p>Při nutnosti použití vybraných nativních knihoven volaných z&nbsp;programu napsaného v&nbsp;assembleru je zapotřebí zaručit, aby se <i>objektový kód</i> vytvořený assemblerem korektně slinkoval se zvolenou statickou knihovnou či knihovnami. To je možné zajistit několika způsoby, typicky specifikací všech knihoven a objektových kódů, které mají společně vytvořit výslednou aplikaci. Tento seznam se následně předá linkeru, který je na Linuxu představován nástrojem <strong>ld</strong> (i když je nutné upozornit na to, že způsob zadávání parametrů linkeru je poněkud těžkopádný). To však není vše, protože kromě pouhého slinkování objektového souboru s&nbsp;knihovními funkcemi je taktéž nutné zajistit, aby výsledný spustitelný nativní soubor obsahoval správný vstupní bod (<i>entry point</i>) atd.</p>
+
+<p>Zkušení assemblerovští mágové si vystačí s&nbsp;nástroji <strong>as</strong> a <strong>ld</strong>, ovšem existuje i mnohem jednodušší varianta překladu, kterou si ukážeme dneska. Tato varianta spočívá v&nbsp;tom, že se namísto explicitního volání assembleru (<strong>as</strong>) a linkeru (<strong>ld</strong>) jednoduše zavolá <strong>gcc</strong>, kterému se jako jediný parametr předá jméno zdrojového souboru se zdrojovým kódem napsaným v&nbsp;assembleru. Pokud bude jméno tohoto souboru obsahovat koncovku &bdquo;.s&ldquo; (tedy například &bdquo;test.s&ldquo;), rozezná <strong>gcc</strong>, že se jedná o assembler a sám automaticky nejenom spustí <strong>as</strong> a <strong>ld</strong>, ale navíc i zajistí korektní slinkování se standardní céčkovou knihovnou apod. Jedinou vážnější nevýhodou tohoto postupu je větší velikost výsledného spustitelného souboru, která dosahuje přibližně šesti kilobajtů (na platformě x86-64).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Vstupní bod do aplikace, předání návratové hodnoty shellu (exit code)</h2>
+
+<p>Pokud se pro překlad assemblerovského programu použije nástroj <strong>gcc</strong>, bude kostra aplikace vypadat poněkud odlišně v&nbsp;porovnání s&nbsp;programy, s&nbsp;nimiž jsme se až doposud setkávali. Je tomu tak z&nbsp;toho důvodu, že <strong>gcc</strong> implicitně vytvoří vstupní bod (<i>entry point</i>) do programu, který je označen návěštím <strong>_start</strong> a obsahuje nativní kód získaný z&nbsp;objektového souboru <strong>crt0.o</strong>. Tento kód volá funkci <strong>main</strong>, což v&nbsp;praxi znamená, že kostra našeho assemblerovského programu se nepatrně změní a z&nbsp;pohledu programátora zjednoduší. Připomeňme si, že původně vypadala kostra následovně (tučně je zvýrazněno návěští představující vstupní bod do aplikace):</p>
+
+<pre>
+# asmsyntax=as
+
+.intel_syntax noprefix
+
+
+# Linux kernel system call table
+sys_exit=1
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+
+
+
+#-----------------------------------------------------------------------------
+.section .bss
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        <strong>.global _start</strong>               # tento symbol ma byt dostupny i linkeru
+
+<strong>_start:</strong>
+        mov   eax, sys_exit          # cislo sycallu pro funkci "exit"
+        mov   ebx, 0                 # exit code = 0
+        int   0x80                   # volani Linuxoveho kernelu
+</pre>
+
+<p>Nyní (tedy při překladu s&nbsp;využitím <strong>gcc</strong>) dojde ke změně názvu programátorem vytvářené funkce, protože namísto návěští <strong>_start</strong>:</p>
+
+<pre>
+.section .text
+        <strong>.global _start</strong>               # tento symbol ma byt dostupny i linkeru
+
+<strong>_start:</strong>
+</pre>
+
+<p>Se použije návěští <strong>main</strong>:</p>
+
+<pre>
+.section .text
+        <strong>.global main</strong>               # tento symbol ma byt dostupny i linkeru
+
+<strong>main:</strong>
+</pre>
+
+<p>Navíc jsme dříve ukončovali program explicitním zavoláním syscallu a předáním návratového kódu v&nbsp;registru <strong>EBX</strong>, tedy následujícím způsobem:</p>
+
+<pre>
+mov   eax, sys_exit          # cislo sycallu pro funkci "exit"
+mov   ebx, 0                 # exit code = 0
+int   0x80                   # volani Linuxoveho kernelu
+</pre>
+
+<p>Nová podoba kódu je pro programátora jednodušší, protože funkci <strong>main</strong> může opustit instrukcí <strong>RET</strong> (návrat ze subrutiny), přičemž návratový kód (<i>exit code</i>) je předán v&nbsp;registru <strong>EAX</strong>:</p>
+
+<pre>
+xor  eax, eax              # navratova hodnota (exit status)
+ret                        # ukonceni aplikace
+</pre>
+
+<p>Poznámka: použití souboru <strong>crt0.o</strong> je sice možné obejít a spolehnout se na vlastní kód, ve skutečnosti je však poměrně příjemné, že za nás kód naprogramovaný v&nbsp;<strong>crt0.o</strong> provede jak základní inicializaci, tak i zpracování <a href="http://dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html">vstupních parametrů</a> atd.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. První příklad &ndash; kostra aplikace s&nbsp;funkcí <strong>main</strong> naprogramovanou v&nbsp;assembleru</h2>
+
+<p>První demonstrační příklad je velmi primitivní, protože po svém spuštění pouze nastaví hodnotu registru <strong>EAX</strong> na nulu (využití instrukce <strong>xor</strong> je často používaným trikem, v&nbsp;assembleru však již spíše idiomem) a vyskočí ze subrutiny instrukcí <strong>ret</strong>:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani volani funkci ze standardni knihovny jazyka C
+# - pro zapis je pouzita "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global main               # tento symbol ma byt dostupny i linkeru
+
+main:
+
+        xor  eax, eax              # navratova hodnota (exit status)
+        ret                        # ukonceni aplikace
+</pre>
+
+<p>Překlad a slinkování se provede tímto příkazem:</p>
+
+<pre>
+gcc main.s
+</pre>
+
+<p>Výsledkem by měl být soubor <strong>a.out</strong> o velikosti přibližně 8,5 kB, který je však možné zmenšit příkazem <strong>strip</strong> na přibližně 6,2 kB.</p>
+
+<p>Disassemblerem se můžeme podívat na interní strukturu, která je již poněkud složitá, ale funkci <strong>main</strong> i sekci <strong>_start</strong> zde nalezneme:</p>
+
+<pre>
+objdump -M intel-mnemonic -f -d -t -h a.out
+</pre>
+
+<pre>
+Disassembly of section .init:
+
+00000000004003a8 &lt;_init&gt;:
+  4003a8:       48 83 ec 08             sub    rsp,0x8
+  4003ac:       48 8b 05 45 0c 20 00    mov    rax,QWORD PTR [rip+0x200c45]        # 600ff8 &lt;_DYNAMIC+0x1d0&gt;
+  4003b3:       48 85 c0                test   rax,rax
+  4003b6:       74 05                   je     4003bd &lt;_init+0x15&gt;
+  4003b8:       e8 33 00 00 00          call   4003f0 &lt;__gmon_start__@plt&gt;
+  4003bd:       48 83 c4 08             add    rsp,0x8
+  4003c1:       c3                      ret    
+
+Disassembly of section .plt:
+
+00000000004003d0 &lt;__libc_start_main@plt-0x10&gt;:
+  4003d0:       ff 35 32 0c 20 00       push   QWORD PTR [rip+0x200c32]        # 601008 &lt;_GLOBAL_OFFSET_TABLE_+0x8&gt;
+  4003d6:       ff 25 34 0c 20 00       jmp    QWORD PTR [rip+0x200c34]        # 601010 &lt;_GLOBAL_OFFSET_TABLE_+0x10&gt;
+  4003dc:       0f 1f 40 00             nop    DWORD PTR [rax+0x0]
+
+00000000004003e0 &lt;__libc_start_main@plt&gt;:
+  4003e0:       ff 25 32 0c 20 00       jmp    QWORD PTR [rip+0x200c32]        # 601018 &lt;_GLOBAL_OFFSET_TABLE_+0x18&gt;
+  4003e6:       68 00 00 00 00          push   0x0
+  4003eb:       e9 e0 ff ff ff          jmp    4003d0 &lt;_init+0x28&gt;
+
+00000000004003f0 &lt;__gmon_start__@plt&gt;:
+  4003f0:       ff 25 2a 0c 20 00       jmp    QWORD PTR [rip+0x200c2a]        # 601020 &lt;_GLOBAL_OFFSET_TABLE_+0x20&gt;
+  4003f6:       68 01 00 00 00          push   0x1
+  4003fb:       e9 d0 ff ff ff          jmp    4003d0 &lt;_init+0x28&gt;
+
+Disassembly of section .text:
+
+0000000000400400 &lt;_start&gt;:
+  400400:       31 ed                   xor    ebp,ebp
+  400402:       49 89 d1                mov    r9,rdx
+  400405:       5e                      pop    rsi
+  400406:       48 89 e2                mov    rdx,rsp
+  400409:       48 83 e4 f0             and    rsp,0xfffffffffffffff0
+  40040d:       50                      push   rax
+  40040e:       54                      push   rsp
+  40040f:       49 c7 c0 60 05 40 00    mov    r8,0x400560
+  400416:       48 c7 c1 f0 04 40 00    mov    rcx,0x4004f0
+  40041d:       48 c7 c7 ed 04 40 00    mov    rdi,0x4004ed
+  400424:       e8 b7 ff ff ff          call   4003e0 &lt;__libc_start_main@plt&gt;
+  400429:       f4                      hlt    
+  40042a:       66 0f 1f 44 00 00       nop    WORD PTR [rax+rax*1+0x0]
+
+0000000000400430 &lt;deregister_tm_clones&gt;:
+  400430:       b8 3f 10 60 00          mov    eax,0x60103f
+  400435:       55                      push   rbp
+  400436:       48 2d 38 10 60 00       sub    rax,0x601038
+  40043c:       48 83 f8 0e             cmp    rax,0xe
+  400440:       48 89 e5                mov    rbp,rsp
+  400443:       77 02                   ja     400447 &lt;deregister_tm_clones+0x17&gt;
+  400445:       5d                      pop    rbp
+  400446:       c3                      ret    
+  400447:       b8 00 00 00 00          mov    eax,0x0
+  40044c:       48 85 c0                test   rax,rax
+  40044f:       74 f4                   je     400445 &lt;deregister_tm_clones+0x15&gt;
+  400451:       5d                      pop    rbp
+  400452:       bf 38 10 60 00          mov    edi,0x601038
+  400457:       ff e0                   jmp    rax
+  400459:       0f 1f 80 00 00 00 00    nop    DWORD PTR [rax+0x0]
+
+0000000000400460 &lt;register_tm_clones&gt;:
+  400460:       b8 38 10 60 00          mov    eax,0x601038
+  400465:       55                      push   rbp
+  400466:       48 2d 38 10 60 00       sub    rax,0x601038
+  40046c:       48 c1 f8 03             sar    rax,0x3
+  400470:       48 89 e5                mov    rbp,rsp
+  400473:       48 89 c2                mov    rdx,rax
+  400476:       48 c1 ea 3f             shr    rdx,0x3f
+  40047a:       48 01 d0                add    rax,rdx
+  40047d:       48 d1 f8                sar    rax,1
+  400480:       75 02                   jne    400484 &lt;register_tm_clones+0x24&gt;
+  400482:       5d                      pop    rbp
+  400483:       c3                      ret    
+  400484:       ba 00 00 00 00          mov    edx,0x0
+  400489:       48 85 d2                test   rdx,rdx
+  40048c:       74 f4                   je     400482 &lt;register_tm_clones+0x22&gt;
+  40048e:       5d                      pop    rbp
+  40048f:       48 89 c6                mov    rsi,rax
+  400492:       bf 38 10 60 00          mov    edi,0x601038
+  400497:       ff e2                   jmp    rdx
+  400499:       0f 1f 80 00 00 00 00    nop    DWORD PTR [rax+0x0]
+
+00000000004004a0 &lt;__do_global_dtors_aux&gt;:
+  4004a0:       80 3d 91 0b 20 00 00    cmp    BYTE PTR [rip+0x200b91],0x0        # 601038 &lt;__TMC_END__&gt;
+  4004a7:       75 11                   jne    4004ba &lt;__do_global_dtors_aux+0x1a&gt;
+  4004a9:       55                      push   rbp
+  4004aa:       48 89 e5                mov    rbp,rsp
+  4004ad:       e8 7e ff ff ff          call   400430 &lt;deregister_tm_clones&gt;
+  4004b2:       5d                      pop    rbp
+  4004b3:       c6 05 7e 0b 20 00 01    mov    BYTE PTR [rip+0x200b7e],0x1        # 601038 &lt;__TMC_END__&gt;
+  4004ba:       f3 c3                   repz ret 
+  4004bc:       0f 1f 40 00             nop    DWORD PTR [rax+0x0]
+
+00000000004004c0 &lt;frame_dummy&gt;:
+  4004c0:       48 83 3d 58 09 20 00    cmp    QWORD PTR [rip+0x200958],0x0        # 600e20 &lt;__JCR_END__&gt;
+  4004c7:       00 
+  4004c8:       74 1e                   je     4004e8 &lt;frame_dummy+0x28&gt;
+  4004ca:       b8 00 00 00 00          mov    eax,0x0
+  4004cf:       48 85 c0                test   rax,rax
+  4004d2:       74 14                   je     4004e8 &lt;frame_dummy+0x28&gt;
+  4004d4:       55                      push   rbp
+  4004d5:       bf 20 0e 60 00          mov    edi,0x600e20
+  4004da:       48 89 e5                mov    rbp,rsp
+  4004dd:       ff d0                   call   rax
+  4004df:       5d                      pop    rbp
+  4004e0:       e9 7b ff ff ff          jmp    400460 &lt;register_tm_clones&gt;
+  4004e5:       0f 1f 00                nop    DWORD PTR [rax]
+  4004e8:       e9 73 ff ff ff          jmp    400460 &lt;register_tm_clones&gt;
+
+00000000004004ed &lt;main&gt;:
+  4004ed:       31 c0                   xor    eax,eax
+  4004ef:       c3                      ret    
+
+00000000004004f0 &lt;__libc_csu_init&gt;:
+  4004f0:       41 57                   push   r15
+  4004f2:       41 89 ff                mov    r15d,edi
+  4004f5:       41 56                   push   r14
+  4004f7:       49 89 f6                mov    r14,rsi
+  4004fa:       41 55                   push   r13
+  4004fc:       49 89 d5                mov    r13,rdx
+  4004ff:       41 54                   push   r12
+  400501:       4c 8d 25 08 09 20 00    lea    r12,[rip+0x200908]        # 600e10 &lt;__frame_dummy_init_array_entry&gt;
+  400508:       55                      push   rbp
+  400509:       48 8d 2d 08 09 20 00    lea    rbp,[rip+0x200908]        # 600e18 &lt;__init_array_end&gt;
+  400510:       53                      push   rbx
+  400511:       4c 29 e5                sub    rbp,r12
+  400514:       31 db                   xor    ebx,ebx
+  400516:       48 c1 fd 03             sar    rbp,0x3
+  40051a:       48 83 ec 08             sub    rsp,0x8
+  40051e:       e8 85 fe ff ff          call   4003a8 &lt;_init&gt;
+  400523:       48 85 ed                test   rbp,rbp
+  400526:       74 1e                   je     400546 &lt;__libc_csu_init+0x56&gt;
+  400528:       0f 1f 84 00 00 00 00    nop    DWORD PTR [rax+rax*1+0x0]
+  40052f:       00 
+  400530:       4c 89 ea                mov    rdx,r13
+  400533:       4c 89 f6                mov    rsi,r14
+  400536:       44 89 ff                mov    edi,r15d
+  400539:       41 ff 14 dc             call   QWORD PTR [r12+rbx*8]
+  40053d:       48 83 c3 01             add    rbx,0x1
+  400541:       48 39 eb                cmp    rbx,rbp
+  400544:       75 ea                   jne    400530 &lt;__libc_csu_init+0x40&gt;
+  400546:       48 83 c4 08             add    rsp,0x8
+  40054a:       5b                      pop    rbx
+  40054b:       5d                      pop    rbp
+  40054c:       41 5c                   pop    r12
+  40054e:       41 5d                   pop    r13
+  400550:       41 5e                   pop    r14
+  400552:       41 5f                   pop    r15
+  400554:       c3                      ret    
+  400555:       66 66 2e 0f 1f 84 00    data32 nop WORD PTR cs:[rax+rax*1+0x0]
+  40055c:       00 00 00 00 
+
+0000000000400560 &lt;__libc_csu_fini&gt;:
+  400560:       f3 c3                   repz ret 
+
+Disassembly of section .fini:
+
+0000000000400564 &lt;_fini&gt;:
+  400564:       48 83 ec 08             sub    rsp,0x8
+  400568:       48 83 c4 08             add    rsp,0x8
+  40056c:       c3                      ret    
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Volání knihovní funkce <strong>puts</strong></h2>
+
+<p>Způsob překladu i slinkování aplikace již známe, dokonce i víme, jak má vypadat kostra assemblerovské aplikace překládané s&nbsp;využitím nástroje <strong>gcc</strong>. Podívejme se tedy, jakým způsobem lze volat nějakou knihovní funkci ze standardní céčkovské knihovny. Na první pohled to není nic těžkého, protože se funkce zavolá instrukcí <strong>CALL</strong>, které se předá návěští, jehož jméno odpovídá jménu funkce. To znamená, že například standardní funkci <strong>puts()</strong> (výpis řetězce na standardní výstup) můžeme zavolat instrukcí <strong>CALL pust</strong>. Druhý problém, který je nutné vyřešit, spočívá v&nbsp;tom, jak funkcím předávat parametry. Na platformě x86-64 se pro předání prvních šesti celočíselných parametrů nebo adres používají registry, a to v&nbsp;tomto pořadí: <strong>RDI</strong>, <strong>RSI</strong>, <strong>RDX</strong>, <strong>RCX</strong>, <strong>R8</strong> a <strong>R9</strong>. Pokud je zapotřebí předat hodnotu s&nbsp;plovoucí řádovou čárkou, použijí se registry <strong>XMM0</strong>, <strong>XMM1</strong>, <strong>XMM2</strong>, <strong>XMM3</strong>, <strong>XMM4</strong>, <strong>XMM5</strong>, <strong>XMM6</strong> a <strong>XMM7</strong>.</p>
+
+<p>Funkci <strong>puts()</strong> se předává jediný parametr, kterým je počáteční adresa řetězce, který se má vytisknout. Tuto adresu nejprve načteme do registru <strong>RDI</strong> (první parametr). Povšimněte si, že řetězec je alokován pomocí deklarace <strong>.asciiz</strong> zajišťující mj.&nbsp;i uložení nuly za konec řetězce. To je céčkovskou funkcí <strong>puts()</strong> vyžadováno. První verze programu typu &bdquo;Hello world!&ldquo; by mohla vypadat následovně:</p>
+
+<pre>
+#-----------------------------------------------------------------------------
+.section .data
+hello_world_message:
+        .asciz "Hello world!\n"    # zprava, ktera se ma vytisknout na standardni vystup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global main               # tento symbol ma byt dostupny i linkeru
+
+main:
+                                   # jedinym parametrem je adresa zpravy
+        mov  rdi, offset hello_world_message
+        call puts                  # volani funkce 'puts' ze standardni knihovny
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zarovnání vrcholu zásobníku na adresu dělitelnou šestnácti</h2>
+
+<p>Volání funkce <strong>puts()</strong> sice bude fungovat, ale není zcela korektní, což by se mohlo projevit při volání složitějších funkcí s&nbsp;více parametry. Je tomu tak z&nbsp;toho důvodu, že na platformě x86-64 je nutné, aby byl při volání funkcí vrchol zásobníku zarovnán na celočíselný násobek šestnácti. A právě zde leží jádro problému &ndash; již při volání subrutiny <strong>main</strong> je registr <strong>RSP</strong> ukazující na vrchol zásobníku posunut o osm bajtů, protože na zásobník bylo nutné uložit návratovou adresu volajícího kódu. Proto musíme ještě před voláním funkce <strong>puts()</strong> na zásobník uložit dalších osm bajtů a po návratu z&nbsp;této funkce obnovit původní hodnotu registru <strong>RSP</strong>. Řešení je jednoduché &ndash; <strong>RSP</strong> se nejprve zmenší o hodnotu osm (zásobník totiž roste směrem k&nbsp;nižším adresám) a po návratu z&nbsp;této funkce se hodnota naopak o osmičku zvětší. Korektní kód tedy bude vypadat následovně:</p>
+
+<pre>
+#-----------------------------------------------------------------------------
+.section .data
+hello_world_message:
+        .asciz "Hello world!\n"    # zprava, ktera se ma vytisknout na standardni vystup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global main               # tento symbol ma byt dostupny i linkeru
+
+main:
+        sub  rsp, 8                # zajistit zarovnani RSP na adresu delitelnou 16
+
+                                   # jedinym parametrem je adresa zpravy
+        mov  rdi, offset hello_world_message
+        call puts                  # volani funkce 'puts' ze standardni knihovny
+
+        add  rsp, 8                # obnoveni puvodni hodnoty RSP
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Druhý příklad &ndash; výpis řetězce na obrazovku pomocí funkce <strong>puts</strong></h2>
+
+<p>Korektní varianta programu typu &bdquo;Hello world!&ldquo; vypadá následovně. Pro překlad tohoto programu opět použijte nástroj <strong>gcc</strong> a nikoli <strong>as</strong>:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani volani funkci ze standardni knihovny jazyka C
+# - volani funkce 'puts'
+# - pro zapis je pouzita "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+hello_world_message:
+        .asciz "Hello world!\n"    # zprava, ktera se ma vytisknout na standardni vystup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global main               # tento symbol ma byt dostupny i linkeru
+
+main:
+        sub  rsp, 8                # zajistit zarovnani RSP na adresu delitelnou 16
+
+                                   # jedinym parametrem je adresa zpravy
+        mov  rdi, offset hello_world_message
+        call puts                  # volani funkce 'puts' ze standardni knihovny
+
+        add  rsp, 8                # obnoveni puvodni hodnoty RSP
+
+        xor  eax, eax              # navratova hodnota (exit status)
+        ret                        # ukonceni aplikace
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Kontrola zarovnání v&nbsp;debuggeru (GDB)</h2>
+
+<p>Pojďme si nyní zkontrolovat, zda instrukce pro zarovnání vrcholu zásobníku na adresu dělitelnou šestnácti skutečně fungují. Nejdříve si upravený program přeložíme, a to s&nbsp;použitím volby <strong>-g</strong>, aby se do výsledného kódu vložily i ladicí informace:</p>
+
+<pre>
+<strong>gcc -g main_64bit.s</strong>
+</pre>
+
+<p>Po úspěšném překladu můžeme spustit interaktivní debugger, což zajišťuje následující příkaz:</p>
+
+<pre>
+<strong>gdb a.out</strong>
+...
+...
+...
+Reading symbols from a.out...done.
+(gdb)
+</pre>
+
+<p>Pokud se namísto posledního řádku vypíše toto chybové hlášení:</p>
+
+<pre>
+Reading symbols from a.out...(no debugging symbols found)...done.
+</pre>
+
+<p>znamená to, že při překladu nebyl použit přepínač <strong>-g</strong>.</p>
+
+<p>Dále již můžeme pokračovat v&nbsp;ladění. Nastavíme breakpoint na první instrukci v&nbsp;subrutině <strong>main</strong>:</p>
+
+<pre>
+(gdb) <strong>break main</strong>
+Breakpoint 1 at 0x40052d: file main_64bit.s, line 25.
+</pre>
+
+<p>Laděnou aplikaci spustíme, po spuštění se aplikace zastaví na nastaveném breakpointu:</p>
+
+<pre>
+(gdb) <strong>run</strong>
+Starting program: /home/tester/44_stdc_puts/a.out 
+
+Breakpoint 1, main () at main_64bit.s:25
+25              sub  rsp, 8                # zajistit zarovnani RSP na adresu delitelnou 16
+</pre>
+
+<p>Vypíšeme si informace o všech registrech. Zajímat nás samozřejmě bude především obsah registru <strong>RSP</strong>:</p>
+
+<pre>
+(gdb) <strong>info registers</strong>
+rax            0x40052d 4195629
+rbx            0x0      0
+rcx            0x0      0
+rdx            0x7fffffffe118   140737488347416
+rsi            0x7fffffffe108   140737488347400
+rdi            0x1      1
+rbp            0x0      0x0
+rsp            <strong>0x7fffffffe028   0x7fffffffe028</strong>
+r8             0x7ffff7dd4e80   140737351863936
+r9             0x7ffff7dea530   140737351951664
+r10            0x7fffffffdeb0   140737488346800
+r11            0x7ffff7a36e50   140737348070992
+r12            0x400440 4195392
+r13            0x7fffffffe100   140737488347392
+r14            0x0      0
+r15            0x0      0
+rip            0x40052d 0x40052d &lt;main&gt;
+eflags         0x246    [ PF ZF IF ]
+cs             0x33     51
+ss             0x2b     43
+ds             0x0      0
+es             0x0      0
+fs             0x0      0
+gs             0x0      0
+</pre>
+
+<p>Vidíme, že registr <strong>RSP</strong> skutečně neobsahuje hodnotu dělitelnou šestnácti, ovšem po provedení další instrukce příkazem <strong>step</strong> se situace změní:</p>
+
+<pre>
+(gdb) <strong>step</strong>
+main () at main_64bit.s:28
+28              mov  rdi, offset hello_world_message
+</pre>
+
+<p>Opět si vypíšeme obsah všech registrů:</p>
+
+<pre>
+<strong>(gdb) info registers</strong>
+rax            0x40052d 4195629
+rbx            0x0      0
+rcx            0x0      0
+rdx            0x7fffffffe118   140737488347416
+rsi            0x7fffffffe108   140737488347400
+rdi            0x1      1
+rbp            0x0      0x0
+rsp            <strong>0x7fffffffe020   0x7fffffffe020</strong>
+r8             0x7ffff7dd4e80   140737351863936
+r9             0x7ffff7dea530   140737351951664
+r10            0x7fffffffdeb0   140737488346800
+r11            0x7ffff7a36e50   140737348070992
+r12            0x400440 4195392
+r13            0x7fffffffe100   140737488347392
+r14            0x0      0
+r15            0x0      0
+rip            0x400531 0x400531 &lt;main+4&gt;
+eflags         0x202    [ IF ]
+cs             0x33     51
+ss             0x2b     43
+ds             0x0      0
+es             0x0      0
+fs             0x0      0
+gs             0x0      0
+</pre>
+
+<p>Nyní již <strong>RSP</strong> obsahuje adresu dělitelnou šestnácti, což se v&nbsp;hexadecimálním výpisu snadno pozná podle nuly v&nbsp;nejnižší cifře.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Volání knihovní funkce <strong>printf</strong> a význam obsahu registru <strong>AL</strong></h2>
+
+<p>Způsobem, který jsme si popsali v&nbsp;předchozích kapitolách, je možné volat většinu funkcí ze standardní céčkové knihovny. Stačí si zapamatovat pořadí registrů pro předávání parametrů:</p>
+
+<ol>
+<li>Celočíselné parametry a adresy: <strong>RDI</strong>, <strong>RSI</strong>, <strong>RDX</strong>, <strong>RCX</strong>, <strong>R8</strong> a <strong>R9</strong></li>
+<li>Hodnoty single(float) a double:  <strong>XMM0</strong>, <strong>XMM1</strong>, <strong>XMM2</strong>, <strong>XMM3</strong>, <strong>XMM4</strong>, <strong>XMM5</strong>, <strong>XMM6</strong> a <strong>XMM7</strong></li>
+</ol>
+
+<p>Výjimkou jsou funkce s&nbsp;proměnným počtem parametrů. U těch je totiž ještě nutné v&nbsp;registru <strong>RAX</strong> (ve skutečnosti však jen v&nbsp;<strong>AL</strong>, tj.&nbsp;spodních osmi bitech) předat počet předávaných hodnot typu float či double. Pokud na nastavení tohoto registru zapomenete, skončí většinou pokus o zavolání funkcí s&nbsp;proměnným počtem parametrů (typickým příkladem je <strong>printf()</strong>) pádem aplikace!</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Třetí příklad &ndash; výpis řetězce na obrazovku pomocí funkce <strong>printf</strong></h2>
+
+<p>Se znalostí nutnosti nastavení registru <strong>AL</strong> (či celého registru <strong>EAX</strong>) na hodnotu odpovídající počtu parametrů typu float/double předávaných variadické funkci můžeme vytvořit demonstrační příklad, v&nbsp;němž se volá variadická funkce <strong>printf()</strong>. Této funkci se předá jediný parametr představující řetězec, který se má vytisknout. V&nbsp;řetězci nejsou uvedeny žádné speciální formátovací znaky, takže se funkci <strong>printf()</strong> nemusí předávat žádné další parametry. Zdrojový kód vypadá následovně:</p>
+
+<pre>
+# asmsyntax=as
+
+# Program pro otestovani volani funkci ze standardni knihovny jazyka C
+# - volani funkce 'printf'
+# - pro zapis je pouzita "Intel" syntaxe.
+#
+# Autor: Pavel Tisnovsky
+
+.intel_syntax noprefix
+
+
+
+#-----------------------------------------------------------------------------
+.section .data
+hello_world_message:
+        .asciz "Hello world!\n"    # zprava, ktera se ma vytisknout na standardni vystup
+
+
+
+#-----------------------------------------------------------------------------
+.section .text
+        .global main               # tento symbol ma byt dostupny i linkeru
+
+main:
+        sub  rsp, 8                # zajistit zarovnani RSP na adresu delitelnou 16
+
+                                   # jedinym parametrem je adresa zpravy
+        mov  rdi, offset hello_world_message
+        xor  al, al                # pocet parametru predanych ve vektorovych registrech
+        call printf                # volani funkce 'printf' ze standardni knihovny
+
+        add  rsp, 8                # obnoveni puvodni hodnoty RSP
+
+        xor  eax, eax              # navratova hodnota (exit status)
+
+        ret                        # ukonceni aplikace
+</pre>
+
+<p>Podívejme se na to, jak se funkce (či subrutina) <strong>main</strong> přeloží do strojového kódu:</p>
+
+<pre>
+000000000040052d &lt;main&gt;:
+  40052d:       48 83 ec 08             sub    rsp,0x8
+  400531:       48 c7 c7 40 10 60 00    mov    rdi,0x601040
+  400538:       30 c0                   xor    al,al
+  40053a:       e8 d1 fe ff ff          call   400410 &lt;printf@plt&gt;
+  40053f:       48 83 c4 08             add    rsp,0x8
+  400543:       31 c0                   xor    eax,eax
+  400545:       c3                      ret    
+  400546:       66 2e 0f 1f 84 00 00    nop    WORD PTR cs:[rax+rax*1+0x0]
+  40054d:       00 00 00 
+</pre>
+
+<p>Poznámka: poslední dva řádky jsou ve skutečnosti pouze &bdquo;smetí&ldquo; vzniklé zarovnáním kódu a nikoli reálné instrukce, které by se skutečně spouštěly (ostatně instrukce <strong>NOP</strong> s&nbsp;prapodivným adresováním je skutečně nesmyslná).</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny tři dnes popisované demonstrační příklady byly, podobně jako ve všech předchozích částech tohoto seriálu, společně s&nbsp;podpůrnými skripty určenými pro jejich překlad či naopak pro disassembling, uloženy do GIT repositáře dostupného na adrese <a href="https://github.com/tisnik/presentations/">https://github.com/tisnik/presentations/</a>. Všechny příklady jsou určeny pro GNU Assembler a používají Intel syntaxi, která je pro mnoho programátorů čitelnější, než původní AT&amp;T syntaxe. Následují tabulky obsahující odkazy na zdrojové kódy příkladů i na již zmíněné podpůrné skripty:</p>
+
+<h3>První demonstrační příklad: šablona pro překlad nástrojem <strong>gcc</strong></h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>main.s</td><td>hlavní program pro procesory x86-64</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/43_stdc_stub/main.s">https://github.com/tisnik/presentations/blob/master/assembler/43_stdc_stub/main.s</a></td></tr>
+<tr><td>2</td><td>assemble</td><td>skript pro překlad s&nbsp;využitím gcc</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/43_stdc_stub/assemble">https://github.com/tisnik/presentations/blob/master/assembler/43_stdc_stub/assemble</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/43_stdc_stub/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/43_stdc_stub/disassemble</a></td></tr>
+</table>
+
+
+
+<h3>Druhý demonstrační příklad: volání knihovní funkce <strong>puts()</strong></h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>main_64bit.s</td><td>hlavní program pro procesory x86-64</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/44_stdc_puts/main_64bit.s">https://github.com/tisnik/presentations/blob/master/assembler/44_stdc_puts/main_64bit.s</a></td></tr>
+<tr><td>2</td><td>assemble_64bit</td><td>skript pro překlad s&nbsp;využitím gcc</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/44_stdc_puts/assemble_64bit">https://github.com/tisnik/presentations/blob/master/assembler/44_stdc_puts/assemble_64bit</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/44_stdc_puts/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/44_stdc_puts/disassemble</a></td></tr>
+</table>
+
+
+
+<h3>Druhý demonstrační příklad: volání knihovní funkce <strong>printf()</strong></h3>
+
+<table>
+<tr><th>#</th><th>Soubor</th><th>Popis</th><th>Odkaz do repositáře</th></tr>
+<tr><td>1</td><td>main.s</td><td>hlavní program pro procesory x86-64</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/45_stdc_printf/main_64bit.s">https://github.com/tisnik/presentations/blob/master/assembler/45_stdc_printf/main_64bit.s</a></td></tr>
+<tr><td>2</td><td>assemble</td><td>skript pro překlad s&nbsp;využitím gcc</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/45_stdc_printf/assemble_64bit">https://github.com/tisnik/presentations/blob/master/assembler/45_stdc_printf/assemble_64bit</a></td></tr>
+<tr><td>3</td><td>disassemble</td><td>skript pro disassembling</td><td><a href="https://github.com/tisnik/presentations/blob/master/assembler/45_stdc_printf/disassemble">https://github.com/tisnik/presentations/blob/master/assembler/45_stdc_printf/disassemble</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>C Functions Without Arguments<br />
+<a href="https://eklitzke.org/c-functions-without-arguments">https://eklitzke.org/c-functions-without-arguments</a>
+</li>
+
+<li>GNU Assembler Examples<br />
+<a href="http://cs.lmu.edu/~ray/notes/gasexamples/">http://cs.lmu.edu/~ray/notes/gasexamples/</a>
+</li>
+
+<li>Simply FPU<br />
+<a href="http://www.website.masmforum.com/tutorials/fptute/">http://www.website.masmforum.com/tutorials/fptute/</a>
+</li>
+
+<li>Art of Assembly language programming: The 80x87 Floating Point Coprocessors<br />
+<a href="https://courses.engr.illinois.edu/ece390/books/artofasm/CH14/CH14-3.html">https://courses.engr.illinois.edu/ece390/books/artofasm/CH14/CH14-3.html</a>
+</li>
+
+<li>Art of Assembly language programming: The FPU Instruction Set<br />
+<a href="https://courses.engr.illinois.edu/ece390/books/artofasm/CH14/CH14-4.html">https://courses.engr.illinois.edu/ece390/books/artofasm/CH14/CH14-4.html</a>
+</li>
+
+<li>INTEL 80387 PROGRAMMER'S REFERENCE MANUAL<br />
+<a href="http://www.ragestorm.net/downloads/387intel.txt">http://www.ragestorm.net/downloads/387intel.txt</a>
+</li>
+
+<li>x86 Instruction Set Reference: FLD<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_100.html">http://x86.renejeschke.de/html/file_module_x86_id_100.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: FLD1/FLDL2T/FLDL2E/FLDPI/FLDLG2/FLDLN2/FLDZ<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_101.html">http://x86.renejeschke.de/html/file_module_x86_id_101.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: FLD<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_100.html">http://x86.renejeschke.de/html/file_module_x86_id_100.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: FST/FSTP<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_117.html">http://x86.renejeschke.de/html/file_module_x86_id_117.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: FADD/FADDP/FIADD<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_81.html">http://x86.renejeschke.de/html/file_module_x86_id_81.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: FSUB/FSUBP/FISUB<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_121.html">http://x86.renejeschke.de/html/file_module_x86_id_121.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: FDIV/FDIVP/FIDIV<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_91.html">http://x86.renejeschke.de/html/file_module_x86_id_91.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BT<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_22.html">http://x86.renejeschke.de/html/file_module_x86_id_22.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BTC<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_23.html">http://x86.renejeschke.de/html/file_module_x86_id_23.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BTR<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_24.html">http://x86.renejeschke.de/html/file_module_x86_id_24.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BTS<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_25.html">http://x86.renejeschke.de/html/file_module_x86_id_25.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BSF<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_19.html">http://x86.renejeschke.de/html/file_module_x86_id_19.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BSR<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_20.html">http://x86.renejeschke.de/html/file_module_x86_id_20.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: BSWAP<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_21.html">http://x86.renejeschke.de/html/file_module_x86_id_21.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: XCHG<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_328.html">http://x86.renejeschke.de/html/file_module_x86_id_328.html</a>
+</li>
+
+<li>x86 Instruction Set Reference: SETcc<br />
+<a href="http://x86.renejeschke.de/html/file_module_x86_id_288.html">http://x86.renejeschke.de/html/file_module_x86_id_288.html</a>
+</li>
+
+<li>X86 Assembly/Arithmetic<br />
+<a href="https://en.wikibooks.org/wiki/X86_Assembly/Arithmetic">https://en.wikibooks.org/wiki/X86_Assembly/Arithmetic</a>
+</li>
+
+<li>Art of Assembly - Arithmetic Instructions<br />
+<a href="http://oopweb.com/Assembly/Documents/ArtOfAssembly/Volume/Chapter_6/CH06-2.html">http://oopweb.com/Assembly/Documents/ArtOfAssembly/Volume/Chapter_6/CH06-2.html</a>
+</li>
+
+<li>The GNU Assembler Tutorial<br />
+<a href="http://tigcc.ticalc.org/doc/gnuasm.html">http://tigcc.ticalc.org/doc/gnuasm.html</a>
+</li>
+
+<li>The GNU Assembler - macros<br />
+<a href="http://tigcc.ticalc.org/doc/gnuasm.html#SEC109">http://tigcc.ticalc.org/doc/gnuasm.html#SEC109</a>
+</li>
+
+<li>ARM subroutines &amp; program stack<br />
+<a href="http://www.toves.org/books/armsub/">http://www.toves.org/books/armsub/</a>
+</li>
+
+<li>Generating Mixed Source and Assembly List using GCC<br />
+<a href="http://www.systutorials.com/240/generate-a-mixed-source-and-assembly-listing-using-gcc/">http://www.systutorials.com/240/generate-a-mixed-source-and-assembly-listing-using-gcc/</a>
+</li>
+
+<li>Calling subroutines<br />
+<a href="http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.kui0100a/armasm_cihcfigg.htm">http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.kui0100a/armasm_cihcfigg.htm</a>
+</li>
+
+<li>ARM Assembly Language Programming<br />
+<a href="http://peter-cockerell.net/aalp/html/frames.html">http://peter-cockerell.net/aalp/html/frames.html</a>
+</li>
+
+<li>ASM Flags<br />
+<a href="http://www.cavestory.org/guides/csasm/guide/asm_flags.html">http://www.cavestory.org/guides/csasm/guide/asm_flags.html</a>
+</li>
+
+<li>Status Register<br />
+<a href="https://en.wikipedia.org/wiki/Status_register">https://en.wikipedia.org/wiki/Status_register</a>
+</li>
+
+<li>Intel x86 JUMP quick reference<br />
+<a href="http://unixwiz.net/techtips/x86-jumps.html">http://unixwiz.net/techtips/x86-jumps.html</a>
+</li>
+
+<li>Linux assemblers: A comparison of GAS and NASM<br />
+<a href="http://www.ibm.com/developerworks/library/l-gas-nasm/index.html">http://www.ibm.com/developerworks/library/l-gas-nasm/index.html</a>
+</li>
+
+<li>Programovani v assembleru na OS Linux<br />
+<a href="http://www.cs.vsb.cz/grygarek/asm/asmlinux.html">http://www.cs.vsb.cz/grygarek/asm/asmlinux.html</a>
+</li>
+
+<li>Is it worthwhile to learn x86 assembly language today?<br />
+<a href="https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1">https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1</a>
+</li>
+
+<li>Why Learn Assembly Language?<br />
+<a href="http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language">http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language</a>
+</li>
+
+<li>Is Assembly still relevant?<br />
+<a href="http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant">http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant</a>
+</li>
+
+<li>Why Learning Assembly Language Is Still a Good Idea<br />
+<a href="http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html">http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html</a>
+</li>
+
+<li>Assembly language today<br />
+<a href="http://beust.com/weblog/2004/06/23/assembly-language-today/">http://beust.com/weblog/2004/06/23/assembly-language-today/</a>
+</li>
+
+<li>Assembler: Význam assembleru dnes<br />
+<a href="http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz">http://www.builder.cz/rubriky/assembler/vyznam-assembleru-dnes-155960cz</a>
+</li>
+
+<li>Assembler pod Linuxem<br />
+<a href="http://phoenix.inf.upol.cz/linux/prog/asm.html">http://phoenix.inf.upol.cz/linux/prog/asm.html</a>
+</li>
+
+<li>AT&amp;T Syntax versus Intel Syntax<br />
+<a href="https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html">https://www.sourceware.org/binutils/docs-2.12/as.info/i386-Syntax.html</a>
+</li>
+
+<li>Linux Assembly website<br />
+<a href="http://asm.sourceforge.net/">http://asm.sourceforge.net/</a>
+</li>
+
+<li>Using Assembly Language in Linux<br />
+<a href="http://asm.sourceforge.net/articles/linasm.html">http://asm.sourceforge.net/articles/linasm.html</a>
+</li>
+
+<li>vasm<br />
+<a href="http://sun.hasenbraten.de/vasm/">http://sun.hasenbraten.de/vasm/</a>
+</li>
+
+<li>vasm &ndash; dokumentace<br />
+<a href="http://sun.hasenbraten.de/vasm/release/vasm.html">http://sun.hasenbraten.de/vasm/release/vasm.html</a>
+</li>
+
+<li>The Yasm Modular Assembler Project<br />
+<a href="http://yasm.tortall.net/">http://yasm.tortall.net/</a>
+</li>
+
+<li>680x0:AsmOne<br />
+<a href="http://www.amigacoding.com/index.php/680x0:AsmOne">http://www.amigacoding.com/index.php/680x0:AsmOne</a>
+</li>
+
+<li>ASM-One Macro Assembler<br />
+<a href="http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler">http://en.wikipedia.org/wiki/ASM-One_Macro_Assembler</a>
+</li>
+
+<li>ASM-One pages<br />
+<a href="http://www.theflamearrows.info/documents/asmone.html">http://www.theflamearrows.info/documents/asmone.html</a>
+</li>
+
+<li>Základní informace o ASM-One<br />
+<a href="http://www.theflamearrows.info/documents/asminfo.html">http://www.theflamearrows.info/documents/asminfo.html</a>
+</li>
+
+<li>Linux Syscall Reference<br />
+<a href="http://syscalls.kernelgrok.com/">http://syscalls.kernelgrok.com/</a>
+</li>
+
+<li>Programming from the Ground Up Book - Summary<br />
+<a href="http://savannah.nongnu.org/projects/pgubook/">http://savannah.nongnu.org/projects/pgubook/</a>
+</li>
+
+<li>IBM System 360/370 Compiler and Historical Documentation<br />
+<a href="http://www.edelweb.fr/Simula/">http://www.edelweb.fr/Simula/</a>
+</li>
+
+<li>IBM 700/7000 series<br />
+<a href="http://en.wikipedia.org/wiki/IBM_700/7000_series">http://en.wikipedia.org/wiki/IBM_700/7000_series</a>
+</li>
+
+<li>IBM System/360<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/360">http://en.wikipedia.org/wiki/IBM_System/360</a>
+</li>
+
+<li>IBM System/370<br />
+<a href="http://en.wikipedia.org/wiki/IBM_System/370">http://en.wikipedia.org/wiki/IBM_System/370</a>
+</li>
+
+<li>Mainframe family tree and chronology<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_FT1.html</a>
+</li>
+
+<li>704 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP704.html</a>
+</li>
+
+<li>705 Data Processing System<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_PP705.html</a>
+</li>
+
+<li>The IBM 704<br />
+<a href="http://www.columbia.edu/acis/history/704.html">http://www.columbia.edu/acis/history/704.html</a>
+</li>
+
+<li>IBM Mainframe album<br />
+<a href="http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html">http://www-03.ibm.com/ibm/history/exhibits/mainframe/mainframe_album.html</a>
+</li>
+
+<li>Osmibitové muzeum<br />
+<a href="http://osmi.tarbik.com/">http://osmi.tarbik.com/</a>
+</li>
+
+<li>Tesla PMI-80<br />
+<a href="http://osmi.tarbik.com/cssr/pmi80.html">http://osmi.tarbik.com/cssr/pmi80.html</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://en.wikipedia.org/wiki/PMI-80">http://en.wikipedia.org/wiki/PMI-80</a>
+</li>
+
+<li>PMI-80<br />
+<a href="http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016">http://www.old-computers.com/museum/computer.asp?st=1&amp;c=1016</a>
+</li>
+
+<li>The 6502 overflow flag explained mathematically <br />
+<a href="http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html">http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html</a>
+</li>
+
+<li>X86 Opcode and Instruction Reference<br />
+<a href="http://ref.x86asm.net/coder32.html">http://ref.x86asm.net/coder32.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
