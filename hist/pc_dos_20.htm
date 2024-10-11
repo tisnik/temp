@@ -45,16 +45,16 @@
 <p><a href="#k06">6. Externí D/A převodník</a></p>
 <p><a href="#k07">7. Frekvenční modulace a její použití při zvukové syntéze</a></p>
 <p><a href="#k08">8. Od objevu frekvenční modulace k&nbsp;hudebním syntetizérům firmy Yamaha</a></p>
-<p><a href="#k09">*** 9. Operátory a jejich vzájemná vazba</a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
+<p><a href="#k09">9. Programování čipu OPL2</a></p>
+<p><a href="#k10">10. Realizace změny jednoho řídicího registru karty OPL2</a></p>
+<p><a href="#k11">11. Řídicí registry čipu OPL2</a></p>
+<p><a href="#k12">*** 12. Operátory a jejich vzájemná vazba</a></p>
 <p><a href="#k13">*** 13. </a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. </a></p>
+<p><a href="#k16">*** 16. Nastavení parametrů pro přehrání tónu komorního A</a></p>
+<p><a href="#k17">*** 17. Praktický příklad: přehrání tónu komorního A</a></p>
+<p><a href="#k18">*** 18. Zápis hodnot registrů OPL2 do tabulky</a></p>
 <p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -331,22 +331,129 @@ použije ve výpočtu výsledného signálu), mohlo &ndash; i přes existenci pa
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. Operátory a jejich vzájemná vazba</h2>
+<h2 id="k09">9. Programování čipu OPL2</h2>
+
+<p>Čip <i>OPL2</i> je vybaven piny pro připojení k&nbsp;osmibitové sběrnici
+řízené signály <strong>CS</strong>, <strong>RD</strong> a <strong>WR</strong>.
+Pro výběr adresy je vyveden pouze jediný pin &ndash; to je však dostačující,
+protože se rozlišují pouhé dvě adresy mapované do I/O prostoru 0x388 a 0x389
+(tyto adresy byly z&nbsp;důvodu zpětné kompatibility použity i u modernějších
+zvukových karet, což si ostatně ukážeme příště).</p>
+
+<p>Na adrese 0x388 je umístěný indexový registr, do nějž se zapisuje index
+vybraného interního registru (0&ndash;255), a na adrese 0x389 je datový
+registr. Čip obsahuje 244 interních osmibitových registrů, pomocí nichž se řídí
+celý průběh zvukové syntézy &ndash; počet registrů je tedy mnohem vyšší, než
+například u jednodušších zvukových čipů (<i>POKEY:</i> 9 registrů, <i>SID:</i>
+29 registrů, <i>AYčko:</i> 14 registrů). Zápis do interního registru musí být
+proveden ve dvou krocích &ndash; výběr registru zápisem jeho čísla na I/O
+adresu 0x388 a po malém zpoždění zápisem nové hodnoty interního registru na
+adresu 0x389.</p>
+
+<p>V&nbsp;původním zapojení OPL2 v&nbsp;kartě AdLib je nutné po zápisu do
+adresového registru (0x388) čekat 3,3 &micro;s a po zápisu do datového registru
+23 &micro;s před modifikací dalšího registru. Prakticky se toto časování
+realizovalo malým trikem: po zápisu do adresového registru se provedlo šest
+čtení z&nbsp; I/O portu a po zápisu do datového registru 35 čtení z&nbsp;I/O
+portu. Využívalo se totiž toho, že zatímco vlastní mikroprocesor mohl mít
+různou hodinovou frekvenci, I/O operace byly stále stejně rychlé (což ovšem
+nemusela být pravda).</p>
 
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Realizace změny jednoho řídicího registru karty OPL2</h2>
+
+<p>V&nbsp;demonstračních příkladech, které budou použity ve druhé části
+dnešního článku, samozřejmě musíme umět nastavovat řídicí registry OPL2.
+Nejdříve si nadefinujeme adresy použitých I/O portů. Do prvního I/O portu se
+zapisuje adresa registru, který chceme modifikovat a do druhého portu pak
+zapisovaná hodnota do registru:</p>
+
+<pre>
+<i>; registry karet s cipem OPL2</i>
+OPL_ADDRESS equ 0x388
+OPL_DATA    equ 0x389
+</pre>
+
+<p>Samotná modifikace vybraného řídicího registru OPL2 je implementována
+v&nbsp;následujícím podprogramu (subrutině), kterému je nutné
+v&nbsp;<strong>AL</strong> předat index registru OPL2 a
+v&nbsp;<strong>AH</strong> jeho hodnotu. Subrutina realizuje i potřebné čekací
+intervaly mezi zápisy a &bdquo;ničí&ldquo; obsahy registrů <strong>DX</strong>
+a <strong>CL</strong>:</p>
+
+<pre>
+<strong>perform_write_to_opl_register</strong>:
+        <i>; zapis do vybraneho registru OPL2</i>
+        <i>; AL - registr</i>
+        <i>; AH - hodnota</i>
+        mov dx, OPL_ADDRESS   <i>; vyber registru pro modifikaci</i>
+        out dx, al
+&nbsp;
+        <i>; cekani priblizne 3.3 mikrosekundy</i>
+        mov cl, 6
+<strong>.delay1</strong>:
+        in  al, dx
+        loop .delay1
+&nbsp;
+        mov al, ah            <i>; zapis hodnoty do vybraneho registru</i>
+        mov dx, OPL_DATA
+        out dx, al
+&nbsp;
+        <i>; cekani priblizne 23 mikrosekund</i>
+        mov cl, 35
+<strong>.delay2</strong>:
+        in  al, dx
+        loop .delay2
+&nbsp; 
+        ret
+</pre>
 
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Řídicí registry čipu OPL2</h2>
+
+<p>Víme již, že se OPL2 řídí přes 244 registrů. To je sice velké množství,
+ovšem tyto registry tvoří skupiny se stejným významem, protože OPL2 obsahuje
+devět samostatných hudebních kanálů. V&nbsp;této kapitole si všechny řídicí
+registry vypíšeme i s&nbsp;jejich originálním názvem; podrobnější popis bude
+uveden dále:</p>
+
+<table>
+<tr><th>Registr/registry</th><th>Oficiální jméno</th></tr>
+<tr><td>01    </td><td>Test LSI / Enable waveform control</td></tr>
+<tr><td>02    </td><td>Timer 1 data (viz kapitolu 5)</td></tr>
+<tr><td>03    </td><td>Timer 2 data (viz kapitolu 5)</td></tr>
+<tr><td>04    </td><td>Timer control flags  (viz kapitolu 5)</td></tr>
+<tr><td>08    </td><td>Speech synthesis mode / Keyboard split note select</td></tr>
+<tr><td>20..35</td><td>Amp Mod / Vibrato / EG type / Key Scaling / Multiple</td></tr>
+<tr><td>40..55</td><td>Key scaling level / Operator output level</td></tr>
+<tr><td>60..75</td><td>Attack Rate / Decay Rate</td></tr>
+<tr><td>80..95</td><td>Sustain Level / Release Rate</td></tr>
+<tr><td>A0..A8</td><td>Frequency (low 8 bits)</td></tr>
+<tr><td>B0..B8</td><td>Key On / Octave / Frequency (high 2 bits)</td></tr>
+<tr><td>BD    </td><td>AM depth / Vibrato depth / Rhythm control</td></tr>
+<tr><td>C0..C8</td><td>Feedback strength / Connection type</td></tr>
+<tr><td>E0..F5</td><td>Wave Select</td></tr>
+</table>
+
+<p>Rozsahy 20..35, 40..55 atd. znamenají, že se v&nbsp;daném rozsahu nachází 18
+registrů. Vždy dva z&nbsp;těchto registrů slouží pro nastavení parametrů dvou
+operátorů pro jeden hudební kanál (1-9). Mapování mezi indexem registru,
+kanálem a operátorem, ovšem není regulární, takže je nutné použít tabulku:</p>
+
+<pre>
+Kanál          1   2   3   4   5   6   7   8   9
+Operátor 1    00  01  02  08  09  0A  10  11  12
+Operátor 2    03  04  05  0B  0C  0D  13  14  15
+</pre>
 
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Operátory a jejich vzájemná vazba</h2>
 
 
 
@@ -366,17 +473,127 @@ použije ve výpočtu výsledného signálu), mohlo &ndash; i přes existenci pa
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16  Nastavení parametrů pro přehrání tónu komorního A</h2>
+
+<table>
+<tr><th>Registr</th><th>Hodnota</th><th>Popis významu nastavené hodnoty</th></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td></tr>
+</table>
 
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<h2 id="k17">17. Praktický příklad: přehrání tónu komorního A</h2>
+
+<pre>
+        write_opl_register 0x20, 0x01    <i>; nastaveni modulatoru: nasobeni frekvence jednickou</i>
+        write_opl_register 0x40, 0x10    <i>; uroven vystupu 40 dB</i>
+        write_opl_register 0x60, 0xF0    <i>; modulator: rychly nastup zvuku + pomale doznivani</i>
+        write_opl_register 0x80, 0x77    <i>; urovne sustain a release pro modulator</i>
+        write_opl_register 0xA0, 0x41    <i>; frekvence zvuku (komorni A = 440 Hz)</i>
+        write_opl_register 0x23, 0x01    <i>; nastaveni nosne: nasobeni frekvence jednickou</i>
+        write_opl_register 0x43, 0x00    <i>; nastavni urovne vystupu nosne na 47 dB</i>
+        write_opl_register 0x63, 0xF0    <i>; nosna: rychly nastup + pomale doznivani</i>
+        write_opl_register 0x83, 0x77    <i>; urovne sustain a release pro nosnou</i>
+        write_opl_register 0xB0, 0x32    <i>; zapnuti/povoleni zvuku + nastaveni oktavy a vyssich bitu frekvence</i>
+</pre>
+
+<pre>
+<i>; Prehrani zakladniho tonu na kartach s cipem OPL2.</i>
+<i>;</i>
+<i>;</i>
+<i>; preklad pomoci:</i>
+<i>;     nasm -f bin -o sound_opl2_basic.com sound_opl2_basic.asm</i>
+<i>;</i>
+<i>; nebo pouze:</i>
+<i>;     nasm -o sound_opl2_basic.com sound_opl2_basic.asm</i>
+
+ 
+<i>;-----------------------------------------------------------------------------</i>
+
+<i>; registry karet s cipem OPL2</i>
+OPL_ADDRESS equ 0x388
+OPL_DATA    equ 0x389
+
+<i>;-----------------------------------------------------------------------------</i>
+
+<i>; ukonceni procesu a navrat do DOSu</i>
+%macro exit 0
+        ret
+%endmacro
+
+<i>; vyprazdneni bufferu klavesnice a cekani na klavesu</i>
+%macro wait_key 0
+        xor     ax, ax
+        int     0x16
+%endmacro
+
+<i>; makro pro zapis do registru OPL2</i>
+%macro write_opl_register 2
+        mov     al, %1
+        mov     ah, %2
+        call    perform_write_to_opl_register
+%endmacro
+
+<i>;-----------------------------------------------------------------------------</i>
+org  0x100        <i>; zacatek kodu pro programy typu COM (vzdy se zacina na 256)</i>
+
+start:
+        write_opl_register 0x20, 0x01    <i>; nastaveni modulatoru: nasobeni frekvence jednickou</i>
+        write_opl_register 0x40, 0x10    <i>; uroven vystupu 40 dB</i>
+        write_opl_register 0x60, 0xF0    <i>; modulator: rychly nastup zvuku + pomale doznivani</i>
+        write_opl_register 0x80, 0x77    <i>; urovne sustain a release pro modulator</i>
+        write_opl_register 0xA0, 0x41    <i>; frekvence zvuku (komorni A = 440 Hz)</i>
+        write_opl_register 0x23, 0x01    <i>; nastaveni nosne: nasobeni frekvence jednickou</i>
+        write_opl_register 0x43, 0x00    <i>; nastavni urovne vystupu nosne na 47 dB</i>
+        write_opl_register 0x63, 0xF0    <i>; nosna: rychly nastup + pomale doznivani</i>
+        write_opl_register 0x83, 0x77    <i>; urovne sustain a release pro nosnou</i>
+        write_opl_register 0xB0, 0x32    <i>; zapnuti/povoleni zvuku + nastaveni oktavy a vyssich bitu frekvence</i>
+        wait_key
+        exit
+
+perform_write_to_opl_register:
+        <i>; zapis do vybraneho registru OPL2</i>
+        <i>; AL - registr</i>
+        <i>; AH - hodnota</i>
+        mov dx, OPL_ADDRESS   <i>; vyber registru pro modifikaci</i>
+        out dx, al
+
+        <i>; cekani priblizne 3.3 mikrosekundy</i>
+        mov cl, 6
+.delay1:
+        in  al, dx
+        loop .delay1
+
+        mov al, ah            <i>; zapis hodnoty do vybraneho registru</i>
+        mov dx, OPL_DATA
+        out dx, al
+
+        <i>; cekani priblizne 23 mikrosekund</i>
+        mov cl, 35
+.delay2:
+        in  al, dx
+        loop .delay2
+ 
+        ret
+</pre>
 
 
 
 <p><a name="k18"></a></p>
-<h2 id="k18">18. </h2>
+<h2 id="k18">18. Zápis hodnot registrů OPL2 do tabulky</h2>
+
+<pre>
+</pre>
 
 
 
