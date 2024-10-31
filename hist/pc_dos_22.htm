@@ -54,7 +54,7 @@
 <p><a href="#k15">15. AdLib Gold 1000</a></p>
 <p><a href="#k16">16. Sound Bird &ndash; emulace OPL3 zvukovým procesorem</a></p>
 <p><a href="#k17">17. Od OPL2 k&nbsp;OPL3</a></p>
-<p><a href="#k18">*** 18. Programování OPL3</a></p>
+<p><a href="#k18">18. Programování OPL3</a></p>
 <p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -719,9 +719,204 @@ dokáže beze změny adres či registrů přehrávat například modulované zvu
 založené na kombinaci dvou operátorů. Tj.&nbsp;i náš prozatím nejsložitější
 příklad (vypsaný níže) bude možné přehrát například na SoundBlasteru 16 (což
 jsem si právě ověřil), s&nbsp;monofonním výstupem (resp.&nbsp;výstupem totožným
-pro oba výstupní kanály):</p>
+pro oba výstupní kanály). V&nbsp;praxi se navíc mohou snížit časové pauzy mezi
+zápisy do registrů OPL (k&nbsp;tomu se ještě taktéž vrátíme):</p>
 
 <pre>
+<i>; Prehrani zakladniho tonu na kartach s cipem OPL2.</i>
+<i>; Pojmenovani registru OPL2.</i>
+<i>; Ovladani KEY ON mezernikem</i>
+<i>; Frekvence modulatoru rizena klavesami 1 az 0</i>
+<i>; Ukonceni aplikace stiskem ESC</i>
+<i>;</i>
+<i>;</i>
+<i>; preklad pomoci:</i>
+<i>;     nasm -f bin -o sound_modulation.com sound_modulation.asm</i>
+<i>;</i>
+<i>; nebo pouze:</i>
+<i>;     nasm -o sound_modulation.com sound_modulation.asm</i>
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+BITS 16         <i>; 16bitovy vystup pro DOS</i>
+CPU 8086        <i>; specifikace pouziteho instrukcniho souboru</i>
+&nbsp;
+ &nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+<i>; registry karet s cipem OPL2</i>
+OPL_ADDRESS equ 0x388
+OPL_DATA    equ 0x389
+&nbsp;
+<i>; ridici registry OPL2</i>
+OPL_TEST_LSI          equ 0x01
+OPL_TIMER_1           equ 0x02
+OPL_TIMER_2           equ 0x03
+OPL_TIMER_CTRL        equ 0x04
+OPL_KBSPLIT           equ 0x08
+OPL_AMP_VIBRATO_EG    equ 0x20
+OPL_LEVEL             equ 0x40
+OPL_ATTACK_DECAY      equ 0x60
+OPL_SUSTAIN_RELEASE   equ 0x80
+OPL_FREQUENCY_LOW     equ 0xa0
+OPL_KEY_ON            equ 0xb0
+OPL_AM_VIBRATO_RHYTHM equ 0xbd
+OPL_FEEDBACK          equ 0xc0
+OPL_WAVE_SELECT       equ 0xe0
+&nbsp;
+<i>; indexy kanalu</i>
+CHANNEL_1 equ 0
+CHANNEL_2 equ 1
+CHANNEL_3 equ 2
+CHANNEL_4 equ 3
+CHANNEL_5 equ 4
+CHANNEL_6 equ 5
+CHANNEL_7 equ 6
+CHANNEL_8 equ 7
+CHANNEL_9 equ 8
+&nbsp;
+<i>; offsety pro jednotlive operatory</i>
+<i>; --------------------------------------------------</i>
+<i>;  Channel        1   2   3   4   5   6   7   8   9</i>
+<i>;  Operator 1    00  01  02  08  09  0A  10  11  12</i>
+<i>;  Operator 2    03  04  05  0B  0C  0D  13  14  15</i>
+<i>; --------------------------------------------------</i>
+<i>;  Channel        1   2   3   4   5   6   7   8   9</i>
+CHANNEL_1_OPERATOR_1 equ 0x00
+CHANNEL_1_OPERATOR_2 equ 0x03
+CHANNEL_2_OPERATOR_1 equ 0x01
+CHANNEL_2_OPERATOR_2 equ 0x04
+CHANNEL_3_OPERATOR_1 equ 0x02
+CHANNEL_3_OPERATOR_2 equ 0x05
+CHANNEL_4_OPERATOR_1 equ 0x08
+CHANNEL_4_OPERATOR_2 equ 0x0b
+CHANNEL_5_OPERATOR_1 equ 0x09
+CHANNEL_5_OPERATOR_2 equ 0x0c
+CHANNEL_6_OPERATOR_1 equ 0x0a
+CHANNEL_6_OPERATOR_2 equ 0x0d
+CHANNEL_7_OPERATOR_1 equ 0x10
+CHANNEL_7_OPERATOR_2 equ 0x13
+CHANNEL_8_OPERATOR_1 equ 0x11
+CHANNEL_8_OPERATOR_2 equ 0x14
+CHANNEL_9_OPERATOR_1 equ 0x12
+CHANNEL_9_OPERATOR_2 equ 0x15
+&nbsp;
+<i>; registry PPI</i>
+PPI_PORT_A equ 0x60
+PPI_PORT_B equ 0x61
+&nbsp;
+<i>; kody klaves</i>
+KEY_ESC     equ 0x01
+KEY_SPACE   equ 0x39
+KEY_RELEASE equ 0x80
+KEY_1       equ 0x02
+KEY_0       equ KEY_1 + 9
+&nbsp;
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+<i>; ukonceni procesu a navrat do DOSu</i>
+%macro <strong>exit</strong> 0
+        ret
+%endmacro
+&nbsp;
+<i>; makro pro zapis do registru OPL2</i>
+%macro <strong>write_opl_register</strong> 2
+        mov     al, %1
+        mov     ah, %2
+        call    perform_write_to_opl_register
+%endmacro
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+org  0x100        <i>; zacatek kodu pro programy typu COM (vzdy se zacina na 256)</i>
+&nbsp;
+<strong>start</strong>:
+        push cs
+        pop  ds                          <i>; DS==CS</i>
+&nbsp;
+        mov  si, tone1                   <i>; zacatek tabulky</i>
+        call write_table_to_opl2         <i>; zapis obsahu tabulky do OPL2</i>
+&nbsp;
+    	in  al, PPI_PORT_B               <i>; port B s rizenim zarizeni</i>
+        or  al, 0b1000000                <i>; nastaveni bitu cislo 7 na jednicku</i>
+        out PPI_PORT_B, al               <i>; zapis zpet na port B</i>
+&nbsp;
+<strong>.opak</strong>:
+        in  al, PPI_PORT_A               <i>; cteni stisknute klavesy</i>
+        cmp al, KEY_SPACE                <i>; test na stisk mezerniku</i>
+        jne .next_test_1                 <i>; neni stisknut -&gt; preskok</i>
+        write_opl_register CHANNEL_1 + OPL_KEY_ON, 0x32    <i>; povoleni KEY ON bitu</i>
+        jmp .opak
+<strong>.next_test_1</strong>:
+        cmp al, KEY_SPACE + KEY_RELEASE  <i>; test na pusteni mezerniku</i>
+        jne .next_test_2                 <i>; neni pusten -&gt; dalsi test</i>
+        write_opl_register CHANNEL_1 + OPL_KEY_ON, 0x12    <i>; zakaz KEY ON bitu</i>
+        jmp .opak
+<strong>.next_test_2</strong>:
+        cmp al, KEY_1                    <i>; test na numericke klavesy</i>
+        jb  .next_test_3                 <i>; hodnota "pod" kodem klavesy 1</i>
+        cmp al, KEY_0
+        ja  .next_test_3                 <i>; hodnota "nad" kodem klavesy 0</i>
+        mov bl, al                       <i>; makro prepisue AL -&gt; nemuzeme ho primo pouzit</i>
+        write_opl_register CHANNEL_1_OPERATOR_1 + OPL_LEVEL, bl
+<strong>.next_test_3</strong>:
+        cmp al, KEY_ESC                  <i>; test stisknute klavesy ESC</i>
+        jne .opak                        <i>; neni stisknuta? -&gt; zkusme znovu</i>
+&nbsp;
+        exit
+&nbsp;
+<strong>write_table_to_opl2</strong>:
+        lodsb                            <i>; nacist bajt z tabulky (cislo registru)</i>
+        or  al, al                       <i>; test na nulu</i>
+        jnz .write_register
+        ret                              <i>; dosahli jsme konce tabulky</i>
+<strong>.write_register</strong>:
+        mov ah, al
+        lodsb                            <i>; nacist dalsi bajt z tabulky (hodnota registru)</i>
+        xchg al, ah                      <i>; podprogram vyzaduje opacne poradi AL, AH</i>
+        call perform_write_to_opl_register
+        jmp  write_table_to_opl2         <i>; muzeme prejit na dalsi registr</i>
+&nbsp;
+&nbsp;
+<strong>tone1</strong>:  <i>; tabulka s tonem pro prvni kanal</i>
+        db CHANNEL_1_OPERATOR_1 + OPL_AMP_VIBRATO_EG,  0x01  <i>; nastaveni modulatoru: nasobeni frekvence jednickou</i>
+        db CHANNEL_1_OPERATOR_1 + OPL_LEVEL,           0x00  <i>; uroven vystupu 40 dB</i>
+        db CHANNEL_1_OPERATOR_1 + OPL_ATTACK_DECAY,    0x41  <i>; modulator: pomaly nastup zvuku + pomale doznivani</i>
+        db CHANNEL_1_OPERATOR_1 + OPL_SUSTAIN_RELEASE, 0x7f  <i>; urovne sustain a release pro modulator</i>
+        db CHANNEL_1_OPERATOR_1 + OPL_FREQUENCY_LOW,   0x41  <i>; frekvence zvuku (komorni A = 440 Hz)</i>
+        db CHANNEL_1_OPERATOR_2 + OPL_AMP_VIBRATO_EG,  0x01  <i>; nastaveni nosne: nasobeni frekvence jednickou</i>
+        db CHANNEL_1_OPERATOR_2 + OPL_LEVEL,           0x00  <i>; nastaveni urovne vystupu nosne na 47 dB</i>
+        db CHANNEL_1_OPERATOR_2 + OPL_ATTACK_DECAY,    0xa2  <i>; nosna: rychly nastup + pomale doznivani</i>
+        db CHANNEL_1_OPERATOR_2 + OPL_SUSTAIN_RELEASE, 0x77  <i>; urovne sustain a release pro nosnou</i>
+        db CHANNEL_1 + OPL_KEY_ON,                     0x12  <i>; zapnuti/povoleni zvuku + nastaveni oktavy a vyssich bitu frekvence</i>
+        db 0, 0                                              <i>; zarazka</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>perform_write_to_opl_register</strong>:
+        <i>; zapis do vybraneho registru OPL2</i>
+        <i>; AL - registr</i>
+        <i>; AH - hodnota</i>
+        mov dx, OPL_ADDRESS   <i>; vyber registru pro modifikaci</i>
+        out dx, al
+&nbsp;
+        <i>; cekani priblizne 3.3 mikrosekundy</i>
+        mov cl, 6
+<strong>.delay1</strong>:
+        in  al, dx
+        loop .delay1
+&nbsp;
+        mov al, ah            <i>; zapis hodnoty do vybraneho registru</i>
+        mov dx, OPL_DATA
+        out dx, al
+&nbsp;
+        <i>; cekani priblizne 23 mikrosekund</i>
+        mov cl, 35
+<strong>.delay2</strong>:
+        in  al, dx
+        loop .delay2
+&nbsp;
+        ret
 </pre>
 
 
@@ -833,6 +1028,14 @@ repositář:</p>
 <tr><td>75</td><td>vga_320x200_unchained_image_1.asm</td><td>zobrazení rastrového obrázku v&nbsp;režimu s&nbsp;nezřetězenými rovinami (nekorektní řešení)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_unchained_image_1.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_unchained_image_1.asm</a></td></tr>
 <tr><td>76</td><td>vga_320x200_unchained_image_2.asm</td><td>zobrazení rastrového obrázku v&nbsp;režimu s&nbsp;nezřetězenými rovinami (korektní řešení)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_unchained_image_2.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_unchained_image_2.asm</a></td></tr>
 <tr><td>77</td><td>vga_320x400_unchained_image.asm</td><td>zobrazení rastrového obrázku v&nbsp;nestandardním režimu 320&times;400 pixelů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x400_unchained_image.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x400_unchained_image.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>78</td><td>vga_vertical_scroll_1.asm</td><td>vertikální scrolling na kartě VGA v&nbsp;režimu s&nbsp;rozlišením 320&times;200 pixelů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_vertical_scroll_1.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_vertical_scroll_1.asm</a></td></tr>
+<tr><td>79</td><td>vga_vertical_scroll_2.asm</td><td>vertikální scrolling na kartě VGA v&nbsp;režimu s&nbsp;rozlišením 320&times;400 pixelů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_vertical_scroll_2.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_vertical_scroll_2.asm</a></td></tr>
+<tr><td>80</td><td>vga_split_screen_1.asm</td><td>režim split-screen a scrolling, nefunční varianta</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_split_screen_1.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_split_screen_1.asm</a></td></tr>
+<tr><td>81</td><td>vga_split_screen_2.asm</td><td>režim split-screen a scrolling, plně funkční varianta</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_split_screen_2.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_split_screen_2.asm</a></td></tr>
+<tr><td>82</td><td>vga_horizontal_scroll_1.asm</td><td>horizontální scrolling bez rozšíření počtu pixelů na virtuálním řádku</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_horizontal_scroll_1.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_horizontal_scroll_1.asm</a></td></tr>
+<tr><td>83</td><td>vga_horizontal_scroll_2.asm</td><td>horizontální scrolling s&nbsp;rozšířením počtu pixelů na virtuálním řádku</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_horizontal_scroll_2.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_horizontal_scroll_2.asm</a></td></tr>
+<tr><td>84</td><td>vga_horizontal_scroll_3.asm</td><td>jemný horizontální scrolling s&nbsp;rozšířením počtu pixelů na virtuálním řádku</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_horizontal_scroll_3.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_horizontal_scroll_3.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 </table>
 
