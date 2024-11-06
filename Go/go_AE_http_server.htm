@@ -48,10 +48,10 @@
 <p><a href="#k09">9. Úplný zdrojový kód první verze webové služby</a></p>
 <p><a href="#k10">10. Otestování webové služby</a></p>
 <p><a href="#k11">11. Úplný zdrojový kód druhé verze webové služby</a></p>
-<p><a href="#k12">*** 12. </a></p>
-<p><a href="#k13">*** 13. </a></p>
-<p><a href="#k14">*** 14. Úplný zdrojový kód třetí verze webové služby</a></p>
-<p><a href="#k15">*** 15. </a></p>
+<p><a href="#k12">12. Otestování chování upravené varianty webové služby</a></p>
+<p><a href="#k13">13. Kontrola, zda je při volání endpointu použita očekávaná metoda</a></p>
+<p><a href="#k14">14. Úplný zdrojový kód třetí verze webové služby</a></p>
+<p><a href="#k15">*** 15. Otestování, jak webová služba kontroluje HTTP metody požadavků</a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">17. Úplný zdrojový kód čtvrté verze webové služby</a></p>
 <p><a href="#k18">*** 18. Otestování základních funkcí poslední varianty webové služby</a></p>
@@ -1146,27 +1146,340 @@ func <strong>main</strong>() {
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Otestování chování upravené varianty webové služby</h2>
+
+<p>Po spuštění webové služby si otestujeme chování všech tří koncových bodů,
+které jsme implementovali:</p>
+
+<pre>
+$ <strong>curl localhost:8080/users | jq .</strong>
+&nbsp;
+[
+  {
+    "Name": "Linus",
+    "Surname": "Torvalds"
+  },
+  {
+    "Name": "Rob",
+    "Surname": "Pike"
+  },
+  {
+    "Name": "Ken",
+    "Surname": "Iverson"
+  }
+]
+&nbsp;
+&nbsp;
+&nbsp;
+$ <strong>curl localhost:8080/user?ID=1 | jq .</strong>
+&nbsp;
+{
+  "Name": "Linus",
+  "Surname": "Torvalds"
+}
+&nbsp;
+&nbsp;
+&nbsp;
+$ <strong>curl localhost:8080/delete-user?ID=1</strong>
+&nbsp;
+{"Status":"deleted","ID":1}
+</pre>
+
+<p>Otestovat si můžeme i chování při chybných vstupech:</p>
+
+<pre>
+$ <strong>curl -v localhost:8080/delete-user</strong>
+&nbsp;
+*   Trying 127.0.0.1:8080...
+* Connected to localhost (127.0.0.1) port 8080 (#0)
+&gt; GET /delete-user HTTP/1.1
+&gt; Host: localhost:8080
+&gt; User-Agent: curl/8.0.1
+&gt; Accept: */*
+&gt;
+&lt; HTTP/1.1 400 Bad Request
+&lt; Content-Type: text/plain
+&lt; Date: Wed, 30 Oct 2024 10:13:17 GMT
+&lt; Content-Length: 0
+&lt;
+* Connection #0 to host localhost left intact
+</pre>
+
+<p>Navíc můžeme použít i HTTP metody, které nejsou v&nbsp;daném kontextu
+očekávány (což je implementační nedostatek):</p>
+
+<pre>
+$ <strong>curl -X DELETE localhost:8080/users</strong>
+&nbsp;
+[{"Name":"Rob","Surname":"Pike"},{"Name":"Ken","Surname":"Iverson"}]
+</pre>
 
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Kontrola, zda je při volání endpointu použita očekávaná metoda</h2>
+
+<p>Abychom zabránili tomu, že bude nějaký endpoint volán nekorektní HTTP
+metodou, můžeme i ve starších verzích ekosystému jazyka Go explicitně
+zkontrolovat, jaká metoda byla použita. K&nbsp;tomu slouží atribut
+<strong>request.Method</strong>, který přímo obsahuje konstantu
+<strong>http.MethodGet</strong>, <strong>http.MethodPut</strong> atd. Kontrolu
+je tedy možné provést například následujícím způsobem:</p>
+
+<pre>
+func (s ServerImpl) returnListOfUsers(writer http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+        ...
+        ...
+        ...
+}
+</pre>
+
+<p>Popř.&nbsp;test, zda je pro smazání uživatele skutečně použita HTTP metoda
+DELETE:</p>
+
+<pre>
+func (s ServerImpl) deleteOneUser(writer http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodDelete {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+        ...
+        ...
+        ...
+}
+</pre>
+
+<p>Tyto kontroly sice nejsou ideální, ale v&nbsp;předchozích verzích Go nám nic
+jiného nezbývalo, pokud jsme nechtěli využít gorilla/mux a podobné knihovny
+třetích stran.</p>
 
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. Úplný zdrojový kód třetí verze webové služby</h2>
 
+<p>Po <a href="#k13">výše zmíněných</a> úpravách bude naše webová služba
+vypadat následovně:</p>
+
+<pre>
+package <strong>main</strong>
+&nbsp;
+import (
+        "encoding/json"
+        "fmt"
+        "log"
+        "net/http"
+        "strconv"
+)
+&nbsp;
+<i>// Datova struktura predstavujici uzivatele</i>
+type <strong>User</strong> struct {
+        Name    string
+        Surname string
+}
+&nbsp;
+<i>// Rozhrani s predpisem metod pro manipulace s databazi uzivatelu</i>
+type <strong>UserStorage</strong> interface {
+        ReadListOfUsers() []User
+        ReadUser(ID int) (User, bool)
+        DeleteUser(ID int)
+}
+&nbsp;
+<i>// Implementace databaze uzivatelu v operacni pameti</i>
+type <strong>MemoryStorage</strong> struct {
+        users map[int]User
+}
+&nbsp;
+<i>// Inicializace databaze uzivatelu</i>
+func <strong>NewMemoryStorage</strong>() MemoryStorage {
+        users := make(map[int]User)
+        users[1] = User{
+                Name:    "Linus",
+                Surname: "Torvalds",
+        }
+        users[2] = User{
+                Name:    "Rob",
+                Surname: "Pike",
+        }
+        users[3] = User{
+                Name:    "Ken",
+                Surname: "Iverson",
+        }
+
+        return MemoryStorage{
+                users: users,
+        }
+}
+&nbsp;
+<i>// Implementace vsech metod predepsanych rozhranim UserStorage</i>
+&nbsp;
+func (s MemoryStorage) <strong>ReadListOfUsers</strong>() []User {
+        users := make([]User, 0, len(s.users))
+        for _, user := range s.users {
+                users = append(users, user)
+        }
+        return users
+}
+&nbsp;
+func (s MemoryStorage) <strong>ReadUser</strong>(ID int) (User, bool) {
+        user, found := s.users[ID]
+        return user, found
+}
+&nbsp;
+func (s MemoryStorage) <strong>DeleteUser</strong>(ID int) {
+        delete(s.users, ID)
+}
+&nbsp;
+<i>// Rozhrani predepisujici metody serveru</i>
+type <strong>Server</strong> interface {
+        Serve(port uint)
+}
+&nbsp;
+<i>// Implementace HTTPServeru</i>
+type <strong>ServerImpl</strong> struct {
+        storage UserStorage
+}
+&nbsp;
+<i>// Inicialiace serveru, predani kontextu</i>
+func <strong>NewServer</strong>(storage UserStorage) Server {
+        return ServerImpl{
+                storage: storage,
+        }
+}
+&nbsp;
+func (s ServerImpl) <strong>Serve</strong>(port uint) {
+        log.Printf("Starting server on port 8080")
+&nbsp;
+        <i>// REST API endpoints</i>
+        http.HandleFunc("/users", s.returnListOfUsers)
+        http.HandleFunc("/user", s.returnOneUser)
+        http.HandleFunc("/delete-user", s.deleteOneUser)
+&nbsp;
+        <i>// start the server</i>
+        http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+}
+&nbsp;
+<i>// REST API handlery</i>
+&nbsp;
+func (s ServerImpl) <strong>returnListOfUsers</strong>(writer http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+        users := s.storage.ReadListOfUsers()
+        writer.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(writer).Encode(users)
+}
+&nbsp;
+func (s ServerImpl) <strong>returnOneUser</strong>(writer http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+        params := r.URL.Query()
+        IDs, found := params["ID"]
+        if !found {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+&nbsp;
+        ID, err := strconv.Atoi(IDs[0])
+        if err != nil {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+&nbsp;
+        user, found := s.storage.ReadUser(ID)
+        if !found {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusNotFound)
+                return
+        }
+        writer.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(writer).Encode(user)
+}
+&nbsp;
+func (s ServerImpl) <strong>deleteOneUser</strong>(writer http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodDelete {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+        params := r.URL.Query()
+        IDs, found := params["ID"]
+        if !found {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+&nbsp;
+        ID, err := strconv.Atoi(IDs[0])
+        if err != nil {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+&nbsp;
+        s.storage.DeleteUser(ID)
+&nbsp;
+        writer.Header().Set("Content-Type", "application/json")
+        status := struct {
+                Status string
+                ID     int
+        }{"deleted", ID}
+        json.NewEncoder(writer).Encode(status)
+}
+&nbsp;
+func <strong>main</strong>() {
+        storage := NewMemoryStorage()
+        server := NewServer(storage)
+        server.Serve(8080)
+}
+</pre>
+
 
 
 <p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<h2 id="k15">15. Otestování, jak webová služba kontroluje HTTP metody požadavků</h2>
 
 
 
 <p><a name="k16"></a></p>
 <h2 id="k16">16. </h2>
+
+<pre>
+<i>// REST API endpoints</i>
+http.HandleFunc("/users", s.returnListOfUsers)
+http.HandleFunc("GET /users/{id}", s.returnOneUser)
+http.HandleFunc("DELETE /users/{id}", s.deleteOneUser)
+</pre>
+
+<pre>
+func (s ServerImpl) <strong>returnOneUser</strong>(writer http.ResponseWriter, r *http.Request) {
+        IDs := r.PathValue("id")
+&nbsp;
+        ID, err := strconv.Atoi(IDs)
+        if err != nil {
+                writer.Header().Set("Content-Type", "text/plain")
+                writer.WriteHeader(http.StatusBadRequest)
+                return
+        }
+        ...
+        ...
+        ...
+&nbsp;
+}
+</pre>
 
 
 
