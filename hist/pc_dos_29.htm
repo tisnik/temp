@@ -50,12 +50,12 @@
 <p><a href="#k11">11. Deskriptory segmentů na čipech 80386</a></p>
 <p><a href="#k12">12. Ukázka adresace 32bitovými registry v&nbsp;reálném režimu</a></p>
 <p><a href="#k13">13. Rozepsání programové smyčky: přenos po 32bitech, offsety jsou realizovány 32bitovými registry</a></p>
-<p><a href="#k14">*** 14. Přístup do obrazové paměti přes segment 0x0000 a 32bitový offset</a></p>
-<p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. Naplnění cache s&nbsp;deskriptory přes &bdquo;utajenou&ldquo; instrukci <strong>LOADALL</strong></a></p>
-<p><a href="#k17">*** 17. <strong>LOADALL</strong> na mikroprocesorech 80286</a></p>
+<p><a href="#k14">14. Přístup do obrazové paměti přes segment 0x0000 a 32bitový offset</a></p>
+<p><a href="#k15">15. Překročení limitu segmentu s&nbsp;využitím posunu adresy o konstantu</a></p>
+<p><a href="#k16">16. Naplnění cache s&nbsp;deskriptory přes &bdquo;utajenou&ldquo; instrukci <strong>LOADALL</strong></a></p>
+<p><a href="#k17">17. <strong>LOADALL</strong> na mikroprocesorech 80286</a></p>
 <p><a href="#k18">*** 18. <strong>LOADALL</strong> na mikroprocesorech 80386</a></p>
-<p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
@@ -1062,161 +1062,237 @@ org  0x100        <i>; zacatek kodu pro programy typu COM (vzdy se zacina na 256
 <p><a name="k14"></a></p>
 <h2 id="k14">14. Přístup do obrazové paměti přes segment 0x0000 a 32bitový offset</h2>
 
+<p>Pokusme se nyní předchozí ukázkový příklad upravit takovým způsobem, aby se
+k&nbsp;Video RAM přistupovalo sice stále přes fyzické adresy 0xa0000-0xafff,
+ale nyní přes segment 0x0000. To ovšem znamená nutnost použití 32bitového
+offsetu. Úprava zdrojového kódu je snadná &ndash; vynulujeme registr ES a
+nastavíme offset do registru EDI:</p>
+
 <pre>
-; Graficky rezim karty VGA s rozlisenim 320x200 pixelu.
-; Vykresleni rastroveho obrazku s explicitnim prenosem po ctyrech bajtech.
-;-----------------------------------------------------------------------------
-
-BITS 16         ; 16bitovy vystup pro DOS
-CPU  386        ; specifikace pouziteho instrukcniho souboru
-
-;-----------------------------------------------------------------------------
-
-; ukonceni procesu a navrat do DOSu
-%macro exit 0
-        mov     ah, 0x4c    ; cislo sluzby DOSu
-        int     0x21        ; zavolani sluzby DOSu
-%endmacro
-
-; vyprazdneni bufferu klavesnice a cekani na klavesu
-%macro wait_key 0
-        xor     ax, ax      ; cislo sluzby BIOSu
-        int     0x16        ; zavolani sluzby BIOSu
-%endmacro
-
-; nastaveni grafickeho rezimu
-%macro gfx_mode 1
-        mov     ah, 0       ; cislo sluzby VGA BIOSu
-        mov     al, %1      ; cislo grafickeho rezimu
-        int     0x10        ; zavolani sluzby BIOSu
-%endmacro
-
-; paleta ve stupnich sedi
-%macro grayscale_palette 0
-        mov ax, 0x1010      ; cislo sluzby a podsluzby VGA BIOSu
-        xor bl, bl          ; index barvy
-next_dac:
-        mov ch, bl          ; prvni barvova slozka
-        shr ch, 1
-        shr ch, 1
-        mov cl, ch          ; druha barvova slozka
-        mov dh, ch          ; treti barvova slozka
-        int 0x10            ; modifikace mapovani v DAC
-        inc bl              ; zvysit index v DAC
-        jnz next_dac        ; nastavit dalsi barvu, dokud nedosahneme hodnoty 256
-%endmacro
-
-;-----------------------------------------------------------------------------
-org  0x100        ; zacatek kodu pro programy typu COM (vzdy se zacina na 256)
-
-start:
-        gfx_mode 0x13       ; nastaveni rezimu 320x200 s 256 barvami
-        grayscale_palette   ; nastaveni palety se stupni sedi
-
         mov ax, cs
         mov ds, ax
-        mov esi, image      ; nyni dvojice DS:ESI obsahuje adresu prvniho bajtu v obrazku
-
+        mov esi, image      <i>; nyni dvojice DS:ESI obsahuje adresu prvniho bajtu v obrazku</i>
+&nbsp;
         xor ax, ax
-	mov es, ax          ; ES=0x0000 !!!
-	mov edi, 0xa0000    ; nyni dvojice ES:EDI obsahuje adresu prvniho pixelu ve video RAM   
+	mov es, ax          <i>; ES=0x0000 !!!</i>
+	mov edi, 0xa0000    <i>; nyni dvojice ES:EDI obsahuje adresu prvniho pixelu ve video RAM   </i>
+</pre>
 
-        mov cx, 320*200/4   ; pocet zapisovanych 32bitovych slov (=ctveric pixelu)
+<p>Dále nastavíme počitadlo opakování smyčky, a to už běžným způsobem:</p>
 
-move_loop:                  ; prenos celeho obrazku po 32bitovych slovech
-	mov eax, ds:[esi]   ; nacteni ctyr bajtu
-	mov es:[edi], eax   ; ulozeni ctyr bajtu
-	add esi, 4          ; posun offsetu
+<pre>
+        mov cx, 320*200/4   <i>; pocet zapisovanych 32bitovych slov (=ctveric pixelu)</i>
+</pre>
+
+<p>A pokusíme se provést vlastní blokový přenos.</p>
+
+<pre>
+<strong>move_loop</strong>:                  <i>; prenos celeho obrazku po 32bitovych slovech</i>
+	mov eax, ds:[esi]   <i>; nacteni ctyr bajtu</i>
+	mov es:[edi], eax   <i>; ulozeni ctyr bajtu</i>
+	add esi, 4          <i>; posun offsetu</i>
 	add edi, 4
-	loop move_loop      ; opakujeme
+	loop move_loop      <i>; opakujeme</i>
+</pre>
 
-        wait_key            ; cekani na klavesu
-        exit                ; navrat do DOSu
+<p>Chování aplikace se nyní může ubrat několika směry:</p>
 
-; pridani binarnich dat s rastrovym obrazkem
-image:
+<ul>
+<li>V&nbsp;reálném režimu aplikace zamrzne (a uvidíme jen černou obrazovku)</li>
+<li>V&nbsp;nereálném režimu (a podle všeho ho nastaví i některé verze HIMEM.SYS) se obrázek přenese bez problémů</li>
+<li>V&nbsp;případě aktivního extenderu závisí na nastavení limitů, ale obecně dojde k&nbsp;pádu kvůli výjimce</li>
+<li>V&nbsp;případě aktivního režimu V86 (virtuální režim) opět závisí na nastavení limitů</li>
+<li>DOSBox limity nekontroluje a proto aplikace obrázek přenese bez problémů</li>
+</ul>
+
+<p>Úplný kód tohoto demonstračního příkladu vypadá následovně:</p>
+
+<pre>
+<i>; Graficky rezim karty VGA s rozlisenim 320x200 pixelu.</i>
+<i>; Vykresleni rastroveho obrazku s explicitnim prenosem po ctyrech bajtech.</i>
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+BITS 16         <i>; 16bitovy vystup pro DOS</i>
+CPU  386        <i>; specifikace pouziteho instrukcniho souboru</i>
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+<i>; ukonceni procesu a navrat do DOSu</i>
+%macro <strong>exit</strong> 0
+        mov     ah, 0x4c    <i>; cislo sluzby DOSu</i>
+        int     0x21        <i>; zavolani sluzby DOSu</i>
+%endmacro
+&nbsp;
+<i>; vyprazdneni bufferu klavesnice a cekani na klavesu</i>
+%macro <strong>wait_key</strong> 0
+        xor     ax, ax      <i>; cislo sluzby BIOSu</i>
+        int     0x16        <i>; zavolani sluzby BIOSu</i>
+%endmacro
+&nbsp;
+<i>; nastaveni grafickeho rezimu</i>
+%macro <strong>gfx_mode</strong> 1
+        mov     ah, 0       <i>; cislo sluzby VGA BIOSu</i>
+        mov     al, %1      <i>; cislo grafickeho rezimu</i>
+        int     0x10        <i>; zavolani sluzby BIOSu</i>
+%endmacro
+&nbsp;
+<i>; paleta ve stupnich sedi</i>
+%macro <strong>grayscale_palette</strong> 0
+        mov ax, 0x1010      <i>; cislo sluzby a podsluzby VGA BIOSu</i>
+        xor bl, bl          <i>; index barvy</i>
+next_dac:
+        mov ch, bl          <i>; prvni barvova slozka</i>
+        shr ch, 1
+        shr ch, 1
+        mov cl, ch          <i>; druha barvova slozka</i>
+        mov dh, ch          <i>; treti barvova slozka</i>
+        int 0x10            <i>; modifikace mapovani v DAC</i>
+        inc bl              <i>; zvysit index v DAC</i>
+        jnz next_dac        <i>; nastavit dalsi barvu, dokud nedosahneme hodnoty 256</i>
+%endmacro
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+org  0x100        <i>; zacatek kodu pro programy typu COM (vzdy se zacina na 256)</i>
+&nbsp;
+<strong>start</strong>:
+        gfx_mode 0x13       <i>; nastaveni rezimu 320x200 s 256 barvami</i>
+        grayscale_palette   <i>; nastaveni palety se stupni sedi</i>
+&nbsp;
+        mov ax, cs
+        mov ds, ax
+        mov esi, image      <i>; nyni dvojice DS:ESI obsahuje adresu prvniho bajtu v obrazku</i>
+&nbsp;
+        xor ax, ax
+	mov es, ax          <i>; ES=0x0000 !!!</i>
+	mov edi, 0xa0000    <i>; nyni dvojice ES:EDI obsahuje adresu prvniho pixelu ve video RAM   </i>
+&nbsp;
+        mov cx, 320*200/4   <i>; pocet zapisovanych 32bitovych slov (=ctveric pixelu)</i>
+&nbsp;
+<strong>move_loop</strong>:                  <i>; prenos celeho obrazku po 32bitovych slovech</i>
+	mov eax, ds:[esi]   <i>; nacteni ctyr bajtu</i>
+	mov es:[edi], eax   <i>; ulozeni ctyr bajtu</i>
+	add esi, 4          <i>; posun offsetu</i>
+	add edi, 4
+	loop move_loop      <i>; opakujeme</i>
+&nbsp;
+        wait_key            <i>; cekani na klavesu</i>
+        exit                <i>; navrat do DOSu</i>
+&nbsp;
+<i>; pridani binarnich dat s rastrovym obrazkem</i>
+<strong>image</strong>:
     incbin "image_320x200.bin"
 </pre>
 
 
 
 <p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<h2 id="k15">15. Překročení limitu segmentu s&nbsp;využitím posunu adresy o konstantu</h2>
+
+<p>Taktéž se můžeme pokusit o překročení limitu segmentu &bdquo;jen o
+kousek&ldquo;, a to s&nbsp;využitím konstanty přičtené k&nbsp;registru EDI.
+Nyní tedy (například) nastavíme segmentový registr ES na hodnotu 0x9800,
+tj.&nbsp;32kB před první adresou Video RAM a vynulujeme registr EDI:</p>
 
 <pre>
-; Graficky rezim karty VGA s rozlisenim 320x200 pixelu.
-; Vykresleni rastroveho obrazku s explicitnim prenosem po ctyrech bajtech.
-;
-;-----------------------------------------------------------------------------
+        mov ax, 0x9800
+	mov es, ax          <i>; ES=0x9800 !!!</i>
+	xor edi, edi        <i>; nyni ES:EDI obsahuje adresu Video RAM-32kB</i>
+</pre>
 
-BITS 16         ; 16bitovy vystup pro DOS
-CPU  386        ; specifikace pouziteho instrukcniho souboru
+<p>Samotná programová smyčka pro provedení blokových přenosů se pochopitelně
+bude muset modifikovat, protože nyní k&nbsp;registru EDI přičteme konstantu
+0x8000, abychom kompenzovali nižší adresu segmentu. Samotný EDI tedy nikdy
+nepřekročí hodnotu 0xffff, čímž se zdánlivě vyhneme problému, na který jsme
+narazili <a href="#k14">v&nbsp;předchozím příkladu</a>:</p>
 
-;-----------------------------------------------------------------------------
+<pre>
+<strong>move_loop</strong>:                       <i>; prenos celeho obrazku po 32bitovych slovech</i>
+	mov eax, ds:[esi]        <i>; nacteni ctyr bajtu</i>
+	mov es:[edi+0x8000], eax <i>; ulozeni ctyr bajtu, ovsem s offsetem</i>
+	add esi, 4               <i>; posun offsetu</i>
+	add edi, 4
+	loop move_loop           <i>; opakujeme</i>
+</pre>
 
-; ukonceni procesu a navrat do DOSu
-%macro exit 0
-        mov     ah, 0x4c    ; cislo sluzby DOSu
-        int     0x21        ; zavolani sluzby DOSu
+<p>V&nbsp;praxi ovšem po spuštění tohoto programu může dojít ke všem chováním,
+které již byly popsány <a href="#k14">v&nbsp;předchozí kapitole</a>: od
+bezproblémového zobrazení rastrového obrázku přes zamrznutí aplikace až po pád
+po zachycení HW výjimky.</p>
+
+<pre>
+<i>; Graficky rezim karty VGA s rozlisenim 320x200 pixelu.</i>
+<i>; Vykresleni rastroveho obrazku s explicitnim prenosem po ctyrech bajtech.</i>
+<i>;</i>
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+BITS 16         <i>; 16bitovy vystup pro DOS</i>
+CPU  386        <i>; specifikace pouziteho instrukcniho souboru</i>
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+&nbsp;
+<i>; ukonceni procesu a navrat do DOSu</i>
+%macro <strong>exit</strong> 0
+        mov     ah, 0x4c    <i>; cislo sluzby DOSu</i>
+        int     0x21        <i>; zavolani sluzby DOSu</i>
 %endmacro
-
-; vyprazdneni bufferu klavesnice a cekani na klavesu
-%macro wait_key 0
-        xor     ax, ax      ; cislo sluzby BIOSu
-        int     0x16        ; zavolani sluzby BIOSu
+&nbsp;
+<i>; vyprazdneni bufferu klavesnice a cekani na klavesu</i>
+%macro <strong>wait_key</strong> 0
+        xor     ax, ax      <i>; cislo sluzby BIOSu</i>
+        int     0x16        <i>; zavolani sluzby BIOSu</i>
 %endmacro
-
-; nastaveni grafickeho rezimu
-%macro gfx_mode 1
-        mov     ah, 0       ; cislo sluzby VGA BIOSu
-        mov     al, %1      ; cislo grafickeho rezimu
-        int     0x10        ; zavolani sluzby BIOSu
+&nbsp;
+<i>; nastaveni grafickeho rezimu</i>
+%macro <strong>gfx_mode</strong> 1
+        mov     ah, 0       <i>; cislo sluzby VGA BIOSu</i>
+        mov     al, %1      <i>; cislo grafickeho rezimu</i>
+        int     0x10        <i>; zavolani sluzby BIOSu</i>
 %endmacro
-
-; paleta ve stupnich sedi
-%macro grayscale_palette 0
-        mov ax, 0x1010      ; cislo sluzby a podsluzby VGA BIOSu
-        xor bl, bl          ; index barvy
+&nbsp;
+<i>; paleta ve stupnich sedi</i>
+%macro <strong>grayscale_palette</strong> 0
+        mov ax, 0x1010      <i>; cislo sluzby a podsluzby VGA BIOSu</i>
+        xor bl, bl          <i>; index barvy</i>
 next_dac:
-        mov ch, bl          ; prvni barvova slozka
+        mov ch, bl          <i>; prvni barvova slozka</i>
         shr ch, 1
         shr ch, 1
-        mov cl, ch          ; druha barvova slozka
-        mov dh, ch          ; treti barvova slozka
-        int 0x10            ; modifikace mapovani v DAC
-        inc bl              ; zvysit index v DAC
-        jnz next_dac        ; nastavit dalsi barvu, dokud nedosahneme hodnoty 256
+        mov cl, ch          <i>; druha barvova slozka</i>
+        mov dh, ch          <i>; treti barvova slozka</i>
+        int 0x10            <i>; modifikace mapovani v DAC</i>
+        inc bl              <i>; zvysit index v DAC</i>
+        jnz next_dac        <i>; nastavit dalsi barvu, dokud nedosahneme hodnoty 256</i>
 %endmacro
-
-;-----------------------------------------------------------------------------
-org  0x100        ; zacatek kodu pro programy typu COM (vzdy se zacina na 256)
-
-start:
-        gfx_mode 0x13       ; nastaveni rezimu 320x200 s 256 barvami
-        grayscale_palette   ; nastaveni palety se stupni sedi
-
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+org  0x100        <i>; zacatek kodu pro programy typu COM (vzdy se zacina na 256)</i>
+&nbsp;
+<strong>start</strong>:
+        gfx_mode 0x13       <i>; nastaveni rezimu 320x200 s 256 barvami</i>
+        grayscale_palette   <i>; nastaveni palety se stupni sedi</i>
+&nbsp;
         mov ax, cs
         mov ds, ax
-        mov esi, image      ; nyni dvojice DS:ESI obsahuje adresu prvniho bajtu v obrazku
-
+        mov esi, image      <i>; nyni dvojice DS:ESI obsahuje adresu prvniho bajtu v obrazku</i>
+&nbsp;
         mov ax, 0x9800
-	mov es, ax          ; ES=0x9800 !!!
-	xor edi, edi        ; nyni ES:EDI obsahuje adresu Video RAM-32kB
-
-        mov cx, 320*200/4   ; pocet zapisovanych 32bitovych slov (=ctveric pixelu)
-
-move_loop:                       ; prenos celeho obrazku po 32bitovych slovech
-	mov eax, ds:[esi]        ; nacteni ctyr bajtu
-	mov es:[edi+0x8000], eax ; ulozeni ctyr bajtu, ovsem s offsetem
-	add esi, 4               ; posun offsetu
+	mov es, ax          <i>; ES=0x9800 !!!</i>
+	xor edi, edi        <i>; nyni ES:EDI obsahuje adresu Video RAM-32kB</i>
+&nbsp;
+        mov cx, 320*200/4   <i>; pocet zapisovanych 32bitovych slov (=ctveric pixelu)</i>
+&nbsp;
+<strong>move_loop</strong>:                       <i>; prenos celeho obrazku po 32bitovych slovech</i>
+	mov eax, ds:[esi]        <i>; nacteni ctyr bajtu</i>
+	mov es:[edi+0x8000], eax <i>; ulozeni ctyr bajtu, ovsem s offsetem</i>
+	add esi, 4               <i>; posun offsetu</i>
 	add edi, 4
-	loop move_loop           ; opakujeme
-
-        wait_key            ; cekani na klavesu
-        exit                ; navrat do DOSu
-
-; pridani binarnich dat s rastrovym obrazkem
-image:
+	loop move_loop           <i>; opakujeme</i>
+&nbsp;
+        wait_key            <i>; cekani na klavesu</i>
+        exit                <i>; navrat do DOSu</i>
+&nbsp;
+<i>; pridani binarnich dat s rastrovym obrazkem</i>
+<strong>image</strong>:
     incbin "image_320x200.bin"
 </pre>
 
@@ -1225,10 +1301,98 @@ image:
 <p><a name="k16"></a></p>
 <h2 id="k16">16. Naplnění cache s&nbsp;deskriptory přes &bdquo;utajenou&ldquo; instrukci <strong>LOADALL</strong></h2>
 
+<p>Jedinou oficiální cestou, jakou lze naplnit cache s&nbsp;deskriptory, je
+nastavení tabulek deskriptorů v&nbsp;operační paměti, přepnutí mikroprocesoru
+do chráněného režimu a načtení nových adres do segmentových registrů.
+V&nbsp;tomto případě se načtou příslušné hodnoty z&nbsp;tabulek deskriptorů do
+cache s&nbsp;deskriptory a nové bázové adresy segmentů i jejich limity začnou
+být platné. To jsou ovšem poměrně komplikované a taktéž pomalé operace, které
+navíc následně vyžadují přepnutí zpět do reálného režimu, což není (zejména
+v&nbsp;případě mikroprocesoru 80286 snadné a vlastně ani oficiálně možné
+&ndash; pro tento účel bylo nutné upravit interní architekturu IBM PC tak, aby
+se provedl reset mikroprocesoru). Ovšem nakonec se našla ještě zajímavější
+cesta, jak naplnit cache. Pro tento účel se totiž začala používat instrukce
+<strong>LOADALL</strong>.</p>
+
+<p>Jedná se o instrukci, která nebyla oficiálně zdokumentována a byla
+společnosti Intel navržena primárně pro testovací účely prováděné ještě před
+instalací mikroprocesoru do základové desky. Ovšem to, že nějaká instrukce není
+zdokumentována, neznamená, že ji nelze použít, navíc v&nbsp;případě, že
+spolehlivě pracovala i na čipech vyráběných ostatními firmami (AMD, IBM). Navíc
+bylo možné tuto instrukci použít i v&nbsp;reálném režimu, bez nutnosti
+přepínání do režimu chráněného a zpět. V&nbsp;praxi se tedy tato instrukce
+začala používat dokonce i v&nbsp;samotném DOSu (HIMEM.SYS) a bylo již možné
+použít pro zavedení takzvaného nereálného režimu (<i>unreal mode</i>).</p>
+
+<p>Na tomto místě je nutné zdůraznit, že instrukce <strong>LOADALL</strong> pro
+mikroprocesor 80286 je zcela odlišná od stejně pojmenované instrukce pro 80386.
+Dokonce se liší i operační kódy těchto instrukcí. Kód pro naplnění cache
+s&nbsp;deskriptory tedy musel zjistit, na jakém procesoru běží a poté použít
+odlišné větve v&nbsp;kódu.</p>
+
 
 
 <p><a name="k17"></a></p>
 <h2 id="k17">17. <strong>LOADALL</strong> na mikroprocesorech 80286</h2>
+
+<p>Nejprve se podívejme, jakou operaci instrukce <strong>LOADALL</strong>
+provádí na mikroprocesorech Intel 80286. Operační kód této instrukce je 0f 05,
+přičemž se nespecifikují žádné operandy. Tato instrukce totiž očekává, že na
+adrese 0x00800 (tedy například 0080:0000 nebo 0000:0800) bude uloženo 102
+bajtů, které se všechny přenesou do viditelných registrů mikroprocesoru,
+neviditelných registrů (nepřístupných programátorům) a taktéž se načte námi
+používaná cache s&nbsp;deskriptory (tedy čtyři deskriptory pro čtyři segmentové
+registry a další čtyři deskriptory pro adresy používané v&nbsp;chráněném
+režimu). Jedná se o relativně pomalou instrukci, protože její provedení trvá
+195 hodinových cyklů. Ovšem díky ní lze snadno zpřístupnit jakýkoli blok
+rozšířené paměti, a to bez nutnosti blokové kopie dat (což je pochopitelně
+mnohem delší).</p>
+
+<p>Hodnoty uložené od výše zmíněné adresy 0x00800 mají tento význam:</p>
+
+<table>
+<tr><th>Adresa</th><th>Šířka dat</th><th>Stručný popis</th></tr>
+<tr><td>0x00800</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x00802</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x00804</td><td>16 bitů</td><td>registr MSW</td></tr>
+<tr><td>0x00806</td><td>16 bitů</td><td>?</td></tr>
+<tr><td>0x00808</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x0080A</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x0080C</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x0080E</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x00810</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x00812</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x00814</td><td>16 bitů</td><td>je vynulován</td></tr>
+<tr><td>0x00816</td><td>16 bitů</td><td>registr TR</td></tr>
+<tr><td>0x00818</td><td>16 bitů</td><td>příznakový registr</td></tr>
+<tr><td>0x0081A</td><td>16 bitů</td><td>registr IP</td></tr>
+<tr><td>0x0081C</td><td>16 bitů</td><td>registr LDT</td></tr>
+<tr><td>0x0081E</td><td>16 bitů</td><td>registr DS</td></tr>
+<tr><td>0x00820</td><td>16 bitů</td><td>registr SS</td></tr>
+<tr><td>0x00822</td><td>16 bitů</td><td>registr CS</td></tr>
+<tr><td>0x00824</td><td>16 bitů</td><td>registr ES</td></tr>
+<tr><td>0x00826</td><td>16 bitů</td><td>registr DI</td></tr>
+<tr><td>0x00828</td><td>16 bitů</td><td>registr SI</td></tr>
+<tr><td>0x0082A</td><td>16 bitů</td><td>registr BP</td></tr>
+<tr><td>0x0082C</td><td>16 bitů</td><td>registr SP</td></tr>
+<tr><td>0x0082E</td><td>16 bitů</td><td>registr BX</td></tr>
+<tr><td>0x00830</td><td>16 bitů</td><td>registr DX</td></tr>
+<tr><td>0x00832</td><td>16 bitů</td><td>registr CX</td></tr>
+<tr><td>0x00834</td><td>16 bitů</td><td>registr AX</td></tr>
+<tr><td>0x00836</td><td>48 bitů</td><td>deskriptor pro ES</td></tr>
+<tr><td>0x0083C</td><td>48 bitů</td><td>deskriptor pro CS</td></tr>
+<tr><td>0x00842</td><td>48 bitů</td><td>deskriptor pro SS</td></tr>
+<tr><td>0x00848</td><td>48 bitů</td><td>deskriptor pro DS</td></tr>
+<tr><td>0x0084E</td><td>48 bitů</td><td>deskriptor pro GDT</td></tr>
+<tr><td>0x00854</td><td>48 bitů</td><td>deskriptor pro LDT</td></tr>
+<tr><td>0x0085A</td><td>48 bitů</td><td>deskriptor pro IDT</td></tr>
+<tr><td>0x00860</td><td>48 bitů</td><td>deskriptor pro TSS</td></tr>
+<tr><td>0x00866</td><td>konec</td><td>konec tabulky</td></tr>
+</table>
+
+<p>Pokud si tedy tento blok připravíme a budeme pouze měnit deskriptory od
+adresy 0X00836, je možné si postupně zpřístupnit veškerou nainstalovanou RAM.
+Není to řešení elegantní, ale funguje.</p>
 
 
 
@@ -1467,7 +1631,7 @@ repositář:</p>
 <tr><td>177</td><td>vga_320x200_long_address_1.asm</td><td>32bitový blokový přenos</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_1.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_1.asm</a></td></tr>
 <tr><td>178</td><td>vga_320x200_long_address_2.asm</td><td>rozepsaný 32bitový blokový přenos provedený v&nbsp;rámci prostoru segmentu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_2.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_2.asm</a></td></tr>
 <tr><td>179</td><td>vga_320x200_long_address_3.asm</td><td>přístup do obrazové paměti přes segment 0x0000 a 32bitový offset</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_3.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_3.asm</a></td></tr>
-<tr><td>180</td><td>vga_320x200_long_address_4.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_4.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_4.asm</a></td></tr>
+<tr><td>180</td><td>vga_320x200_long_address_4.asm</td><td>otestování, jak lze přenášet data s&nbsp;využitím 32bitového offsetu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_4.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/vga_320x200_long_address_4.asm</a></td></tr>
 </table>
 
 
