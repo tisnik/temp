@@ -39,12 +39,12 @@
 
 <p><a href="#k01">1. Programovatelné IO na mikrořadičích RP2040</a></p>
 <p><a href="#k02">2. Jednodeskové mikropočítače Raspberry Pi Pico</a></p>
-<p><a href="#k03">*** 3. Mikrořadiče RP2040 a RP2350</a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
-<p><a href="#k08">*** 8. </a></p>
+<p><a href="#k03">3. Mikrořadiče RP2040 a RP2350</a></p>
+<p><a href="#k04">4. Důvody pro existenci PIO na Raspberry Pi Pico</a></p>
+<p><a href="#k05">5. Realizace PIO na čipu RP2040</a></p>
+<p><a href="#k06">6. Interní struktura stavových strojů tvořících PIO</a></p>
+<p><a href="#k07">7. Výstupní FIFO (fronta) a posuvný registr <strong>OSR</strong></a></p>
+<p><a href="#k08">8. Vstupní FIFO (fronta) a posuvný registr <strong>ISR</strong></a></p>
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
@@ -110,11 +110,12 @@ nutnosti použití nativního assembleru (ale i to MicroPython dokáže).</div><
 <p>Původní jednodeskový mikropočítač řady Pico se jmenoval jednoduše Raspberry
 Pi Pico. Jeho oficiální cena byla čtyři dolary a založen byl na mikrořadiči
 RP2040 s&nbsp;264kB RAM (SRAM) a 2MB paměti Flash. Mikrořadič RP2040 má jádro
-ARM Cortex-M0+ s&nbsp;taktovací frekvencí 133MHz. Jak kapacita RAM, tak i Flash
-paměti společně s&nbsp;poměrně vysokým výpočetním výkonem umožňují běh
-MicroPythonu, i když mnoho projektů se píše v&nbsp;céčku, Rustu nebo dokonce i
-ve FreePascalu. Dnes nás bude zajímat i to, že původní Pi Pico má 26 GPIO pinů
-(varianta Pico H je prakticky totožná, až na odlišné piny pro debugging).</p>
+ARM Cortex-M0+ s&nbsp;taktovací frekvencí 133MHz, ovšem na Pico je frekvence
+snížena na 125MHz. Jak kapacita RAM, tak i Flash paměti společně s&nbsp;poměrně
+vysokým výpočetním výkonem umožňují běh MicroPythonu, i když mnoho projektů se
+píše v&nbsp;céčku, Rustu nebo dokonce i ve FreePascalu. Dnes nás bude zajímat i
+to, že původní Pi Pico má 26 GPIO pinů (varianta Pico H je prakticky totožná,
+až na odlišné piny pro debugging).</p>
 
 <p>O rok později vznikla varianta &bdquo;W&ldquo;, přičemž toto písmeno
 naznačuje, že byl přidán modul pro Wifi. Konkrétně se jedná o čip Infineon
@@ -150,36 +151,189 @@ dvěma sice podobnými, ale nikoli totožnými systémy.</div></p>
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Mikrořadiče RP2040 a RP2350</h2>
 
+<p>Již z&nbsp;tabulky uvedené <a href="#k02">ve druhé kapitole</a> je zřejmé,
+že modely Pi Pico (bez číslovky) a Pi Pico 2 se od sebe v&nbsp;několika
+ohledech odlišují, což je do značné míry způsobeno použitím odlišných
+mikrořadičů. Rozdílů je však ještě větší množství a vzhledem k&nbsp;tomu, že se
+dotýkají i problematiky probírané v&nbsp;dnešním článku (PIO), si tyto rozdíly
+taktéž vypíšeme. Zajímat nás budou především údaje o PIO:</p>
+
+<table>
+<tr><th>Čip</th><th>RP2040</th><th>RP2350</th><th>Poznámka</th></tr>
+<tr><td>Jádra</td><td>2&times;ARM Cortex-M0+</td><td>2&times;ARM Cortex-M33 + 2&times;Hazard3 RISC-V</td><td>volba jader při bootu</td></tr>
+<tr><td>FPU</td><td>ne</td><td>ano (ARM)</td><td>pouze jednoduchá přesnost</td></tr>
+<tr><td>Frekvence</td><td>133 MHz</td><td>150 MHz</td><td>&nbsp;</td></tr>
+<tr><td>(S)RAM</td><td>264 kB</td><td>510 kB</td><td>&nbsp;</td></tr>
+<tr><td>OTP paměť</td><td>&times;</td><td>8 kB</td><td>používáno například pro klíče při bootu atd.</td></tr>
+<tr><td>DMA</td><td>12 kanálů</td><td>16 kanálů</td><td>přímý přístup do paměti</td></tr>
+<tr><td>IRQ pro DMA</td><td>2</td><td>4</td><td>HW přerušení používaná při DMA</td></tr>
+<tr><td>PIO</td><td>2 (8 stavových strojů)</td><td>3 (12 stavových strojů)</td><td>bude popsáno dále</td></tr>
+<tr><td>PWM</td><td>16</td><td>24</td><td>pulsní šířková modulace</td></tr>
+<tr><td>ADC</td><td>4 kanály, 12bitů</td><td>4 kanály, 12 bitů (popř.&nbsp;8 kanálů)</td><td>analogově-digiální převodník</td></tr>
+<tr><td>DAC</td><td>&times;</td><td>&times;</td><td>digitálně-analogový převodník</td></tr>
+</table>
+
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Důvody pro existenci PIO na Raspberry Pi Pico</h2>
+
+<p>Samotné mikrořadiče RP2040 a RP2350 jsou poměrně rychlé, takže
+mj.&nbsp;umožňují provozovat i interpretované programovací jazyky typu
+MicroPython (i když i zde lze zařídit překlad vybraných funkcí). Ovšem i přes
+samotnou rychlost mikrořadičových jader je mnohdy nutné v&nbsp;reálném čase
+pracovat se vstupně-výstupními piny. Příkladem může být například implementace
+vlastního sériového přenosu dat bez použití k&nbsp;tomu dedikovaných bloků
+mikrořadiče.</p>
+
+<p>Samozřejmě je možné napsat subrutiny s&nbsp;realizací tohoto sériového
+přenosu. Používá se k&nbsp;tomu technika zvaná <i>bit banging</i>, tedy
+programové ovládání obecných vstupně-výstupních pinů (<i>GPIO</i>).  Nicméně se
+mnohdy jedná o operace, které musí být přesně načasovány a v&nbsp;takových
+případech nám nemusí hrubá rychlost jader postačovat &ndash; záviset budeme
+(možná) na systému přerušení, na tom, jaké další činnosti jádra provádí, zda se
+činnost jader nepřerušuje kvůli DMA atd. A už vůbec není možné v&nbsp;těchto
+případech použít zmíněný MicroPython; vše by muselo být naprogramováno
+v&nbsp;jazyce C nebo přímo v&nbsp;assembleru.</p>
+
+<p>Řešení spočívá právě ve využití programovatelných IO, kdy se samotná logika
+ovládání pinů (tj.&nbsp;v&nbsp;tom nejjednodušším případě jejich čtení či
+zápis) buď kompletně nebo alespoň částečně naprogramuje v&nbsp;PIO tak, že
+poběží nezávisle na jádrech mikrořadiče. Díky tomu, že v&nbsp;tomto případě
+přesně známe délku trvání hodinových cyklů, může být časování provedeno tím
+nejtriviálnějším způsobem &ndash; použitím instrukcí <strong>nop</strong>.
+V&nbsp;extrémním případě tak jádra nebudou moci vykonávat prakticky žádnou
+činnost, protože vstupně-výstupní operace poběží přes PIO.</p>
+
+<p><div class="rs-tip-major">Poznámka: jeden z&nbsp;příkladů sériového přenosu
+realizovaného přes PIP je dostupný <a
+href="https://github.com/Sympatron/pio-uart/tree/master">zde</a>.</div></p>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Realizace PIO na čipu RP2040</h2>
+
+<p>Podívejme se nyní, jakým způsobem jsou PIO realizovány na čipu RP2040. Tento
+mikrořadič obsahuje dvojici bloků PIO (RP2350 má tyto bloky tři). Každý blok je
+tvořen čtveřicí stavových strojů (<i>state machine</i>), které dokážou,
+nezávisle na ostatních subsystémech, vykonávat krátké specializované programy.
+Ty jsou uloženy v&nbsp;samostatné paměti (<i>Instruction Memory</i>), která má
+kapacitu pro až 32 instrukcí. Do stavových strojů se přivádí hodinový signál,
+který synchronizuje prováděné operace: přečtení, dekódování a vykonání
+instrukcí. Samotný repertoár dostupných instrukcí je ve skutečnosti velmi
+krátký, protože obsahuje jen devět instrukcí. Konkrétně se jedná o instrukce
+<strong>IN</strong>, <strong>OUT</strong>, <strong>PUSH</strong>,
+<strong>PULL</strong>, <strong>MOV</strong>, <strong>JMP</strong>,
+<strong>WAIT</strong>, <strong>SET</strong> a <strong>IRQ</strong>.
+Vstupně-výstupní instrukce mohou pracovat s&nbsp;jakýmkoli GPIO pinem, kterých
+je na RP2040 celkem 30 (jsou označeny symboly <strong>GP0</strong> až
+<strong>GP29</strong>, teoreticky je ovšem k&nbsp;dispozici celkem 32 GPIO).
+Stavové stroje musí komunikovat i se zbytkem mikrořadiče, což je realizováno
+přes FIFO (fronty) a systém přerušení.</p>
+
+<p>Interně vypadá propojení stavových strojů s&nbsp;GPIO na straně jedné a
+s&nbsp;jádry mikrořadiče na straně druhé následovně:</p>
+
+*** image ***
+<p><i>Obrázek 1: Jeden z&nbsp;bloků PIO (druhý má totožnou architekturu)<br />
+Zdroj: datasheet k&nbsp;čipu RP2040, dostupné na <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf</a>.</i></p>
+
+<p><div class="rs-tip-major">Poznámka: fronty jsou konfigurovatelné, takže je
+možné například zajistit, aby byly obě použity pro vstup nebo naopak pro výstup
+(s&nbsp;dvojnásobnou délkou).</div></p>
 
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Interní struktura stavových strojů tvořících PIO</h2>
+
+<p>Z&nbsp;prvního obrázku je patrné, že každý blok PIO interně obsahuje
+čtveřici stavových strojů, které jsou přes celkem osm FIFO připojeny
+k&nbsp;mikrořadiči a přes mapovací obvod k&nbsp;vybraným GPIO (tedy obecným
+vstupně-výstupním pinům). Na PIO se můžeme dívat jako na samostatnou výpočetní
+jednotku (CPU), která je zvláštní tím, že neobsahuje plnohodnotnou
+aritmeticko-logickou jednotku (a nelze tedy jednoduše realizovat například
+součet atd.). Interně stavový stroj obsahuje následující bloky:</p>
+
+<ol>
+<li>dva 32bitové posuvné registry <strong>ISR</strong> a <strong>OSR</strong> (<i>shift registers</i>) s&nbsp;volitelným směrem posunu</li>
+<li>dva 32bitové registry <strong>X</strong> a <strong>Y</strong> nazývané <i>scratch registers</i>, ovšem ve skutečnosti mají význam univerzálních registrů</li>
+<li>registr PC obsahující index instrukce uložené v&nbsp;paměti nazývané <i>instruction memory</i></li>
+<li>32bitové fronty (FIFO) pro čtení i zápis dat</li>
+<li>dělič hodinového signálu (16+8 bitů)</li>
+<li>mapování na GPIO</li>
+<li>rozhraní pro DMA</li>
+<li>rozhraní pro IRQ (přerušení)</li>
+</ol>
+
+<p><div class="rs-tip-major">Poznámka: zajímavé je, že celý blok PIO obsazuje
+plochu čipu, která zhruba odpovídá ploše zabrané řadičem SPI nebo
+I<sup>2</sup>C. Ovšem PIO je mnohem flexibilnější než tyto řadiče, navíc může
+být kdykoli snadno přeprogramován a v&nbsp;určité okamžiky může vykonávat
+odlišnou činnost.</div></p>
 
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Výstupní FIFO (fronta) a posuvný registr <strong>OSR</strong><strong>OSR</strong> a <strong>ISR</strong></h2>
+
+<p>Pro komunikaci mezi mikrořadičem a stavovými stroji se používá dvojice
+posuvných registrů označovaná zkratkami <strong>OSR</strong> a
+<strong>ISR</strong>, jejichž způsob zapojení i ovládání přes instrukce PIO je
+nutné znát.</p>
+
+<p><strong>OSR</strong> neboli <i>Output Shift Register</i> slouží pro čtení
+dat posílaných z&nbsp;mikrořadiče do stavového stroje. Pro manipulaci
+s&nbsp;<strong>OSR</strong> slouží dvojice PIO instrukcí
+s&nbsp;mnemotechnickými zkratkami <strong>PULL</strong> a <strong>OUT</strong>.
+Instrukce <strong>PULL</strong> přečte 32bitové slovo z&nbsp;výstupní FIFO
+(fronty) a zapíše je do <strong>OSR</strong>. A instrukce <strong>OUT</strong>
+dokáže provést posun bitů v&nbsp;posuvném registru s&nbsp;jejich vysunutím
+(zápisem) na GPIO, do scratch registrů atd. Funkci si tedy můžeme graficky
+znázornit následovně:</p>
+
+*** image ***
+<p><i>Obrázek 2: Výstupní FIFO a registr <strong>OSR</strong><br />
+Zdroj: datasheet k&nbsp;čipu RP2040, dostupné na <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf</a>.</i></p>
+
+<p><div class="rs-tip-major">Poznámka: název tohoto registr tedy vznikl na
+základě toho, jak se chová z&nbsp;pohledu mikrořadiče (jde o výstup).
+Z&nbsp;hlediska stavového stroje je to naopak vstupní registr.</div></p>
 
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Vstupní FIFO (fronta) a posuvný registr <strong>ISR</strong></h2>
+
+<p>Posuvný registr <strong>ISR</strong> neboli <i>Input Shift Register</i>
+naopak slouží pro (postupné) čtení dat dostupných ve stavovém stroji (GPIO
+atd.) s&nbsp;jejich posíláním do vstupní FIFO (fronty). Pro ovládání této části
+se používají PIO instrukce s&nbsp;mnemotechnickými zkratkami
+<strong>IN</strong> a <strong>PUSH</strong>. Instrukce <strong>IN</strong> do
+posuvného registru zapíše 1 až 32 bitů (s&nbsp;posunem zbytku) a instrukce
+<strong>PUSH</strong> pošle celý obsah <strong>ISR</strong> do FIFO. Opět
+platí, že pojmenování jak registru, tak i fronty je provedeno na základě toho,
+jak se jejich činnost jeví z&nbsp;pohledu mikrořadiče (a nikoli stavového
+stroje):</p>
+
+*** image ***
+<p><i>Obrázek 3: Vstupní FIFO a registr <strong>ISR</strong><br />
+Zdroj: datasheet k&nbsp;čipu RP2040, dostupné na <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf</a>.</i></p>
 
 
 
 <p><a name="k09"></a></p>
 <h2 id="k09">9. </h2>
 
+<pre>
+MicroPython v1.24.1 on 2024-11-29; Raspberry Pi Pico W with RP2040
+Type "help()" for more information.
+>>> import machine
+>>> machine.freq()
+125000000
+>>>
+</pre>
 
 
 <p><a name="k10"></a></p>
@@ -439,6 +593,14 @@ href="https://github.com/tisnik/most-popular-python-libs">https://github.com/tis
 
 <li>Raspberry Pi Pico 2 vs Original Pico: What’s New?<br />
 <a href="https://www.digikey.cz/en/maker/blogs/2024/raspberry-pi-pico-2-vs-original-pico-whats-new">https://www.digikey.cz/en/maker/blogs/2024/raspberry-pi-pico-2-vs-original-pico-whats-new</a>
+</li>
+
+<li>pio-uart<br />
+<a href="https://github.com/Sympatron/pio-uart">https://github.com/Sympatron/pio-uart</a>
+</li>
+
+<li>Datasheet čipu RP2040<br />
+<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf</a>
 </li>
 
 </ol>
