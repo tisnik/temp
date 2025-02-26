@@ -38,9 +38,9 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
+<p><a href="#k01">1. Programovatelné IO na mikrořadičích RP2040 &ndash; komunikace s&nbsp;PIO a ovládání PIO</a></p>
+<p><a href="#k02">2. Krátké zopakování z&nbsp;minula: ovládání LED připojené na GPIO přes PIO</a></p>
+<p><a href="#k03">3. Využití druhého registru <strong>Y</strong> pro řízení střídy</a></p>
 <p><a href="#k04">*** 4. </a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
@@ -55,78 +55,193 @@
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. Příloha: varianty všech dnešních příkladů pro LED připojenou na GPIO 25</a></p>
+<p><a href="#k18">18. Příloha: varianty všech dnešních příkladů pro LED připojenou na GPIO 25</a></p>
 <p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Programovatelné IO na mikrořadičích RP2040 &ndash; komunikace s&nbsp;PIO a ovládání PIO</h2>
 
-<pre>
-import rp2
-from machine import Pin
+<p>V&nbsp;úvodních dvou článcích o programovatelném IO (PIO) implementovaném na
+mikrořadičích RP2040 [<a
+href="https://www.root.cz/clanky/programovatelne-io-na-mikroradicich-rp2040-v-raspberry-pi-pico/">1</a>]
+a [<a
+href="https://www.root.cz/clanky/programovatelne-io-na-mikroradicich-rp2040-prakticke-pouziti/">2</a>]
+jsme si popsali jak celou architekturu PIO, tak i způsob přímého ovládání
+vstupně-výstupních pinů (GPIO) s&nbsp;využitím programů, které mohou být
+vykonávány jednotlivými stavovými stroji, které PIO tvoří. V&nbsp;těchto
+programech jsme využili některé instrukce z&nbsp;instrukčního souboru PIO.
+Konkrétně se jednalo o instrukce <strong>SET</strong> (nastavení pinů či
+nastavení vybraného interního registru) a <strong>JMP</strong> (nepodmíněné i
+podmíněné skoky). Známe i pseudoinstrukci <strong>NOP</strong> a navíc i způsob
+definice počtu cyklů, které mají být vykonány před dokončením instrukce. Naše
+PIO programy prozatím pracovaly velmi jednoduše: stavový stroj neustále
+opakoval tu samou sekvenci instrukcí s&nbsp;předem nastavenou frekvencí.</p>
 
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink_1hz():
-    set(pins, 1)
-    set(x, 31)                  [6]
-    label("delay_high")
-    nop()                       [29]
-    jmp(x_dec, "delay_high")
-    set(pins, 0)
-    set(x, 31)                  [6]
-    label("delay_low")
-    nop()                       [29]
-    jmp(x_dec, "delay_low")
-
-
-sm = rp2.StateMachine(0, blink_1hz, freq=2000, set_base=Pin(8))
-sm.active(1)
-</pre>
-
-<pre>
-import rp2
-from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink_1hz():
-    set(pins, 1)
-    set(x, 31)                  [6]
-    label("delay_high")
-    nop()                       [29]
-    jmp(x_dec, "delay_high")
-    set(pins, 0)
-    set(x, 31)                  [6]
-    label("delay_low")
-    nop()                       [29]
-    jmp(x_dec, "delay_low")
-
-
-sm = rp2.StateMachine(0, blink_1hz, freq=2000, set_base=Pin(25))
-sm.active(1)
-</pre>
+<p>Ovšem v&nbsp;praxi je nutné s&nbsp;PIO nějakým způsobem komunikovat a
+ovládat ho z&nbsp;hlavního programu, který běží přímo na procesorových jádrech
+čipu RP2040 (ARM nebo RISC-V). Například budeme potřebovat realizovat
+softwarovou verzi sběrnice I<sup>2</sup>C, asynchronní sériový port UART nebo
+pulsně-šířkovou modulaci (PWM). V&nbsp;takových případech je nutné do PIO
+(resp.&nbsp;přesněji řečeno do jednotlivých stavových strojů) předávat data
+posílaná na sběrnici/port, číst přijatá data nebo měnit bitový vzorek
+v&nbsp;případě PWM. Teoreticky již víme, jak PIO ovládat &ndash; využít lze
+FIFO (fronty) a k&nbsp;nim připojené posuvné registry ISR (<i>input shift
+register</i>) a OSR (<i>output shift register</i>). Existuje však ještě jeden
+způsob ovládání &ndash; &bdquo;vnucení&ldquo; nové instrukce stavovému stroji.
+V&nbsp;dnešním článku si ukážeme použití FIFO a registrů ISR a OSR. Může se
+zdát, že se jedná o složitou technologii, jak však uvidíme v&nbsp;praxi, je
+využití FIFO poměrně elegantní a jednoduché.</p>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Krátké zopakování z&nbsp;minula: ovládání LED připojené na GPIO přes PIO</h2>
 
-
-
-<p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<p>V&nbsp;této kapitole si připomeneme, jakým způsobem jsme vlastně přes PIO
+(resp.&nbsp;přes stavový stroj) ovládali LED připojenou na zvolený port.
+Realizovali jsme blikání této LED. Ve skutečnosti je to poměrně snadné &ndash;
+nastavíme příslušný GPIO na jedničku a po uplynutí předem známého počtu cyklů
+tento GPIO vynulujeme. Opět počkáme nějaký počet cyklů a můžeme celý program
+zopakovat. Nejjednodušší způsob (i když zdaleka nikoli nejelegantnější) je
+založen na instrukcích <strong>SET</strong> a na pseudoinstrukci
+<strong>NOP</strong> (což je vhodně zakódované &bdquo;čekání&ldquo;):</p>
 
 <pre>
 import rp2
 from machine import Pin
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink_10hz</strong>():
+    set(pins, 1) [19]
+    nop()        [19]
+    nop()        [19]
+    nop()        [19]
+    nop()        [19]
+    set(pins, 0) [19]
+    nop()        [19]
+    nop()        [19]
+    nop()        [19]
+    nop()        [19]
+&nbsp;
+&nbsp;
+sm = rp2.StateMachine(0, blink_1hz, freq=2000, set_base=Pin(8))
+sm.active(1)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;hranatých závorkách jsou zapsány
+přidané čekací cykly. To znamená, že každá instrukce trvá dvacet cyklů a jedno
+opakování programu tedy bude trvat 200 cyklů. Frekvence blikání bude rovna
+2000/200=10Hz.</div></p>
+
+<p>Sofistikovanější řešení spočívá ve využití programové smyčky realizované
+instrukcí <strong>JMP</strong>. Tato instrukce totiž (kromě dalších variant)
+dokáže snížit hodnotu interního registru <strong>X</strong> o jedničku a
+provést skok v&nbsp;případě, že se ještě nedosáhlo nuly. V&nbsp;programu je
+realizována dvojice smyček, které obsahují pouze &bdquo;zpožděnou&ldquo;
+operaci <strong>NOP</strong></p>
+
+<pre>
+import rp2
+from machine import Pin
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink_1hz</strong>():
+    set(pins, 1)
+    set(x, 31)                  [6]
+    label("delay_high")
+    nop()                       [29]
+    jmp(x_dec, "delay_high")
+    set(pins, 0)
+    set(x, 31)                  [6]
+    label("delay_low")
+    nop()                       [29]
+    jmp(x_dec, "delay_low")
+&nbsp;
+&nbsp;
+sm = rp2.StateMachine(0, blink_1hz, freq=2000, set_base=Pin(8))
+sm.active(1)
+</pre>
+
+<p>V&nbsp;tomto případě může být mnohem čitelnější si uvést program tak, jak by
+se napsal přímo v&nbsp;assembleru a nikoli nepřímo v&nbsp;MicroPythonu:</p>
+
+<pre>
+             set pins, 1
+             set X, 31 [6]
+delay_high:  nop       [29]
+             jmp X--, delay_high
+             set pins, 0
+             set X 31 [6]
+delay_low:   nop      [29]
+             jmp X--, delay_low
+</pre>
+
+<p>Resp.&nbsp;pro úplnost musíme dodat i direktivy <strong>.wrap</strong> a
+<strong>.wrap_target</strong>, které nám umožní realizovat nekonečnu smyčku
+(MicroPython tyto direktivy vkládá automaticky):</p>
+
+<pre>
+.wrap_target
+             set pins, 1
+             set X, 31 [6]
+delay_high:  nop       [29]
+             jmp X--, delay_high
+             set pins, 0
+             set X 31 [6]
+delay_low:   nop      [29]
+             jmp X--, delay_low
+.wrap
+</pre>
 
 
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink1():
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Využití druhého registru <strong>Y</strong> pro řízení střídy</h2>
+
+<p>Výše uvedená dvojice programů sice skutečně dokázala blikat LED
+s&nbsp;využitím PIO, ovšem použité řešení je založeno na konstantách, které
+jsou do zdrojového kódu &bdquo;zadrátovány&ldquo;. To například znamená, že
+není možné (jednoduše) měnit střídu, tedy poměr časů, v&nbsp;nichž je LED
+rozsvícena či naopak zhasnuta. Jedno z&nbsp;možných řešení spočívá
+v&nbsp;náhradě dvou zpožďovacích smyček za smyčku jedinou. Uvnitř této smyčky
+budeme kontrolovat hodnotu počitadla (tedy registru <strong>X</strong>) a pokud
+překročí nastavenou mez, provede se zhasnutí LED. A změnou této meze, která
+bude uložena ve druhém pomocném registru <strong>Y</strong>, bude možné
+ovlivňovat střídu v&nbsp;poměrech od 0:32 až po 32:32:</p>
+
+<pre>
+.wrap_target
+             set X, 31         <i># počitadlo smyčky</i>
+             set Y, 16         <i># hraniční hodnota pro přepnutí pinu s připojenou LED</i>
+             set pins, 1       <i># nastavit pin (rozsvítit LED)</i>
+blink_loop:  jmp X!=Y, skip    <i># když X!=Y přeskočit další instrukci</i>
+             set pins, 0       <i># vynulovat pin (zhasnout LED)</i>
+skip:        nop    [29]       <i># zpožďovací mechanismus</i>
+             jmp X--, blink_loop
+.wrap
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, jak relativně
+sofistikované algoritmy můžeme tvořit pouze s&nbsp;využitím instrukcí
+<strong>SET</strong> a zejména pak instrukce <strong>JMP</strong>.</div></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. </h2>
+
+<pre>
+import rp2
+from machine import Pin
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink1</strong>():
     set(x, 31)                 <i># počitadlo smyčky</i>
     set(y, 16)                 <i># hraniční hodnota pro přepnutí pinu</i>
     set(pins, 1)               <i># nastavit pin</i>
@@ -136,15 +251,17 @@ def blink1():
     label("skip")
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(x_dec, "blink_loop")   <i># a opakujeme x-krát</i>
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink1, freq=2000, set_base=Pin(8))
 sm.active(1)                   <i># spustit stavový stroj</i>
 </pre>
 
 
-<p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<p><a name="k05"></a></p>
+<h2 id="k05">5. </h2>
+
+<p></p>
 
 <pre>
 import rp2
@@ -171,8 +288,8 @@ sm.active(1)                   <i># spustit stavový stroj</i>
 </pre>
 
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<p><a name="k06"></a></p>
+<h2 id="k06">6. </h2>
 
 <pre>
 import rp2
@@ -200,8 +317,8 @@ sm.active(1)                   <i># spustit stavový stroj</i>
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<p><a name="k07"></a></p>
+<h2 id="k07">7. </h2>
 
 <pre>
 import rp2
@@ -231,8 +348,8 @@ sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</
 
 
 
-<p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<p><a name="k08"></a></p>
+<h2 id="k08">8. </h2>
 
 <pre>
 import rp2
@@ -261,8 +378,8 @@ sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</
 </pre>
 
 
-<p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<p><a name="k09"></a></p>
+<h2 id="k09">9. </h2>
 
 <pre>
 import rp2
@@ -292,11 +409,6 @@ sm = rp2.StateMachine(0, blink6, freq=2000, set_base=Pin(8))
 sm.active(1)                   <i># spustit stavový stroj</i>
 sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</i>
 </pre>
-
-
-<p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
-
 
 
 <p><a name="k10"></a></p>
@@ -342,13 +454,20 @@ sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</
 <p><a name="k18"></a></p>
 <h2 id="k18">18. Příloha: varianty všech dnešních příkladů pro LED připojenou na GPIO 25</h2>
 
+<p>Všechny demonstrační příklady popsané v&nbsp;předchozích kapitolách byly
+navrženy takovým způsobem, aby ovládaly LED připojenou na vstupně-výstupní pin
+číslo 8 (což není standardní způsob připojení). V&nbsp;této příloze jsou
+uvedeny všechny příklady v&nbsp;nepatrně odlišné konfiguraci, v&nbsp;níž je LED
+připojena ke GPIO číslo 25, což je standardní pin používaný v&nbsp;RPi Pico bez
+Wifi modulu:</p>
+
 <pre>
 import rp2
 from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink1():
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink1</strong>():
     set(x, 31)                 <i># počitadlo smyčky</i>
     set(y, 16)                 <i># hraniční hodnota pro přepnutí pinu</i>
     set(pins, 1)               <i># nastavit pin</i>
@@ -358,8 +477,8 @@ def blink1():
     label("skip")
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(x_dec, "blink_loop")   <i># a opakujeme x-krát</i>
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink1, freq=2000, set_base=Pin(25))
 sm.active(1)                   <i># spustit stavový stroj</i>
 </pre>
@@ -367,10 +486,10 @@ sm.active(1)                   <i># spustit stavový stroj</i>
 <pre>
 import rp2
 from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink2():
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink2</strong>():
     set(y, 16)                 <i># hraniční hodnota pro přepnutí pinu</i>
     label("endless_loop")      <i># cíl skoku</i>
     set(x, 31)                 <i># počitadlo smyčky</i>
@@ -382,8 +501,8 @@ def blink2():
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(x_dec, "blink_loop")   <i># a opakujeme x-krát</i>
     jmp("endless_loop")
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink2, freq=2000, set_base=Pin(25))
 sm.active(1)                   <i># spustit stavový stroj</i>
 </pre>
@@ -391,10 +510,10 @@ sm.active(1)                   <i># spustit stavový stroj</i>
 <pre>
 import rp2
 from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink3():
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink3</strong>():
     set(y, 16)                 <i># hraniční hodnota pro přepnutí pinu</i>
     wrap_target()              <i># cíl skoku</i>
     set(x, 31)                 <i># počitadlo smyčky</i>
@@ -406,8 +525,8 @@ def blink3():
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(x_dec, "blink_loop")   <i># a opakujeme x-krát</i>
     wrap()
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink3, freq=2000, set_base=Pin(25))
 sm.active(1)                   <i># spustit stavový stroj</i>
 </pre>
@@ -415,10 +534,10 @@ sm.active(1)                   <i># spustit stavový stroj</i>
 <pre>
 import rp2
 from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink4():
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink4</strong>():
     pull(block)                <i># přečtení hodnoty z FIFO s čekáním, uložení do OSR</i>
     mov(y, osr)                <i># přesun hodnoty z OSR do registru Y</i>
     wrap_target()              <i># cíl skoku</i>
@@ -431,17 +550,66 @@ def blink4():
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(x_dec, "blink_loop")   <i># a opakujeme X-krát</i>
     wrap()
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink4, freq=2000, set_base=Pin(25))
 sm.active(1)                   <i># spustit stavový stroj</i>
 sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</i>
 </pre>
 
 <pre>
+import rp2
+from machine import Pin
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink5</strong>():
+    pull(block)                <i># přečtení hodnoty z FIFO s čekáním, uložení do OSR</i>
+    mov(x, osr)                <i># přesun hodnoty z OSR do registru X</i>
+    wrap_target()              <i># cíl skoku</i>
+    set(y, 31)                 <i># počitadlo smyčky</i>
+    set(pins, 1)               <i># nastavit pin</i>
+    label("blink_loop")
+    jmp(x_not_y, "skip")       <i># když X!=Y přeskočit další instrukci</i>
+    set(pins, 0)               <i># vynulovat pin</i>
+    label("skip")
+    nop() [29]                 <i># zpožďovací mechanismus</i>
+    jmp(y_dec, "blink_loop")   <i># a opakujeme Y-krát</i>
+    wrap()
+&nbsp;
+&nbsp;
+sm = rp2.StateMachine(0, blink5, freq=2000, set_base=Pin(25))
+sm.active(1)                   <i># spustit stavový stroj</i>
+sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</i>
 </pre>
 
 <pre>
+import rp2
+from machine import Pin
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink6</strong>():
+    pull(block)                <i># přečtení hodnoty z FIFO s čekáním, uložení do OSR</i>
+    mov(x, osr)                <i># přesun hodnoty z OSR do registru X</i>
+    wrap_target()              <i># cíl skoku</i>
+    pull(noblock)              <i># zkusíme přečíst novou poslanou hodnotu, ale nečekáme na ni</i>
+                               <i># pokud hodnota nebyla poslána, doplní se hodnota registru X</i>
+    mov(x, osr)                <i>#  přesun hodnoty z OSR do registru X</i>
+    set(y, 31)                 <i># počitadlo smyčky</i>
+    set(pins, 1)               <i># nastavit pin</i>
+    label("blink_loop")
+    jmp(x_not_y, "skip")       <i># když X!=Y přeskočit další instrukci</i>
+    set(pins, 0)               <i># vynulovat pin</i>
+    label("skip")
+    nop() [29]                 <i># zpožďovací mechanismus</i>
+    jmp(y_dec, "blink_loop")   <i># a opakujeme Y-krát</i>
+    wrap()
+&nbsp;
+&nbsp;
+sm = rp2.StateMachine(0, blink6, freq=2000, set_base=Pin(25))
+sm.active(1)                   <i># spustit stavový stroj</i>
+sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</i>
 </pre>
 
 
