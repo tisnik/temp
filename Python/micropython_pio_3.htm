@@ -32,7 +32,7 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Na úvodní dvojici článků o programovatelném IO (PIO) na čipech RP2040 dnes navážeme. Ukážeme si základní způsoby komunikace hlavního programu běžícího na mikrořadiči s PIO programy. Pro tyto účely se používají fronty (FIFO) a vstupní i výstupní posuvné registry.</p>
 
 
 
@@ -47,16 +47,16 @@
 <p><a href="#k07">7. Využití direktiv <strong>wrap</strong> a <strong>wrap_target</strong></a></p>
 <p><a href="#k08">8. Demonstrační příklad: direktivy <strong>wrap</strong> a <strong>wrap_target</strong> namísto explicitně zapsané smyčky</a></p>
 <p><a href="#k09">9. Nastavení střídy z&nbsp;hlavního programu přes FIFO</a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
-<p><a href="#k13">*** 13. </a></p>
-<p><a href="#k14">*** 14. </a></p>
-<p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
+<p><a href="#k10">10. Konfigurace střídy ještě před spuštěním blikání LED</a></p>
+<p><a href="#k11">11. Demonstrační příklad: konfigurace střídy před spuštěním hlavní smyčky</a></p>
+<p><a href="#k12">12. Realizace neblokujícího čtení z&nbsp;FIFO</a></p>
+<p><a href="#k13">13. Neblokující čtení z&nbsp;fronty s&nbsp;využitím výchozí hodnoty</a></p>
+<p><a href="#k14">*** 14. Demonstrační příklad: prohození významu registrů X a Y</a></p>
+<p><a href="#k15">*** 15. Průběžná změna střídy kdykoli za běhu PIO programu</a></p>
+<p><a href="#k16">*** 16. Demonstrační příklad: průběžná změna střídy za běhu PIO programu</a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">18. Příloha: varianty všech dnešních příkladů pro LED připojenou na GPIO 25</a></p>
-<p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
@@ -448,15 +448,73 @@ Zdroj: datasheet k&nbsp;čipu RP2040, dostupné na <a href="https://datasheets.r
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Konfigurace střídy ještě před spuštěním blikání LED</h2>
+
+<p>Podívejme se nyní na způsob konfigurace střídy, kterou provedeme ještě před
+spuštěním blikání LED. Co to znamená? Ještě před vstupem do hlavní (nekonečné)
+programové smyčky přečteme hodnotu z&nbsp;výstupní FIFO (výstupní je ovšem
+z&nbsp;pohledu mikrořadiče, zatímco z&nbsp;pohledu PIO je tato fronta vstupní)
+a necháme si tuto hodnotu přenést do registru <strong>OSR</strong> (<i>Output
+Shift Register</i>). V&nbsp;případě, že je FIFO prázdná, budeme čekat na zápis
+hodnoty; bude se tedy jednat o blokující operaci čtení:</p>
+
+<pre>
+pull block
+</pre>
+
+<p>Ve druhém kroku přeneseme celý obsah <strong>OSR</strong> (tedy všech 32
+bitů) do interního registru <strong>Y</strong>:</p>
+
+<pre>
+mov Y, OSR
+</pre>
+
+<p>Zbytek programu již zůstane stejný:</p>
+
+<pre>
+<strong>.wrap_target</strong>
+             set X, 31         <i># počitadlo smyčky</i>
+             set pins, 1       <i># nastavit pin (rozsvítit LED)</i>
+<strong>blink_loop</strong>:  jmp X!=Y, skip    <i># když X!=Y přeskočit další instrukci</i>
+             set pins, 0       <i># vynulovat pin (zhasnout LED)</i>
+<strong>skip</strong>:        nop    [29]       <i># zpožďovací mechanismus</i>
+             jmp X--, blink_loop
+<strong>.wrap</strong>
+</pre>
+
+<p>Celý program tedy bude vypadat takto:</p>
+
+<pre>
+             pull block        <i># blokující přečtení 32 bitů z&nbsp;FIFO s jejich zápisem do OSR</i>
+             mov Y, OSR        <i># přenos všech 32 bitů z&nbsp;OSR do interního registru Y</i>
+<strong>.wrap_target</strong>
+             set X, 31         <i># počitadlo smyčky</i>
+             set pins, 1       <i># nastavit pin (rozsvítit LED)</i>
+<strong>blink_loop</strong>:  jmp X!=Y, skip    <i># když X!=Y přeskočit další instrukci</i>
+             set pins, 0       <i># vynulovat pin (zhasnout LED)</i>
+<strong>skip</strong>:        nop    [29]       <i># zpožďovací mechanismus</i>
+             jmp X--, blink_loop
+<strong>.wrap</strong>
+</pre>
+
+<p>Pokud nyní příslušný PIO program spustíme, bude čekat na zápis 32bitové
+hodnoty do výstupní FIFO. Jak je to zařízeno v&nbsp;MicroPythonu si ukážeme
+v&nbsp;navazující kapitole.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Demonstrační příklad: konfigurace střídy před spuštěním hlavní smyčky</h2>
+
+<p>Program napsaný v&nbsp;assembleru PIO si nyní přepíšeme do MicroPythonu:</p>
 
 <pre>
 import rp2
 from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink4():
+&nbsp;
+&nbsp;
+<i>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</i>
+def <strong>blink4</strong>():
     pull(block)                <i># přečtení hodnoty z FIFO s čekáním, uložení do OSR</i>
     mov(y, osr)                <i># přesun hodnoty z OSR do registru Y</i>
     wrap_target()              <i># cíl skoku</i>
@@ -469,22 +527,143 @@ def blink4():
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(x_dec, "blink_loop")   <i># a opakujeme X-krát</i>
     wrap()
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink4, freq=2000, set_base=Pin(8))
 sm.active(1)                   <i># spustit stavový stroj</i>
+</pre>
+
+<p>Po spuštění &ndash; inicializaci &ndash; stavového stroje se zdánlivě nebude
+nic dít (LED nebude blikat). PIO program totiž čeká na hodnotu zapsanou do
+výstupní FIFO (původně je totiž FIFO prázdná). Tento zápis se provede velmi
+jednoduše:</p>
+
+<pre>
 sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</i>
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: smysl má zapisovat hodnoty 0 až 31.
+Vyšší hodnoty nemají význam, protože je porovnáváme s&nbsp;hodnotou uloženou do
+čítače X, jenž bude mít rozsah 0..31 (resp.&nbsp;přesněji čítá dolů z&nbsp;31
+do nuly).</div></p>
 
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Realizace neblokujícího čtení z&nbsp;FIFO</h2>
+
+<p>Víme již, jak nastavit parametr či parametry před spuštěním hlavní smyčky,
+která bude ovládat GPIO (vstupně-výstupní piny). Ovšem v&nbsp;praxi je taktéž
+nutné měnit parametry za běhu této smyčky. V&nbsp;našem konkrétním případě to
+znamená požadavek na to, aby se mohla měnit střída blikání LED v&nbsp;průběhu
+tohoto blikání. Teoreticky tedy potřebujeme z&nbsp;FIFO vyčíst novou hodnotu,
+ovšem <i>bez čekání</i> na tuto hodnotu v&nbsp;případě, že žádná nová hodnota
+nebyla poslána. Jinými slovy &ndash; pokud hlavní procesor (jádro) nepošle nový
+parametr, budeme chtít, aby LED stále blikala na základě dříve natavené střídy.
+Samotné čtení z&nbsp;FIFO bez čekání je teoreticky dobře realizovatelné,
+protože můžeme použít modifikátor <strong>noblock</strong>:</p>
+
+<pre>
+             pull block        <i># blokující přečtení 32 bitů z&nbsp;FIFO s jejich zápisem do OSR</i>
+             mov Y, OSR        <i># přenos všech 32 bitů z&nbsp;OSR do interního registru Y</i>
+<strong>.wrap_target</strong>
+             pull noblock      <i># neblokující pokus o přečtení 32 bitů z&nbsp;FIFO, ovšem bez čekání na hodnotu</i>
+                               <i>POZOR: nefunkční řešení!!!</i>
+             mov Y, OSR        <i># přenos všech 32 bitů z&nbsp;OSR do interního registru Y</i>
+             set X, 31         <i># počitadlo smyčky</i>
+             set pins, 1       <i># nastavit pin (rozsvítit LED)</i>
+<strong>blink_loop</strong>:  jmp X!=Y, skip    <i># když X!=Y přeskočit další instrukci</i>
+             set pins, 0       <i># vynulovat pin (zhasnout LED)</i>
+<strong>skip</strong>:        nop    [29]       <i># zpožďovací mechanismus</i>
+             jmp X--, blink_loop
+<strong>.wrap</strong>
+</pre>
+
+<p>Ovšem takto naznačené řešení ve skutečnosti nebude plně funkční, protože i
+když je <strong>pull noblock</strong> neblokující operace (tedy nečeká na data
+poslaná do FIFO), stále tato operace musí &bdquo;něco&ldquo; zapsat do registru
+<strong>OSR</strong>, z&nbsp;něhož následně tuto hodnotu vyčteme. Je tomu tak
+z&nbsp;toho důvodu, že čtení z&nbsp;<strong>OSR</strong> je destruktivní
+operací &ndash; ve skutečnosti se totiž nejedná o pouhé čtení, ale o vysunutí
+bitů z&nbsp;registru a doplnění nulami (zleva či zprava, podle nastavení). Toto
+řešení tedy budeme muset nepatrně opravit.</p>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, jak moc se vlastně liší
+chování PIO od běžného CPU.</div></p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Neblokující čtení z&nbsp;fronty s&nbsp;využitím výchozí hodnoty</h2>
+
+<p>Ve skutečnosti provádí instrukce <strong>pull noblock</strong> následující
+operaci:</p>
+
+<ul>
+
+<li>V&nbsp;případě, že se ve frontě (FIFO) nachází alespoň jedna hodnota, je
+tato hodnota z&nbsp;fronty přečtena a předána do posuvného registru
+<strong>OSR</strong>.</li>
+
+<li>V&nbsp;případě, že je fronta prázdná, je do posuvného registru
+<strong>OSR</strong> uložena hodnota z&nbsp;interního registru
+<strong>X</strong>. To znamená, že se vlastně jedná o stejnou operaci, jakou
+provede <strong>mov OSR, X</strong>.</li>
+
+</ul>
+
+<p>Pro nás je užitečný především druhý bod, protože ten nám zaručí, že pokud
+bude v&nbsp;registru <strong>X</strong> uložena střída (tedy prakticky hodnota
+0 až 31), budeme moci provést instrukci <strong>pull noblock</strong>, která
+automaticky naplní <strong>OSR</strong> buď novou hodnotou zapsanou
+&bdquo;zvenku&ldquo;, nebo původní hodnotou, která se již používá. A díky tomu,
+že <strong>OSR</strong> bude vždy naplněn správnou hodnotou, nebude nám vadit,
+že jeho čtení je vlastně destruktivní operací.</p>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Demonstrační příklad: prohození významu registrů X a Y</h2>
+
+<p></p>
+
+<pre>
+             pull block        <i># blokující přečtení 32 bitů z&nbsp;FIFO s jejich zápisem do OSR</i>
+             mov Y, OSR        <i># přenos všech 32 bitů z&nbsp;OSR do interního registru Y</i>
+<strong>.wrap_target</strong>
+             set X, 31         <i># počitadlo smyčky</i>
+             set pins, 1       <i># nastavit pin (rozsvítit LED)</i>
+<strong>blink_loop</strong>:  jmp X!=Y, skip    <i># když X!=Y přeskočit další instrukci</i>
+             set pins, 0       <i># vynulovat pin (zhasnout LED)</i>
+<strong>skip</strong>:        nop    [29]       <i># zpožďovací mechanismus</i>
+             jmp X--, blink_loop
+<strong>.wrap</strong>
+</pre>
+
+<p></p>
+
+<pre>
+             pull block        <i># blokující přečtení 32 bitů z&nbsp;FIFO s jejich zápisem do OSR</i>
+             mov X, OSR        <i># přenos všech 32 bitů z&nbsp;OSR do interního registru X</i>
+<strong>.wrap_target</strong>
+             set Y, 31         <i># počitadlo smyčky</i>
+             set pins, 1       <i># nastavit pin (rozsvítit LED)</i>
+<strong>blink_loop</strong>:  jmp X!=Y, skip    <i># když X!=Y přeskočit další instrukci</i>
+             set pins, 0       <i># vynulovat pin (zhasnout LED)</i>
+<strong>skip</strong>:        nop    [29]       <i># zpožďovací mechanismus</i>
+             jmp Y--, blink_loop
+<strong>.wrap</strong>
+</pre>
+
+<p></p>
 
 <pre>
 import rp2
 from machine import Pin
-
-
-@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)
-def blink5():
+&nbsp;
+&nbsp;
+<u>@rp2.asm_pio(set_init=rp2.PIO.OUT_LOW)</u>
+def <strong>blink5</strong>():
     pull(block)                <i># přečtení hodnoty z FIFO s čekáním, uložení do OSR</i>
     mov(x, osr)                <i># přesun hodnoty z OSR do registru X</i>
     wrap_target()              <i># cíl skoku</i>
@@ -497,13 +676,17 @@ def blink5():
     nop() [29]                 <i># zpožďovací mechanismus</i>
     jmp(y_dec, "blink_loop")   <i># a opakujeme Y-krát</i>
     wrap()
-
-
+&nbsp;
+&nbsp;
 sm = rp2.StateMachine(0, blink5, freq=2000, set_base=Pin(8))
 sm.active(1)                   <i># spustit stavový stroj</i>
 sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</i>
 </pre>
 
+
+
+<p><a name="k15"></a></p>
+<h2 id="k15">15. Průběžná změna střídy kdykoli za běhu PIO programu</h2>
 
 <pre>
 import rp2
@@ -517,7 +700,7 @@ def blink6():
     wrap_target()              <i># cíl skoku</i>
     pull(noblock)              <i># zkusíme přečíst novou poslanou hodnotu, ale nečekáme na ni</i>
                                <i># pokud hodnota nebyla poslána, doplní se hodnota registru X</i>
-    mov(x, osr)                <i>#  přesun hodnoty z OSR do registru X</i>
+    mov(x, osr)                <i># přesun hodnoty z OSR do registru X</i>
     set(y, 31)                 <i># počitadlo smyčky</i>
     set(pins, 1)               <i># nastavit pin</i>
     label("blink_loop")
@@ -535,33 +718,8 @@ sm.put(10)                     <i># prahová hodnota, která se pošle do FIFO</
 </pre>
 
 
-<p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
-
-
-
-<p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
-
-
-
-<p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
-
-
-
-<p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
-
-
-
-<p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
-
-
-
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Demonstrační příklad: průběžná změna střídy za běhu PIO programu</h2>
 
 
 
@@ -757,16 +915,16 @@ V&nbsp;tabulce zobrazené níže jsou odkazy na jednotlivé příklady:</p>
 <tr><td>10</td><td>pio_blink_pin_8_loop_1.py</td><td>blikání LED na GPIO #8, registr Y je použit pro specifikaci střídy</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_loop_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_loop_1.py</a></td></tr>
 <tr><td>11</td><td>pio_blink_pin_8_loop_2.py</td><td>blikání LED na GPIO #8, explicitní zápis nekonečné programové smyčky s&nbsp;řízením GPIO</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_loop_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_loop_2.py</a></td></tr>
 <tr><td>12</td><td>pio_blink_pin_8_loop_3.py</td><td>blikání LED na GPIO #8, použití direktiv <strong>.wrap</strong> a <strong>.wrap_target</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_loop_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_loop_3.py</a></td></tr>
-<tr><td>13</td><td>pio_blink_pin_8_control_1.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_1.py</a></td></tr>
-<tr><td>14</td><td>pio_blink_pin_8_control_2.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_2.py</a></td></tr>
-<tr><td>15</td><td>pio_blink_pin_8_control_3.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_3.py</a></td></tr>
+<tr><td>13</td><td>pio_blink_pin_8_control_1.py</td><td>nastavení střídy přes FIFO před začátkem blikání (varianta pro GPIO #8)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_1.py</a></td></tr>
+<tr><td>14</td><td>pio_blink_pin_8_control_2.py</td><td>prohození interních registrů X a Y (varianta pro GPIO #8)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_2.py</a></td></tr>
+<tr><td>15</td><td>pio_blink_pin_8_control_3.py</td><td>průběžná změna střídy v&nbsp;průběhu blikání (varianta pro GPIO #8)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_8_control_3.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>16</td><td>pio_blink_pin_25_loop_1.py</td><td>blikání LED na GPIO #25, registr Y je použit pro specifikaci střídy</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_loop_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_loop_1.py</a></td></tr>
 <tr><td>17</td><td>pio_blink_pin_25_loop_2.py</td><td>blikání LED na GPIO #25, explicitní zápis nekonečné programové smyčky s&nbsp;řízením GPIO</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_loop_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_loop_2.py</a></td></tr>
 <tr><td>18</td><td>pio_blink_pin_25_loop_3.py</td><td>blikání LED na GPIO #25, použití direktiv <strong>.wrap</strong> a <strong>.wrap_target</strong></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_loop_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_loop_3.py</a></td></tr>
-<tr><td>19</td><td>pio_blink_pin_25_control_1.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_1.py</a></td></tr>
-<tr><td>20</td><td>pio_blink_pin_25_control_2.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_2.py</a></td></tr>
-<tr><td>21</td><td>pio_blink_pin_25_control_3.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_3.py</a></td></tr>
+<tr><td>19</td><td>pio_blink_pin_25_control_1.py</td><td>nastavení střídy přes FIFO před začátkem blikání (varianta pro GPIO #25)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_1.py</a></td></tr>
+<tr><td>20</td><td>pio_blink_pin_25_control_2.py</td><td>prohození interních registrů X a Y (varianta pro GPIO #25)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_2.py</a></td></tr>
+<tr><td>21</td><td>pio_blink_pin_25_control_3.py</td><td>průběžná změna střídy v&nbsp;průběhu blikání (varianta pro GPIO #25)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pio/pio_blink_pin_25_control_3.py</a></td></tr>
 </table>
 
 
