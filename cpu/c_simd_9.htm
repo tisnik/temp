@@ -38,9 +38,9 @@
 <h2>Obsah</h2>
 
 <p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
+<p><a href="#k02">2. Vynulování obsahu pole o předem známém počtu prvků</a></p>
+<p><a href="#k03">3. Výsledek překladu se zákazem i povolením SSE instrukcí: neoptimalizované varianty</a></p>
+<p><a href="#k04">4. Výsledek překladu se zákazem i povolením SSE instrukcí: optimalizované varianty a vliv zarovnání</a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
 <p><a href="#k07">*** 7. </a></p>
@@ -55,8 +55,8 @@
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k19">*** 19. Seznam všech předchozích částí tohoto seriálu a článků o SIMD instrukcích</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k19">19. Seznam všech předchozích částí tohoto seriálu a článků o SIMD instrukcích</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
@@ -66,19 +66,66 @@
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Vynulování obsahu pole o předem známém počtu prvků</h2>
 
-void clear(float *a) {
-    #define SIZE2 8
+<p>Pokusy s&nbsp;autovektorizací začneme na triviálním příkladu. Jedná se o
+funkci, která vynuluje obsah pole hodnot typu <strong>float</strong>
+(v&nbsp;SIMD označovaných jako <i>single</i> podle IEEE 754). Počet prvků
+nulovaného pole je pro jednoduchost dopředu známý a je uložen v&nbsp;konstantě
+nazvané <strong>SIZE</strong>. Zdrojový kód, který vůbec nebere v&nbsp;úvahu
+případné optimalizace, vypadá následovně:</p>
+
+<pre>
+void <strong>clear</strong>(float *a) {
+    #define SIZE 8
     int i;
-    for (i=0; i<SIZE2; i++) {
+    for (i=0; i&lt;SIZE; i++) {
         a[i] = 0.0;
     }
 }
+</pre>
+
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Výsledek překladu se zákazem i povolením SSE instrukcí: neoptimalizované varianty</h2>
+
+<p>Jak bude vypadat překlad této jednoduché funkce do strojového kódu
+mikroprocesorů s&nbsp;architekturou x86 (resp.&nbsp;přesněji řečeno x86-64)?
+Výsledky se v&nbsp;tomto případě budou zásadně lišit podle toho, zda je
+povoleno používat instrukce SSE nebo je to naopak zakázáno.</p>
+
+<p>Pokud jsou optimalizace zakázány a současně je zakázáno i použití SSE, bude
+výsledný kód používat instrukce FPU a vše bude realizováno
+v&nbsp;neoptimalizované smyčce:</p>
+
+<pre>
+<strong>clear</strong>(float*):
+        push    rbp
+        mov     rbp, rsp
+        mov     QWORD PTR [rbp-24], rdi
+        mov     DWORD PTR [rbp-4], 0
+        jmp     .L2
+.L3:
+        mov     eax, DWORD PTR [rbp-4]
+        cdqe
+        lea     rdx, [0+rax*4]
+        mov     rax, QWORD PTR [rbp-24]
+        add     rax, rdx
+        fldz
+        fstp    DWORD PTR [rax]
+        add     DWORD PTR [rbp-4], 1
+.L2:
+        cmp     DWORD PTR [rbp-4], 7
+        jle     .L3
+        nop
+        nop
+        pop     rbp
+        ret
+</pre>
+
+<p>Při zákazu optimalizací, ale povolení SSE je opět výsledkem neoptimalizovaná
+smyčka, v&nbsp;níž ale nalezneme registr XMM0 a skalární instrukci MOVSS:</p>
 
 <pre>
 clear(float*):
@@ -105,18 +152,71 @@ clear(float*):
         ret
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: oba tyto kódy jsou skutečně velmi špatné
+a i začátečník v&nbsp;assembleru dokáže napsat optimálnější varianty.</div></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výsledek překladu se zákazem i povolením SSE instrukcí: optimalizované varianty a vliv zarovnání</h2>
+
+<p>Nyní se pokusme o povolení optimalizací, prozatím s&nbsp;využitím přepínače
+-O2. V&nbsp;případě, že jsou instrukce SSE zakázány, bude zápis (na platformě
+x86-64) prováděn po 64bitových slovech, tj.&nbsp;po dvojici hodnot typu
+<strong>float</strong>. To je již mnohem rychlejší a není zapotřebí realizovat
+pomalou počítanou programovou smyčku:</p>
+
 <pre>
-clear(float*):
+<strong>clear</strong>(float*):
+        mov     QWORD PTR [rdi], 0
+        mov     QWORD PTR [rdi+8], 0
+        mov     QWORD PTR [rdi+16], 0
+        mov     QWORD PTR [rdi+24], 0
+        ret
+</pre>
+
+<p>Při povolení instrukcí SSE je kód odlišný. Nejdříve se smaže obsah registru
+XMM0 a následně se provedou pouze dva zápisy, z&nbsp;nichž každý uloží do
+paměti čtyři hodnoty typu <strong>float</strong>:</p>
+
+<pre>
+<strong>clear</strong>(float*):
         pxor    xmm0, xmm0
         movups  XMMWORD PTR [rdi], xmm0
         movups  XMMWORD PTR [rdi+16], xmm0
         ret
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: C v&nbsp;tomto případě neví, jak budou
+prvky pole (ne)zarovnány a proto musí použít instrukci <strong>MOVUPS</strong>
+a nikoli <strong>MOVAPS</strong>. Ovšem pokud existuje jistota, že pole začíná
+na zarovnané adrese, je možné překladači &bdquo;napovědět&ldquo;:</div></p>
+
+<pre>
+void <strong>clear</strong>(float *a) {
+    #define SIZE 8
+    <u>a = __builtin_assume_aligned (a, 16);</u>
+    int i;
+    for (i=0; i&lt;SIZE; i++) {
+        a[i] = 0.0;
+    }
+}
+</pre>
+
+<p>Výsledkem nyní bude kód s&nbsp;instrukcemi <strong>MOVAPS</strong>:</p>
+
+<pre>
+<strong>clear</strong>(float*):
+        pxor    xmm0, xmm0
+        movaps  XMMWORD PTR [rdi], xmm0
+        movaps  XMMWORD PTR [rdi+16], xmm0
+        ret
+</pre>
 
 
-<p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. </h2>
 
 SIZE=16
 clear(float*):
@@ -138,8 +238,8 @@ clear(float*):
         movups  XMMWORD PTR [rdi+48], xmm0
         ret
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<p><a name="k06"></a></p>
+<h2 id="k06">6. </h2>
 
 void add_delta(float *a, float delta) {
     #define SIZE 16
@@ -192,10 +292,10 @@ add_delta(float*, float):
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<p><a name="k07"></a></p>
+<h2 id="k07">7. </h2>
 
-void add_delta(float *a, float *b) {
+void add_arrays(float *a, float *b) {
     #define SIZE 24
     int i;
     for (i=0; i<SIZE; i++) {
@@ -203,7 +303,7 @@ void add_delta(float *a, float *b) {
     }
 }
 
-add_delta(float*, float*):
+add_arrays(float*, float*):
         xor     eax, eax
 .L2:
         movss   xmm0, DWORD PTR [rdi+rax]
@@ -214,7 +314,7 @@ add_delta(float*, float*):
         jne     .L2
         ret
 
-add_delta(float*, float*):
+add_arrays(float*, float*):
         lea     rdx, [rsi+4]
         mov     rax, rdi
         sub     rax, rdx
@@ -241,7 +341,7 @@ add_delta(float*, float*):
 
 SIZE=17
 
-add_delta(float*, float*):
+add_arrays(float*, float*):
         lea     rdx, [rsi+4]
         mov     rax, rdi
         sub     rax, rdx
@@ -271,7 +371,7 @@ add_delta(float*, float*):
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k08">8. </h2>
 
 #include <math.h>
 
@@ -284,8 +384,8 @@ void array_sqrt(float *a) {
 }
 
 
-<p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<p><a name="k09"></a></p>
+<h2 id="k09">9. </h2>
 
 array_sqrt(float*):
         lea     rax, [rdi+96]
@@ -341,11 +441,6 @@ array_sqrt(float*):
 
 
 
-<p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
-
-
-
 <p><a name="k10"></a></p>
 <h2 id="k10">10. </h2>
 
@@ -394,43 +489,94 @@ array_sqrt(float*):
 <table>
 <tr><th> #</th><th>Příklad</th><th>Stručný popis</th><th>Adresa</th></tr>
 <tr><td> 1</td><td>array_clear_size_8.c            </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8.c</a></td></tr>
-<tr><td> 2</td><td>array_clear_size_8_non_vect.asm </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_non_vect.asm</a></td></tr>
-<tr><td> 3</td><td>array_clear_size_8_no_sse.asm   </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_no_sse.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_no_sse.asm</a></td></tr>
-<tr><td> 4</td><td>array_clear_size_8_vect.asm     </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_vect.asm</a></td></tr>
+<tr><td> 2</td><td>array_clear_size_8_non_vect.asm </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_non_vect.asm</a></td></tr>
+<tr><td> 3</td><td>array_clear_size_8_no_sse.asm   </td><td>výsledek překladu se zákazem SSE instrukcí</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_no_sse.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_no_sse.asm</a></td></tr>
+<tr><td> 4</td><td>array_clear_size_8_vect.asm     </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_8_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td> 5</td><td>array_clear_size_16.c           </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16.c</a></td></tr>
-<tr><td> 6</td><td>array_clear_size_16_non_vect.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_non_vect.asm</a></td></tr>
-<tr><td> 7</td><td>array_clear_size_16_vect.asm    </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_vect.asm</a></td></tr>
+<tr><td> 6</td><td>array_clear_size_16_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_non_vect.asm</a></td></tr>
+<tr><td> 7</td><td>array_clear_size_16_vect.asm    </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_16_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td> 8</td><td>array_clear_size_18.c           </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18.c</a></td></tr>
-<tr><td> 9</td><td>array_clear_size_18_non_vect.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_non_vect.asm</a></td></tr>
-<tr><td>10</td><td>array_clear_size_18_vect.asm    </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_vect.asm</a></td></tr>
+<tr><td> 9</td><td>array_clear_size_18_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_non_vect.asm</a></td></tr>
+<tr><td>10</td><td>array_clear_size_18_vect.asm    </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_clear_size_18_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>11</td><td>add_delta_size_16.c             </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16.c</a></td></tr>
-<tr><td>12</td><td>add_delta_size_16_non_vect.asm  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_non_vect.asm</a></td></tr>
-<tr><td>13</td><td>add_delta_size_16_vect.asm      </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_vect.asm</a></td></tr>
+<tr><td>12</td><td>add_delta_size_16_non_vect.asm  </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_non_vect.asm</a></td></tr>
+<tr><td>13</td><td>add_delta_size_16_vect.asm      </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_16_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>14</td><td>add_delta_size_17.c             </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17.c</a></td></tr>
-<tr><td>15</td><td>add_delta_size_17_non_vect.asm  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_non_vect.asm</a></td></tr>
-<tr><td>16</td><td>add_delta_size_17_vect.asm      </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_vect.asm</a></td></tr>
+<tr><td>15</td><td>add_delta_size_17_non_vect.asm  </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_non_vect.asm</a></td></tr>
+<tr><td>16</td><td>add_delta_size_17_vect.asm      </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_17_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>17</td><td>add_delta_size_24.c             </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24.c</a></td></tr>
-<tr><td>18</td><td>add_delta_size_24_non_vect.asm  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_non_vect.asm</a></td></tr>
-<tr><td>19</td><td>add_delta_size_24_vect.asm      </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_vect.asm</a></td></tr>
+<tr><td>18</td><td>add_delta_size_24_non_vect.asm  </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_non_vect.asm</a></td></tr>
+<tr><td>19</td><td>add_delta_size_24_vect.asm      </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/add_delta_size_24_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>20</td><td>array_sqrt.c                    </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt.c</a></td></tr>
-<tr><td>21</td><td>array_sqrt_non_vect.asm         </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_non_vect.asm</a></td></tr>
-<tr><td>22</td><td>array_sqrt_vect.asm             </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect.asm</a></td></tr>
-<tr><td>23</td><td>array_sqrt_vect_fast_math.asm   </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect_fast_math.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect_fast_math.asm</a></td></tr>
+<tr><td>21</td><td>array_sqrt_non_vect.asm         </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_non_vect.asm</a></td></tr>
+<tr><td>22</td><td>array_sqrt_vect.asm             </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect.asm</a></td></tr>
+<tr><td>23</td><td>array_sqrt_vect_fast_math.asm   </td><td>výsledek překladu s&nbsp;povolením vektorizace a nepřesných výpočtů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect_fast_math.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/array_sqrt_vect_fast_math.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>24</td><td>dot_product_4.c                 </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4.c</a></td></tr>
-<tr><td>25</td><td>dot_product_4_non_vect.asm      </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_non_vect.asm</a></td></tr>
-<tr><td>26</td><td>dot_product_4_vect.asm          </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_vect.asm</a></td></tr>
+<tr><td>25</td><td>dot_product_4_non_vect.asm      </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_non_vect.asm</a></td></tr>
+<tr><td>26</td><td>dot_product_4_vect.asm          </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_4_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>27</td><td>dot_product_8.c                 </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8.c</a></td></tr>
-<tr><td>28</td><td>dot_product_8_non_vect.asm      </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_non_vect.asm</a></td></tr>
-<tr><td>29</td><td>dot_product_8_vect.asm          </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_vect.asm</a></td></tr>
+<tr><td>28</td><td>dot_product_8_non_vect.asm      </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_non_vect.asm</a></td></tr>
+<tr><td>29</td><td>dot_product_8_vect.asm          </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_8_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>30</td><td>dot_product_100.c               </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100.c">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100.c</a></td></tr>
-<tr><td>31</td><td>dot_product_100_non_vect.asm    </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_non_vect.asm</a></td></tr>
-<tr><td>32</td><td>dot_product_100_vect.asm        </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_vect.asm</a></td></tr>
+<tr><td>31</td><td>dot_product_100_non_vect.asm    </td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_non_vect.asm</a></td></tr>
+<tr><td>32</td><td>dot_product_100_vect.asm        </td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/dot_product_100_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>33</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>34</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>35</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>36</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>37</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>38</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>39</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>40</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>41</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>42</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>43</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>44</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>45</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>46</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>47</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>48</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>49</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
+<tr><td>50</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/">https://github.com/tisnik/8bit-fame/blob/master/simd-gcc/</a></td></tr>
 </table>
+
+add_arrays_size_4.c
+add_arrays_size_4_non_vect.asm
+add_arrays_size_4_vect.asm
+add_arrays_size_16.c
+add_arrays_size_16_non_vect.asm
+add_arrays_size_16_vect.asm
+add_arrays_size_17.c
+add_arrays_size_17_non_vect.asm
+add_arrays_size_17_vect.asm
+add_arrays_restrict_size_4.c
+add_arrays_restrict_size_4_non_vect.asm
+add_arrays_restrict_size_4_vect.asm
+add_arrays_restrict_size_16.c
+add_arrays_restrict_size_16_non_vect.asm
+add_arrays_restrict_size_16_vect.asm
+add_arrays_restrict_size_17.c
+add_arrays_restrict_size_17_non_vect.asm
+add_arrays_restrict_size_17_vect.asm
 
 
 
 <p><a name="k19"></a></p>
 <h2 id="k19">19. Seznam všech předchozích částí tohoto seriálu a článků o SIMD instrukcích</h2>
+
+<p>Podporou SIMD instrukcí na úrovni <i>intrinsic</i> jsme se už na Rootu
+zabývali, stejně jako samotnými SIMD instrukcemi na úrovni assembleru. Pro
+úplnost jsou v&nbsp;této příloze uvedeny odkazy na příslušné články:</p>
 
 <ol>
 
@@ -498,6 +644,10 @@ array_sqrt(float*):
 <h2 id="k20">20. Odkazy na Internetu</h2>
 
 <ol>
+
+<li>Auto-vectorization in GCC<br />
+<a href="https://gcc.gnu.org/projects/tree-ssa/vectorization.html">https://gcc.gnu.org/projects/tree-ssa/vectorization.html</a>
+</li>
 
 <li>GCC documentation: Extensions to the C Language Family<br />
 <a href="https://gcc.gnu.org/onlinedocs/gcc/C-Extensions.html#C-Extensions">https://gcc.gnu.org/onlinedocs/gcc/C-Extensions.html#C-Extensions</a>
@@ -679,6 +829,14 @@ Intel corporation, 1996</li>
 
 <li>SIMD Algorithms Youtube course<br />
 <a href="https://denisyaroshevskiy.github.io/presentations/">https://denisyaroshevskiy.github.io/presentations/</a>
+</li>
+
+<li>Compiler explorer<br />
+<a href="https://godbolt.org/">https://godbolt.org/</a>
+</li>
+
+<li>Restricting pointers<br />
+<a href="https://gcc.gnu.org/onlinedocs/gcc/Restricted-Pointers.html">https://gcc.gnu.org/onlinedocs/gcc/Restricted-Pointers.html</a>
 </li>
 
 </ol>
