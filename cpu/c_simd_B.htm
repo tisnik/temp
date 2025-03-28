@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,11 +37,11 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. Vynulování pole s&nbsp;prvky typu <i>byte</i></a></p>
-<p><a href="#k03">*** 3. Vynulování pole s&nbsp;prvky typu <i>double</i></a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
+<p><a href="#k01">*** 1. Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</a></p>
+<p><a href="#k02">2. Vynulování pole s&nbsp;prvky typu <i>byte</i></a></p>
+<p><a href="#k03">3. Vynulování pole s&nbsp;prvky typu <i>double</i></a></p>
+<p><a href="#k04">4. Přičtení konstanty ke všem prvkům pole typu <i>byte</i></a></p>
+<p><a href="#k05">*** 5. Vysvětlení postupu výpočtu</a></p>
 <p><a href="#k06">*** 6. </a></p>
 <p><a href="#k07">*** 7. </a></p>
 <p><a href="#k08">*** 8. </a></p>
@@ -55,18 +55,26 @@
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k19">*** 19. Seznam všech předchozích částí tohoto seriálu a článků o SIMD instrukcích</a></p>
-<p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
+<p><a href="#k19">19. Seznam všech předchozích částí tohoto seriálu a článků o SIMD instrukcích</a></p>
+<p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</h2>
+
+<p></p>
 
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Vynulování pole s&nbsp;prvky typu <i>byte</i></h2>
+
+<p>Dnešní první funkcí, kterou si necháme přeložit z&nbsp;jazyka C do
+strojového kódu (resp.&nbsp;do assembleru pro lepší čitelnost), bude funkce,
+která vynuluje všechny prvky z&nbsp;pole obsahujícího 32 bajtů. Překlad budeme
+provádět s&nbsp;povolením instrukčních sad SSEx (nejenom SSE1) pro platformu
+x86-64:</p>
 
 <pre>
 void <strong>clear</strong>(unsigned char *a) {
@@ -78,18 +86,64 @@ void <strong>clear</strong>(unsigned char *a) {
 }
 </pre>
 
+<p>Překladač v&nbsp;tomto případě nebude tvořit programovou smyčku, ale pouze
+vynuluje obsah registru XMM0 a zapíše tento registr na začátek pole a taktéž na
+adresu posunutou o offset 16. Toto řešení je plně funkční, protože do jednoho
+XMM registru lze uložit šestnáct bajtů:</p>
+
 <pre>
-clear:
+<strong>clear</strong>:
         pxor    xmm0, xmm0
         movups  XMMWORD PTR [rdi], xmm0
         movups  XMMWORD PTR [rdi+16], xmm0
         ret     
 </pre>
 
+<p>Zkusme zjistit, kde je limit proto, aby překladač skutečně použil
+programovou smyčku. Nulované pole zvětšíme na 64 bajtů:</p>
+
+<pre>
+<strong>clear</strong>:
+        pxor    xmm0, xmm0
+        movups  XMMWORD PTR [rdi], xmm0
+        movups  XMMWORD PTR [rdi+16], xmm0
+        movups  XMMWORD PTR [rdi+32], xmm0
+        movups  XMMWORD PTR [rdi+48], xmm0
+        ret     
+</pre>
+
+<p>K&nbsp;vytvoření smyčky stále nedošlo, takže pole rozšíříme na 128 bajtů
+s&nbsp;tímto výsledkem:</p>
+
+<pre>
+<strong>clear</strong>:
+        mov     QWORD PTR [rdi], 0
+        mov     rax, rdi
+        lea     rdi, [rdi+8]
+        mov     QWORD PTR [rdi+112], 0
+        and     rdi, -8
+        sub     rax, rdi
+        lea     ecx, [rax+128]
+        xor     eax, eax
+        shr     ecx, 3
+        rep     stosq
+        ret     
+</pre>
+
+<p>Nyní je situace zajímavá, protože překladač &bdquo;vzdal&ldquo; snahu o
+použití instrukcí SSE a namísto toho zapisuje 16 bajtů opakující se instrukcí
+<strong>STOSQ</strong> s&nbsp;konstantou nula (<strong>REP STOSQ</strong>).
+Zápise je proveden na adresu uchovanou v&nbsp;registru <strong>RDI</strong> (ta
+se postupně zvyšuje).</p>
+
 
 
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Vynulování pole s&nbsp;prvky typu <i>double</i></h2>
+
+<p>Ve druhém demonstračním příkladu vynulujeme pole obsahující prvky typu
+<i>double</i>. Opět začneme malým polem (vektorem), které obsahuje pouze osm
+prvků:</p>
 
 <pre>
 void <strong>clear</strong>(double *a) {
@@ -101,6 +155,10 @@ void <strong>clear</strong>(double *a) {
 }
 </pre>
 
+<p>Výsledek překladu do assembleru s&nbsp;povolenou vektorizací opět využívá
+rozbalené smyčky &ndash; do paměti se uloží vynulovaný vektor XMM0, a to celkem
+čtyřikrát, protože každý zápis vynuluje v&nbsp;poli dva prvky:</p>
+
 <pre>
 clear:
         pxor    xmm0, xmm0
@@ -111,23 +169,51 @@ clear:
         ret     
 </pre>
 
+<p>Zajímavé je, že při zvětšení pole na 16 prvků typu <i>double</i> překladač
+namísto SSE instrukcí opět použije pouze celočíselné registry a pro vynulování
+prvků opakuje instrukci <strong>STOSQ</strong>:</p>
+
+<pre>
+clear:
+        mov     QWORD PTR [rdi], 0
+        mov     rax, rdi
+        lea     rdi, [rdi+8]
+        mov     QWORD PTR [rdi+112], 0
+        and     rdi, -8 # tmp105,
+        sub     rax, rdi
+        lea     ecx, [rax+128]
+        xor     eax, eax
+        shr     ecx, 3
+        rep     stosq
+        ret     
+</pre>
+
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Přičtení konstanty ke všem prvkům pole typu <i>byte</i></h2>
+
+<p>Ve třetím demonstračním příkladu budeme realizovat přičtení konstanty ke
+všem prvkům pole typu <i>byte</i>. Opět nejdříve začneme krátkým polem
+s&nbsp;pouhými šestnácti prvky:</p>
 
 <pre>
-void add_delta(unsigned char *a, unsigned char delta) {
+void <strong>add_delta</strong>(unsigned char *a, unsigned char delta) {
     #define SIZE 16
     int i;
-    for (i=0; i<SIZE; i++) {
+    for (i=0; i&lt;SIZE; i++) {
         a[i] += delta;
     }
 }
 </pre>
 
+<p>Způsob překladu je zajímavý, protože se zde využívá kombinace instrukcí pro
+proložení prvků vektorů s&nbsp;přesunem prvků. Musíme totiž dosáhnout stavu,
+kdy bude vektor obsahovat 16 stejných konstant. Posléze je již možné použít
+jedinou instrukci <strong>PADDB</strong> realizující vektorový součet:</p>
+
 <pre>
-add_delta:
+<strong>add_delta</strong>:
         movd       xmm0, esi
         movdqu     xmm1, XMMWORD PTR [rdi]
         punpcklbw  xmm0, xmm0
@@ -138,10 +224,60 @@ add_delta:
         ret     
 </pre>
 
+<p><div class="rs-tip-major">Poznámka: v&nbsp;navazující kapitole bude ukázáno,
+proč se použila právě tato sekvence instrukcí a jak se výpočet provádí krok za
+krokem.</div></p>
+
+<p>Po zvětšení pole na 32 prvků (bajtů) bude výsledek vypadat takto:</p>
+
+<pre>
+<strong>add_delta</strong>:
+        movd       xmm0, esi
+        movdqu     xmm1, XMMWORD PTR [rdi]
+        movdqu     xmm2, XMMWORD PTR [rdi+16]
+        punpcklbw  xmm0, xmm0
+        punpcklwd  xmm0, xmm0
+        pshufd     xmm0, xmm0, 0
+        paddb      xmm1, xmm0
+        paddb      xmm0, xmm2
+        movups     XMMWORD PTR [rdi], xmm1
+        movups     XMMWORD PTR [rdi+16], xmm0
+        ret     
+</pre>
+
+<p>Cílem je stále snaha o &bdquo;rozšíření&ldquo; konstanty do všech prvků
+registru XMM0 tak, aby bylo možné provést vektorový součet.</p>
+
+<p>Po zvětšení pole na 64 prvků (bajtů) již překladač donutíme
+k&nbsp;vygenerování nerozbalené programové smyčky:</p>
+
+<pre>
+<strong>add_delta</strong>:
+        movd       xmm1, esi
+        lea        rax, [rdi+64]
+        punpcklbw  xmm1, xmm1
+        punpcklwd  xmm1, xmm1
+        pshufd     xmm1, xmm1, 0
+.L2:
+        movdqu     xmm0, XMMWORD PTR [rdi]
+        add        rdi, 16
+        paddb      xmm0, xmm1
+        movups     XMMWORD PTR [rdi-16], xmm0
+        cmp        rax, rdi
+        jne        .L2
+        ret     
+</pre>
+
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Vysvětlení postupu výpočtu</h2>
+
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. </h2>
 
 <pre>
 void add_delta(double *a, double delta) {
@@ -164,12 +300,6 @@ add_delta:
         movups     XMMWORD PTR [rdi], xmm0
         ret     
 </pre>
-
-
-
-<p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
-
 
 
 <p><a name="k07"></a></p>
@@ -307,15 +437,45 @@ bez nutnosti klonovat celý (dnes již poměrně rozsáhlý) repositář:</p>
 <tr><td>52</td><td>array_sum_4_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_4_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_4_non_vect.asm</a></td></tr>
 <tr><td>53</td><td>array_sum_4_vect.asm</td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_4_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_4_vect.asm</a></td></tr>
 <tr><td>54</td><td>array_sum_8.c</td><td>součet všech prvků v&nbsp;poli s&nbsp;osmi prvky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_8.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_8.c</a></td></tr>
+<tr><td>55</td><td>array_sum_8_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_8_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_8_non_vect.asm</a></td></tr>
+<tr><td>56</td><td>array_sum_8_vect.asm</td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_8_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_8_vect.asm</a></td></tr>
+<tr><td>57</td><td>array_sum_100.c</td><td>součet všech prvků polí se 100 prvky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_100.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_100.c</a></td></tr>
+<tr><td>58</td><td>array_sum_100_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_100_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_100_non_vect.asm</a></td></tr>
+<tr><td>59</td><td>array_sum_100_vect.asm</td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_100_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_sum_100_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>60</td><td>find_max_4.c</td><td>vyhledání největšího prvku v&nbsp;poli se čtyřmi prvky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_4.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_4.c</a></td></tr>
+<tr><td>61</td><td>find_max_4_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_4_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_4_non_vect.asm</a></td></tr>
+<tr><td>62</td><td>find_max_4_vect.asm</td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_4_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_4_vect.asm</a></td></tr>
+<tr><td>63</td><td>find_max_8.c</td><td>vyhledání největšího prvku v&nbsp;poli s&nbsp;osmi prvky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_8.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_8.c</a></td></tr>
+<tr><td>64</td><td>find_max_8_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_8_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_8_non_vect.asm</a></td></tr>
+<tr><td>65</td><td>find_max_8_vect.asm</td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_8_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_8_vect.asm</a></td></tr>
+<tr><td>66</td><td>find_max_100.c</td><td>vyhledání největšího prvku v&nbsp;poli se 100 prvky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_100.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_100.c</a></td></tr>
+<tr><td>67</td><td>find_max_100_non_vect.asm</td><td>výsledek překladu se zákazem vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_100_non_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_100_non_vect.asm</a></td></tr>
+<tr><td>68</td><td>find_max_100_vect.asm</td><td>výsledek překladu s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_100_vect.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/find_max_100_vect.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>69</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>70</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 </table>
 
-array_clear_32_bytes.asm
 array_clear_32_bytes.c
-array_clear_8_doubles.asm
-array_clear_8_doubles.c
+array_clear_32_bytes.asm
+array_clear_64_bytes.c
+array_clear_64_bytes.asm
+array_clear_128_bytes.c
+array_clear_128_bytes.asm
 
-add_delta_16_bytes.asm
+array_clear_8_doubles.c
+array_clear_8_doubles.asm
+array_clear_16_doubles.c
+array_clear_16_doubles.asm
+
 add_delta_16_bytes.c
+add_delta_16_bytes.asm
+add_delta_32_bytes.c
+add_delta_32_bytes.asm
+add_delta_64_bytes.c
+add_delta_64_bytes.asm
+
 add_delta_8_doubles.asm
 add_delta_8_doubles.c
 
