@@ -41,11 +41,11 @@
 <p><a href="#k02">2. Vynulování pole s&nbsp;prvky typu <i>byte</i></a></p>
 <p><a href="#k03">3. Vynulování pole s&nbsp;prvky typu <i>double</i></a></p>
 <p><a href="#k04">4. Přičtení konstanty ke všem prvkům pole typu <i>byte</i></a></p>
-<p><a href="#k05">*** 5. Vysvětlení postupu výpočtu</a></p>
-<p><a href="#k06">*** 6. Přičtení konstanty ke všem prvkům pole typu <i>double</i></a></p>
-<p><a href="#k07">*** 7. </a></p>
-<p><a href="#k08">*** 8. </a></p>
-<p><a href="#k09">*** 9. </a></p>
+<p><a href="#k05">5. Vysvětlení postupu výpočtu</a></p>
+<p><a href="#k06">6. Přičtení konstanty ke všem prvkům pole typu <i>double</i></a></p>
+<p><a href="#k07">7. Součet dvou polí stejné délky s&nbsp;prvky typu <i>byte</i></a></p>
+<p><a href="#k08">8. Výsledek překladu s&nbsp;povolenou autovektorizací</a></p>
+<p><a href="#k09">9. Zajištění, že předané ukazatele budou ukazovat na odlišná pole</a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
 <p><a href="#k12">*** 12. </a></p>
@@ -277,30 +277,131 @@ k&nbsp;vygenerování nerozbalené programové smyčky:</p>
 instrukcí, která vede k&nbsp;tomu, že se původně jedna jednobajtová konstanta
 rozkopíruje celkem 16&times; do celého vektoru, což ve výsledku umožní provést
 vektorový součet instrukcí <strong>PADDB</strong>. Jedná se o zajímavou
-techniku, kterou si vysvětlíme po jednotlivých instrukcích:</p>
+techniku, kterou si vysvětlíme po jednotlivých instrukcích.</p>
+
+<p>Nejprve do registru XMM1 načteme vektor s&nbsp;hodnotami od 0 do 15 (což se
+dobře vizualizuje):</p>
 
 <pre>
+0F 0E 0D 0C 0B 0A 09 08 07 06 05 04 03 02 01 00
 </pre>
 
-<p>Výsledný program (přeložitelný pro Linux), který provede součet a zobrazí
+<p>Následně dvojicí instrukcí zajistíme zápis konstanty do nejnižšího bitu
+registru XMM0:</p>
+
+<pre>
+        mov esi, 1                   <i>; konstanta, kterou budeme pricitat</i>
+        movd xmm0, esi               <i>; nacteni konstanty do druheho vektoru</i>
+</pre>
+
+<p>Výsledek bude vypadat takto:</p>
+
+<pre>
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01
+</pre>
+
+<p>V&nbsp;dalších krocích musíme onen jediný bajt na konci registru XMM0
+rozkopírovat do všech ostatních patnácti bajtů. Instrukce
+<strong>PUNPCKLBW</strong> provede první krok &ndash; zkopírování do druhého
+prvku (ve skutečnosti se překopírují všechny sudé prvky, ovšem ty jsou nulové a
+nezajímaí nás):</p>
+
+<pre>
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 01
+</pre>
+
+<p>Nyní tedy registr XMM0 obsahuje ve spodních dvou bajtech totožnou konstantu.
+Instrukcí <strong>PUNPCKLWD</strong> (ta pracuje po slovech, nikoli po bajtech)
+provedeme kopii nejnižších dvou prvků do prvků s&nbsp;indexy 2 a 3 (indexuje se
+od nuly). Opět platí, že podobná operace proběhne i pro vyšší prvky, ale ty nás
+nezajímají:</p>
+
+<pre>
+00 00 00 00 00 00 00 00 00 00 00 00 01 01 01 01
+</pre>
+
+<p>Již se blížíme ke konci, protože nyní spodní dvojslovo obsahuje konstantu,
+kterou musíme rozkopírovat do dalších třech dvojslov. A to lze provést jedinou
+instrukcí <strong>PSHUFD</strong>. Ta je sice určena pro hodnoty typu
+<i>float/single</i>, ovšem jedná se o pouhé kopie bez dalších FP manipulací.
+Výsledkem bude vektor:</p>
+
+<pre>
+01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+</pre>
+
+<p>Nyní nám již zbývá provést instrukci <strong>PADDB</strong>, která paralelně
+sečte všech šestnáct dvojic prvků a výsledkem bude vektor:</p>
+
+<pre>
+10 0F 0E 0D 0C 0B 0A 09 08 07 06 05 04 03 02 01
+</pre>
+
+<p>Úplný program (přeložitelný pro Linux), který provede součet a zobrazí
 přitom všechny mezivýsledky, vypadá takto:</p>
 
 <pre>
+[bits 32]
+&nbsp; 
+%include "linux_macros.asm"
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+section .data
+&nbsp;
+<strong>hex_message</strong>:
+         times 8 db '?'
+         db ' '
+         hex_message_length equ $ - hex_message
+&nbsp;
+align 16
+<strong>sse_val_1</strong> db 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+section .bss
+sse_tmp resb 16
+&nbsp;
+&nbsp;
+<i>;-----------------------------------------------------------------------------</i>
+section .text
+        global _start                <i>; tento symbol ma byt dostupny i linkeru</i>
+&nbsp;
+<strong>_start</strong>:
+        mov ebx, sse_val_1
+        movdqu xmm1, [ebx]           <i>; nacteni puvodniho vektoru do registru XMM0</i>
+        print_sse_reg_as_hex xmm1    <i>; tisk hodnoty registru XMM0</i>
+&nbsp;
+        mov esi, 1                   <i>; konstanta, kterou budeme pricitat</i>
+        movd xmm0, esi               <i>; nacteni konstanty do druheho vektoru</i>
+        print_sse_reg_as_hex xmm0    <i>; tisk hodnoty registru XMM0</i>
+&nbsp;
+        punpcklbw xmm0, xmm0         <i>; prolozeni hodnot, zdrojem je jediny registr</i>
+        print_sse_reg_as_hex xmm0    <i>; tisk hodnoty registru XMM0</i>
+&nbsp;
+        punpcklwd xmm0, xmm0         <i>; prolozeni hodnot, zdrojem je jediny registr</i>
+        print_sse_reg_as_hex xmm0    <i>; tisk hodnoty registru XMM0</i>
+&nbsp;
+        pshufd xmm0, xmm0, 0         <i>; rozkopirovani spodnich osmi bajtu do celeho vektoru</i>
+        print_sse_reg_as_hex xmm0    <i>; tisk hodnoty registru XMM0</i>
+&nbsp;
+        paddb xmm0, xmm1             <i>; vektorovy soucet</i>
+        print_sse_reg_as_hex xmm0    <i>; tisk hodnoty registru XMM0</i>
+&nbsp;
+        exit                         <i>; ukonceni procesu</i>
+&nbsp;
+&nbsp;
+%include "hex2string.asm"
 </pre>
-
-0F0E0D0C 0B0A0908 07060504 03020100
-00000000 00000000 00000000 00000001
-00000000 00000000 00000000 00000101
-00000000 00000000 00000000 01010101
-01010101 01010101 01010101 01010101
-100F0E0D 0C0B0A09 08070605 04030201
 
 
 
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Přičtení konstanty ke všem prvkům pole typu <i>double</i></h2>
 
-<p></p>
+<p>Pro úplnost si ještě ukažme, jakým způsobem se přeloží funkce, která bude
+přičítat konstantu ke všem prvkům pole typu <i>double</i>. Kvůli použití tohoto
+datového typu opět překladač &bdquo;donutíme&ldquo; k&nbsp;tomu, aby používal
+instrukce z&nbsp;instrukční sady SSE2 a nikoli z&nbsp;původní sady SSE. Nejprve
+provedeme operaci přičtení konstanty ke všem prvkům pole o délce 4 prvky:</p>
 
 <pre>
 void <strong>add_delta</strong>(double *a, double delta) {
@@ -312,7 +413,13 @@ void <strong>add_delta</strong>(double *a, double delta) {
 }
 </pre>
 
-<p></p>
+<p>Při pohledu na přeložený kód je zřejmé, že se nejdříve instrukcí
+<strong>UNPCKLPD</strong> (oba operandy jsou stejné) provede kopie spodního
+prvku dvouprvkového vektoru do horního prvku. Po provedení této instrukce tedy
+budou v&nbsp;registru XMM0 uloženy dvě stejné hodnoty typu <i>double</i>.
+V&nbsp;dalších krocích je již možné provést vektorový součet instrukcí
+<strong>ADDPD</strong> &ndash; každá instrukce sečte vždy dvojice prvků
+z&nbsp;prvního a druhého pole:</p>
 
 <pre>
 <strong>add_delta</strong>:
@@ -326,7 +433,8 @@ void <strong>add_delta</strong>(double *a, double delta) {
         ret     
 </pre>
 
-<p></p>
+<p>Zkusme si nyní zvětšit obě pole na délku osmi prvků, abychom zjistili, od
+jaké meze se překladač uchýlí k&nbsp;vygenerování programové smyčky:</p>
 
 <pre>
 void <strong>add_delta</strong>(double *a, double delta) {
@@ -338,7 +446,10 @@ void <strong>add_delta</strong>(double *a, double delta) {
 }
 </pre>
 
-<p></p>
+<p>Nyní je z&nbsp;výsledného kódu patrné, že se skutečně vygenerovala
+programová smyčka, která v&nbsp;každé iteraci sečte dvojici hodnot typu
+<i>double</i>. Konstanta (resp.&nbsp;dvojice konstant) pro přičtení je
+pochopitelně vypočtena ještě před vstupem do smyčky:</p>
 
 <pre>
 <strong>add_delta</strong>:
@@ -359,17 +470,142 @@ void <strong>add_delta</strong>(double *a, double delta) {
 <p><a name="k07"></a></p>
 <h2 id="k07">7. Součet dvou polí stejné délky s&nbsp;prvky typu <i>byte</i></h2>
 
+<p>V&nbsp;dalším příkladu se pokusíme o provedení součtu prvků dvou polí stejné
+délky. Pole (resp.&nbsp;přesněji řečeno jejich prvky) budou typu <i>byte</i>,
+takže překladač pravděpodobně použije rozšířené operace MMX &ndash; tedy
+operace, které již existovaly v&nbsp;instrukční sadě MMX, ale díky SSE/SSE2 je
+je možné použít i pro vektory obsahující šestnáct hodnot a nikoli pouze osm
+hodnot.</p>
+
+<p>Součet dvou polí, z&nbsp;nichž každé obsahuje šestnáct prvků typu
+<i>byte</i>:</p>
+
+<pre>
+void <strong>add_arrays</strong>(unsigned char *a, unsigned char *b) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE; i++) {
+        a[i] += b[i];
+    }
+}
+</pre>
+
+<p>Součet dvou polí, z&nbsp;nichž každé obsahuje 32 prvků typu <i>byte</i>:</p>
+
+<pre>
+void add_arrays(unsigned char *a, unsigned char *b) {
+    #define SIZE 32
+    int i;
+    for (i=0; i&lt;SIZE; i++) {
+        a[i] += b[i];
+    }
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že se jedná o jednoduché
+programové smyčky, ve kterých se žádným způsobem nepokoušíme o nějaké
+optimalizace.</div></p>
+
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. Zajištění, že předané ukazatele budou ukazovat na odlišná pole</h2>
+<h2 id="k08">8. Výsledek překladu s&nbsp;povolenou autovektorizací</h2>
+
+<p>Vzhledem k&nbsp;tomu, že součet dvou vektorů se šestnácti prvky typu
+<i>byte</i> je možné realizovat jedinou instrukcí <strong>PADDB</strong>, by se
+mohlo zdát, že se předchozí funkce přeloží do několika instrukcí: načtení
+vektorů, vektorový součet, uložení výsledku. Ve skutečnosti to není tak
+jednoduché, protože překladač musí počítat s&nbsp;tím, že se obě pole mohou
+překrývat. A právě tato větev je realizována ve smyčce začínající lokálním
+návěštím (<i>label</i>) <strong>.L4</strong>:</p>
+
+<pre>
+<strong>add_arrays</strong>:
+        lea     rdx, [rsi+1]
+        mov     rax, rdi
+        sub     rax, rdx
+        cmp     rax, 14
+        jbe     .L4
+        movdqu  xmm0, XMMWORD PTR [rsi]
+        movdqu  xmm1, XMMWORD PTR [rdi]
+        paddb   xmm0, xmm1
+        movups  XMMWORD PTR [rdi], xmm0
+        ret     
+&nbsp;
+.L4:
+        xor     eax, eax
+.L2:
+        movzx   edx, BYTE PTR [rsi+rax]
+        add     BYTE PTR [rdi+rax], dl
+        add     rax, 1
+        cmp     rax, 16
+        jne     .L2
+        ret     
+</pre>
+
+<p>Podobně je tomu i u funkce, která má sečíst 32prvková pole s&nbsp;prvky typu
+<i>byte</i>:</p>
+
+<pre>
+<strong>add_arrays</strong>:
+        lea     rdx, [rsi+1]
+        mov     rax, rdi
+        sub     rax, rdx
+        cmp     rax, 14
+        jbe     .L4
+        movdqu  xmm1, XMMWORD PTR [rsi]
+        movdqu  xmm0, XMMWORD PTR [rdi]
+        movdqu  xmm2, XMMWORD PTR [rdi+16]
+        paddb   xmm0, xmm1
+        movups  XMMWORD PTR [rdi], xmm0
+        movdqu  xmm0, XMMWORD PTR [rsi+16]
+        paddb   xmm0, xmm2
+        movups  XMMWORD PTR [rdi+16], xmm0
+        ret     
+.L4:
+        xor     eax, eax
+.L2:
+        movzx   edx, BYTE PTR [rsi+rax]
+        add     BYTE PTR [rdi+rax], dl
+        add     rax, 1
+        cmp     rax, 32
+        jne     .L2
+        ret     
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: proč tomu tak je zjistíte snadno, pokud
+tyto funkce zavoláte tak, že jim předáte ukazatel na nějaké pole a ukazatel o
+jedničku vyšší.</div></p>
 
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. Vyplatí se přistupovat k&nbsp;prvkům polí od nejnižšího nebo nejvyššího indexu?</h2>
+<h2 id="k09">9. Zajištění, že předané ukazatele budou ukazovat na odlišná pole</h2>
 
-<p></p>
+<p>Jakým způsobem lze eliminovat přidané programové smyčky, již víme &ndash;
+musíme překladači jazyka C oznámit, že se pole nebudou překrývat. To se provede
+klíčovým slovem <strong>restrict</strong>, které je sice poněkud neznámé, ale o
+to důležitější:</p>
+
+<pre>
+void <strong>add_arrays</strong>(unsigned char *<u>restrict</u> a, unsigned char *<u>restrict</u> b) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE; i++) {
+        a[i] += b[i];
+    }
+}
+</pre>
+
+<pre>
+void <strong>add_arrays</strong>(unsigned char *<u>restrict</u> a, unsigned char *<u>restrict</u> b) {
+    #define SIZE 32
+    int i;
+    for (i=0; i&lt;SIZE; i++) {
+        a[i] += b[i];
+    }
+}
+</pre>
 
 
 
@@ -379,7 +615,7 @@ void <strong>add_delta</strong>(double *a, double delta) {
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Vyplatí se přistupovat k&nbsp;prvkům polí od nejnižšího nebo nejvyššího indexu?</h2>
 
 
 
@@ -533,27 +769,21 @@ bez nutnosti klonovat celý (dnes již poměrně rozsáhlý) repositář:</p>
 <tr><td>87</td><td>add_delta_8_doubles.c</td><td>přičtení konstanty ke všem prvkům pole typu <i>double</i> o délce osmi prvků</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.c</a></td></tr>
 <tr><td>88</td><td>add_delta_8_doubles.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>89</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>90</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>91</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>92</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>93</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>94</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>95</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>96</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>89</td><td>add_arrays_16_bytes.c           </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.c</a></td></tr>
+<tr><td>90</td><td>add_arrays_16_bytes.asm         </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.asm</a></td></tr>
+<tr><td>91</td><td>add_arrays_32_bytes.c           </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.c</a></td></tr>
+<tr><td>92</td><td>add_arrays_32_bytes.asm         </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.asm</a></td></tr>
+<tr><td>93</td><td>add_arrays_16_bytes_restrict.c  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.c</a></td></tr>
+<tr><td>94</td><td>add_arrays_16_bytes_restrict.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.asm</a></td></tr>
+<tr><td>95</td><td>add_arrays_32_bytes_restrict.c  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.c</a></td></tr>
+<tr><td>96</td><td>add_arrays_32_bytes_restrict.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>97</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 <tr><td>98</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 <tr><td>99</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>100</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 </table>
 
-add_arrays_16_bytes.asm
-add_arrays_16_bytes.c
-add_arrays_16_bytes_restrict.asm
-add_arrays_16_bytes_restrict.c
-add_arrays_32_bytes.asm
-add_arrays_32_bytes.c
-add_arrays_32_bytes_restrict.asm
-add_arrays_32_bytes_restrict.c
 add_arrays_restrict_size_16_backward.asm
 add_arrays_restrict_size_16_backward.c
 add_arrays_size_16_backward.asm
