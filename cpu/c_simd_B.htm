@@ -37,7 +37,7 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</a></p>
+<p><a href="#k01">1. Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</a></p>
 <p><a href="#k02">2. Vynulování pole s&nbsp;prvky typu <i>byte</i></a></p>
 <p><a href="#k03">3. Vynulování pole s&nbsp;prvky typu <i>double</i></a></p>
 <p><a href="#k04">4. Přičtení konstanty ke všem prvkům pole typu <i>byte</i></a></p>
@@ -46,11 +46,11 @@
 <p><a href="#k07">7. Součet dvou polí stejné délky s&nbsp;prvky typu <i>byte</i></a></p>
 <p><a href="#k08">8. Výsledek překladu s&nbsp;povolenou autovektorizací</a></p>
 <p><a href="#k09">9. Zajištění, že předané ukazatele budou ukazovat na odlišná pole</a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
-<p><a href="#k13">*** 13. </a></p>
-<p><a href="#k14">*** 14. </a></p>
+<p><a href="#k10">10. Výsledek překladu s&nbsp;povolenou autovektorizací</a></p>
+<p><a href="#k11">11. Vyplatí se přistupovat k&nbsp;prvkům polí od nejnižšího nebo nejvyššího indexu?</a></p>
+<p><a href="#k12">12. Vynulování prvků pole od posledního prvku směrem k&nbsp;prvku prvnímu</a></p>
+<p><a href="#k13">13. Součet prvků dvou polí: varianta s&nbsp;obecnými ukazateli</a></p>
+<p><a href="#k14">14. Součet prvků polí: varianta s&nbsp;nepřekrývajícími se ukazateli</a></p>
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
@@ -63,7 +63,27 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Instrukční sady SIMD a automatické vektorizace prováděné překladačem GCC (3)</h2>
 
-<p></p>
+<p>Na úvodní dvojici článků o instrukčních sadách SIMD a automatické
+vektorizaci kódu prováděné překladačem GCC [<a
+href="https://www.root.cz/clanky/instrukcni-sady-simd-a-automaticke-vektorizace-provadene-prekladacem-gcc/">1</a>],
+[<a
+href="https://www.root.cz/clanky/instrukcni-sady-simd-a-automaticke-vektorizace-provadene-prekladacem-gcc-2/">2</a>]
+dnes navážeme. Zabývat se totiž budeme vektorizací programových smyček,
+v&nbsp;nichž se zpracovávají pole (vektory) s&nbsp;prvky, jejichž typy jsou
+odlišné od FP typu <i>single</i>. To vlastně znamená, že namísto instrukční
+sady SSE bude nutné, aby překladač vygeneroval instrukce ze sady SSE2 atd.
+Ovšem to je pouhé rozšíření schopností, o nichž jsme se již zmiňovali.</p>
+
+<p>Zajímavé je, že dnešní verze překladače GCC dokážou vektorizovat i
+složitější programové konstrukce, například přístup k&nbsp;polím
+s&nbsp;přeskakováním prvků (<i>stride</i>). V&nbsp;praxi se totiž poměrně často
+setkáme s&nbsp;tím, že se z&nbsp;pole čte (nebo do něj zapisuje) každý druhý,
+třetí resp.&nbsp;obecně n-tý prvek. A i takové varianty programových smyček je
+nutné optimalizovat. Zmínit se musíme ještě o jedné vlastnosti automatických
+vektorizací kódu &ndash; zpracování programových smyček, ve kterých se
+k&nbsp;prvkům pole přistupuje sice sekvenčně, ale nikoli od prvku prvního, ale
+naopak od prvku posledního (což je obecně špatný přístup). Uvidíme zda a jakým
+způsobem vektorizace dopadne v&nbsp;těchto případech.</p>
 
 
 
@@ -610,42 +630,270 @@ void <strong>add_arrays</strong>(unsigned char *<u>restrict</u> a, unsigned char
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Výsledek překladu s&nbsp;povolenou autovektorizací</h2>
+
+<p>Opět se podívejme na to, jak dopadne překlad s&nbsp;autovektorizací obou
+funkcí, jejichž zdrojové kódy byly ukázány <a href="#k09">v&nbsp;předchozí
+kapitole</a>. Překladač má nyní jistotu, že oba ukazatele předávané do funkcí
+budou odlišné a bude tedy moci ve vygenerovaném kódu odstranit podmínky a větev
+určenou právě pro tyto případy. I z&nbsp;tohoto důvodu se součet šestnácti
+prvků typu byte provede jedinou instrukcí <strong>PADDB</strong>:</p>
+
+<pre>
+<strong>add_arrays</strong>:
+        movdqu  xmm1, XMMWORD PTR [rdi]
+        movdqu  xmm0, XMMWORD PTR [rsi]
+        paddb   xmm0, xmm1
+        movups  XMMWORD PTR [rdi], xmm0
+        ret     
+</pre>
+
+<p>A varianta sčítající 32 prvků typu byte je stále realizována bez (obecně
+pomalé) programové smyčky, protože výpočet byl rozbalen. Pokud pomineme přesuny
+operandů mezi pamětí a registry, bude celý součet realizován dvojicí funkcí
+<strong>PADDB</strong>:</p>
+
+<pre>
+<strong>add_arrays</strong>:
+        movdqu  xmm0, XMMWORD PTR [rdi]
+        movdqu  xmm1, XMMWORD PTR [rsi]
+        movdqu  xmm2, XMMWORD PTR [rdi+16]
+        paddb   xmm0, xmm1
+        movups  XMMWORD PTR [rdi], xmm0
+        movdqu  xmm0, XMMWORD PTR [rsi+16]
+        paddb   xmm0, xmm2
+        movups  XMMWORD PTR [rdi+16], xmm0
+        ret     
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: to ovšem neznamená, že by předchozí kód
+vytvořený překladačem byl ideální a že ho nelze dále urychlit. Překladač totiž
+neví, jak jsou pole zarovnána a proto musí vygenerovat instrukce
+<strong>MOVDQU</strong> a <strong>MOVUPS</strong>. Pokud by ovšem věděl, že
+pole jsou zarovnána na násobky šestnácti bajtů, bude moci využít instrukce
+<strong>MOVDQA</strong> a <strong>MOVAPS</strong>, které mohou být mnohem
+rychlejší (jediný přenos po sběrnici).</div></p>
 
 
 
 <p><a name="k11"></a></p>
 <h2 id="k11">11. Vyplatí se přistupovat k&nbsp;prvkům polí od nejnižšího nebo nejvyššího indexu?</h2>
 
+<p>Většina programových smyček, které ve zdrojových kódech popisují nějaký
+pravidelný průchod polem, zpracovává pole od prvního prvku (s&nbsp;indexem 0)
+až k&nbsp;prvku poslednímu. Ovšem někdy se můžeme setkat i s&nbsp;opačným
+průchodem polem. Ten je realizován buď z&nbsp;toho důvodu, že to dobře odpovídá
+řešenému problému (nalezení posledního prvku odpovídajícího nějaké podmínce
+atd.) nebo si vývojář zvolil druhý typ smyčky na základě předpokladu, že je
+vlastně jedno, zda se polem prochází směrem dopředu nebo zezadu. V&nbsp;praxi
+se ovšem oba přístupy liší a mají vliv na výkon celé aplikace. V&nbsp;první
+řadě se liší způsob využití vyrovnávacích pamětí a taktéž (před)načtení
+jednotlivých stránek paměti v&nbsp;případě, že se využívá stránkování
+(<i>paging</i>). To je sice zajímavá problematika, ale vybočuje z&nbsp;tématu
+dnešního článku.</p>
+
+<p>Nás dnes bude primárně zajímat to, zda a jak dokáže autovektorizační
+technika přeložit a optimalizovat zdrojové kódy, v&nbsp;nichž se prochází polem
+opačným směrem.</p>
+
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Vynulování prvků pole od posledního prvku směrem k&nbsp;prvku prvnímu</h2>
+
+<p>Začneme jednoduchým příkladem &ndash; vynulováním prvků pole v&nbsp;opačném
+pořadí:</p>
+
+<pre>
+void <strong>clear</strong>(float *a) {
+    #define SIZE 8
+    int i;
+    for (i=SIZE-1; i&gt;=0; i--) {
+        a[i] = 0.0;
+    }
+}
+</pre>
+
+<p>Překlad do assembleru dopadne následovně:</p>
+
+<pre>
+<strong>clear</strong>:
+        pxor    xmm0, xmm0
+        movups  XMMWORD PTR [rdi], xmm0
+        movups  XMMWORD PTR [rdi+16], xmm0
+        ret     
+</pre>
+
+<p>V&nbsp;tomto případě je tedy zcela jedno, jak je smyčka napsána; navíc se
+v&nbsp;assembleru prvky nulují v&nbsp;pořadí od prvního směrem
+k&nbsp;poslednímu prvku.</p>
 
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Součet prvků dvou polí: varianta s&nbsp;obecnými ukazateli</h2>
+
+<p>Další programový kód provádí součet odpovídajících si prvků dvou polí. Tato
+varianta prozatím používá obecné ukazatele, což překladači neumožní provést
+všechny možné optimalizace:</p>
+
+<pre>
+void <strong>add_delta</strong>(float *a, float *b) {
+    #define SIZE 16
+    int i;
+    for (i=SIZE-1; i&gt;=0; i--) {
+        a[i] += b[i];
+    }
+}
+</pre>
+
+<p>Výsledek:</p>
+
+<pre>
+<strong>add_delta</strong>:
+        mov     rax, rdi
+        sub     rax, rsi
+        add     rax, 12
+        cmp     rax, 8
+        jbe     .L5
+        mov     eax, 48
+.L3:
+        movups  xmm0, XMMWORD PTR [rdi+rax]
+        movups  xmm1, XMMWORD PTR [rsi+rax]
+        shufps  xmm0, xmm0, 27
+        shufps  xmm1, xmm1, 27
+        addps   xmm0, xmm1
+        shufps  xmm0, xmm0, 27
+        movups  XMMWORD PTR [rdi+rax], xmm0
+        sub     rax, 16
+        cmp     rax, -16
+        jne     .L3
+        ret     
+.L5:
+        mov     eax, 60
+.L2:
+        movss   xmm0, DWORD PTR [rdi+rax]
+        addss   xmm0, DWORD PTR [rsi+rax]
+        movss   DWORD PTR [rdi+rax], xmm0
+        sub     rax, 4
+        cmp     rax, -4
+        jne     .L2
+        ret     
+</pre>
+
+<p>Povšimněte si, že jsou vlastně realizovány dvě větve. První z&nbsp;nich je
+vektorizovaná a prochází polem opačným směrem:</p>
+
+<pre>
+.L3:
+        movups  xmm0, XMMWORD PTR [rdi+rax]
+        movups  xmm1, XMMWORD PTR [rsi+rax]
+        shufps  xmm0, xmm0, 27
+        shufps  xmm1, xmm1, 27
+        addps   xmm0, xmm1
+        shufps  xmm0, xmm0, 27
+        movups  XMMWORD PTR [rdi+rax], xmm0
+        sub     rax, 16
+        cmp     rax, -16
+        jne     .L3
+</pre>
+
+<p>Druhá větev vektorizovaná není a realizuje se v&nbsp;ní výpočet pro překryv
+polí. Ovšem i zde se polem prochází opačným směrem:</p>
+
+<pre>
+.L2:
+        movss   xmm0, DWORD PTR [rdi+rax]
+        addss   xmm0, DWORD PTR [rsi+rax]
+        movss   DWORD PTR [rdi+rax], xmm0
+        sub     rax, 4
+        cmp     rax, -4
+        jne     .L2
+        ret     
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: při porovnání s&nbsp;původní verzí
+smyčky vlastně nedošlo k&nbsp;větším změnám a pokud nebudeme uvažovat horší
+využití cache či stránek, budou i výsledné doby běhu podobné.</div></p>
 
 
 
 <p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
+<h2 id="k14">14. Součet prvků polí: varianta s&nbsp;nepřekrývajícími se ukazateli</h2>
+
+<p>Zajímavější bude zjistit způsob překladu funkce, v&nbsp;níž je pomocí
+klíčového slova <strong>restrict</strong> umožněno překladači provádět další
+optimalizace &ndash; ignorovat možnost překryvu:</p>
+
+<pre>
+void <strong>add_arrays</strong>(float *<u>restrict</u> a, float *<u>restrict</u> b) {
+    #define SIZE 16
+    int i;
+    for (i=SIZE-1; i&gt;=0; i--) {
+        a[i] += b[i];
+    }
+}
+</pre>
+
+<p>Z&nbsp;přeloženého kódu je patrné, že i nyní se polem skutečně prochází
+směrem od posledního prvku směrem k&nbsp;prvku prvnímu:</p>
+
+<pre>
+<strong>add_arrays</strong>:
+        mov     eax, 48
+.L2:
+        movups  xmm0, XMMWORD PTR [rdi+rax]
+        movups  xmm1, XMMWORD PTR [rsi+rax]
+        shufps  xmm0, xmm0, 27
+        shufps  xmm1, xmm1, 27
+        addps   xmm0, xmm1
+        shufps  xmm0, xmm0, 27
+        movups  XMMWORD PTR [rdi+rax], xmm0
+        sub     rax, 16
+        cmp     rax, -16
+        jne     .L2
+        ret     
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: zajímavá je už samotná existence
+programové smyčky v&nbsp;assembleru. Varianta procházející polem od prvního
+prvku totiž byla přeložena odlišně &ndash; bez přeskládání prvků pomocí
+<strong>SHUFPS</strong>. Předchozí výsledek tedy bude pomalejší:</div></p>
+
+<pre>
+<strong>add_arrays</strong>:
+        xor     eax, eax
+.L2:
+        movups  xmm0, XMMWORD PTR [rdi+rax]
+        movups  xmm1, XMMWORD PTR [rsi+rax]
+        addps   xmm0, xmm1
+        movups  XMMWORD PTR [rdi+rax], xmm0
+        add     rax, 16
+        cmp     rax, 64
+        jne     .L2
+        ret     
+</pre>
 
 
 
 <p><a name="k15"></a></p>
 <h2 id="k15">15. </h2>
 
+<p></p>
+
 
 
 <p><a name="k16"></a></p>
 <h2 id="k16">16. </h2>
 
+<p></p>
+
 
 
 <p><a name="k17"></a></p>
 <h2 id="k17">17. </h2>
+
+<p></p>
 
 
 
@@ -782,16 +1030,20 @@ bez nutnosti klonovat celý (dnes již poměrně rozsáhlý) repositář:</p>
 <tr><td>98</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 <tr><td>99</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 <tr><td>100</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>101</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>102</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>103</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td>104</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
 </table>
 
-add_arrays_restrict_size_16_backward.asm
-add_arrays_restrict_size_16_backward.c
-add_arrays_size_16_backward.asm
-add_arrays_size_16_backward.c
-array_clear_size_8_backward.asm
 array_clear_size_8_backward.c
-get_color_component.asm
+array_clear_size_8_backward.asm
+add_arrays_size_16_backward.c
+add_arrays_size_16_backward.asm
+add_arrays_restrict_size_16_backward.c
+add_arrays_restrict_size_16_backward.asm
 get_color_component.c
+get_color_component.asm
 
 
 
@@ -1101,6 +1353,10 @@ Intel corporation, 1996</li>
 
 <li>Can any one explain why dot product is used in neural network and what is the intitutive thought of dot product<br />
 <a href="https://stats.stackexchange.com/questions/291680/can-any-one-explain-why-dot-product-is-used-in-neural-network-and-what-is-the-in">https://stats.stackexchange.com/questions/291680/can-any-one-explain-why-dot-product-is-used-in-neural-network-and-what-is-the-in</a>
+</li>
+
+<li>Aligned and unaligned memory accesses?<br />
+<a href="https://stackoverflow.com/questions/1063809/aligned-and-unaligned-memory-accesses">https://stackoverflow.com/questions/1063809/aligned-and-unaligned-memory-accesses</a>
 </li>
 
 </ol>
