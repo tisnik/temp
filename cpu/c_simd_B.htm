@@ -51,10 +51,10 @@
 <p><a href="#k12">12. Vynulování prvků pole od posledního prvku směrem k&nbsp;prvku prvnímu</a></p>
 <p><a href="#k13">13. Součet prvků dvou polí: varianta s&nbsp;obecnými ukazateli</a></p>
 <p><a href="#k14">14. Součet prvků polí: varianta s&nbsp;nepřekrývajícími se ukazateli</a></p>
-<p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
-<p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k15">15. Přístup k&nbsp;prvkům polí s&nbsp;krokem rozdílným od jedné (<i>stride</i>)</a></p>
+<p><a href="#k16">*** 16. Překlad funkcí pro přístup k&nbsp;jedné barvové složce všech pixelů do assembleru</a></p>
+<p><a href="#k17">*** 17. Zápis jedné barvové složky do všech pixelů</a></p>
+<p><a href="#k18">18. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k19">19. Seznam všech předchozích částí tohoto seriálu a článků o SIMD instrukcích</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
@@ -877,23 +877,199 @@ prvku totiž byla přeložena odlišně &ndash; bez přeskládání prvků pomoc
 
 
 <p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<h2 id="k15">15. Přístup k&nbsp;prvkům polí s&nbsp;krokem rozdílným od jedné (<i>stride</i>)</h2>
 
-<p></p>
+<p>Poměrně často se v&nbsp;reálných aplikacích sice zpracovávají prvky nějakého
+pole, ovšem jedná se o každý <i>n</i>-tý prvek, přičemž hodnota <i>n</i> (krok)
+je v&nbsp;tomto případě větší než 1. Typickým příkladem takového problému je
+práce s&nbsp;rastrovými obrázky, v&nbsp;nichž je každý pixel uložen formou tří
+barvových složek RGB a každá tato složka má jeden bajt. Dalším příkladem je
+zpracování audio signálu se šestnáctibitovými vzorky uloženými tak, že každý
+lichý vzorek patří pravému kanálu a každý lichý vzorek kanálu levému (nebo
+naopak &ndash; na principu se však nic nemění). A našly by se i další podobné
+příklady.</p>
+
+<p>Překladač by tedy měl nějakým způsobem umět optimalizovat i tyto algoritmy.
+Mimochodem &ndash; krok <i>n</i>, který jsme zmiňovali v&nbsp;předchozím
+odstavci (byl nastaven na hodnotu 4 pro bitmapy a na hodnotu 2 pro audio
+signál) se nazývá <i>stride</i> a i příslušná autovektorizace se jmenuje
+<i>stride access autovectorization</i>.</p>
+
+<p>Povídejme se na jednoduchý příklad. Je v&nbsp;něm definována trojice funkcí,
+z&nbsp;nichž každá získá z&nbsp;pole o velikosti SIZE*3 obsahujícího barvy
+pixelů ve formátu RGB vždy jen jedinou barvovou složku. Celý kód jsem pro
+jednoduchost rozepsal do tří funkcí, i když by bylo možné napsat jen jedinou
+funkci, která by navíc akceptovala offset 0, 1 nebo 2 a namísto funkcí by se
+použila makra. Ovšem pro větší čitelnost výsledného assembleru použijeme
+definice tří samostatných funkcí, které se od sebe odlišují pouze konstantou
+použitou při výpočtu indexů do pole <strong>rgb</strong>:</p>
+
+<pre>
+void <strong>get_red_component</strong>(float *restrict red, float *restrict rgb) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE/3; i++) {
+        red[i] = rgb[3*i];
+    }
+}
+&nbsp;
+void <strong>get_green_component</strong>(float *restrict green, float *restrict rgb) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE/3; i++) {
+        green[i] = rgb[3*i+1];
+    }
+}
+&nbsp;
+void <strong>get_blue_component</strong>(float *restrict blue, float *restrict rgb) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE/3; i++) {
+        blue[i] = rgb[3*i+2];
+    }
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že u parametrů všech
+funkcí je použito klíčové slovo <strong>restrict</strong>, kterým překladači
+naznačujeme, že se nebude jednat o stejná pole nebo o překrývající se pole.
+Překladač tedy bude moci kód optimalizovat &ndash; vynechat specifickou větev
+pro překrývající se pole.</div></p>
 
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Překlad funkcí pro přístup k&nbsp;jedné barvové složce všech pixelů do assembleru</h2>
 
 <p></p>
+
+<pre>
+<strong>get_red_component</strong>:
+        movups  xmm0, XMMWORD PTR [rsi]
+        movups  xmm1, XMMWORD PTR [rsi+16]
+        shufps  xmm1, xmm0, 10
+        shufps  xmm0, xmm1, 140
+        movq    xmm1, QWORD PTR [rsi+32]
+        shufps  xmm1, xmm0, 165
+        shufps  xmm0, xmm1, 36
+        movups  XMMWORD PTR [rdi], xmm0
+        movss   xmm0, DWORD PTR [rsi+48]
+        movss   DWORD PTR [rdi+16], xmm0
+        ret     
+</pre>
+
+<pre>
+<strong>get_green_component</strong>:
+        movups  xmm0, XMMWORD PTR [rsi+4]
+        movups  xmm1, XMMWORD PTR [rsi+20]
+        shufps  xmm1, xmm0, 10
+        shufps  xmm0, xmm1, 140
+        movq    xmm1, QWORD PTR [rsi+36]
+        shufps  xmm1, xmm0, 165
+        shufps  xmm0, xmm1, 36
+        movups  XMMWORD PTR [rdi], xmm0
+        movss   xmm0, DWORD PTR [rsi+52]
+        movss   DWORD PTR [rdi+16], xmm0
+        ret     
+</pre>
+
+<pre>
+<strong>get_blue_component</strong>:
+        movups  xmm0, XMMWORD PTR [rsi+8]
+        movups  xmm1, XMMWORD PTR [rsi+24]
+        shufps  xmm1, xmm0, 10
+        shufps  xmm0, xmm1, 140
+        movq    xmm1, QWORD PTR [rsi+40]
+        shufps  xmm1, xmm0, 165
+        shufps  xmm0, xmm1, 36
+        movups  XMMWORD PTR [rdi], xmm0
+        movss   xmm0, DWORD PTR [rsi+56]
+        movss   DWORD PTR [rdi+16], xmm0
+        ret     
+</pre>
 
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<h2 id="k17">17. Zápis jedné barvové složky do všech pixelů</h2>
 
-<p></p>
+<p>Nyní zkusme namísto funkcí určených pro <i>čtení</i> jedné zvolené barvové
+složky všech pixelů naprogramovat funkce, které provádí <i>zápis</i>
+(modifikaci) jedné vybrané barvové složky u všech pixelů. Vstupem je tedy
+například sekvence hodnot červené barvové složky, která se má propsat do
+výsledného rastrového obrázku. Opět jsem pro větší čitelnost všechny tři funkce
+napsal samostatně:</p>
+
+<pre>
+void <strong>set_red_component</strong>(float *restrict red, float *restrict rgb) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE/3; i++) {
+        rgb[3*i] = red[i];
+    }
+}
+&nbsp;
+void <strong>set_green_component</strong>(float *restrict green, float *restrict rgb) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE/3; i++) {
+        rgb[3*i+1] = green[i];
+    }
+}
+&nbsp;
+void <strong>set_blue_component</strong>(float *restrict blue, float *restrict rgb) {
+    #define SIZE 16
+    int i;
+    for (i=0; i&lt;SIZE/3; i++) {
+        rgb[3*i+2] = blue[i];
+    }
+}
+</pre>
+
+<pre>
+<strong>set_red_component</strong>:
+        movss   xmm0, DWORD PTR [rdi+12]
+        movss   xmm1, DWORD PTR [rdi+8]
+        movss   xmm2, DWORD PTR [rdi+4]
+        movss   xmm3, DWORD PTR [rdi]
+        movss   DWORD PTR [rsi+36], xmm0
+        movss   xmm0, DWORD PTR [rdi+16]
+        movss   DWORD PTR [rsi], xmm3
+        movss   DWORD PTR [rsi+12], xmm2
+        movss   DWORD PTR [rsi+24], xmm1
+        movss   DWORD PTR [rsi+48], xmm0
+        ret     
+</pre>
+
+<pre>
+<strong>set_green_component</strong>:
+        movss   xmm0, DWORD PTR [rdi+12]
+        movss   xmm1, DWORD PTR [rdi+8]
+        movss   xmm2, DWORD PTR [rdi+4]
+        movss   xmm3, DWORD PTR [rdi]
+        movss   DWORD PTR [rsi+40], xmm0
+        movss   xmm0, DWORD PTR [rdi+16]
+        movss   DWORD PTR [rsi+4], xmm3
+        movss   DWORD PTR [rsi+16], xmm2
+        movss   DWORD PTR [rsi+28], xmm1
+        movss   DWORD PTR [rsi+52], xmm0
+        ret     
+</pre>
+
+<pre>
+<strong>set_blue_component</strong>:
+        movss   xmm0, DWORD PTR [rdi+12]
+        movss   xmm1, DWORD PTR [rdi+8]
+        movss   xmm2, DWORD PTR [rdi+4]
+        movss   xmm3, DWORD PTR [rdi]
+        movss   DWORD PTR [rsi+44], xmm0
+        movss   xmm0, DWORD PTR [rdi+16]
+        movss   DWORD PTR [rsi+8], xmm3
+        movss   DWORD PTR [rsi+20], xmm2
+        movss   DWORD PTR [rsi+32], xmm1
+        movss   DWORD PTR [rsi+56], xmm0
+        ret     
+</pre>
 
 
 
@@ -1017,33 +1193,27 @@ bez nutnosti klonovat celý (dnes již poměrně rozsáhlý) repositář:</p>
 <tr><td>87</td><td>add_delta_8_doubles.c</td><td>přičtení konstanty ke všem prvkům pole typu <i>double</i> o délce osmi prvků</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.c</a></td></tr>
 <tr><td>88</td><td>add_delta_8_doubles.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_delta_8_doubles.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>89</td><td>add_arrays_16_bytes.c           </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.c</a></td></tr>
-<tr><td>90</td><td>add_arrays_16_bytes.asm         </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.asm</a></td></tr>
-<tr><td>91</td><td>add_arrays_32_bytes.c           </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.c</a></td></tr>
-<tr><td>92</td><td>add_arrays_32_bytes.asm         </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.asm</a></td></tr>
-<tr><td>93</td><td>add_arrays_16_bytes_restrict.c  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.c</a></td></tr>
-<tr><td>94</td><td>add_arrays_16_bytes_restrict.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.asm</a></td></tr>
-<tr><td>95</td><td>add_arrays_32_bytes_restrict.c  </td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.c</a></td></tr>
-<tr><td>96</td><td>add_arrays_32_bytes_restrict.asm</td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.asm</a></td></tr>
+<tr><td>89</td><td>add_arrays_16_bytes.c</td><td>součet prvků dvou polí se 16 prvky typu <i>byte</i>: varianta s&nbsp;obecnými ukazateli</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.c</a></td></tr>
+<tr><td>90</td><td>add_arrays_16_bytes.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes.asm</a></td></tr>
+<tr><td>91</td><td>add_arrays_32_bytes.c</td><td>součet prvků dvou polí s&nbsp;32 prvky typu <i>byte</i>: varianta s&nbsp;obecnými ukazateli</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.c</a></td></tr>
+<tr><td>92</td><td>add_arrays_32_bytes.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes.asm</a></td></tr>
+<tr><td>93</td><td>add_arrays_16_bytes_restrict.c</td><td>součet prvků polí se 16 prvky typu <i>byte</i>: varianta s&nbsp;nepřekrývajícími se ukazateli</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.c</a></td></tr>
+<tr><td>94</td><td>add_arrays_16_bytes_restrict.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_16_bytes_restrict.asm</a></td></tr>
+<tr><td>95</td><td>add_arrays_32_bytes_restrict.c</td><td>součet prvků polí s&nbsp;32 prvky typu <i>byte</i>: varianta s&nbsp;nepřekrývajícími se ukazateli</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.c</a></td></tr>
+<tr><td>96</td><td>add_arrays_32_bytes_restrict.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_32_bytes_restrict.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>97</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>98</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>99</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>100</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>101</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>102</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>103</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
-<tr><td>104</td><td></td><td></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/</a></td></tr>
+<tr><td> 97</td><td>array_clear_size_8_backward.c</td><td>součet prvků dvou polí v&nbsp;pořadí od posledního prvku k&nbsp;prvku prvnímu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_clear_size_8_backward.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_clear_size_8_backward.c</a></td></tr>
+<tr><td> 98</td><td>array_clear_size_8_backward.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_clear_size_8_backward.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/array_clear_size_8_backward.asm</a></td></tr>
+<tr><td> 99</td><td>add_arrays_size_16_backward.c</td><td>součet prvků dvou polí v&nbsp;pořadí od posledního prvku k&nbsp;prvku prvnímu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_size_16_backward.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_size_16_backward.c</a></td></tr>
+<tr><td>100</td><td>add_arrays_size_16_backward.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_size_16_backward.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_size_16_backward.asm</a></td></tr>
+<tr><td>101</td><td>add_arrays_restrict_size_16_backward.c</td><td>součet prvků polí: varianta s&nbsp;nepřekrývajícími se ukazateli</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_restrict_size_16_backward.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_restrict_size_16_backward.c</a></td></tr>
+<tr><td>102</td><td>add_arrays_restrict_size_16_backward.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_restrict_size_16_backward.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/add_arrays_restrict_size_16_backward.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>103</td><td>get_color_component.c</td><td>získání jedné barvové složky ze všech pixelů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/get_color_component.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/get_color_component.c</a></td></tr>
+<tr><td>104</td><td>get_color_component.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/get_color_component.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/get_color_component.asm</a></td></tr>
+<tr><td>105</td><td>set_color_component.c</td><td>zápis jedné barvové složky do všech pixelů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/set_color_component.c">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/set_color_component.c</a></td></tr>
+<tr><td>106</td><td>set_color_component.asm</td><td>výsledek překladu do assembleru s&nbsp;povolením vektorizace</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/set_color_component.asm">https://github.com/tisnik/8bit-fame/blob/master/gcc-simd/set_color_component.asm</a></td></tr>
 </table>
-
-array_clear_size_8_backward.c
-array_clear_size_8_backward.asm
-add_arrays_size_16_backward.c
-add_arrays_size_16_backward.asm
-add_arrays_restrict_size_16_backward.c
-add_arrays_restrict_size_16_backward.asm
-get_color_component.c
-get_color_component.asm
 
 
 
