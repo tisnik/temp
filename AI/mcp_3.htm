@@ -42,20 +42,20 @@
 <p><a href="#k03">*** 3. </a></p>
 <p><a href="#k04">4. Úplný zdrojový kód MCP serveru naprogramovaného v&nbsp;jazyce Go</a></p>
 <p><a href="#k05">5. Komunikace s&nbsp;MCP serverem z&nbsp;MCP klienta naprogramovaného v&nbsp;Pythonu</a></p>
-<p><a href="#k06">*** 6. Komunikace s&nbsp;MCP serverem z&nbsp;MCP klienta naprogramovaného v&nbsp;jazyce Go</a></p>
+<p><a href="#k06">6. Komunikace s&nbsp;MCP serverem z&nbsp;MCP klienta naprogramovaného v&nbsp;jazyce Go</a></p>
 <p><a href="#k07">7. Úplný zdrojový kód jednoduchého MCP klienta, který server spustí a přečte z&nbsp;něj vybraný zdroj</a></p>
-<p><a href="#k08">*** 8. </a></p>
-<p><a href="#k09">*** 9. </a></p>
-<p><a href="#k10">*** 10. </a></p>
-<p><a href="#k11">*** 11. </a></p>
-<p><a href="#k12">*** 12. </a></p>
+<p><a href="#k08">8. Vylepšení struktury MCP serveru</a></p>
+<p><a href="#k09">*** 9. Nástroje (<i>tools</i>) poskytované MCP serverem</a></p>
+<p><a href="#k10">10. Realizace serveru s&nbsp;definovaným nástrojem (<i>tool</i>)</a></p>
+<p><a href="#k11">11. Zavolání nástroje poskytovaného MCP serverem z&nbsp;Pythonu</a></p>
+<p><a href="#k12">*** 12. Zavolání nástroje poskytovaného MCP serverem z&nbsp;jazyka Go</a></p>
 <p><a href="#k13">*** 13. </a></p>
 <p><a href="#k14">*** 14. </a></p>
 <p><a href="#k15">*** 15. </a></p>
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. </a></p>
-<p><a href="#k19">*** 19. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
 
 
@@ -313,11 +313,20 @@ Text: Hello, dear client
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Komunikace s&nbsp;MCP serverem z&nbsp;MCP klienta naprogramovaného v&nbsp;jazyce Go</h2>
 
-<p></p>
+<p>Jak bude vlastně naprogramován MCP klient v&nbsp;jazyce Go? Teoreticky se
+jedná o stejný postup, jako v&nbsp;případě klienta napsaného v&nbsp;Pythonu,
+ovšem realizace je nepatrně odlišná, takže si ji popíšeme po jednotlivých
+krocích.</p>
+
+<p>Nejprve necháme klienta inicializovat spuštění MCP serveru, což je v&nbsp;Go
+triviální:</p>
 
 <pre>
 cmd := exec.Command("go", "run", "./mcp_server_1.go")
 </pre>
+
+<p>Následně získáme proudy pro standardní vstup a výstup právě spuštěného MCP
+serveru. Se serverem totiž budeme komunikovat právě přes STDIO:</p>
 
 <pre>
 stdin, err := cmd.StdinPipe()
@@ -331,6 +340,8 @@ if err != nil {
 }
 </pre>
 
+<p>Následuje spuštění MCP serveru:</p>
+
 <pre>
 if err := cmd.Start(); err != nil {
         log.Fatalf("Failed to start server: %v", err)
@@ -338,6 +349,9 @@ if err := cmd.Start(); err != nil {
 &nbsp;
 defer cmd.Process.Kill()
 </pre>
+
+<p>Nyní tedy MCP server běží, takže můžeme inicializovat vlastní MCP protokol
+s&nbsp;transportem nastaveným na STDIO:</p>
 
 <pre>
 transport := stdio.NewStdioServerTransportWithIO(stdout, stdin)
@@ -348,16 +362,30 @@ if _, err := client.Initialize(context.Background()); err != nil {
 }
 </pre>
 
+<p>V&nbsp;této chvíli spolu již MCP klient i server komunikují, takže se můžeme
+pokusit o přečtení zdroje <i>pozdrav://</i>:</p>
+
 <pre>
 resource, err := client.ReadResource(context.Background(), "pozdrav://")
 if err != nil {
         log.Printf("Failed to read resource: %v", err)
 }
-&nbsp;
+</pre>
+
+<p>Pokud se čtení podaří, vypíšeme si podrobnější informace o přečteném
+zdroji:</p>
+
+<pre>
 if resource != nil {
         log.Printf("Resource content: %s", resource)
 }
 </pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;poslední verzi knihovny
+<strong>mcp-golang</strong> došlo ke změně, která neumožňuje přečtení obsahu
+zdroje. Tato chyba bude doufejme v&nbsp;další verzi opravena (patch zašlu). Už
+jen existence tohoto problému mnohé vypovídá o stabilitě a kvalitě knihoven pro
+MCP.</div></p>
 
 
 
@@ -419,27 +447,346 @@ func <strong>main</strong>() {
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Vylepšení struktury MCP serveru</h2>
+
+<p>Původní verze MCP serveru nebyla příliš čitelná, protože se ve zdrojovém
+kódu mísila volání knihovny <strong>mcp-golang</strong> s&nbsp;konfigurací
+zdroje. Z&nbsp;tohoto důvodu si server nepatrně vylepšíme, a to tak, že
+konfiguraci zdroje přeneseme do konstant definovaných na začátku zdrojového
+kódu (resp.&nbsp;přesněji řečeno za importy):</p>
+
+<pre>
+<i>// Jednoduchý MCP server s jediným zdrojem</i>
+&nbsp;
+package <strong>main</strong>
+&nbsp;
+import (
+        mcp_golang "github.com/metoro-io/mcp-golang"
+        "github.com/metoro-io/mcp-golang/transport/stdio"
+)
+&nbsp;
+const <u>resourceURI</u> = "pozdrav://"
+const <u>resourcename</u> = "greeting"
+const <u>resourceDescription</u> = "Odpověď s pozdravem"
+const <u>resourceMimeType</u> = "text/plain"
+&nbsp;
+func <strong>resourceHandler</strong>() (*mcp_golang.ResourceResponse, error) {
+        resource := mcp_golang.NewTextEmbeddedResource(
+                resourceURI,
+                "Hello, dear client",
+                resourceMimeType)
+        response := mcp_golang.NewResourceResponse(resource)
+        return response, nil
+}
+&nbsp;
+func <strong>main</strong>() {
+        done := make(chan struct{})
+&nbsp;
+        server := mcp_golang.NewServer(stdio.NewStdioServerTransport())
+&nbsp;
+        err := server.RegisterResource(
+                resourceURI,
+                resourceName,
+                resourceDescription,
+                resourceMimeType,
+                resourceHandler)
+        if err != nil {
+                panic(err)
+        }
+&nbsp;
+        err = server.Serve()
+        if err != nil {
+                panic(err)
+        }
+&nbsp;
+        &lt;-done
+}
+</pre>
+
+<p>Tuto variantu serveru si otestujeme z&nbsp;Pythonu:</p>
+
+<pre>
+<i>"""MCP klient, který spustí server, se kterým se komunikuje přes STDIO."""</i>
+&nbsp;
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+&nbsp;
+<i># parametry pro spuštění MCP serveru</i>
+server_params = StdioServerParameters(
+    command="go",  <i># spustí se tento příkaz</i>
+    args=["run", "./mcp_server_2.go"],  <i># a předají se mu následující parametry</i>
+    env=None,  <i># lze definovat i proměnné prostředí</i>
+)
+&nbsp;
+&nbsp;
+async def <strong>run</strong>():
+    <i>"""Realizace klienta."""</i>
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+&nbsp;
+            <i># přečtení zdroje</i>
+            data = await session.read_resource("pozdrav://")
+            print("Data returned:", data)
+            print("Type:", type(data))
+&nbsp;
+            text = data.contents[0].text
+            print("Text:", text)
+&nbsp;
+&nbsp;
+<i># přímé spuštění klienta</i>
+if __name__ == "__main__":
+    import asyncio
+&nbsp;
+    asyncio.run(run())
+</pre>
 
 
 
 <p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+<h2 id="k09">9. Nástroje (<i>tools</i>) poskytované MCP serverem</h2>
+
+<p></p>
+
+<pre>
+type <strong>FactorialArguments</strong> struct {
+        N int `json:"n" jsonschema:"required,description=input value for factorial computation"`
+}
+</pre>
+
+<p></p>
+
+<pre>
+func <strong>factorialHandler</strong>(arguments FactorialArguments) (*mcp_golang.ToolResponse, error) {
+        fact := 1
+        for i := range arguments.N {
+                fact *= 1 + i
+        }
+        toolResults := mcp_golang.NewTextContent(strconv.Itoa(fact))
+        response := mcp_golang.NewToolResponse(toolResults)
+        return response, nil
+}
+</pre>
+
+<p></p>
+
+<pre>
+server := mcp_golang.NewServer(stdio.NewStdioServerTransport())
+&nbsp;
+err := server.RegisterTool("factorial", "Výpočet faktoriálu", factorialHandler)
+if err != nil {
+        panic(err)
+}
+&nbsp;
+err = server.Serve()
+if err != nil {
+        panic(err)
+}
+</pre>
 
 
 
 <p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<h2 id="k10">10. Realizace serveru s&nbsp;definovaným nástrojem (<i>tool</i>)</h2>
+
+<p>Opět se podívejme na způsob realizace celého MCP serveru, ve kterém je
+definován a nabízen jediný nástroj (<i>tool</i>). Tento nástroj bude počítat
+hodnotu faktoriálu pro zadaný parametr <i>n</i>, který mu pochopitelně musí
+klient poslat:</p>
+
+<pre>
+<i>// Jednoduchý MCP server s jediným nástrojem</i>
+&nbsp;
+package <strong>main</strong>
+&nbsp;
+import (
+        "strconv"
+&nbsp;
+        mcp_golang "github.com/metoro-io/mcp-golang"
+        "github.com/metoro-io/mcp-golang/transport/stdio"
+)
+&nbsp;
+type <strong>FactorialArguments</strong> struct {
+        N int `json:"n" jsonschema:"required,description=input value for factorial computation"`
+}
+&nbsp;
+func <strong>factorialHandler</strong>(arguments FactorialArguments) (*mcp_golang.ToolResponse, error) {
+        fact := 1
+        for i := range arguments.N {
+                fact *= 1 + i
+        }
+        toolResults := mcp_golang.NewTextContent(strconv.Itoa(fact))
+        response := mcp_golang.NewToolResponse(toolResults)
+        return response, nil
+}
+&nbsp;
+func <strong>main</strong>() {
+        done := make(chan struct{})
+&nbsp;
+        server := mcp_golang.NewServer(stdio.NewStdioServerTransport())
+&nbsp;
+        err := server.RegisterTool("factorial", "Výpočet faktoriálu", factorialHandler)
+        if err != nil {
+                panic(err)
+        }
+&nbsp;
+        err = server.Serve()
+        if err != nil {
+                panic(err)
+        }
+&nbsp;
+        &lt;-done
+}
+</pre>
 
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Zavolání nástroje poskytovaného MCP serverem z&nbsp;Pythonu</h2>
+
+<p><a href="#k10">Výše popsaný</a> nástroj zavoláme z&nbsp;MCP klienta, který
+je naprogramován v&nbsp;Pythonu. Opět se pro nás nejedná o žádnou novinku a
+všechny části tohoto klienta by měly být zřejmé, a to včetně způsobu zavolání
+nástroje a předání parametru <i>n</i>.</p>
+
+<pre>
+<i>"""MCP klient, který zavolá nástroj."""</i>
+&nbsp;
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+&nbsp;
+<i># parametry pro spuštění MCP serveru</i>
+server_params = StdioServerParameters(
+    command="go",  <i># spustí se tento příkaz</i>
+    args=["run", "./mcp_server_3.go"],  <i># a předají se mu následující parametry</i>
+    env=None,  <i># lze definovat i proměnné prostředí</i>
+)
+&nbsp;
+&nbsp;
+async def <strong>run</strong>():
+    <i>"""Realizace klienta."""</i>
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+&nbsp;
+            for n in range(11):
+                <i># zavolání nástroje</i>
+                data = await session.call_tool("factorial", arguments={"n": n})
+                factorial = data.content[0].text
+                print(n, factorial)
+&nbsp;
+&nbsp;
+<i># přímé spuštění klienta</i>
+if __name__ == "__main__":
+    import asyncio
+&nbsp;
+    asyncio.run(run())
+</pre>
+
+<p>Samozřejmě si komunikaci otestujeme:</p>
+
+<pre>
+$ <strong>python mcp_client_3.py </strong>
+</pre>
+
+<p>Výsledky vypsané na terminál by měly vypadat takto:</p>
+
+<pre>
+0 1
+1 1
+2 2
+3 6
+4 24
+5 120
+6 720
+7 5040
+8 40320
+9 362880
+10 3628800
+</pre>
 
 
 
 <p><a name="k12"></a></p>
-<h2 id="k12">12. </h2>
+<h2 id="k12">12. Zavolání nástroje poskytovaného MCP serverem z&nbsp;jazyka Go</h2>
+
+<pre>
+package main
+
+import (
+        "context"
+        "log"
+        "os/exec"
+
+        mcp "github.com/metoro-io/mcp-golang"
+        "github.com/metoro-io/mcp-golang/transport/stdio"
+)
+
+// Define type-safe arguments
+type CalculateArgs struct {
+        N int `json:"n"`
+}
+
+func main() {
+        cmd := exec.Command("go", "run", "./mcp_server_3.go")
+
+        stdin, err := cmd.StdinPipe()
+        if err != nil {
+                log.Fatalf("Failed to get stdin pipe: %v", err)
+        }
+
+        stdout, err := cmd.StdoutPipe()
+        if err != nil {
+                log.Fatalf("Failed to get stdout pipe: %v", err)
+        }
+
+        if err := cmd.Start(); err != nil {
+                log.Fatalf("Failed to start server: %v", err)
+        }
+
+        defer cmd.Process.Kill()
+
+        transport := stdio.NewStdioServerTransportWithIO(stdout, stdin)
+        client := mcp.NewClient(transport)
+
+        if _, err := client.Initialize(context.Background()); err != nil {
+                log.Fatalf("Failed to initialize: %v", err)
+        }
+
+        for n := range 11 {
+                args := CalculateArgs{N: n}
+                response, err := client.CallTool(
+                        context.Background(),
+                        "factorial",
+                        args)
+                if err != nil {
+                        log.Fatalf("Failed to call tool: %v", err)
+                }
+
+                if response != nil && len(response.Content) > 0 {
+                        factorial := response.Content[0].TextContent.Text
+                        log.Printf("%d! = %s", n, factorial)
+                }
+        }
+
+}
+</pre>
+
+<pre>
+$ <strong>go run mcp_client_3.go </strong>
+&nbsp;
+2025/04/08 13:55:27 0! = 1
+2025/04/08 13:55:27 1! = 1
+2025/04/08 13:55:27 2! = 2
+2025/04/08 13:55:27 3! = 6
+2025/04/08 13:55:27 4! = 24
+2025/04/08 13:55:27 5! = 120
+2025/04/08 13:55:27 6! = 720
+2025/04/08 13:55:27 7! = 5040
+2025/04/08 13:55:27 8! = 40320
+2025/04/08 13:55:27 9! = 362880
+2025/04/08 13:55:27 10! = 3628800
+</pre>
 
 
 
@@ -487,13 +834,15 @@ a naleznete je na následujících adresách:</p>
 <tr><td> 2</td><td>mcp_client_1.py</td><td>MCP klient komunikující s&nbsp;první verzí MCP serveru, naprogramováno v&nbsp;Pythonu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_1.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_1.py</a></td></tr>
 <tr><td> 3</td><td>mcp_client_1.go</td><td>MCP klient komunikující s&nbsp;první verzí MCP serveru, naprogramováno v&nbsp;jazyce Go</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_1.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_1.go</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td> 4</td><td>mcp_server_2.go</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_2.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_2.go</a></td></tr>
-<tr><td> 5</td><td>mcp_client_2.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_2.py</a></td></tr>
-<tr><td> 6</td><td>mcp_server_3.go</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_3.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_3.go</a></td></tr>
-<tr><td> 7</td><td>mcp_client_3.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.py</a></td></tr>
-<tr><td> 8</td><td>mcp_client_3.go</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.go</a></td></tr>
-<tr><td> 9</td><td>mcp_server_4.go</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_4.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_4.go</a></td></tr>
-<tr><td>10</td><td>mcp_client_4.go</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_4.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_4.go</a></td></tr>
+<tr><td> 4</td><td>mcp_server_2.go</td><td>vylepšení struktury MCP serveru</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_2.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_2.go</a></td></tr>
+<tr><td> 5</td><td>mcp_client_2.py</td><td>MCP klient komunikující se druhou verzí MCP serveru, naprogramováno v&nbsp;Pythonu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_2.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_2.py</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>mcp_server_3.go</td><td>realizace serveru s&nbsp;definovaným nástrojem (<i>tool</i>)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_3.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_3.go</a></td></tr>
+<tr><td> 7</td><td>mcp_client_3.py</td><td>zavolání nástroje z&nbsp;Pythonu</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.py">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.py</a></td></tr>
+<tr><td> 8</td><td>mcp_client_3.go</td><td>zavolání nástroje z&nbsp;jazyka Go</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_3.go</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 9</td><td>mcp_server_4.go</td><td>realizace serveru s&nbsp;definovanou výzvou (<i>prompt</i>)</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_4.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_server_4.go</a></td></tr>
+<tr><td>10</td><td>mcp_client_4.go</td><td>komunikace přes výzvu (<i>prompt</i>) realizovaná v&nbsp;jazyce Go</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_4.go">https://github.com/tisnik/most-popular-python-libs/blob/master/mcp/mcp-golang/mcp_client_4.go</a></td></tr>
 </table>
 
 <p>Zdrojové kódy všech minule a předminule popsaných demonstračních příkladů
@@ -636,18 +985,6 @@ V&nbsp;tabulce zobrazené níže jsou odkazy na jednotlivé příklady:</p>
 
 <li>Pillow documentation<br />
 <a href="https://pillow.readthedocs.io/en/stable/handbook/tutorial.html">https://pillow.readthedocs.io/en/stable/handbook/tutorial.html</a>
-</li>
-
-<li>Pillow: Python Imaging Library (Fork)<br />
-<a href="https://pypi.org/project/pillow/">https://pypi.org/project/pillow/</a>
-</li>
-
-<li>How to use Pillow, a fork of PIL<br />
-<a href="https://www.pythonforbeginners.com/gui/how-to-use-pillow">https://www.pythonforbeginners.com/gui/how-to-use-pillow</a>
-</li>
-
-<li>PNG is Not GIF<br />
-<a href="https://www.root.cz/clanky/png-is-not-gif/">https://www.root.cz/clanky/png-is-not-gif/</a>
 </li>
 
 </ol>
