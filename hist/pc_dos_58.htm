@@ -37,14 +37,14 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Algoritmus CORDIC a numerické formáty s&nbsp;pevnou řádovou čárkou</a></p>
+<p><a href="#k01">1. Algoritmus CORDIC a numerické formáty s&nbsp;pevnou řádovou čárkou</a></p>
 <p><a href="#k02">2. Výpočet délky vektoru pomocí algoritmu CORDIC</a></p>
 <p><a href="#k03">3. První demonstrační příklad: výpočet délky vektoru</a></p>
 <p><a href="#k04">4. Výpočet logaritmu algoritmem CORDIC</a></p>
 <p><a href="#k05">5. Druhý demonstrační příklad: výpočet přirozeného logaritmu</a></p>
 <p><a href="#k06">6. Výsledky získané předchozím příkladem</a></p>
-<p><a href="#k07">*** 7. </a></p>
-<p><a href="#k08">*** 8. </a></p>
+<p><a href="#k07">7. Algoritmus CORDIC s&nbsp;hodnotami uloženými ve formátu pevné řádové binární čárky</a></p>
+<p><a href="#k08">8. Realizace funkce určené pro naplnění tabulky <strong>atans</strong>[] (arkustangenty vhodně zvolených úhlů)</a></p>
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
 <p><a href="#k11">*** 11. </a></p>
@@ -62,6 +62,26 @@
 
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Algoritmus CORDIC a numerické formáty s&nbsp;pevnou řádovou čárkou</h2>
+
+<p>V&nbsp;předchozích článcích jsme si uvedli, jakým způsobem je možné
+algoritmus <strong>CORDIC</strong> (<i><strong>CO</strong>ordinate
+<strong>RO</strong>tation <strong>DI</strong>gital
+<strong>C</strong>omputer</i>) použít pro výpočet goniometrických funkcí
+s&nbsp;hodnotami uloženými ve formátu plovoucí řádové binární čárky (FP).
+Tentýž algoritmus je však po mírné modifikaci možné použít i při práci
+s&nbsp;formátem pevné řádové binární čárky (FX) a dá se říci, že teprve zde se
+plně ukazuje jeho implementační jednoduchost a současně i velká vyjadřovací
+síla &ndash; pomocí jednoho iteračního postupu je možné vypočítat poměrně velké
+množství navzájem značně odlišných funkcí, přičemž paměťové nároky algoritmu
+jsou minimální a rovnají se tabulce s&nbsp;cca deseti až dvaceti prvky
+s&nbsp;rozsahem 32 (popř.&nbsp;pouze 16) bitů. To je výhodné především při
+implementaci na mikrořadičích (oblíbená řada 8051, PICy, řada 68HC11 atd.) a
+také při práci s&nbsp;programovatelnými obvody typu FPGA.</p>
+
+<p>Dnes se budeme zabývat právě tímto problémem. Nejdříve si však
+v&nbsp;kapitolách 2-6 ukážeme, jak lze CORDIC po úpravách použít i pro další
+(sofistikovanější) výpočty, například pro výpočet délky vektoru, výpočet
+hyperbolických funkcí, ale i pro výpočet logaritmů.</p>
 
 
 
@@ -466,12 +486,216 @@ tak jednoduchý algoritmus velmi dobrý výsledek.</div></p>
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Algoritmus CORDIC s&nbsp;hodnotami uloženými ve formátu pevné řádové binární čárky</h2>
+
+<p>Hlavním tématem dnešního článku je přepis algoritmu CORDIC do podoby, ve
+které se již nepoužije matematický koprocesor (a tedy ani datové typy
+<i>float</i> či <i>double</i>), ale výpočty budou probíhat na běžné celočíselné
+aritmeticko-logické jednotce.</p>
+
+<p>Před vlastním uvedením implementace algoritmu CORDIC s&nbsp;čísly uloženými
+ve formátu pevné řádové binární čárky je zapotřebí provést náležitou přípravu,
+protože formát FX (většinou) není ani mikroprocesory ani překladači podporován.
+Z&nbsp;tohoto důvodu si v&nbsp;této kapitole pro připomenutí uvedeme všechny
+základní aritmetické funkce určené pro práci s&nbsp;formátem FX. Jedná se o
+funkce <strong>fx_add()</strong>, <strong>fx_sub()</strong>,
+<strong>fx_mul()</strong> a <strong>fx_div()</strong> (tyto funkce byly
+podrobněji vysvětleny v&nbsp;předchozím díle). Kromě toho jsou uvedena i těla
+dalších pomocných funkcí, zejména <strong>fx_print()</strong> i maker určených
+pro převod stupňů na radiány a naopak. Pomocí konstant <strong>A</strong> a
+<strong>B</strong> je určen rozsah a přesnost numerických hodnot uložených ve
+formátu <strong>fx</strong> &ndash; ten je v&nbsp;naší implementaci shodný
+s&nbsp;třicetidvoubitovým datovým typem <strong>signed int</strong>, jelikož
+potřebujeme pracovat jak s&nbsp;kladnými, tak i se zápornými hodnotami.</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+&nbsp;
+<i>/* počet míst před a za binární řádovou tečkou */</i>
+#define <strong>A</strong> 16
+#define <strong>B</strong> 16
+&nbsp;
+<i>/* Ludolfovo číslo */</i>
+#ifndef <strong>M_PI</strong>
+#define <strong>M_PI</strong> 3.14159265358979323846
+#endif
+&nbsp;
+<i>/* maximální počet iterací při běhu algoritmu */</i>
+#define <strong>MAX_ITER</strong> 16
+&nbsp;
+<i>/* "zesílení" při rotacích */</i>
+#define <strong>K</strong> 0.6073
+&nbsp;
+<i>/* převody mezi stupni a radiány */</i>
+#define <strong>rad2deg</strong>(rad) ((rad)*180.0/M_PI)
+#define <strong>deg2rad</strong>(deg) ((deg)/180.0*M_PI)
+&nbsp;
+<i>/* datový typ, se kterým budeme pracovat */</i>
+typedef signed int fx;
+&nbsp;
+<i>/* hlavičky použitých funkcí */</i>
+void   <strong>fx_print</strong>(fx x);
+fx     <strong>fp2fx</strong>(double x);
+double <strong>fx2fp</strong>(fx x);
+&nbsp;
+<i>/* tabulka arkustangentu úhlů */</i>
+fx <strong>atans</strong>[MAX_ITER];
+&nbsp;
+<i>/* tabulka záporných celočíselných mocnin hodnoty 2 */</i>
+fx <strong>pows</strong>[MAX_ITER];
+&nbsp;
+<i>/*</i>
+<i> * Tisk numerické hodnoty uložené ve formátu pevné</i>
+<i> * řádové binární čárky (FX)</i>
+<i> */</i>
+void <strong>fx_print</strong>(fx x)
+{
+    int i;
+    int val=x;                         <i>/* pomocná proměnná pro převod do dvojkové soustavy */</i>
+    printf("bin: ");
+    for (i=0; i&lt;A+B; i++) {            <i>/* převod na řetězec bitů (do dvojkové soustavy) */</i>
+        putchar(!!(val &amp; (1&lt;&lt;(A+B-1)))+'0'); <i>/* výpis hodnoty aktuálně nejvyššího bitu */</i>
+        if (i==B-1) putchar('.');      <i>/* po řádové binární čárce vypsat značku */</i>
+        val=val&lt;&lt;1;                    <i>/* posun na další (méně významný) bit */</i>
+    }
+&nbsp;
+    printf("   hex: %08x   fp: %+11.5f\n", x, fx2fp(x));
+}
+&nbsp;
+<i>/*</i>
+<i> * Převod z formátu plovoucí řádové binární čárky (FP)</i>
+<i> * do formátu pevné řádové binární čárky (FX)</i>
+<i> */</i>
+fx <strong>fp2fx</strong>(double x)
+{
+    return (fx)(x*(2&lt;&lt;(B-1)));
+}
+&nbsp;
+<i>/*</i>
+<i> * Převod z celočíselného formátu (integer)</i>
+<i> * do formátu pevné řádové binární čárky (FX)</i>
+<i> */</i>
+fx <strong>int2fx</strong>(int x)
+{
+    return (fx)(x&lt;&lt;B);
+}
+&nbsp;
+<i>/*</i>
+<i> * Převod z formátu pevné řádové binární čárky (FX)</i>
+<i> * do formátu plovoucí řádové binární čárky (FP)</i>
+<i> */</i>
+double <strong>fx2fp</strong>(fx x)
+{
+    return (double)x/(2&lt;&lt;(B-1));
+}
+&nbsp;
+<i>/*</i>
+<i> * Součet dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_add</strong>(fx x, fx y)
+{
+    return x+y;
+}
+&nbsp;
+<i>/*</i>
+<i> * Rozdíl dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_sub</strong>(fx x, fx y)
+{
+    return x-y;
+}
+&nbsp;
+<i>/*</i>
+<i> * Součin dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_mul</strong>(fx x, fx y)
+{
+    fx result=(x&gt;&gt;(B/2))*(y&gt;&gt;(B/2));
+    return result;
+}
+&nbsp;
+<i>/*</i>
+<i> * Podíl dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_div</strong>(fx x, fx y)
+{
+    fx result=x/(y&gt;&gt;(B/2));
+    return result&lt;&lt;(B/2);
+}
+</pre>
 
 
 
 <p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<h2 id="k08">8. Realizace funkce určené pro naplnění tabulky <strong>atans</strong>[] (arkustangenty vhodně zvolených úhlů)</h2>
+
+<p>Podobně jako při implementaci algoritmu CORDIC pro hodnoty ve formátu FP
+(tedy s&nbsp;plovoucí řádovou čárkou), i v&nbsp;případě práce s&nbsp;formátem
+FX je nutné některé hodnoty předpočítat. Opět se jedná o tabulku
+<strong>atans[]</strong> obsahující arkustangenty vybraných úhlů. Kromě toho
+naplníme i tabulku <strong>pows[]</strong>, ve které jsou uloženy záporné
+mocniny čísla 2. Jak však uvidíme v&nbsp;dalším textu, není v&nbsp;případě FX
+výpočtů tato tabulka využita a algoritmus CORDIC se z&nbsp;tohoto důvodu
+poněkud zjednoduší. Funkce pro výpočet obou zmiňovaných tabulek vypadá
+následovně:</p>
+
+<pre>
+<i>/*</i>
+<i> * Vytvoření tabulky pro výpočet goniometrických</i>
+<i> * funkcí pomocí algoritmu CORDIC</i>
+<i> */</i>
+void <strong>fx_create_tables</strong>(void)
+{
+    int i;
+    for (i=0; i&lt;MAX_ITER; i++) {
+        double p=pow(2.0, -i);
+        atans[i]=fp2fx(atan(p));
+        pows[i]=fp2fx(p);
+    }
+}
+</pre>
+
+<p>To, zda je tabulka korektně naplněna, je možné otestovat velmi
+jednoduše:</p>
+
+<pre>
+    <i>/* kontrolní výpis tabulky atans[] */</i>
+    for (i=0; i&lt;MAX_ITER; i++)
+        printf("%d\t%f\n", i, fx2fp(rad2deg(atans[i])));
+
+</pre>
+
+<p>Výsledkem běhu předchozího testu je tabulka hodnot arkustangent úhlů
+(zhruba) odpovídajících FP verzi:</p>
+
+<table>
+<tr><th>Index</th><th>Hodnota úhlu</th></tr>
+<tr><td> 0</td><td>44.999252</td></tr>
+<tr><td> 1</td><td>26.564514</td></tr>
+<tr><td> 2</td><td>14.035431</td></tr>
+<tr><td> 3</td><td> 7.124374</td></tr>
+<tr><td> 4</td><td> 3.575729</td></tr>
+<tr><td> 5</td><td> 1.789612</td></tr>
+<tr><td> 6</td><td> 0.894363</td></tr>
+<tr><td> 7</td><td> 0.446747</td></tr>
+<tr><td> 8</td><td> 0.222931</td></tr>
+<tr><td> 9</td><td> 0.111023</td></tr>
+<tr><td>10</td><td> 0.055069</td></tr>
+<tr><td>11</td><td> 0.027100</td></tr>
+<tr><td>12</td><td> 0.013107</td></tr>
+<tr><td>13</td><td> 0.006119</td></tr>
+<tr><td>14</td><td> 0.002609</td></tr>
+<tr><td>15</td><td> 0.000870</td></tr>
+</table>
+
+<p>S&nbsp;takto připravenou tabulkou je možné pokračovat v&nbsp;dalších
+výpočtech.</p>
 
 
 
@@ -825,6 +1049,22 @@ tak jednoduchý algoritmus velmi dobrý výsledek.</div></p>
 
 <li>Programovani v assembleru na OS Linux<br />
 <a href="http://www.cs.vsb.cz/grygarek/asm/asmlinux.html">http://www.cs.vsb.cz/grygarek/asm/asmlinux.html</a>
+</li>
+
+<li>Is it worthwhile to learn x86 assembly language today?<br />
+<a href="https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1">https://www.quora.com/Is-it-worthwhile-to-learn-x86-assembly-language-today?share=1</a>
+</li>
+
+<li>Why Learn Assembly Language?<br />
+<a href="http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language">http://www.codeproject.com/Articles/89460/Why-Learn-Assembly-Language</a>
+</li>
+
+<li>Is Assembly still relevant?<br />
+<a href="http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant">http://programmers.stackexchange.com/questions/95836/is-assembly-still-relevant</a>
+</li>
+
+<li>Why Learning Assembly Language Is Still a Good Idea<br />
+<a href="http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html">http://www.onlamp.com/pub/a/onlamp/2004/05/06/writegreatcode.html</a>
 </li>
 
 </ol>
