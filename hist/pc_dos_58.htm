@@ -49,11 +49,11 @@
 <p><a href="#k10">10. Celý demonstrační příklad: výpočet funkce <i>tan</i> s&nbsp;využitím algoritmu CORDIC</a></p>
 <p><a href="#k11">11. Výsledky výpočtu funkce <i>tan</i>: absolutní a relativní chyby</a></p>
 <p><a href="#k12">12. Výpočet goniometrické funkce <i>tan</i> s&nbsp;využitím algoritmu CORDIC &ndash; optimalizovaná varianta výpočtů</a></p>
-<p><a href="#k13">*** 13. Celý demonstrační příklad: výpočet funkce <i>tan</i> s&nbsp;využitím algoritmu CORDIC</a></p>
+<p><a href="#k13">13. Celý demonstrační příklad: výpočet funkce <i>tan</i> s&nbsp;využitím algoritmu CORDIC</a></p>
 <p><a href="#k14">*** 14. Výsledky výpočtu funkce <i>tan</i>: absolutní a relativní chyby</a></p>
 <p><a href="#k15">*** 15. Způsob překladu algoritmu CORDIC do assembleru</a></p>
-<p><a href="#k16">*** 16. </a></p>
-<p><a href="#k17">*** 17. </a></p>
+<p><a href="#k16">*** 16. Výpočet goniometrické funkce <i>sin</i></a></p>
+<p><a href="#k17">*** 17. Výsledky výpočtu funkce <i>sin</i>: absolutní a relativní chyby, statistiky</a></p>
 <p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k19">19. Literatura</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -932,7 +932,7 @@ fx <strong>fx_tan_cordic</strong>(fx delta)
             delta = fx_sub(delta, atans[i]);
         }
         x0 = xn;
-/*        printf("%i\t%+f\t%+f\t%+f\n", i, fx2fp(x0), fx2fp(y0), fx2fp(delta)); */
+<i>/*        printf("%i\t%+f\t%+f\t%+f\n", i, fx2fp(x0), fx2fp(y0), fx2fp(delta)); */</i>
     }
     if (x0 == 0)                <i>/* ošetření tangenty pravého úhlu */</i>
         if (y0 &lt; 0)
@@ -1143,6 +1143,204 @@ mikroprocesory.</p>
 <h2 id="k13">13. Celý demonstrační příklad: výpočet funkce <i>tan</i> s&nbsp;využitím algoritmu CORDIC</h2>
 
 <pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+&nbsp;
+<i>/* počet míst před a za binární řádovou tečkou */</i>
+#define <strong>A</strong> 16
+#define <strong>B</strong> 16
+&nbsp;
+<i>/* Ludolfovo číslo */</i>
+#ifndef M_PI
+#define <strong>M_PI</strong> 3.14159265358979323846
+#endif
+&nbsp;
+<i>/* maximální počet iterací při běhu algoritmu */</i>
+#define <strong>MAX_ITER</strong> 16
+&nbsp;
+<i>/* "zesílení" při rotacích */</i>
+#define <strong>K_float</strong> 0.6073
+&nbsp;
+<i>/* převody mezi stupni a radiány */</i>
+#define <strong>rad2deg</strong>(rad) ((rad) * 180.0 / M_PI)
+#define <strong>deg2rad</strong>(deg) ((deg) / 180.0 * M_PI)
+&nbsp;
+<i>/* datový typ, se kterým budeme pracovat */</i>
+typedef signed int <strong>fx</strong>;
+&nbsp;
+<i>/* hlavičky použitých funkcí */</i>
+void <strong>fx_print</strong>(fx x);
+fx <strong>fp2fx</strong>(double x);
+double <strong>fx2fp</strong>(fx x);
+&nbsp;
+<i>/* tabulka arkustangentu úhlů */</i>
+fx <strong>atans</strong>[MAX_ITER];
+&nbsp;
+<i>/* tabulka záporných celočíselných mocnin hodnoty 2 */</i>
+fx <strong>pows</strong>[MAX_ITER];
+&nbsp;
+<i>/*</i>
+<i> * Tisk numerické hodnoty uložené ve formátu pevné</i>
+<i> * řádové binární čárky (FX)</i>
+<i> */</i>
+void <strong>fx_print</strong>(fx x)
+{
+    int i;
+    int val = x;                <i>/* pomocná proměnná pro převod do dvojkové soustavy */</i>
+    printf("bin: ");
+    for (i = 0; i &lt; A + B; i++) {       <i>/* převod na řetězec bitů (do dvojkové soustavy) */</i>
+        putchar(!!(val &amp; (1 &lt;&lt; (A + B - 1))) + '0');    <i>/* výpis hodnoty aktuálně nejvyššího bitu */</i>
+        if (i == B - 1)
+            putchar('.');       <i>/* po řádové binární čárce vypsat značku */</i>
+        val = val &lt;&lt; 1;         <i>/* posun na další (méně významný) bit */</i>
+    }
+&nbsp;
+    printf("   hex: %08x   fp: %+11.5f\n", x, fx2fp(x));
+}
+&nbsp;
+<i>/*</i>
+<i> * Převod z formátu plovoucí řádové binární čárky (FP)</i>
+<i> * do formátu pevné řádové binární čárky (FX)</i>
+<i> */</i>
+fx <strong>fp2fx</strong>(double x)
+{
+    return (fx) (x * (2 &lt;&lt; (B - 1)));
+}
+&nbsp;
+<i>/*</i>
+<i> * Převod z celočíselného formátu (integer)</i>
+<i> * do formátu pevné řádové binární čárky (FX)</i>
+<i> */</i>
+fx <strong>int2fx</strong>(int x)
+{
+    return (fx) (x &lt;&lt; B);
+}
+&nbsp;
+<i>/*</i>
+<i> * Převod z formátu pevné řádové binární čárky (FX)</i>
+<i> * do formátu plovoucí řádové binární čárky (FP)</i>
+<i> */</i>
+double <strong>fx2fp</strong>(fx x)
+{
+    return (double) x / (2 &lt;&lt; (B - 1));
+}
+&nbsp;
+<i>/*</i>
+<i> * Součet dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_add</strong>(fx x, fx y)
+{
+    return x + y;
+}
+&nbsp;
+<i>/*</i>
+<i> * Rozdíl dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_sub</strong>(fx x, fx y)
+{
+    return x - y;
+}
+&nbsp;
+<i>/*</i>
+<i> * Součin dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_mul</strong>(fx x, fx y)
+{
+    fx result = (x &gt;&gt; (B / 2)) * (y &gt;&gt; (B / 2));
+    return result;
+}
+&nbsp;
+<i>/*</i>
+<i> * Podíl dvou hodnot uložených ve shodném formátu</i>
+<i> * pevné binární řádové čárky (FX)</i>
+<i> */</i>
+fx <strong>fx_div</strong>(fx x, fx y)
+{
+    fx result = x / (y &gt;&gt; (B / 2));
+    return result &lt;&lt; (B / 2);
+}
+&nbsp;
+<i>/*</i>
+<i> * Vytvoření tabulky pro výpočet goniometrických</i>
+<i> * funkcí pomocí algoritmu CORDIC</i>
+<i> */</i>
+void <strong>fx_create_tables</strong>(void)
+{
+    int i;
+    for (i = 0; i &lt; MAX_ITER; i++) {
+        double p = pow(2.0, -i);
+        atans[i] = fp2fx(atan(p));
+        pows[i] = fp2fx(p);
+    }
+}
+&nbsp;
+&nbsp;
+<i>/* výpočet funkce tan() pro zadaný úhel delta */</i>
+<i>/* (optimalizovaná verze) */</i>
+fx <strong>fx_tan_cordic_optim</strong>(fx delta)
+{
+    int i;
+    <i>/* nastavení počátečních podmínek */</i>
+    fx x0 = int2fx(1);
+    fx y0 = 0;
+    fx xn;
+    if (delta == 0)
+        return 0;               <i>/* ošetření nulového úhlu */</i>
+    for (i = 0; i &lt; MAX_ITER; i++) {    <i>/* iterační smyčka */</i>
+        if (delta &lt; 0) {        <i>/* úhel je záporný =&gt; rotace doleva */</i>
+            xn = fx_add(x0, y0 &gt;&gt; i);   <i>/* místo násobení bitový posuv */</i>
+            y0 = fx_sub(y0, x0 &gt;&gt; i);
+            delta = fx_add(delta, atans[i]);
+        } else {                <i>/* úhel je kladný =&gt; rotace doprava */</i>
+            xn = fx_sub(x0, y0 &gt;&gt; i);
+            y0 = fx_add(y0, x0 &gt;&gt; i);
+            delta = fx_sub(delta, atans[i]);
+        }
+        x0 = xn;
+    }
+    if (x0 == 0)                <i>/* ošetření tangenty pravého úhlu */</i>
+        if (y0 &lt; 0)
+            return 0;
+        else
+            return 0;
+    else
+        return fx_div(y0, x0);  <i>/* vrátit výsledek operace */</i>
+}
+&nbsp;
+&nbsp;
+int <strong>main</strong>(void)
+{
+    int i;
+    fx tanfx;
+    double delta;               <i>/* úhel, ze kterého se funkce počítá */</i>
+    double tan_value;           <i>/* absolutní chyby */</i>
+    double tan_error;           <i>/* relativní chyby */</i>
+&nbsp;
+    fx_create_tables();
+&nbsp;
+    <i>/* výpis tabulky tangent úhlů v rozsahu 0..89° */</i>
+    for (i=0; i&lt;90; i++) {                         <i>/* výpočetní smyčka */</i>
+        delta=deg2rad(i);                          <i>/* převod úhlu na radiány */</i>
+        tanfx=fx_tan_cordic_optim(fp2fx(delta));   <i>/* aplikace algoritmu CORDIC */</i>
+        tan_value=fx2fp(tanfx);                    <i>/* výpočet funkce tan */</i>
+        tan_error=fabs(tan_value-tan(delta));      <i>/* výpočet absolutních chyb */</i>
+                                                   <i>/* tisk výsledků */</i>
+        printf("%02d\t%14.10f\t%14.10f\t%12.10f\t%8.3f%%\n",
+                i,
+                tan_value,
+                tan(delta),
+                tan_error,
+                tan_error==0 ? 0:100.0*tan_error/tan(delta));
+    }
+&nbsp;
+    return 0;
+}
+&nbsp;
+<i>// finito</i>
 </pre>
 
 
@@ -1162,12 +1360,66 @@ následující (do značné míry podobné) výsledky:</p>
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Výpočet goniometrické funkce <i>sin</i></h2>
+
+<p>Výpočet goniometrické funkce <i>sin()</i> pomocí algoritmu CORDIC je při
+použití formátu pevné řádové binární čárky velmi snadný a současně i přímočarý.
+Dokonce je možné říci, že výpočet je oproti verzi používající plovoucí řádovou
+čárku jednodušší, a to z&nbsp;toho důvodu, že se místo pomocné tabulky
+s&nbsp;druhými mocninami čísla dvě přímo používá operace pro aritmetický posuv
+doprava (ten je podporován přímo centrální procesorovou jednotkou, jedná se
+tedy o znatelné zrychlení celého výpočtu). Při implementaci algoritmu CORDIC
+v&nbsp;programovacím jazyku C může funkce pro výpočet sinu vypadat následovně
+(připomeňme si, že výsledek je uložen v&nbsp;y-ové složce orotovaného vektoru
+<strong>r</strong>):</p>
+
+<pre>
+<i>/* výpočet funkce sin() pro zadaný úhel delta */</i>
+fx <strong>fx_sin_cordic_optim</strong>(fx delta)
+{
+    int i;
+    static fx K_fx=(fx)(K_float*(2&lt;&lt;(B-1)));
+    <i>/* nastavení počátečních podmínek */</i>
+    fx x0=int2fx(1);
+    fx y0=0;
+    fx xn;
+    for (i=0; i&lt;MAX_ITER; i++) {            <i>/* iterační smyčka */</i>
+        if (delta&lt;0) {                      <i>/* úhel je záporný =&gt; rotace doleva */</i>
+            xn=fx_add(x0, y0&gt;&gt;i);           <i>/* místo násobení bitový posuv */</i>
+            y0=fx_sub(y0, x0&gt;&gt;i);
+            delta=fx_add(delta, atans[i]);
+        }
+        else {                              <i>/* úhel je kladný =&gt; rotace doprava */</i>
+            xn=fx_sub(x0, y0&gt;&gt;i);
+            y0=fx_add(y0, x0&gt;&gt;i);
+            delta=fx_sub(delta, atans[i]);
+        }
+        x0=xn;
+    }
+    return fx_mul(y0, K_fx);                <i>/* opravit "zesílení" výsledku */</i>
+}
+</pre>
 
 
 
 <p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
+<h2 id="k17">17. Výsledky výpočtu funkce <i>sin</i>: absolutní a relativní chyby, statistiky</h2>
+
+<p>Výše uvedenou céčkovskou funkci <strong>fx_sin_cordic_optim()</strong> si
+můžeme otestovat na výpočtu úhlů ležících v&nbsp;prvním kvadrantu, tj.&nbsp;od
+0&deg; do 90&deg;. Kromě vypočtených hodnot je u každého úhlu uvedena i hodnota
+vypočtená pomocí FPU, dále pak absolutní a relativní chyba. Tučně jsou
+zvýrazněny ty relativní chyby, které jsou menší než jedno procento:</p>
+
+<h2>Statistické vlastnosti výpočtu</h2>
+
+<table>
+<tr><td><strong>Počet iterací:</strong></td><td>16</td></tr>
+<tr><td><strong>Součet absolutních chyb:</strong></td><td>   0.270</td></tr>
+<tr><td><strong>Součet relativních chyb:</strong></td><td>  59.119%</td></tr>
+<tr><td><strong>Průměrná absolutní chyba:</strong></td><td>   0.003</td></tr>
+<tr><td><strong>Průměrná relativní chyba:</strong></td><td>   0.650%</td></tr>
+</table>
 
 
 
@@ -1207,6 +1459,8 @@ následující (do značné míry podobné) výsledky:</p>
 <tr><td>24</td><td>gfx_6_putpixel_4.asm</td><td>vykreslení pixelu přes obrázek, nekorektní chování (přepis obrázku)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/gfx_6_putpixel_4.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/gfx_6_putpixel_4.asm</a></td></tr>
 <tr><td>25</td><td>gfx_6_putpixel_5.asm</td><td>vykreslení pixelu přes obrázek, korektní varianta pro bílé pixely</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/gfx_6_putpixel_5.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/gfx_6_putpixel_5.asm</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>26</td><td>cga_text_mode_1.asm</td><td>standardní textový režim s&nbsp;rozlišením 40&times;25 znaků</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/cga_text_mode_1.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/cga_text_mode_1.asm</a></td></tr>
+<tr><td>27</td><td>cga_text_mode_3.asm</td><td>standardní textový režim s&nbsp;rozlišením 80&times;25 znaků</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/pc-dos/cga_text_mode_3.asm">https://github.com/tisnik/8bit-fame/blob/master/pc-dos/cga_text_mode_3.asm</a></td></tr>
 </table>
 
 
