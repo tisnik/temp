@@ -37,7 +37,7 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Funkce vestavěné v&nbsp;GCC pro provádění nízkoúrovňových bitových operací a rotací</a></p>
+<p><a href="#k01">1. Funkce vestavěné v&nbsp;GCC pro provádění nízkoúrovňových bitových operací a rotací</a></p>
 <p><a href="#k02">2. Bitová rotace doprava i doleva</a></p>
 <p><a href="#k03">3. Způsob překladu operace rotace doleva do strojového kódu</a></p>
 <p><a href="#k04">4. Překlad volání funkce <strong>__builtin_stdc_rotate_left</strong> pro platformu x86-64</a></p>
@@ -48,12 +48,12 @@
 <p><a href="#k09">9. Analýza vygenerovaného strojového kódu pro platformu AArch64</a></p>
 <p><a href="#k10">10. Rozdíl mezi operací rotace doleva a doprava</a></p>
 <p><a href="#k11">11. Překlad operace rotace doprava pro všechny analyzované platformy</a></p>
-<p><a href="#k12">*** 12. Funkce pro výpočet parity v&nbsp;bajtu či vícebajtovém slovu</a></p>
+<p><a href="#k12">12. Funkce pro výpočet parity v&nbsp;bajtu či vícebajtovém slovu</a></p>
 <p><a href="#k13">13. Volání vestavěných funkcí <strong>__builtin_parity</strong>, <strong>__builtin_parityl</strong> a <strong>__builtin_parityll</strong></a></p>
 <p><a href="#k14">14. Realizace výpočtu parity na platformě x86-64</a></p>
 <p><a href="#k15">15. Realizace výpočtu parity na platformě ARM32</a></p>
 <p><a href="#k16">*** 16. Realizace výpočtu parity na platformě ARM64 (AArch64)</a></p>
-<p><a href="#k17">*** 17. Výpočet parity a celočíselné datové typy se znaménkem</a></p>
+<p><a href="#k17">17. Výpočet parity a celočíselné datové typy se znaménkem</a></p>
 <p><a href="#k18">*** 18. Další bitové operace podporované vestavěnými funkcemi GCC</a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
 <p><a href="#k20">20. Odkazy na Internetu</a></p>
@@ -62,6 +62,36 @@
 
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Funkce vestavěné v&nbsp;GCC pro provádění nízkoúrovňových bitových operací a rotací</h2>
+
+<p>Na předchozí dvojici článků o funkcích vestavěných do GCC, které slouží
+k&nbsp;provádění nízkoúrovňových operací [<a
+href="https://www.root.cz/clanky/funkce-vestavene-v-gcc-pro-provadeni-nizkourovnovych-aritmetickych-operaci/">1</a>]
+[<a
+href="https://www.root.cz/clanky/generator-nahodnych-cisel-zalozeny-na-instrukcich-rdseed-a-rdrand/">2</a>]
+dnes navážeme. Prozatím jsme si popsali realizace operace součtů
+s&nbsp;přenosem (<i>carry</i>), které jsou relativně často používány
+v&nbsp;praxi. Ve druhém článku jsme se zmínili o funkcích, které interně volají
+instrukce <strong>RDSEED</strong> a <strong>RDRAND</strong>, jež přistupují
+k&nbsp;vestavěnému generátoru náhodných čísel (což je specifikum platformy
+x86-64). Ovšem podobných nízkoúrovňových operací existuje celá řada. Dnes se
+zaměříme na dvě skupiny takových operací. V&nbsp;první skupině se nachází
+operace pro provedení bitové <i>rotace</i> (nikoli <i>posunu</i>) doleva či
+doprava o specifikovaný počet bitů. A ve skupině druhé nalezneme operace pro
+výpočet parity předaného bajtu či vícebajtového slova.</p>
+
+<p>Přitom nás nebude zajímat pouze způsob volání těchto operací (to je ve
+skutečnosti triviální), ale i to, jak jsou tyto operace přeloženy do strojového
+kódu. Zaměříme se na platformu x86-64, ARM32 (tedy původní ARMy) a AArch64
+(64bitová architektura). Zajímavé bude například zjištění, že pro výpočet
+parity se na architektuře AArch64 musí volat &bdquo;vektorové&ldquo; (SIMD)
+operace a na platformě ARM32 se namísto volání specializované instrukce volá
+systémová subrutina. A taktéž bude zajímavé zjistit způsob realizace bitových
+rotací pro &bdquo;nenativní&ldquo; bitové šířky u architektur ARM32 i AArch64
+(jedná se o rotace bajtů, šestnáctibitových slov a u ARM32 i rotace 64bitových
+slov).</p>
+
+<p><div class="rs-tip-major">Poznámka: používat budeme překladač GCC C verze
+15; některé operace jsou definovány až v&nbsp;této nové verzi.</div></p>
 
 
 
@@ -786,7 +816,40 @@ nutná simulace rotace bitovými posuny:</p>
 <p><a name="k12"></a></p>
 <h2 id="k12">12. Funkce pro výpočet parity v&nbsp;bajtu či vícebajtovém slovu</h2>
 
-<p></p>
+<p>Ve druhé polovině dnešního článku se budeme zabývat vestavěnými funkcemi
+sloužícími pro výpočet parity, tj.&nbsp;počtu jedničkových bitů v&nbsp;bajtu či
+vícebajtovém slovu. I s&nbsp;tímto výpočtem se lze relativně často setkat,
+ovšem programovací jazyk C nenabízí pro výpočet parity žádné speciální
+operátory. Namísto toho můžeme volat vestavěné funkce, které mají následující
+hlavičku:</p>
+
+<pre>
+int <strong>__builtin_parity</strong>(unsigned int x)
+int <strong>__builtin_parityl</strong>(unsigned long)
+int <strong>__builtin_parityll</strong>(unsigned long long)
+</pre>
+
+<p>V&nbsp;novějších verzích překladače GCC je nabízena ještě generická varianta
+výše uvedených funkcí, která má tuto hlavičku (za ... lze dosadit libovolný
+celočíselný typ bez znaménka):</p>
+
+<pre>
+int <strong>__builtin_parityg</strong>(...)
+</pre>
+
+<p>A jak je parita spočítána interně? Nejjednodušší je to na platformě x86-64,
+protože zde existuje paritní bit <strong>PF</strong>. Ten je (po příslušné
+testovací či aritmetické operaci) nastaven na jedničku v&nbsp;případě, že má
+výsledek sudou paritu (a pochopitelně je vynulován při liché paritě). A navíc
+platforma x86-64 obsahuje instrukce <strong>SETcc</strong>, které dokážou
+nastavit hodnotu ve zvoleném pracovním registru na nulu, pokud je splněna
+podmínka specifikovaná v&nbsp;<strong>cc</strong>. A touto podmínkou může být
+test paritního bitu <strong>PF</strong> na nulu nebo na jedničku:</p>
+
+<pre>
+SETP  cílový_registr
+SETNP cílový_registr
+</pre>
 
 
 
@@ -950,8 +1013,8 @@ možné instrukci <strong>setnp</strong> aplikovat:</p>
 <h2 id="k15">15. Realizace výpočtu parity na platformě ARM32</h2>
 
 <p>Na 32bitové platformě ARM není výpočet parity realizován jednou instrukcí,
-ale podprogramem. Zde tedy můžeme předpokládat relativně pomalé výpočty této
-operace:</p>
+ale podprogramem (subrutinou). Zde tedy můžeme předpokládat relativně pomalé
+výpočty této operace:</p>
 
 <pre>
 <strong>parity_char</strong>:
@@ -987,8 +1050,37 @@ platforma ARM32 vlastně nejhůře.</div></p>
 <p><a name="k16"></a></p>
 <h2 id="k16">16. Realizace výpočtu parity na platformě ARM64 (AArch64)</h2>
 
+<p>Nejzajímavější je způsob překladu výpočtu parity na platformě AArch64. Zde
+se totiž využívá instrukce <strong>cnt</strong>, která zjistí počet
+jedničkových bitů. Ovšem zajímavé je, že tato instrukce pracuje
+s&nbsp;&bdquo;vektorovými&ldquo; registry <strong>Vxx</strong> a nikoli
+s&nbsp;běžnými celočíselnými pracovními registry. Takže si nejdříve uveďme,
+s&nbsp;jakými registry se vlastně na této platformě pracuje.</p>
+
+<p>Původních patnáct pracovních registrů pojmenovaných <strong>R0</strong> až
+<strong>R14</strong>, které známe z&nbsp;32bitových procesorů ARM, bylo
+rozšířeno na 31 registrů, z&nbsp;nichž každý má šířku 64 bitů. Z&nbsp;tohoto
+důvodu muselo dojít k&nbsp;úpravě pojmenování registrů způsobem, který je
+naznačený v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>Jméno</th><th>Význam</th></tr>
+<tr><td>r0..r30</td><td>použito například v&nbsp;dokumentaci, popisu ABI atd.</td></tr>
+<tr><td>x0..x30</td><td>celý 64bitový registr použitý jako zdroj či cíl</td></tr>
+<tr><td>w0..w30</td><td>spodních 32 bitů registru (horních 32 bitů výsledku je buď vynulováno nebo znaménkově rozšířeno)</td></tr>
+</table>
+
+<p>Další sada registrů je používána při operacích s&nbsp;typy
+<i>single/float</i> a <i>double</i> (tedy s&nbsp;operandy reprezentovanými
+v&nbsp;systému plovoucí řádové čárky), u SIMD operací a taktéž kryptografickým
+modulem:</p>
+
+<p>Povšimněte si, že &ndash; na rozdíl od mnoha jiných architektur &ndash;
+nedochází k&nbsp;tomu, že by se například dva single registry mapovaly do
+jednoho double registru atd.</p>
+
 <pre>
-parity_char:
+<strong>parity_char</strong>:
         and     x0, x0, 255
         fmov    d31, x0
         cnt     v31.8b, v31.8b
@@ -996,24 +1088,24 @@ parity_char:
         fmov    w0, s31
         and     w0, w0, 1
         ret
-
-parity_int:
+&nbsp;
+<strong>parity_int</strong>:
         fmov    s31, w0
         cnt     v31.8b, v31.8b
         addv    b31, v31.8b
         fmov    w0, s31
         and     w0, w0, 1
         ret
-
-parity_long:
+&nbsp;
+<strong>parity_long</strong>:
         fmov    d31, x0
         cnt     v31.8b, v31.8b
         addv    b31, v31.8b
         fmov    x0, d31
         and     w0, w0, 1
         ret
-
-parity_long_long:
+&nbsp;
+<strong>parity_long_long</strong>:
         fmov    d31, x0
         cnt     v31.8b, v31.8b
         addv    b31, v31.8b
@@ -1027,23 +1119,135 @@ parity_long_long:
 <p><a name="k17"></a></p>
 <h2 id="k17">17. Výpočet parity a celočíselné datové typy se znaménkem</h2>
 
+<p>Vestavěné funkce <strong>__builtin_parity</strong>,
+<strong>__builtin_parityl</strong> a <strong>__builtin_parityll</strong> jsou
+definovány pro parametry typu celé číslo bez znaménka (<i>unsigned</i>),
+protože pro typy se znaménkem je výpočet poněkud nejasný především ze
+<i>sémantického</i> pohledu (operace pracují s&nbsp;vektorem bitů, zatímco
+záporné hodnoty mají různé způsoby vyjádření). Teoreticky by nás tedy měl
+překladač jazyka C varovat, pokud se pokusíme o překlad tohoto kódu:</p>
+
 <pre>
-int parity_char(signed char x) {
-    return __builtin_parity(x);
+int <strong>parity_char</strong>(signed char x) {
+    return <u>__builtin_parity</u>(x);
 }
-
-int parity_int(signed int x) {
-    return __builtin_parity(x);
+&nbsp;
+int <strong>parity_int</strong>(signed int x) {
+    return <u>__builtin_parity</u>(x);
 }
-
-int parity_long(signed long x) {
-    return __builtin_parityl(x);
+&nbsp;
+int <strong>parity_long</strong>(signed long x) {
+    return <u>__builtin_parityl</u>(x);
 }
-
-int parity_long_long(signed long long x) {
-    return __builtin_parityll(x);
+&nbsp;
+int <strong>parity_long_long</strong>(signed long long x) {
+    return <u>__builtin_parityll</u>(x);
 }
 </pre>
+
+<p>V&nbsp;případě, že překlad provedeme například s&nbsp;následujícími
+přepínači, překladač žádné varování ani chyby nevypíše:</p>
+
+<pre>
+$ <strong>gcc -Wall -Werror parity_signed.c</strong>
+</pre>
+
+<p>Aby se potenciální problémy s&nbsp;hodnotami se znaménkem detekovaly, je nutné </p>
+
+<pre>
+$ <strong>gcc -Wall -Werror -Wconversion parity_signed.c</strong>
+</pre>
+
+<p>V&nbsp;tomto případě bude skutečně detekován problém při konverzi hodnot
+z&nbsp;typu se znaménkem na typ bez znaménka:</p>
+
+<pre>
+parity_signed.c: In function ‘parity_char’:
+parity_signed.c:2:29: error: conversion to ‘unsigned int’ from ‘signed char’ may change the sign of the result [-Werror=sign-conversion]
+    2 |     return __builtin_parity(x);
+      |                             ^
+parity_signed.c: In function ‘parity_int’:
+parity_signed.c:6:29: error: conversion to ‘unsigned int’ from ‘int’ may change the sign of the result [-Werror=sign-conversion]
+    6 |     return __builtin_parity(x);
+      |                             ^
+parity_signed.c: In function ‘parity_long’:
+parity_signed.c:10:30: error: conversion to ‘long unsigned int’ from ‘long int’ may change the sign of the result [-Werror=sign-conversion]
+   10 |     return __builtin_parityl(x);
+      |                              ^
+parity_signed.c: In function ‘parity_long_long’:
+parity_signed.c:14:31: error: conversion to ‘long long unsigned int’ from ‘long long int’ may change the sign of the result [-Werror=sign-conversion]
+   14 |     return __builtin_parityll(x);
+      |                               ^
+cc1: all warnings being treated as errors
+</pre>
+
+<p>V&nbsp;případě, že budeme volat modernější vestavěnou funkci
+<strong>__builtin_parityg</strong>, budou se problémy hlásit i v&nbsp;případě,
+že přepínač <strong>-Wconversion</strong> nepoužijeme. Ověřit si to opět můžeme
+velmi jednoduchým pokusem:</p>
+
+<pre>
+#include &lt;stdint.h&gt;
+&nbsp;
+int <strong>parity_8bit</strong>(int8_t x) {
+    return <u>__builtin_parityg</u>(x);
+}
+&nbsp;
+int <strong>parity_16bit</strong>(int16_t x) {
+    return <u>__builtin_parityg</u>(x);
+}
+&nbsp;
+int <strong>parity_32bit</strong>(int32_t x) {
+    return <u>__builtin_parityg</u>(x);
+}
+&nbsp;
+int <strong>parity_64bit</strong>(int64_t x) {
+    return <u>__builtin_parityg</u>(x);
+}
+</pre>
+
+<p>Chybová hlášení vypsaná překladačem GCC by měla vypadat následovně:</p>
+
+<pre>
+parityg_signed.c: In function ‘parity_8bit’:
+parityg_signed.c:4:30: error: argument 1 in call to function ‘__builtin_parityg’ has signed type
+    4 |     return __builtin_parityg(x);
+      |                              ^
+parityg_signed.c: In function ‘parity_16bit’:
+parityg_signed.c:8:30: error: argument 1 in call to function ‘__builtin_parityg’ has signed type
+    8 |     return __builtin_parityg(x);
+      |                              ^
+parityg_signed.c: In function ‘parity_32bit’:
+parityg_signed.c:12:30: error: argument 1 in call to function ‘__builtin_parityg’ has signed type
+   12 |     return __builtin_parityg(x);
+      |                              ^
+parityg_signed.c: In function ‘parity_64bit’:
+parityg_signed.c:16:30: error: argument 1 in call to function ‘__builtin_parityg’ has signed type
+   16 |     return __builtin_parityg(x);
+      |                              ^
+parityg_signed.c: In function ‘parity_8bit’:
+parityg_signed.c:5:1: error: control reaches end of non-void function [-Werror=return-type]
+    5 | }
+      | ^
+parityg_signed.c: In function ‘parity_16bit’:
+parityg_signed.c:9:1: error: control reaches end of non-void function [-Werror=return-type]
+    9 | }
+      | ^
+parityg_signed.c: In function ‘parity_32bit’:
+parityg_signed.c:13:1: error: control reaches end of non-void function [-Werror=return-type]
+   13 | }
+      | ^
+parityg_signed.c: In function ‘parity_64bit’:
+parityg_signed.c:17:1: error: control reaches end of non-void function [-Werror=return-type]
+   17 | }
+      | ^
+cc1: all warnings being treated as errors
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: to znamená, že je většinou výhodnější
+volat vestavěnou funkci <strong>__builtin_parityg</strong> a nikoli její starší
+varianty <strong>__builtin_parity</strong>, <strong>__builtin_parityl</strong>
+či <strong>__builtin_parityll</strong>.</div></p>
 
 
 
