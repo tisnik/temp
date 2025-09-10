@@ -31,25 +31,25 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Dnes si ukážeme další funkce vestavěné do GCC, jež slouží pro realizaci nízkoúrovňových operací. Zaměříme se na funkce umožnující ve vstupní hodnotě nalézt délku sekvence nulových bitů, přičemž se tato sekvence hledá od nejvyššího bitu nebo naopak od bitu nejnižšího.</p>
 
 
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Funkce vestavěné v&nbsp;GCC pro provádění nízkoúrovňových bitových operací a rotací (2. část)</a></p>
-<p><a href="#k02">*** 2. Vyhledání prvního nebo posledního bitu se zadanou hodnotou</a></p>
-<p><a href="#k03">*** 3. Důležitá odbočka: instrukce pro hledání bitů dostupné na architektuře x86-64</a></p>
+<p><a href="#k01">1. Funkce vestavěné v&nbsp;GCC pro provádění nízkoúrovňových bitových operací a rotací (2. část)</a></p>
+<p><a href="#k02">2. Vyhledání prvního nebo posledního bitu se zadanou hodnotou vs. hledání sekvence stejných bitů</a></p>
+<p><a href="#k03">3. Důležitá odbočka: instrukce pro hledání bitů dostupné na architektuře x86-64</a></p>
 <p><a href="#k04">4. Základní použití instrukcí <strong>BSF</strong> a <strong>BSR</strong></a></p>
 <p><a href="#k05">5. Realizace výpočtů pozice nejvyššího a nejnižšího bitu s&nbsp;jedničkovou hodnotou pro vstupy 0 až 16</a></p>
-<p><a href="#k06">*** 6. Chování instrukcí <strong>BSF</strong> a <strong>BSR</strong> v&nbsp;případě, že je vstup nulový</a></p>
+<p><a href="#k06">6. Chování instrukcí <strong>BSF</strong> a <strong>BSR</strong> v&nbsp;případě, že je vstup nulový</a></p>
 <p><a href="#k07">7. Upravené příklady pro výpočty pozice nejvyššího a nejnižšího bitu s&nbsp;jedničkovou hodnotou pro vstupy 0 až 16</a></p>
 <p><a href="#k08">8. Vypočtené výsledky</a></p>
-<p><a href="#k09">*** 9. Zjištění počtu nulových bitů na začátku nebo konci testované hodnoty</a></p>
+<p><a href="#k09">9. Zjištění počtu nulových bitů na začátku nebo konci testované hodnoty</a></p>
 <p><a href="#k10">10. Příklad použití instrukce <strong>LZCNT</strong></a></p>
 <p><a href="#k11">11. Příklad použití instrukce <strong>TZCNT</strong></a></p>
-<p><a href="#k12">*** 12. <strong>LZCNT</strong> == <strong>REP BSR</strong></a></p>
-<p><a href="#k13">*** 13. <strong>TZCNT</strong> == <strong>REP BSF</strong></a></p>
+<p><a href="#k12">12. <strong>LZCNT</strong> == <strong>REP BSR</strong></a></p>
+<p><a href="#k13">13. <strong>TZCNT</strong> == <strong>REP BSF</strong></a></p>
 <p><a href="#k14">*** 14. Volání vestavěné funkce <strong>__builtin_stdc_first_trailing_one</strong></a></p>
 <p><a href="#k15">*** 15. Překlad funkce <strong>__builtin_stdc_first_trailing_one</strong> do strojového kódu</a></p>
 <p><a href="#k16">*** 16. </a></p>
@@ -63,8 +63,27 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Funkce vestavěné v&nbsp;GCC pro provádění nízkoúrovňových bitových operací a rotací (2. část)</h2>
 
-<p></p>
+<p>Na <a
+href="https://www.root.cz/clanky/funkce-vestavene-v-gcc-pro-nizkourovnove-bitove-operace-a-rotace/">předchozí
+článek o podpoře bitových rotací a výpočtu parity</a> dnes navážeme. Ukážeme si
+některé další funkce vestavěné do GCC, které slouží pro realizaci
+nízkoúrovňových operací. Zaměříme se na funkce, které dokážou ve vstupní
+hodnotě nalézt délku sekvence nulových bitů, přičemž se tato sekvence hledá od
+nejvyššího bitu nebo naopak od bitu nejnižšího. Tyto operace se označují
+zkratkami <strong>clz</strong> (<i>count leading zeros</i>) a
+<strong>ctz</strong> (<i>count trailing zeros</i>). Existují ještě podobné
+operace <strong>ffs</strong> (<i>find first set</i>) a <strong>fls</strong>
+(<i>find last set</i>), které hledají index prvního nebo posledního bitu
+nastaveného na jedničku.</p>
 
+<p>Ukážeme si, jak jsou tyto operace realizovány na architektuře x86-64, která
+k&nbsp;tomuto účelu nabízí hned čtyři instrukce.</p>
+
+<p>Jen pro úplnost si vypišme všechny vestavěné funkce nabízené překladačem
+GCC, které jsou určeny pro provádění nízkoúrovňových operací. Velká část těchto
+funkcí realizuje operace popsané v&nbsp;úvodním odstavci:</p>
+
+<pre>
 int __builtin_ffs(int x)
 int __builtin_clz(unsigned int x)
 int __builtin_ctz(unsigned int x)
@@ -99,21 +118,102 @@ unsigned int __builtin_stdc_leading_ones(type arg)
 unsigned int __builtin_stdc_leading_zeros(type arg)
 unsigned int __builtin_stdc_trailing_ones(type arg)
 unsigned int __builtin_stdc_trailing_zeros(type arg)
+</pre>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. Vyhledání prvního nebo posledního bitu se zadanou hodnotou</h2>
+<h2 id="k02">2. Vyhledání prvního nebo posledního bitu se zadanou hodnotou vs. hledání sekvence stejných bitů</h2>
+
+<p>První čtveřice vestavěných funkcí slouží pro nalezení prvního bitu se
+zadanou hodnotou (nula či jedna). Vyhledávání prvního bitu může začínat od
+nejnižšího či naopak od nejvyššího bitu a korektně se reaguje i na situace, kdy
+žádný z&nbsp;bitů nenabývá hledané hodnoty (tj.&nbsp;hledáme jedničkový bit
+v&nbsp;hodnotě 0x0000 či nulový bit v&nbsp;hodnotě 0xffff):</p>
+
+<pre>
+unsigned int __builtin_stdc_first_leading_one(type arg)
+unsigned int __builtin_stdc_first_leading_zero(type arg)
+unsigned int __builtin_stdc_first_trailing_one(type arg)
+unsigned int __builtin_stdc_first_trailing_zero(type arg)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: nejnižší bit má v&nbsp;tomto případě
+index roven jedné! Hodnota nula je rezervována pro situace, ve kterých nebyl
+bit nalezen.</div></p>
+
+<p>Další funkce hledají sekvenci bitů se stejnou hodnotou, a to opět od
+nejnižšího nebo od nejvyššího bitu. Opět se pochopitelně jedná o čtveřici
+funkcí:</p>
+
+<pre>
+unsigned int __builtin_stdc_leading_ones(type arg)
+unsigned int __builtin_stdc_leading_zeros(type arg)
+unsigned int __builtin_stdc_trailing_ones(type arg)
+unsigned int __builtin_stdc_trailing_zeros(type arg)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;případě, že se vrátí 0, znamená
+to, že vstupní hodnota nezačíná očekávanou sekvencí, resp.&nbsp;že je tato
+sekvence nulová.</div></p>
+
+<p>Existují ještě starší funkce s&nbsp;podobným významem, které ovšem nemají
+definovanou hodnotu v&nbsp;případě, že nebyl bit nalezen. A navíc se bity
+indexují od nuly a nikoli od jedničky:</p>
+
+<pre>
+int __builtin_ffs(int x)
+int __builtin_ffsl(long)
+int __builtin_ffsll(long long)
+&nbsp;
+int __builtin_clz(unsigned int x)
+int __builtin_clzl(unsigned long)
+int __builtin_clzll(unsigned long long)
+&nbsp;
+int __builtin_ctz(unsigned int x)
+int __builtin_ctzl(unsigned long)
+int __builtin_ctzll(unsigned long long)
+</pre>
+
+<p>Modernější varianty těchto funkcí jsou generické (první operand je
+jakéhokoli celočíselného typu) a jako druhý operand akceptují hodnotu vrácenou
+v&nbsp;případě, že bit s&nbsp;hledanou hodnotou není nalezen (můžeme například
+předat -1 atd.):</p>
+
+<pre>
+int __builtin_ffsg(...)
+int __builtin_clzg(...)
+int __builtin_ctzg(...)
+</pre>
 
 
 
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Důležitá odbočka: instrukce pro hledání bitů dostupné na architektuře x86-64</h2>
 
-BSF
-BSR
-TZCNT - count trailing zeroes
-LZCNT
+<p>Ještě předtím, než si ukážeme způsob použití a překladu vestavěných funkcí
+určených pro nalezení nulových či naopak nenulových bitů, je užitečné, poučné a
+zajímavé se podívat, jaké instrukce, které tuto činnost provádí, jsou vlastně
+k&nbsp;dispozici a jak se chovají. Zaměřme se na platformu x86-64, která
+vychází z&nbsp;platformy x86. Zde máme k&nbsp;dispozici hned čtyři instrukce,
+které mají odlišnou historii vzniku a taktéž (značně) odlišné chování:</p>
+
+<table>
+<tr><th>Instrukce</th><th>Operandy</th><th>Význam zkratky</th><th>Chování</th><th>Chování pro nulový vstup</th></tr>
+<tr><td>BSF</td><td>16bit, 32bit, 64bit</td><td>Bit Scan Forward</td><td>index prvního bitu nastaveného na jedničku (hledání od nejnižšího bitu)</td><td>ZF=1</td></tr>
+<tr><td>BSR</td><td>16bit, 32bit, 64bit</td><td>Bit Scan Reverse</td><td>index prvního bitu nastaveného na jedničku (hledání od nejvyššího bitu)</td><td>ZF=1</td></tr>
+<tr><td>LZCNT</td><td>16bit, 32bit, 64bit</td><td>Count Leading Zeros</td><td>délka sekvence nulových bitů (hledání od nejvyššího bitu)</td><td>CF=1</td></tr>
+<tr><td>TZCNT</td><td>16bit, 32bit, 64bit</td><td>Count Trailing Zeros</td><td>délka sekvence nulových bitů (hledání od nejnižšího bitu)</td><td>CF=1</td></tr>
+</table>
+
+<p>Délka sekvence nulových bitů ovšem neodpovídá indexu prvního jedničkového
+bitu, a to ani při hledání od nejnižšího bitu.</p>
+
+<p><div class="rs-tip-major">Poznámka: u všech těchto instrukcí platí důležitá
+vlastnost &ndash; doba výpočtu není závislá na struktuře vstupních dat,
+tj.&nbsp;interně se <i>NE</i>provádí postupné procházení jednotlivými bity
+(s&nbsp;testy na jejich hodnotu), ale využívají se komplikovanější a
+sofistikovanější mechanismy.</div></p>
 
 
 
@@ -382,7 +482,35 @@ section .text
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Chování instrukcí <strong>BSF</strong> a <strong>BSR</strong> v&nbsp;případě, že je vstup nulový</h2>
 
-<p></p>
+<p>V&nbsp;předchozím textu jsme si řekli, že instrukce <strong>BSF</strong> a
+<strong>BSR</strong> hledají ve vstupním bajtu či vícebajtovém slovu první bit,
+který je nastavený na jedničku. Ovšem v&nbsp;tomto případě je nutné myslet i na
+mezní případ, kdy vstupní data obsahují jen nulové bity. Mikroprocesor tento
+stav pochopitelně kontroluje a pokud je vstup nulový, nastaví se příznak
+<strong>ZF</strong> (<i>Zero Flag</i>) a hodnota uložená (nebo neuložená) do
+výsledného registru není definována. To tedy znamená, že v&nbsp;praxi je
+prakticky vždy nutné testovat i hodnotu příznakového bitu <strong>ZF</strong>,
+a to například následujícím způsobem:</p>
+
+<pre>
+        bsf     edx, ecx             <i>; zjisteni indexu prvniho nenuloveho bitu</i>
+&nbsp;
+        jnz     zf_reset             <i>; vse v poradku, byl nalezen index bitu</i>
+&nbsp;
+<strong>zf_set</strong>:             <i>; ZF je nastaven - vstupni operand byl nulovy</i>
+        ...
+        ...
+        ...
+&nbsp;
+<strong>zf_reset</strong>:
+        ...
+        ...
+        ...
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: díky existenci příznakových bitů tedy
+není nutné pracovat s&nbsp;&bdquo;magickými chybovými konstantami&ldquo; typu
+-1 atd.</div></p>
 
 
 
@@ -588,6 +716,38 @@ ZF reset 00000004
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Zjištění počtu nulových bitů na začátku nebo konci testované hodnoty</h2>
 
+<p>Instrukce <strong>BSF</strong> a <strong>BSR</strong> jsou podporovány
+(z&nbsp;pohledu moderního IT) celou věčnost, protože byly přidány již do
+instrukční sady mikroprocesorů Intel 80386 (1985). V&nbsp;moderních
+mikroprocesorech s&nbsp;architekturou x86-64 jsou tyto instrukce stále
+podporovány, ovšem navíc mají vývojáři k&nbsp;dispozici dvě další instrukce
+nazvané <strong>LZCNT</strong> a <strong>TZCNT</strong>. Instrukce
+<strong>LZCNT</strong> vrací délku sekvence nulových bitů, přičemž tato
+sekvence musí začínat nejvyšším bitem. Instrukce <strong>TZCNT</strong> taktéž
+vrací délku sekvence nulových bitů, ovšem nyní tato sekvence začíná nejnižším
+bitem.</p>
+
+<p>Do jistém míry tedy tedy instrukce nahrazují <strong>BSF</strong> a
+<strong>BSR</strong>, ovšem je nutné myslet na odlišné chování:</p>
+
+<ul>
+
+<li>Jsou vráceny délky sekvencí nulových bitů a nikoli indexy nenulových bitů
+&ndash; tj.&nbsp;je zde rozdíl &pm;1, pokud začínáme od nejnižšího bitu. A
+pokud naopak začínáme od bitu nejvyššího, je hodnota zcela odlišná.</li>
+
+<li>Pokud je délka nalezené sekvence nulová (tj.&nbsp;první nalezený bit má
+hodnotu 1), nastavuje se příznak <strong>ZF</strong>.</li>
+
+<li>Pokud odpovídá délka sekvence bitové šířce vstupu, nastavuje se příznak
+<strong>CF</strong>.</li>
+
+</ul>
+
+<p><div class="rs-tip-major">Poznámka: to vlastně znamená, že hodnota příznaku
+<strong>CF</strong> sémanticky nahradila příznak <strong>ZF</strong> použitý u
+instrukcí <strong>BSF</strong> a <strong>BSR</strong>.</div></p>
+
 
 
 <p><a name="k10"></a></p>
@@ -698,53 +858,69 @@ analyzovaná 32bitová hodnota přesně jedním nulovým bitem.</p>
 <p><a name="k12"></a></p>
 <h2 id="k12">12. <strong>LZCNT</strong> == <strong>REP BSR</strong></h2>
 
+<p>Instrukce <strong>LZCNT</strong> do jisté míry odpovídá chování instrukce
+<strong>BSR</strong>, i když vrácené hodnoty a nastavované příznaky jsou
+odlišné. Při zavádění této (relativně nové) instrukce do instrukční sady byl
+proto zvolen malý trik &ndash; instrukční kód <strong>LZCNT</strong> je totožný
+s&nbsp;instrukčním kódem instrukce <strong>BSR</strong>, ovšem s&nbsp;přidaným
+prefixem <strong>REP</strong>, jenž u <strong>BSR</strong> vlastně nemá žádný
+význam (teoreticky by měl znamenat opakování instrukce se změnou
+ukazatelů/adres, což je ovšem definováno pouze pro instrukce
+<strong>MOVS</strong>, <strong>STOS</strong>, <strong>CMPS</strong>,
+<strong>LODS</strong> a <strong>SCAS</strong>). Instrukci tak bylo možné
+přidat, aniž by zabírala další (drahou) pozici v&nbsp;sadě dostupných
+operačních kódů.</p>
+
+<p>Ostatně můžeme si otestovat, zda je to pravda, úpravou existujícího
+demonstračního příkladu (viz podtrženou část kódu):</p>
+
 <pre>
 [bits 32]
- 
+&nbsp; 
 %include "linux_macros.asm"
-
+&nbsp; 
 <i>;-----------------------------------------------------------------------------</i>
 section .data
-
-hex_message:
+&nbsp; 
+<strong>hex_message</strong>:
          times 8 db '?'
          db 0x0a
          hex_message_length equ $ - hex_message
-
+&nbsp;
 <i>;-----------------------------------------------------------------------------</i>
 section .bss
-
-id_string: resb 8
-
- 
+&nbsp;
 <i>;-----------------------------------------------------------------------------</i>
 section .text
         global _start                <i>; tento symbol ma byt dostupny i linkeru</i>
-
-_start:
+&nbsp;
+<strong>_start</strong>:
         mov     eax, 0x42            <i>; == 0b01000010</i>
-        rep bsr   edx, eax
-
+        <u>rep bsr   edx, eax</u>
+&nbsp;
         mov     ebx, hex_message     <i>; buffer, ktery se zaplni hexa cislicemi</i>
         call    hex2string           <i>; zavolani prislusne subrutiny</i>
         print_string   hex_message, hex_message_length    <i>; tisk hexadecimalni hodnoty</i>
-
+&nbsp;
         exit                         <i>; ukonceni procesu</i>
-
-
+&nbsp;
+&nbsp;
 %include "hex2string.asm"
 </pre>
 
-<pre>
-0FBDD0         bsr     edx, eax
-</pre>
+<p>Výsledkem bude:</p>
 
 <pre>
-F30FBDD0       lzcnt   edx, eax
+00000019
 </pre>
 
+<p>Totožné kódování je patrné i při pohledu na kontrolní výpisy generované
+assemblerem NASM při použití přepínače <strong>-l</strong>:</p>
+
 <pre>
-F30FBDD0       rep bsr   edx, eax
+  0FBDD0       bsr     edx, eax         <i>; BSR bez prefixu</i>
+F30FBDD0       lzcnt   edx, eax         <i>; LZCNT má totožné kódování s přidaným prefixem REP</i>
+F30FBDD0       rep bsr   edx, eax       <i>; naprosto stejný instrukční kód</i>
 </pre>
 
 
@@ -752,53 +928,58 @@ F30FBDD0       rep bsr   edx, eax
 <p><a name="k13"></a></p>
 <h2 id="k13">13. <strong>TZCNT</strong> == <strong>REP BSF</strong></h2>
 
+<p>Prakticky stejnou vlastností &bdquo;trpí&ldquo; i instrukce
+<strong>TZCNT</strong>, která je přeložena do stejné sekvence bajtů, jako
+instrukce <strong>REP BSF</strong>. Taktéž si to ověříme na upraveném
+demonstračním příkladu:</p>
+
 <pre>
 [bits 32]
- 
+&nbsp; 
 %include "linux_macros.asm"
-
+&nbsp; 
 <i>;-----------------------------------------------------------------------------</i>
 section .data
-
-hex_message:
+&nbsp; 
+<strong>hex_message</strong>:
          times 8 db '?'
          db 0x0a
          hex_message_length equ $ - hex_message
-
+&nbsp;
 <i>;-----------------------------------------------------------------------------</i>
 section .bss
-
-id_string: resb 8
-
- 
+&nbsp;
 <i>;-----------------------------------------------------------------------------</i>
 section .text
         global _start                <i>; tento symbol ma byt dostupny i linkeru</i>
-
-_start:
+&nbsp;
+<strong>_start</strong>:
         mov     eax, 0x42            <i>; == 0b01000010</i>
-        rep bsf   edx, eax
-
+        <u>rep bsf   edx, eax</u>
+&nbsp;
         mov     ebx, hex_message     <i>; buffer, ktery se zaplni hexa cislicemi</i>
         call    hex2string           <i>; zavolani prislusne subrutiny</i>
         print_string   hex_message, hex_message_length    <i>; tisk hexadecimalni hodnoty</i>
-
+&nbsp;
         exit                         <i>; ukonceni procesu</i>
-
-
+&nbsp;
+&nbsp;
 %include "hex2string.asm"
 </pre>
 
-<pre>
-0FBCD0         bsf     edx, eax
-</pre>
+<p>Po překladu a spuštění takto upraveného příkladu se korektně vypíše hodnota
+1:</p>
 
 <pre>
-F30FBCD0       tzcnt   edx, eax
+00000001
 </pre>
 
+<p>Porovnání operačních kódů instrukcí:</p>
+
 <pre>
-F30FBCD0       rep bsf   edx, eax
+  0FBCD0       bsf     edx, eax         <i>; BSF bez prefixu</i>
+F30FBCD0       tzcnt   edx, eax         <i>; TZCNT má totožné kódování s přidaným prefixem REP</i>
+F30FBCD0       rep bsf   edx, eax       <i>; naprosto stejný instrukční kód</i>
 </pre>
 
 
@@ -806,7 +987,7 @@ F30FBCD0       rep bsf   edx, eax
 <p><a name="k14"></a></p>
 <h2 id="k14">14. Volání vestavěné funkce <strong>__builtin_stdc_first_trailing_one</strong></h2>
 
-<p></p>
+<p>Nyní od assembleru přejdeme zpět k&nbsp;jazyku C, konkrétně k&nbsp;překladači GCC. Ukážeme si použití vestavěné funkce <strong>__builtin_stdc_first_trailing_one</strong>, která nalezne index prvního jedničkového bitu.</p>
 
 <pre>
 #include &lt;stdio.h&gt;
