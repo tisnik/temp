@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Zpracování hodnot typu half float (fp16) na platformě AArch64</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Zpracování hodnot typu half float (fp16) na platformě AArch64</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,16 +37,16 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
+<p><a href="#k01">*** 1. Zpracování hodnot typu <i>half float</i> (<i>fp16</i>) na platformě AArch64</a></p>
 <p><a href="#k02">2. Podpora technologie NEON v&nbsp;ARMovských jádrech AArch64</a></p>
-<p><a href="#k03">*** 3. Pracovní registry používané instrukcemi NEON</a></p>
-<p><a href="#k04">4. Překlad operace součtu dvou hodnot typu <i>half float</i></a></p>
-<p><a href="#k05">5. Překlad využívající instrukce pro přímé operace s&nbsp;hodnotami typu <i>half float</i></a></p>
-<p><a href="#k06">6. Způsob překladu všech čtyř základních aritmetických operací nad hodnotami typu <i>half float</i></a></p>
-<p><a href="#k07">*** 7. Překlad operací pro porovnání dvou hodnot typu <i>half float</i></a></p>
-<p><a href="#k08">*** 8. </a></p>
-<p><a href="#k09">*** 9. </a></p>
-<p><a href="#k10">*** 10. </a></p>
+<p><a href="#k03">3. Pracovní registry používané instrukcemi NEON</a></p>
+<p><a href="#k04">4. Podporované formáty prvků vektorů</a></p>
+<p><a href="#k05">5. Překlad operace součtu dvou hodnot typu <i>half float</i></a></p>
+<p><a href="#k06">6. Překlad využívající instrukce pro přímé operace s&nbsp;hodnotami typu <i>half float</i></a></p>
+<p><a href="#k07">7. Způsob překladu všech čtyř základních aritmetických operací nad hodnotami typu <i>half float</i></a></p>
+<p><a href="#k08">8. Překlad operací pro porovnání dvou hodnot typu <i>half float</i></a></p>
+<p><a href="#k09">9. NEON a operace nad celými vektory</a></p>
+<p><a href="#k10">10. Přičtení konstanty ke všem prvkům pole</a></p>
 <p><a href="#k11">*** 11. </a></p>
 <p><a href="#k12">*** 12. Intrinsic pro provádění operací s&nbsp;hodnotami typu <i>half float</i></a></p>
 <p><a href="#k13">*** 13. </a></p>
@@ -61,8 +61,35 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Zpracování hodnot typu <i>half float</i> (<i>fp16</i>) na platformě AArch64</h2>
 
+<p>Formát <i>half float</i>, jenž je dnes standardizován v&nbsp;<i>IEEE
+754-2008</i>, používá pro ukládání hodnot s&nbsp;plovoucí řádovou čárkou
+pouhých šestnáct bitů, tj.&nbsp;dva byty. Maximální hodnota je rovna 65504,
+minimální hodnota (větší než nula) přibližně 5,9&times;10<sup>-8</sup>.
+Předností tohoto formátu je malá bitová šířka (umožňuje paralelní přenos po
+interních sběrnicích GPU) a také větší rychlost zpracování základních operací,
+protože pro tak malou bitovou šířku mantisy je možné některé operace
+&bdquo;zadrátovat&ldquo; a nepočítat pomocí ALU. Také některé iterativní
+výpočty (sin, cos, sqrt) mohou být provedeny rychleji, než v&nbsp;případě
+plnohodnotných typů <strong>float</strong> a <strong>single</strong>.</p>
+
+<table>
+<tr><td>Celkový počet bitů (bytů):</td><td>16 (2)</td></tr>
+<tr><td>Bitů pro znaménko:</td><td>1</td></tr>
+<tr><td>Bitů pro exponent:</td><td>5</td></tr>
+<tr><td>Bitů pro mantisu:</td><td>10</td></tr>
+<tr><td>BIAS (offset exponentu):</td><td>15</td></tr>
+<tr><td>Přesnost:</td><td>5-6 číslic</td></tr>
+<tr><td>Maximální hodnota:</td><td>65504</td></tr>
+<tr><td>Minimální hodnota:</td><td>-65504</td></tr>
+<tr><td>Nejmenší kladná nenulová hodnota:</td><td>5,96&times;10<sup>-8</sup></td></tr>
+<tr><td>Nejmenší kladná normalizovaná hodnota:</td><td>6,104&times;10<sup>-5</sup></td></tr>
+<tr><td>Podpora záporné nuly:</td><td>ano</td></tr>
+<tr><td>Podpora +&infin;:</td><td>ano</td></tr>
+<tr><td>Podpora -&infin;:</td><td>ano</td></tr>
+<tr><td>Podpora NaN:</td><td>ano</td></tr>
+</table>
 <p>Pokud se podíváme na historii mikroprocesorů ARM, zjistíme, že cesta k&nbsp;technologii NEON na jádrech AArch64 vlastně nebyla vůbec přímočará.  První implementace &bdquo;vektorových&ldquo; operací pro procesory ARM používaly rozhraní pro koprocesory, takže se vlastně používala paralelní/doplňková instrukční sada. Konkrétně se jednalo o technologii nazvanou <i>VFP</i> neboli <i>Vector Floating Point</i>. Touto technologií, která je stále na některých ARMovských jádrech podporována, jsme se již v&nbsp;seriálu o architekturách počítačů <a href="https://www.root.cz/clanky/mikroprocesory-arm-a-architektura-vfp-vector-floating-point/">zabývali</a>.  Na tomto místě je vhodné zdůraznit, že i přesto, že se v&nbsp;názvu VFP používá termín &bdquo;vector&ldquo;, nejednalo se o implementaci skutečných SIMD operací, protože se prvky vektorů zpracovávaly postupně, tedy sekvenčně (stále se však jednalo o vylepšení, protože se ušetřilo načtení instrukce a její dekódování). Z&nbsp;tohoto důvodu byl &bdquo;vektorový režim&ldquo; VFP poměrně rychle nahrazen novou technologií nazvanou NEON označovanou též Advanced SIMD.  Dnes se s&nbsp;VFP můžeme na některých ARMovských jádrech setkat, další jádra pak podporují jen <i>VFPLite</i>, kde však každá operace trvá zhruba deset strojových cyklů!</p>
 
 <p>Technologie NEON již podporovala plnohodnotné SIMD operace, při použití vektorů s&nbsp;nejmenšími prvky o velikosti jednoho bajtu až šestnáct operací (například součtu) paralelně. Díky tomu bylo možné implementovat například dekodér pro známý formát MP3 na mikroprocesoru s&nbsp;taktem pouhých 10 MHz popř.&nbsp;implementovat <a href="https://cs.wikipedia.org/wiki/AMR_%28kodek%29">AMR kodek</a> na podobném čipu, ovšem s&nbsp;hodinovým taktem 13 MHz. Při použití klasických výpočtů se skalárními hodnotami by bylo nutné použít čip s&nbsp;vyšší hodinovou frekvencí či naopak &ndash; tento výkonný čip by již neměl dostatek výkonu pro provádění dalších činností. Pro ukázku: ještě mikroprocesory 486DX2 s&nbsp;hodinovou frekvencí 66 MHz měly s&nbsp;dekódováním MP3 velké problémy a zvládaly jen menší bitrate a monofonní výstup). Právě díky NEONu se začaly čipy ARM používat i v&nbsp;některých oblastech, které byly dříve vyhrazeny digitálním signálovým procesorům.</p>
@@ -110,13 +137,41 @@ dokonalý, jak ostatně uvidíme v&nbsp;praktické části dnešního článku.<
 <p><a name="k03"></a></p>
 <h2 id="k03">3. Pracovní registry používané instrukcemi NEON</h2>
 
-<p>Původní technologie NEON, která byla implementovaná na 32bitových jádrech ARM, používala sadu třiceti dvou nových pracovních registrů, přičemž každý registr měl šířku 64 bitů. Tato sada byla oddělena od klasických celočíselných pracovních registrů, což samozřejmě zvýšilo možnosti překladače při optimalizacích kódu. Nové registry byly pojmenovány <strong>D0</strong> až <strong>D31</strong> (<strong>D</strong> = double), popř.&nbsp;mohly být vždy dva sousední registry spojeny do jednoho 128bitového registru (ty byly pojmenovány <strong>Q0</strong> až <strong>Q15</strong>, <strong>Q</strong> = quad). Pokud jádro kromě NEONu podporovalo i výše zmíněnou VFP (konkrétně VFPv3 nebo VFPv4), byly registry <strong>D0</strong> až <strong>D31</strong> sdíleny mezi oběma jednotkami.</p>
+<p>Původní technologie NEON, která byla implementovaná na 32bitových jádrech
+ARM, používala sadu třiceti dvou nových pracovních registrů, přičemž každý
+takový registr měl šířku 64 bitů. Tato sada byla oddělena od klasických
+celočíselných pracovních registrů, což samozřejmě zvýšilo možnosti překladače
+při optimalizacích kódu (a teoreticky to mohlo umožnit souběžné provádění
+výpočtů). Nové registry byly pojmenovány <strong>D0</strong> až
+<strong>D31</strong> (písmeno <strong>D</strong> v&nbsp;tomto případě značí
+<i>double</i>), popř.&nbsp;mohly být vždy dva sousední registry spojeny do
+jednoho 128bitového registru (ty byly pojmenovány <strong>Q0</strong> až
+<strong>Q15</strong>, písmeno <strong>Q</strong> v&nbsp;tomto případě znamená
+<i>quad</i>). Pokud jádro kromě NEONu podporovalo i výše zmíněnou VFP
+(konkrétně VFPv3 nebo VFPv4), byly registry <strong>D0</strong> až
+<strong>D31</strong> sdíleny mezi oběma jednotkami.</p>
 
-<p>U jader ARMv8-A s&nbsp;instrukční sadou AArch64 došlo v&nbsp;této oblasti k&nbsp;vylepšení, protože programátoři nově mají k&nbsp;dispozici 32 pracovních registrů, ovšem nyní se jedná o plnohodnotné 128bitové registry. Tyto registry jsou současně používány i při běžných matematických operacích s&nbsp;hodnotami uloženými v&nbsp;systému plovoucí řádové čárky a taktéž kryptografickým modulem. Došlo ještě k&nbsp;další změně &ndash; již nedochází k&nbsp;rozdělení jednoho registru pro typ <i>double</i> do dvou registrů pro hodnotu typu <i>single/float</i>, jako tomu bylo u <a href="https://www.root.cz/clanky/mikroprocesory-arm-a-architektura-vfp-vector-floating-point/#k02">VFP</a>.  Nově je možné každý registr použít jako 128bitový vektor, pro uložení hodnoty <i>double</i> (spodních 64 bitů), uložení hodnoty typu <i>single/float</i> (spodních 32 bitů) popř.&nbsp;pro uložení hodnoty typu <i>half float</i> (spodních 16 bitů). Horní bity jsou při čtení ignorovány, při zápisu nulovány:</p>
+<p>U jader ARMv8-A s&nbsp;novou instrukční sadou A64 došlo v&nbsp;této oblasti
+k&nbsp;poměrně důležitému vylepšení, protože programátoři mají nově
+k&nbsp;dispozici 32 pracovních registrů, ovšem nyní se jedná o plnohodnotné
+128bitové registry. Tyto registry jsou současně používány i při běžných
+matematických operacích s&nbsp;hodnotami uloženými v&nbsp;systému plovoucí
+řádové čárky a taktéž kryptografickým modulem. Došlo ještě k&nbsp;další změně
+&ndash; již nedochází k&nbsp;rozdělení jednoho registru pro typ <i>double</i>
+do dvou registrů pro hodnotu typu <i>single/float</i>, jako tomu bylo u <a
+href="https://www.root.cz/clanky/mikroprocesory-arm-a-architektura-vfp-vector-floating-point/#k02">VFP</a>.
+Nově je možné každý registr použít jako 128bitový vektor, pro uložení hodnoty
+<i>double</i> (spodních 64 bitů), uložení hodnoty typu <i>single/float</i>
+(spodních 32 bitů) popř.&nbsp;(což nás dnes zajímá nejvíce) pro uložení hodnoty
+typu <i>half float</i> (spodních 16 bitů).</p>
+
+<p>Horní bity jsou při čtení ignorovány, při zápisu nulovány:</p>
+
+<p>Používá se následující pojmenování registrů:</p>
 
 <table>
 <tr><th>Jméno</th><th>Význam</th></tr>
-<tr><td>v0..v31</td><td>128bitové registry</td></tr>
+<tr><td>v0..v31</td><td>128bitové registry (využívá se celá jejich bitová šířka)</td></tr>
 <tr><td>d0..d31</td><td>spodních 64 bitů registrů v0..v31, použito pro hodnoty typu <i>double</i></td></tr>
 <tr><td>s0..s31</td><td>spodních 32 bitů registrů v0..v31, použito pro hodnoty typu <i>single/float</i></td></tr>
 <tr><td>h0..h31</td><td>spodních 16 bitů registrů v0..v31, použito pro hodnoty typu <i>half float</i></td></tr>
@@ -125,7 +180,58 @@ dokonalý, jak ostatně uvidíme v&nbsp;praktické části dnešního článku.<
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. Překlad operace součtu dvou hodnot typu <i>half float</i></h2>
+<h2 id="k04">4. Podporované formáty prvků vektorů</h2>
+
+<p>Ještě před popisem toho, jakým způsobem se registry používají ve funkci
+vektorů, se zmiňme o použitých výrazech. U technologie NEON se používá
+následující terminologie:</p>
+
+<ol>
+
+<li><i>Vector</i> vždy značí 64bitovou či 128bitovou část pracovního registru
+<strong>Vn</strong>, která je rozdělena na prvky různých typů (s&nbsp;obecně
+menším počtem bitů, než má celý vektor).</li>
+
+<li><i>Element</i> je prvek vektoru.</li>
+
+<li><i>Lane</i> označuje index prvku vektoru. U mnoha operací se kombinují
+prvky z&nbsp;různých vektorů, které mají shodný index. Příkladem je součet
+vektorů, který je (logicky) prováděn po odpovídajících si prvcích.</li>
+
+</ol>
+
+<p>Indexy jednotlivých <i>lanes</i> se zvyšují směrem od nejnižšího bitu
+k&nbsp;bitu nejvyššímu. Pro pracovní registry <strong>V0</strong> až
+<strong>V31</strong> a použitý typ prvků mohou indexy nabývat těchto
+hodnot:</p>
+
+<table>
+<tr><th>Vektor</th><th>Indexy jednotlivých lanes</th></tr>
+<tr><td>128bitový registr</td><td>&times;</td></tr>
+<tr><td>2&times;64 bitů</td><td>1, 0</td></tr>
+<tr><td>4&times;32 bitů</td><td>3, 2, 1, 0</td></tr>
+<tr><td>8&times;16 bitů</td><td>7, 6, ..0</td></tr>
+<tr><td>16&times;8 bitů</td><td>15..0</td></tr>
+</table>
+
+<p>Víme již, že je možné namísto 128bitových vektorů používat i vektory
+64bitové, tj.&nbsp;registrové aliasy <strong>D0</strong> až
+<strong>D31</strong>. Zde samozřejmě bude k&nbsp;dispozici jen polovina indexů,
+resp.&nbsp;jen polovina prvků vektorů:</p>
+
+<table>
+<tr><th>Vektor</th><th>Indexy jednotlivých lanes</th></tr>
+<tr><td>64bitový registr</td><td>&times;</td></tr>
+<tr><td>1&times;64 bitů</td><td>0</td></tr>
+<tr><td>2&times;32 bitů</td><td>1, 0</td></tr>
+<tr><td>4&times;16 bitů</td><td>3, 2, 1, 0</td></tr>
+<tr><td>8&times;8 bitů</td><td>7, 6, ..0</td></tr>
+</table>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Překlad operace součtu dvou hodnot typu <i>half float</i></h2>
 
 <p>Pokusme se nyní přeložit velmi jednoduchou funkci, která provede součet
 dvojice hodnot typu <i>half float</i>. Tento typ se v&nbsp;GCC jmenuje
@@ -161,10 +267,10 @@ se provede převod zpět na typ <i>half float</i>, a to opět instrukcí
 
 
 
-<p><a name="k05"></a></p>
-<h2 id="k05">5. Překlad využívající instrukce pro přímé operace s&nbsp;hodnotami typu <i>half float</i></h2>
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Překlad využívající instrukce pro přímé operace s&nbsp;hodnotami typu <i>half float</i></h2>
 
-<p><a href="k04">Výše uvedený</a> výsledek překladu pochopitelně není ideální,
+<p><a href="k05">Výše uvedený</a> výsledek překladu pochopitelně není ideální,
 protože se provádí konverze z&nbsp;typu <i>half float</i> na <i>single</i> a
 zpět. Ovšem pokud překladači naznačíme, že cílová platforma umožňuje přímé
 provádění (některých) operací s&nbsp;hodnotami typu <i>half float</i>, bude
@@ -188,8 +294,8 @@ výsledkem je opět hodnota stejného typu:</p>
 
 
 
-<p><a name="k06"></a></p>
-<h2 id="k06">6. Způsob překladu všech čtyř základních aritmetických operací nad hodnotami typu <i>half float</i></h2>
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Způsob překladu všech čtyř základních aritmetických operací nad hodnotami typu <i>half float</i></h2>
 
 <p>Pro úplnost se ještě podívejme na to, jakým způsobem se přeloží všechny
 čtyři základní aritmetické operace, tj.&nbsp;nikoli pouze operace součtu, ale i
@@ -272,73 +378,88 @@ strojový kód:</p>
 
 
 
-<p><a name="k07"></a></p>
-<h2 id="k07">7. Překlad operací pro porovnání dvou hodnot typu <i>half float</i></h2>
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Překlad operací pro porovnání dvou hodnot typu <i>half float</i></h2>
+
+<p>Kromě provádění základních aritmetických operací se v&nbsp;praxi velmi často
+porovnávají dvě hodnoty na relaci &bdquo;je rovno&ldquo;,
+&bdquo;nerovno&ldquo;, &bdquo;větší než&ldquo;, &bdquo;větší nebo rovno&ldquo;,
+&bdquo;menší než&ldquo; a &bdquo;menší nebo rovno&ldquo;. Programovací jazyk C
+má pro tyto operace vyhrazenu šestici operátorů a v&nbsp;případě GCC je možné
+tyto operace provádět i s&nbsp;hodnotami typu <i>half float</i> (v&nbsp;GCC
+<strong>_Float16</strong>).</p>
+
+<p>Ostatně si můžeme tyto operace jednoduše otestovat:</p>
 
 <pre>
 bool <strong>fp16_eq</strong>(_Float16 x, _Float16 y) {
     return x == y;
 }
-
+&nbsp;
 bool <strong>fp16_ne</strong>(_Float16 x, _Float16 y) {
     return x != y;
 }
-
+&nbsp;
 bool <strong>fp16_gt</strong>(_Float16 x, _Float16 y) {
     return x &gt; y;
 }
-
+&nbsp;
 bool <strong>fp16_ge</strong>(_Float16 x, _Float16 y) {
     return x &gt;= y;
 }
-
+&nbsp;
 bool <strong>fp16_lt</strong>(_Float16 x, _Float16 y) {
     return x &lt; y;
 }
-
+&nbsp;
 bool <strong>fp16_le</strong>(_Float16 x, _Float16 y) {
     return x &lt;= y;
 }
 </pre>
 
+<p>Překlad bez povolení přímých manipulací s&nbsp;hodnotami typu <i>half
+float</i> bude opět založen na konverzi těchto hodnot na typy <i>single</i>.
+Následně je provedena instrukce <strong>FCMP</strong> nebo
+<strong>FCMPE</strong> a do registru <strong>W0</strong> je uložen výsledek
+porovnání (získaný z&nbsp;příznakových bitů):</p>
 
 <pre>
-fp16_eq(_Float16, _Float16):
+<strong>fp16_eq</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmp    s0, s1
         cset    w0, eq
         ret
-
-fp16_ne(_Float16, _Float16):
+&nbsp;
+<strong>fp16_ne</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmp    s0, s1
         cset    w0, ne
         ret
-
-fp16_gt(_Float16, _Float16):
+&nbsp;
+<strong>fp16_gt</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
         cset    w0, gt
         ret
-
-fp16_ge(_Float16, _Float16):
+&nbsp;
+<strong>fp16_ge</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
         cset    w0, ge
         ret
-
-fp16_lt(_Float16, _Float16):
+&nbsp;
+<strong>fp16_lt</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
         cset    w0, mi
         ret
-
-fp16_le(_Float16, _Float16):
+&nbsp;
+<strong>fp16_le</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
@@ -346,43 +467,48 @@ fp16_le(_Float16, _Float16):
         ret
 </pre>
 
+<p>Mohlo by se zdát, že pokud povolíme přímé manipulace s&nbsp;typem <i>half
+float</i>, bude výsledný strojový kód kratší (a tím pádem i rychlejší),
+tj.&nbsp;vynechají se konverzní instrukce <strong>FCVT</strong> atd. Ovšem není
+tomu tak, o čemž se můžeme snadno přesvědčit:</p>
+
 <pre>
-fp16_eq(_Float16, _Float16):
+<strong>fp16_eq</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmp    s0, s1
         cset    w0, eq
         ret
-
-fp16_ne(_Float16, _Float16):
+&nbsp;
+<strong>fp16_ne</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmp    s0, s1
         cset    w0, ne
         ret
-
-fp16_gt(_Float16, _Float16):
+&nbsp;
+<strong>fp16_gt</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
         cset    w0, gt
         ret
-
-fp16_ge(_Float16, _Float16):
+&nbsp;
+<strong>fp16_ge</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
         cset    w0, ge
         ret
-
-fp16_lt(_Float16, _Float16):
+&nbsp;
+<strong>fp16_lt</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
         cset    w0, mi
         ret
-
-fp16_le(_Float16, _Float16):
+&nbsp;
+<strong>fp16_le</strong>(_Float16, _Float16):
         fcvt    s0, h0
         fcvt    s1, h1
         fcmpe   s0, s1
@@ -392,25 +518,65 @@ fp16_le(_Float16, _Float16):
 
 
 
-<p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<p><a name="k09"></a></p>
+<h2 id="k09">9. NEON a operace nad celými vektory</h2>
+
+<p>Instrukce NEON na 64bitových mikroprocesorech AArch64 podporují vektory
+s&nbsp;elementy (prvky) těchto typů:</p>
+
+<table>
+<tr><th>Typ</th><th>Šířka</th><th>Poznámka</th></tr>
+<tr><td>float</td><td>32 bitů</td><td>hodnota s&nbsp;plovoucí řádovou čárkou, jednoduchá přesnost</td></tr>
+<tr><td>double</td><td>64 bitů</td><td>hodnota s&nbsp;plovoucí řádovou čárkou, dvojitá přesnost</td></tr>
+<tr><td>half</td><td>32 bitů</td><td>hodnota s&nbsp;plovoucí řádovou čárkou, poloviční přesnost (jen převody)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>int8</td><td>8 bitů</td><td>osmibitové celé číslo se znaménkem, obecné použití</td></tr>
+<tr><td>int16</td><td>16 bitů</td><td>16bitové celé číslo se znaménkem, obecné použití</td></tr>
+<tr><td>int32</td><td>32 bitů</td><td>32bitové celé číslo se znaménkem, obecné použití</td></tr>
+<tr><td>int64</td><td>64 bitů</td><td>64bitové celé číslo se znaménkem, obecné použití</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>uint8</td><td>8 bitů</td><td>osmibitové celé číslo bez znaménka, typicky barvová složka pixelu</td></tr>
+<tr><td>uint16</td><td>16 bitů</td><td>16bitové celé číslo bez znaménka, typicky zvukový vzorek</td></tr>
+<tr><td>uint32</td><td>32 bitů</td><td>32bitové celé číslo bez znaménka, obecné použití</td></tr>
+<tr><td>uint64</td><td>64 bitů</td><td>64bitové celé číslo bez znaménka, obecné použití</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>polynomial</td><td>8 bitů</td><td>používán pro výpočty korekcí chyb atd.</td></tr>
+<tr><td>polynomial</td><td>16 bitů</td><td>používán pro výpočty korekcí chyb atd.</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: některé typy (formáty) jsou dostupné jen
+pro NEON implementovaný na mikroprocesorech s&nbsp;architekturou AArch64. Týká
+se to zejména použití vektorů s&nbsp;elementy typu <i>double</i>.</div></p>
+
+<p>Nás nyní budou zajímat především &bdquo;vektorizace&ldquo; operací
+prováděných na poli obsahujícími prvky typu <i>half float</i>.</p>
 
 
 
-<p><a name="k08"></a></p>
-<h2 id="k08">8. </h2>
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Přičtení konstanty ke všem prvkům pole</h2>
+
+<p>V&nbsp;dalším ukázkovém příkladu je realizována funkce, která ke všem prvkům
+pole s&nbsp;prvky typu <i>half float</i> o známé délce přičítá konstantu
+předanou formou argumentu. Celý příklad je naprogramován naivním způsobem, bez
+jakékoli snahy o optimalizace na úrovni céčkovského zdrojového kódu:</p>
 
 <pre>
 #define LENGTH 32
-
+&nbsp;
 void <strong>fp16_delta</strong>(_Float16 values[LENGTH], _Float16 delta) {
     int i;
     for (i=0; i&lt;LENGTH; i++) {
         values[i] += delta;
     }
 }
-
 </pre>
+
+<p>V&nbsp;případě, že není povoleno rozšíření instrukční sady o <i>fp16</i>,
+bude výsledkem překladu explicitně vygenerovaná programová smyčka, ve které se
+(v&nbsp;každé iteraci) provádí dvojice konverzí instrukcí
+<strong>FCVT</strong>: z&nbsp;<i>half float</i> na <i>single</i> a naopak ze
+<i>single</i> na <i>half float</i>. Výsledek tedy nebude příliš rychlý:</p>
 
 <pre>
 <strong>fp16_delta</strong>:
@@ -427,10 +593,37 @@ void <strong>fp16_delta</strong>(_Float16 values[LENGTH], _Float16 delta) {
         ret
 </pre>
 
+<p>Pokud jsou operace <i>fp16</i> povoleny, bude překlad proveden odlišným
+způsobem. Součet 32 prvků pole je rozdělen do čtyř vektorových instrukcí
+<strong>FADD</strong>. Povšimněte si, jak se &bdquo;role&ldquo; registrů mění
+pro různé operace &ndash; někdy se pracuje s&nbsp;celými 128bitovými registry
+<strong>Qx</strong>, jindy se stejným registrem, ovšem tak, že jeho obsah bude
+považován za vektor osmi 16bitových hodnot typu <i>half float</i>
+(<strong>Vx.8h</strong>):</p>
+
+<pre>
+<strong>fp16_delta</strong>(_Float16*, _Float16):
+        dup     v0.8h, v0.h[0]
+        ldp     q3, q2, [x0]
+        ldp     q1, q31, [x0, 32]
+        fadd    v3.8h, v3.8h, v0.8h
+        fadd    v2.8h, v2.8h, v0.8h
+        fadd    v1.8h, v1.8h, v0.8h
+        fadd    v31.8h, v31.8h, v0.8h
+        stp     q3, q2, [x0]
+        stp     q1, q31, [x0, 32]
+        ret
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: instrukce <strong>LDP</strong> a
+<strong>STP</strong> dokážou pracovat s&nbsp;párem registrů &ndash; je to
+částečná náhrada za instrukce <strong>LDM</strong> a <strong>STM</strong>,
+které v&nbsp;instrukční sadě A64 neexistují.</div></p>
 
 
-<p><a name="k09"></a></p>
-<h2 id="k09">9. </h2>
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. </h2>
 
 <p></p>
 
@@ -466,8 +659,8 @@ void <strong>add_arrays</strong>(_Float16 *a, _Float16 *b) {
 
 
 
-<p><a name="k10"></a></p>
-<h2 id="k10">10. </h2>
+<p><a name="k12"></a></p>
+<h2 id="k12">12. </h2>
 
 <p></p>
 
@@ -603,8 +796,8 @@ add_arrays(_Float16*, _Float16*):
 
 
 
-<p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<p><a name="k13"></a></p>
+<h2 id="k13">13. </h2>
 
 <p></p>
 
@@ -631,13 +824,13 @@ _Float16 <strong>fp16_second</strong>(_Float16 x, _Float16 y) {
 
 
 
-<p><a name="k12"></a></p>
-<h2 id="k12">12. Intrinsic pro provádění operací s&nbsp;hodnotami typu <i>half float</i></h2>
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Intrinsic pro provádění operací s&nbsp;hodnotami typu <i>half float</i></h2>
 
 
 
-<p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<p><a name="k15"></a></p>
+<h2 id="k15">15. </h2>
 
 <pre>
 #include <arm_fp16.h>
@@ -655,8 +848,8 @@ fp16_add(_Float16, _Float16):
 
 
 
-<p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
+<p><a name="k16"></a></p>
+<h2 id="k16">16. </h2>
 
 <pre>
 #include <arm_fp16.h>
@@ -698,8 +891,8 @@ fp16_div(_Float16, _Float16):
 
 
 
-<p><a name="k15"></a></p>
-<h2 id="k15">15. </h2>
+<p><a name="k17"></a></p>
+<h2 id="k17">17. </h2>
 
 <pre>
 #include <arm_fp16.h>
@@ -775,16 +968,6 @@ fp16_le(_Float16, _Float16):
 
 
 
-<p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
-
-
-
-<p><a name="k17"></a></p>
-<h2 id="k17">17. </h2>
-
-
-
 <p><a name="k18"></a></p>
 <h2 id="k18">18. </h2>
 
@@ -841,6 +1024,8 @@ repositář:</p>
 
 fp16_add_delta.c
 fp16_add_delta.asm
+fp16_add_delta_fp16.asm
+
 fp16_add_arrays_32.c
 fp16_add_arrays_32.asm
 fp16_add_arrays_16.c
