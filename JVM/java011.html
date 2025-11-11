@@ -1,0 +1,754 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 (5)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 (5)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;jedenácté části seriálu o vlastnostech JDK 6 a JDK 7 (samozřejmě včetně OpenJDK) se opět budeme zabývat principem činnosti správců paměti a způsobů, jakými lze ovlivnit výkonnost virtuálního stroje Javy. Popíšeme si především rozdíl mezi různými typy správců paměti a zaměříme se na běh JVM na víceprocesorových počítačích.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Základní funkce správce paměti &ndash; shrnutí</a></p>
+<p><a href="#k02">2. Propustnost versus čas pozastavení běhu aplikací</a></p>
+<p><a href="#k03">3. Co lze napravit při výkonnostních problémech?</a></p>
+<p><a href="#k04">4. Sériový správce paměti</a></p>
+<p><a href="#k05">5. Správce paměti jako úzké hrdlo víceprocesorového systému?</a></p>
+<p><a href="#k06">6. Paralelní správci paměti</a></p>
+<p><a href="#k07">7. Testovací příklad</a></p>
+<p><a href="#k08">8. Výsledky běhu testovacího příkladu</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Základní funkce správce paměti &ndash; shrnutí</h2>
+
+<p>V&nbsp;předchozích částech seriálu o vlastnostech programovacího jazyka Java
+i jeho virtuálního stroje (<i>JVM</i>) jsme se seznámili s&nbsp;tím, jakým
+způsobem je implementován správce paměti (<i>GC &ndash; Garbage Collector</i>).
+Připomeňme si, že správce paměti slouží k&nbsp;vyhledávání těch objektů
+umístěných na haldě, které již nejsou dosažitelné ze žádného vlákna běžící
+aplikace. Tyto objekty jsou následně odstraněny a ostatní objekty na haldě jsou
+v&nbsp;případě potřeby přeuspořádány takovým způsobem, aby halda nebyla příliš
+fragmentovaná, což by znemožnilo alokaci paměti pro větší objekty. Vzhledem
+k&nbsp;tomu, že vyhledávání potenciálně neživých objektů je z&nbsp;časového i
+výkonnostního hlediska poměrně náročná činnost, jsou při implementaci správců
+paměti použity některé heuristické metody. Základní myšlenkou, na které jsou
+tyto metody založeny, je zjištění, že objekty, které jsou již živé po delší
+časový úsek, budou s&nbsp;velkou pravděpodobností živé i po provedení dalšího
+běhu správce paměti. Většinou platí i opak &ndash; nově vytvořené objekty budou
+mít s&nbsp;velkou pravděpodobností jen krátkou dobu života.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-1.png"><img src="http://i.iinfo.cz/images/592/java10-1-prev.png" width="193" height="270" alt=" " /></a>
+<p><i>Obrázek 1: Dvě hlavní oblasti haldy (young generation a tenured
+generation) a podrobnější pohled na podoblast young generation.</i></p>
+
+<p>Při použití výše zmíněné heuristiky je celá halda (<i>heap</i>) rozdělena na
+dvě oblasti &ndash; <i>young generation</i> a <i>tenured generation</i>
+s&nbsp;tím, že nově vytvářené objekty jsou nejprve umístěny do oblasti <i>young
+generation</i>. Virtuální stroj jazyka Java se snaží jemu dostupnou
+(přidělenou) operační paměť pro haldu rozdělit na oblasti <i>young
+generation</i> a <i>tenured generation</i> na základě vzorců odvozených opět od
+chování běžných aplikací (navíc se pro haldu může rezervovat větší paměťový
+úsek, než je skutečně v&nbsp;daný okamžik alokován). V&nbsp;některých
+případech, především u netypických aplikací či u aplikací, kde záleží na co
+nejvyšším výkonu či rychlé odezvě aplikace, je však možné při spuštění
+virtuálního stroje definovat jak alokovanou i maximální velikost haldy, tak i
+způsob rozdělení haldy na dvě výše zmíněné oblasti. K&nbsp;tomuto účelu slouží
+několik přepínačů, především volby <strong>-Xmx</strong>,
+<strong>-Xms</strong>, <strong>-XX:NewRatio=</strong>,
+<strong>-XX:NewSize=</strong> a <strong>-XX:MaxNewSize=</strong>, jejichž
+význam byl vysvětlen <a
+href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-jdk-7-4/">v&nbsp;předchozí
+části tohoto seriálu</a>.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-2.png"><img src="http://i.iinfo.cz/images/592/java10-2-prev.png" width="194" height="270" alt=" " /></a>
+<p><i>Obrázek 2: Dvě hlavní oblasti haldy (young generation a tenured
+generation) a podrobnější pohled na podoblast tenured generation.</i></p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Propustnost versus čas pozastavení běhu aplikací</h2>
+
+<p>V&nbsp;předchozí části seriálu jsme si taktéž popsali základní metody
+(nabízené přímo běhovým prostředím Javy &ndash; <i>JRE</i>) pro monitorování
+činnosti správce paměti. Pro tento účel je možné při spouštění virtuálního
+stroje Javy použít volby <strong>-verbose:gc</strong>,
+<strong>-Xloggc:jméno_souboru</strong> a <strong>-XX:PrintGCDetails</strong>,
+které se často kombinují s&nbsp;volbou <strong>>-XX:PrintGCTimeStamps</strong>
+(přidání informací o čase, v&nbsp;níž byl správce paměti spuštěn). Pomocí
+těchto voleb lze zjistit, jak často se správce paměti spouští, o kterého
+správce paměti se jedná (<i>young generation</i> či <i>tenured generation</i>)
+a taktéž obsazení jednotlivých oblastí na haldě. Pokud dochází
+k&nbsp;výkonnostním problémům, lze výše uvedené volby kombinovat taktéž
+s&nbsp;profilerem (<strong>-Xprof</strong>) s&nbsp;jehož pomocí je možné
+zjistit, kterou část kódu je vhodné upravit. Ovšem v&nbsp;některých případech
+nám údaje poskytované s&nbsp;využitím těchto voleb nemusí plně dostačovat.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-3.png"><img src="http://i.iinfo.cz/images/592/java10-3-prev.png" width="223" height="270" alt=" " /></a>
+<p><i>Obrázek 3: Celková doba běhu testovací aplikace
+<strong>ConcatTest1</strong> (vyjádřená v&nbsp;sekundách) v&nbsp;závislosti na
+maximální velikosti haldy (vyjádřené v&nbsp;megabajtech).</i></p>
+
+<p>Jedná se například o situace, kdy dochází k&nbsp;takovým problémům se
+správou paměti, že aplikace musí být pozastavovaná na dlouhou dobu, což sice
+nemusí při číselném vyjádření průměrné doby činnosti správce paměti být
+alarmující, ovšem dlouhé intervaly jsou velmi nepříjemné, a to jak u
+desktopových aplikací s&nbsp;grafickým uživatelským rozhraním, tak i například
+u aplikací serverových (vůbec již nemluvě o aplikacích běžících v&nbsp;reálném
+čase). V&nbsp;praxi se tedy rozlišuje mezi <i>propustností systému</i> (zhruba
+řečeno jde o zprůměrovaný výkon snižovaný mj.&nbsp;i činností správce paměti) a
+<i>maximální dobou</i> pozastavení aplikace z&nbsp;důvodu činnosti správce
+paměti.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-4.png"><img src="http://i.iinfo.cz/images/592/java10-4-prev.png" width="217" height="270" alt=" " /></a>
+<p><i>Obrázek 4: Počet spuštění správce paměti v&nbsp;závislosti na maximální
+velikosti haldy (vyjádřené v&nbsp;megabajtech).</i></p>
+
+<p>Pro detekci takových kritických okamžiků v&nbsp;životě aplikace je možné
+použít volby <strong>-XX:+PrintGCApplicationConcurrentTime</strong> a
+<strong>-XX:+PrintGCApplicationStoppedTime</strong>. Každou z&nbsp;těchto voleb
+je samozřejmě možné využít samostatně, společně, nebo je lze kombinovat
+s&nbsp;ostatními volbami &ndash; vše záleží na našich schopnostech při
+zpracování standardního výstupu generovaného <i>JRE</i> :-). První
+z&nbsp;těchto voleb slouží pro zapnutí výpisu časových intervalů, v&nbsp;nichž
+aplikace běží bez přerušení, přesněji řečeno bez přerušení správcem paměti
+(aplikace samozřejmě může pasivně čekat na jiné události). Pokud tuto volbu
+použijeme, budou se na standardní výstup vypisovat následující údaje (formát je
+platný pro poslední oficiální verzi <i>JDK 6</i> i pro <i>OpenJDK 6</i>):</p>
+
+<pre>
+Application time: 0.0194960 seconds
+Application time: 0.0035360 seconds
+Application time: 0.0030870 seconds
+Application time: 0.0026110 seconds
+...
+</pre>
+
+<a href="http://i.iinfo.cz/images/50/java11-1.png"><img src="http://i.iinfo.cz/images/50/java11-1-prev.png" width="370" height="252" alt=" " /></a>
+<p><i>Obrázek 5: Graficky zpracované hodnoty vypisované pomocí volby
+<strong>-XX:PrintGCApplicationConcurrentTime</strong> (intervaly kdy aplikace
+běží) v&nbsp;případě, že je testovací aplikace <strong>ConcatTest1</strong>
+spuštěna s&nbsp;maximální povolenou velikostí haldy na 20MB.</i></p>
+
+<p>Význam těchto údajů je zřejmý: nejprve aplikace pracovala po dobu 19,4 ms,
+poté byla na určitou dobu přerušena kvůli správě paměti, následně opět mohla
+běžet bez přerušení cca 3,5 ms atd. Informaci o tom, na jak dlouho byla
+aplikace přerušena činností správce paměti, lze získat po zapnutí volby
+<strong>-XX:+PrintGCApplicationStoppedTime</strong>:</p>
+
+<pre>
+Total time for which application threads were stopped: 0.0035280 seconds
+Total time for which application threads were stopped: 0.0017170 seconds
+Total time for which application threads were stopped: 0.0009440 seconds
+</pre>
+
+<a href="http://i.iinfo.cz/images/50/java11-2.png"><img src="http://i.iinfo.cz/images/50/java11-2-prev.png" width="370" height="252" alt=" " /></a>
+<p><i>Obrázek 6: Graficky zpracované hodnoty vypisované pomocí volby
+<strong>-XX:PrintGCApplicationStoppedTime</strong> (intervaly, kdy je aplikace
+přerušena kvůli GC) v&nbsp;případě, že je testovací aplikace
+<strong>ConcatTest1</strong> spuštěna s&nbsp;maximální povolenou velikostí
+haldy na 20MB.</i></p>
+
+<p>Při kombinaci obou výše zmíněných voleb získáme výpis, v&nbsp;němž se oba údaje střídají:</p>
+
+<pre>
+Application time: 0.0196750 seconds
+Total time for which application threads were stopped: 0.0034630 seconds
+Application time: 0.0035820 seconds
+Total time for which application threads were stopped: 0.0017060 seconds
+Application time: 0.0030790 seconds
+Total time for which application threads were stopped: 0.0008940 seconds
+Application time: 0.0026010 seconds
+Total time for which application threads were stopped: 0.0005410 seconds
+</pre>
+
+<a href="http://i.iinfo.cz/images/50/java11-3.png"><img src="http://i.iinfo.cz/images/50/java11-3-prev.png" width="370" height="250" alt=" " /></a>
+<p><i>Obrázek 7: Graficky zpracované hodnoty vypisované pomocí volby
+<strong>-XX:PrintGCApplicationConcurrentTime</strong>, ovšem tentokrát
+setříděné sestupně.</i></p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Co lze napravit při výkonnostních problémech?</h2>
+
+<p>Pokud se při měření výkonnosti aplikace stane, že jsou zjištěny velké
+prodlevy způsobené činností správce paměti, nebo že správce paměti výrazným
+způsobem snižuje celkovou propustnost systému, lze provést (nebo alespoň
+vyzkoušet) některou z&nbsp;následujících úprav:</p>
+
+<ol>
+
+<li>Upravit algoritmus aplikace a/nebo datové struktury, které aplikace používá
+(to se ovšem lehko řekne, že...).</li>
+
+<li>Na 64bitových platformách je možné použít již popsané <a
+href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">komprimované
+ukazatele na objekty</a>, které v&nbsp;některých případech mohou poměrně
+výrazně snížit obsazení haldy. Do jaké míry je tato volba v&nbsp;konkrétní
+aplikaci užitečná, záleží především na tom, s&nbsp;jakými datovými strukturami
+se pracuje (resp.&nbsp;v&nbsp;jaké míře se používají reference &ndash; typické
+u grafových struktur, speciálně binárních stromů či vázaných seznamů).</li>
+
+<li>Velký vliv na výkonnost správce paměti a tím pádem i celé aplikace, má
+výchozí i maximální velikost haldy nastavovaná pomocí výše uvedených voleb
+<strong>-Xmx</strong> a <strong>-Xms</strong> (v&nbsp;mnoha případech je
+výhodné, aby obě volby obsahovaly shodné hodnoty). Ovšem maximální velikost
+haldy by neměla přesáhnout volnou kapacitu fyzické operační paměti, protože by
+jinak docházelo k&nbsp;odkládání stránek na disk, což naopak výkonnost citelně
+snižuje (to je již výhodnější obětovat několik procent strojového času na běh
+správce paměti).</li>
+
+<li>Kromě specifikace celkové velikosti haldy má velký vliv na výkonnost i
+způsob rozdělení haldy na <i>young generation</i> a <i>tenured generation</i>
+pomocí voleb popsaných <a
+href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-
+jdk-7-4/">minule</a>. Na rozdíl od předchozích voleb <strong>-Xmx</strong> a
+<strong>-Xms</strong>, jejichž hodnoty se nastavují celkem snadno, je
+v&nbsp;tomto případě již většinou nutné provádět profilování a monitorování
+aplikací běžících ve stejném prostředí, kde mají být aplikace nasazeny a taktéž
+se <i>shodnými (nebo velmi podobnými) daty</i> (měření výkonnosti aplikace nad
+testovací databází s&nbsp;10000 záznamy nám prakticky nic neřekne o tom, jak se
+aplikace bude chovat nad reálnými daty s&nbsp;10 miliony záznamy a několika
+desítkami souběžně zpracovávaných požadavků).</li>
+
+<li>V&nbsp;případě, že správce paměti zvolený virtuálním strojem jazyka Java
+z&nbsp;nějakého důvodu potřebám aplikace nevyhovuje (což se stává poměrně
+často!), lze zvolit jiný typ správce paměti. Jde se o dosti důležitou
+problematiku popsanou v&nbsp;navazujících kapitolách.</li>
+
+<li>V&nbsp;neposlední řadě je taktéž možné správci paměti poněkud pomoci
+využitím velkých stránek (<i>huge pages</i>, <i>large pages</i>). Tuto možnost
+sice není možné využít na všech systémech, ale na mnohých serverech je možné
+velké stránky při startu systému povolit a následně je i využívat
+v&nbsp;<i>JRE</i> při mapování paměti pro haldu. Tato problematika, která se
+kvůli neustále se zvyšujícím kapacitám operačních pamětí dostává stále častěji
+do povědomí programátorů i administrátorů, bude popsána v&nbsp;navazující části
+tohoto seriálu.</li>
+
+</ol>
+
+<a href="http://i.iinfo.cz/images/50/java11-4.png"><img src="http://i.iinfo.cz/images/50/java11-4-prev.png" width="339" height="270" alt=" " /></a>
+<p><i>Obrázek 8: Při snížení maximální kapacity haldy na pouhé 2MB se zmenšují
+i intervaly, v&nbsp;nichž testovací aplikace běží bez toho, aby byl její běh
+přerušován správcem paměti.</i></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Sériový správce paměti</h2>
+
+<p>Na některých platformách a zejména při spuštění běhového prostředí Javy
+v&nbsp;režimu <i>client</i>, se používá takzvaný <i>sériový správce paměti</i>.
+Jak již název napovídá, pracuje tento správce paměti v&nbsp;jednom vláknu,
+přičemž jeho činnost odpovídá činnosti popsané v&nbsp;minulé a předminulé části
+tohoto seriálu (rozdělení haldy na dvě části, dva různé typy algoritmů
+v&nbsp;závislosti na tom, nad kterou částí haldy správce paměti pracuje...). Na
+počítačích vybavených jedním procesorem s&nbsp;jedním nebo dvěma jádry
+(popř.&nbsp;s&nbsp;jedním jádrem podporujícím <i>hyperthreading</i>) se ve
+velké většině případů jedná o nejvhodnější typ správce paměti, který se navíc
+chová velmi deterministicky (předvídatelně). Současně je sériový správce paměti
+tím nejjednodušším správcem paměti, který je v&nbsp;současných verzích
+<i>JDK</i> a <i>OpenJDK</i> implementován; navíc jde i o historicky nejstarší
+implementaci stále podporovanou i v&nbsp;moderních <i>JDK</i> (tyto dvě
+vlastnosti přispívají k&nbsp;jeho velké stabilitě). V&nbsp;některých případech
+se však může ukázat, že tento správce paměti nemusí být pro daný typ aplikace
+tou nejvhodnější volbou.</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-5.png"><img src="http://i.iinfo.cz/images/50/java11-5-prev.png" width="370" height="200" alt=" " /></a>
+<p><i>Obrázek 9: Hodnoty vypisované pomocí volby
+<strong>-XX:PrintGCApplicationStoppedTime</strong> (intervaly, kdy je aplikace
+přerušena kvůli GC) v&nbsp;případě, že je testovací aplikace
+<strong>ConcatTest1</strong> spuštěna s&nbsp;maximální povolenou velikostí
+haldy sníženou na pouhé 2MB (lze porovnat s&nbsp;obrázkem číslo 6).
+Povšimněte si, jak se postupně mění poměr krátkých a dlouhých intervalů.</i></p>
+
+<p>Sériový správce paměti může způsobovat problémy u těch aplikací, u nichž
+jsou vyžadovány co nejkratší (popř.&nbsp;navíc predikovatelné) intervaly
+přerušení běhu aplikace kvůli správě paměti. V&nbsp;tomto případě je namísto
+sériového správce paměti vhodnější použít buď některý z&nbsp;ostatních
+standardních správců paměti, nebo použít prozatím sice ještě experimentální,
+ale velmi dobrý a po teoretické stránce promyšlený správce paměti <i>G1</i>,
+který se v&nbsp;současných verzích <i>JDK</i> a <i>OpenJDK</i> zapíná dvojicí
+voleb <strong>-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC</strong>. Ovšem
+sériový správce paměti může být nevhodný taktéž i ve chvíli, kdy je aplikace
+provozována na výkonných serverech s&nbsp;větším množstvím procesorových jader
+&ndash; v&nbsp;současnosti se ostatně stroje s&nbsp;osmi či dokonce šestnácti
+jádry stávají již vcelku běžnou výbavou serveroven. Na těchto výkonných
+počítačích se totiž sériový správce paměti může stát úzkým hrdlem celé
+aplikace, což si budeme ilustrovat v&nbsp;následující kapitole.</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-6.png"><img src="http://i.iinfo.cz/images/50/java11-6-prev.png" width="370" height="205" alt=" " /></a>
+<p><i>Obrázek 10: Hodnoty vypisované pomocí volby
+<strong>-XX:PrintGCApplicationConcurrentTime</strong>, ovšem tentokrát
+setříděné sestupně. Tento graf je platný pro testovací aplikaci
+<strong>ConcatTest1</strong> spuštěnou s&nbsp;maximální povolenou velikostí
+haldy 2 MB (lze porovnat s&nbsp;obrázek 7).</i></p>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Správce paměti jako úzké hrdlo víceprocesorového systému?</h2>
+
+<p>V&nbsp;předchozí kapitole jsme si řekli, že sériový správce paměti
+(<i>serial garbage collector</i>) nemusí být vždy vhodný při provozování
+aplikace na počítačích, které jsou osazeny větším množstvím procesorových
+jader. Důvod je jednoduchý: sériový správce paměti je spuštěn v&nbsp;jediném, i
+když samostatném vlákně, takže vlastně představuje tu část aplikace, která není
+dobře škálovatelná se zvyšujícím se počtem procesorových jader &ndash; zejména
+v&nbsp;těch případech, kdy jsou použity čtyři procesorová jádra nebo i větší
+množství jader (pro jednoduchost nyní uvažujme o procesorech podporujících
+hyperthreading jako o vícejádrových procesorech, což sice není zcela přesné,
+ale pro první přiblížení dostačující).</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-7.png"><img src="http://i.iinfo.cz/images/50/java11-7-prev.png" width="370" height="222" alt=" " /></a>
+<p><i>Obrázek 11: Jednovláknová aplikace (<strong>ConcatTest1</strong>)
+spuštěná na počítači s&nbsp;osmi jádry nedokáže dobře využít všechny možnosti
+nabízené tímto relativně výkonným strojem.</i></p>
+
+<p>Představme si, že aplikace provozovaná na virtuálním stroji jazyka Java je
+optimalizovaná takovým způsobem, aby se dosáhlo co největší propustnosti
+(<i>throughput</i>) na počítači, v&nbsp;němž je nainstalováno větší množství
+procesorových jader, například dva procesory s&nbsp;podporou hyperthreadingu.
+To znamená, že je v&nbsp;takové aplikaci vytvořeno větší množství souběžně
+pracujících vláken. Ve zcela ideálním případě (každý ideál je ovšem
+nedosažitelný ;-)) pracují všechna vlákna skutečně samostatně, tj.&nbsp;není
+zapotřebí je synchronizovat kvůli přístupu k&nbsp;nějakému sdílenému
+prostředku. Poměrně velké množství algoritmizovatelných problémů je skutečně
+možné paralelizovat, takže by se mohlo zdát, že zvýšení propustnosti celého
+systému lze mj.&nbsp;dosáhnout i prostým spuštěním aplikace na počítači
+s&nbsp;větším množstvím procesorů a že výkon aplikace poroste zhruba lineárně
+s&nbsp;počtem procesorů (nebo jejich jader) &ndash; viz též následující
+obrázek.</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-8.png"><img src="http://i.iinfo.cz/images/50/java11-8-prev.png" width="360" height="270" alt=" " /></a>
+<p><i>Obrázek 12: Dokonale škálovatelná aplikace, kde sériový správce paměti
+nevyžaduje žádný výkon CPU. Na horizontální osu je vynesen počet procesorových
+jader, na vertikální osu míra urychlení (propustnost).</i></p>
+
+<p>Ovšem pokud je aplikace provozována na virtuálním stroji jazyka Java
+(<i>JVM</i>) s&nbsp;běžícím sériovým správcem paměti, stává se tento správce
+úzkým hrdlem celého systému, protože při jeho běhu, přesněji ve druhé části
+algoritmu <i>Mark and Sweep</i>, musí správce paměti na určitý okamžik
+pozastavit všechna ostatní vlákna aplikace. I v&nbsp;případě, že celý cyklus
+správy paměti vyžaduje pouze 5% nebo 10% výkonu počítače, má i tato relativně
+malá část aplikace velký dopad na její škálovatelnost &ndash; v&nbsp;této
+situaci se tedy uplatňuje <i>Amdahlův zákon</i> (i když je pravda, že jsme si
+celou problematiku poněkud zjednodušili).</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-9.png"><img src="http://i.iinfo.cz/images/50/java11-9-prev.png" width="360" height="270" alt=" " /></a>
+<p><i>Obrázek 13: Již ve chvíli, kdy sériový správce paměti vyžaduje pouhých 5%
+výkonu, klesá dosti výrazně propustnost celé aplikace. Například pro počítač
+s&nbsp;20 jádry není urychlení dvacetinásobné, ale pouze desetinásobné.</i></p>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Paralelní správci paměti</h2>
+
+<p>Naštěstí však nejsme v&nbsp;současných verzích <i>JDK</i> a <i>OpenJDK</i>
+omezeni pouze na použití sériového správce paměti. Namísto něho můžeme
+v&nbsp;případě potřeby použít další tři typy správců &ndash; paralelního
+správce paměti (<i>ParallelGC</i>), takzvaného souběžně pracujícího správce
+typu Mark and Sweep (<i>Concurrent Mark and Sweep &ndash; CMS</i>) a taktéž
+správce paměti <i>G1</i>, který se v&nbsp;současnosti nachází v&nbsp;testovací
+fázi vývoje. U paralelního správce paměti lze zvolit, zda má jeho paralelní
+část běžet pouze nad oblastí <i>young generation</i> nebo i nad oblastí
+<i>tenured generation</i> a u všech správců se navíc může zvolit (a je to i
+v&nbsp;mnoha případech vhodné), v&nbsp;kolika vláknech tito správci poběží.
+Podrobnějším popisem algoritmů těchto správců paměti se budeme zabývat příště,
+dnes si však již řekneme, jaké volby lze pro jejich spuštění použít. Pro
+úplnost začněme sériovým správcem paměti. Ten se vybírá následujícím
+způsobem:</p>
+
+<pre>
+java -XX:+UseSerialGC ConcatTest1
+</pre>
+
+<p>Paralelní správce paměti běžící nad oblastí <i>young generation</i> se
+zapíná takto:</p>
+
+<pre>
+java -XX:+UseParallelGC ConcatTest1
+</pre>
+
+<p>Pokud má paralelní část správce paměti pracovat i nad oblastí <i>tenured
+generation</i>, lze využít volbu:</p>
+
+<pre>
+java -XX:+UseParallelOldGC ConcatTest1
+</pre>
+
+<a href="http://i.iinfo.cz/images/50/java11-10.png"><img src="http://i.iinfo.cz/images/50/java11-10-prev.png" width="360" height="270" alt=" " /></a>
+<p><i>Obrázek 14: Stav, kdy sériový správce paměti vyžaduje již 10% výkonu, by
+byl již pro větší počet procesorových jader neakceptovatelný.</i></p>
+
+<p>Správce paměti <i>CMS</i> není možné použít současně s&nbsp;předchozími typy
+správců paměti, starší verze JDK však na tuto chybu uživatele neupozorňovaly.
+V&nbsp;každém případě, pokud je vhodné použít <i>CMS</i> (například při
+požadavcích na rychlé odezvy aplikace), používá se tato volba:</p>
+
+<pre>
+java -XX:+UseConcMarkSweepGC ConcatTest1
+</pre>
+
+<p>Jak jsme si již řekli v&nbsp;předchozím textu, někdy je vhodné přímo určit
+počet vláken, které jsou jednotlivými paralelními správci paměti využity:</p>
+
+<pre>
+java -XX:+UseParallelGC -XX:ParallelGCThreads=4 ConcatTest1
+java -XX:+UseParallelOldGC -XX:ParallelGCThreads=4 ConcatTest1
+java -XX:+UseConcMarkSweepGC -XX:ParallelGCThreads=4 ConcatTest1
+</pre>
+
+<a href="http://i.iinfo.cz/images/50/java11-11.png"><img src="http://i.iinfo.cz/images/50/java11-11-prev.png" width="360" height="270" alt=" " /></a>
+<p><i>Obrázek 15: Vliv sériového správce paměti si můžeme zobrazit i jinak. Na
+tomto grafu jsou na horizontální osu vyneseny požadavky správce paměti na
+výpočetní výkon (od 0% do 100%) a na vertikální ose skutečné urychlení jinak
+dokonale škálovatelné aplikace běžící na počítači se šestnácti
+procesory.</i></p>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Testovací příklad</h2>
+
+<p>Pro otestování funkce správců paměti na počítači s&nbsp;větším množstvím
+procesorů jsem vytvořil velmi jednoduchou modifikaci našeho původního příkladu
+<strong>ConcatTest1</strong>. Modifikovaná verze nazvaná
+<strong>ConcurrentConcatenationTest</strong> po svém spuštění vytvoří <i>n</i>
+vláken (<i>n</i> lze zadat jako parametr, jinak je zvolena hodnota 8), kde
+každé vlákno samostatně provádí paměťově náročnou konkatenaci řetězce. Při
+startu vlákna, při dokončení výpočtu (konkatenace řetězce) i před ukončením
+vlákna se na standardní výstup vypíše číslo (ID) daného vlákna a informace o
+tom, v&nbsp;jakém stavu se vlákno nachází:</p>
+
+<pre>
+class ConcatenationThread extends Thread {
+    private static final int DEFAULT_LOOP_COUNT = 10000;
+    private int threadId;
+
+    public ConcatenationThread(int threadId) {
+        this.threadId = threadId;
+    }
+
+    public String createString() {
+        String str = "";
+        for (int i = 0; i &lt; DEFAULT_LOOP_COUNT; i++) {
+            str += i + " ";
+        }
+        return str;
+    }
+
+    @Override
+    public void run() {
+        System.out.format("Thread #%d started\n", this.threadId);
+        System.out.format("Thread #%d: string length %d\n", this.threadId, createString().length());
+        System.out.format("Thread #%d finished\n", this.threadId);
+    }
+}
+
+public class ConcurrentConcatenationTest {
+    private static final int DEFAULT_THREAD_COUNT = 8;
+
+    public static void main(String[] args) {
+        int threadCount = args.length == 0 ? DEFAULT_THREAD_COUNT : Integer.parseInt(args[0]);
+        for (int i = 0; i &lt; threadCount; i++) {
+            new ConcatenationThread(i).start();
+        }
+        System.out.println("Main thread finished");
+    }
+
+}
+</pre>
+
+<a href="http://i.iinfo.cz/images/50/java11-12.png"><img src="http://i.iinfo.cz/images/50/java11-12-prev.png" width="370" height="221" alt=" " /></a>
+<p><i>Obrázek 16: Testovací příklad <strong>ConcurrentConcatenationTest</strong>
+spuštěný na počítači s&nbsp;osmi procesorovými jádry již využívá možnosti
+počítače lépe než program <strong>ConcatTest1</strong>.</i></p>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Výsledky běhu testovacího příkladu</h2>
+
+<p>Základní vlastnost paralelních správců paměti &ndash; tj.&nbsp;propustnost
+aplikace &ndash; si můžeme jednoduše otestovat tak, že budeme spouštět výše
+uvedený demonstrační příklad s&nbsp;různými správci paměti a s&nbsp;různým
+počtem vláken vyhrazených pro tyto správce. Skript, který zajistí vytvoření
+souborů se statistickými daty, je poměrně jednoduchý (povšimněte si, že lze
+specifikovat i maximální velikost paměti vyhrazené pro haldu):</p>
+
+<pre>
+#!/bin/bash
+
+# kolik vlaken ma byt vyhrazeno GC
+MIN_GC_THREADS=1
+MAX_GC_THREADS=16
+
+# velikost haldy v megabajtech
+HEAP_SIZE=5
+
+function run_java () {
+    # nechceme volat interni prikaz time z BASHe!
+    echo "JVM parameters: $1"
+    /usr/bin/time -o $2 -a -f "%U" java -Xmx${HEAP_SIZE}M $1 ConcurrentConcatenationTest
+}
+
+# seriovy spravce pameti
+run_java "-XX:+UseSerialGC" _time_serial.txt
+
+# paralelni spravce pameti bezici nad young generation
+for par in `seq $MIN_GC_THREADS $MAX_GC_THREADS`;
+do
+    run_java "-XX:+UseParallelGC -XX:ParallelGCThreads=${par}" _time_parallel_young.txt
+done
+
+# paralelni spravce pameti bezici nad young i tenured generation
+for par in `seq $MIN_GC_THREADS $MAX_GC_THREADS`;
+do
+    run_java "-XX:+UseParallelOldGC -XX:ParallelGCThreads=${par}" _time_parallel_old_gc.txt
+done
+
+# spravce pameti typu Concurrent Mark and Sweep
+for par in `seq $MIN_GC_THREADS $MAX_GC_THREADS`;
+do
+    run_java "-XX:+UseConcMarkSweepGC -XX:ParallelGCThreads=${par}" _time_concurrent.txt
+done
+</pre>
+
+<p>Výsledky bude pravděpodobně nejlepší si zobrazit graficky. V&nbsp;prvním
+grafu jsou ukázány časy běhu testovací aplikace v&nbsp;případě, že je maximální
+velikost haldy nastavena na 20MB a počet vláken pro správce paměti se pohybuje
+od 1 do 16 (vše na osmijádrovém systému!). Povšimněte si, že s&nbsp;rostoucím
+počtem vláken vytvořených pro správce paměti (nikoli pro výkonnou část
+aplikace) ve skutečnosti od určité poměrně nízké hranice <i>klesá</i>
+propustnost, tj.&nbsp;prodlužuje se celkový čas běhu aplikace:</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-13.png"><img src="http://i.iinfo.cz/images/50/java11-13-prev.png" width="370" height="267" alt=" " /></a>
+
+<p>Při pohledu na předchozí graf by se mohlo zdát, že vždy jasně vyhrává
+paralelní správce paměti. Ve skutečnosti tomu však tak nemusí být vždycky.
+Podívejme se, co se stane, když se velikost haldy sníží na pouhých 5MB. Zde se
+dostáváme do situace (zde uměle vytvořené, ovšem v&nbsp;praxi taktéž
+nastávající), že se zmenšují oblasti, nad kterými správci paměti pracují a
+jednotlivá vlákna si tak spíše překážejí (toto je ostatně jeden z&nbsp;případů,
+kdy starý dobrý sériový správce paměti může být výkonnější než mnohem
+složitější správci paralelní):</p>
+
+<a href="http://i.iinfo.cz/images/50/java11-14.png"><img src="http://i.iinfo.cz/images/50/java11-14-prev.png" width="368" height="270" alt=" " /></a>
+
+<p>To, jakým způsobem lze tyto (a mnohé další) problémy řešit, se budeme
+zabývat příště.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>První graf z&nbsp;osmé kapitoly v&nbsp;plném rozlišení<br />
+<a class="rs-file file-png" href="http://i.iinfo.cz/files/root/254/java-11-graf1.png">java-11-graf1</a>
+</li>
+
+<li>Druhý graf z&nbsp;osmé kapitoly v&nbsp;plném rozlišení<br />
+<a class="rs-file file-png" href="http://i.iinfo.cz/files/root/561/java-11-graf2.png">java-11-graf2</a>
+</li>
+
+<li>Všechny zdrojové soubory a skripty použité v&nbsp;dnešním článku<br />
+<a class="rs-file file-x-bzip2" href="http://i.iinfo.cz/files/root/54/java11-src.bz2">java11-src</a>
+</li>
+
+<li>Výsledky používané při tvorbě grafů v&nbsp;dnešním článku<br />
+<a class="rs-file file-x-bzip2" href="http://i.iinfo.cz/files/root/60/java11-results.bz2">java11-results</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Amdahl's law<br />
+<a href="http://en.wikipedia.org/wiki/Amdahl_law">http://en.wikipedia.org/wiki/Amdahl_law</a>
+</li>
+
+<li>Garbage collection (computer science)<br />
+<a href="http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)">http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)</a>
+</li>
+
+<li>Dr. Dobb's | G1: Java's Garbage First Garbage Collector<br />
+<a href="http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/">http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/</a>
+</li>
+
+<li>Java's garbage-collected heap<br />
+<a href="http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html">http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html</a>
+</li>
+
+<li>Compressed oops in the Hotspot JVM<br />
+<a href="http://wikis.sun.com/display/HotSpotInternals/CompressedOops">http://wikis.sun.com/display/HotSpotInternals/CompressedOops</a>
+</li>
+
+<li>32-bit or 64-bit JVM? How about a Hybrid?<br />
+<a href="http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/">http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/</a>
+</li>
+
+<li>Compressed object pointers in Hotspot VM<br />
+<a href="http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot">http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot</a>
+</li>
+
+<li>Java HotSpot(tm) Virtual Machine Performance Enhancements<br />
+<a href="http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html">http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html</a>
+</li>
+
+<li>Using jconsole<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a>
+</li>
+
+<li>jconsole &ndash; Java Monitoring and Management Console<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>x86-64<br />
+<a href="http://en.wikipedia.org/wiki/X86-64">http://en.wikipedia.org/wiki/X86-64</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>1.6.0_14 (6u14)<br />
+<a href="http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn">http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn</a>
+</li>
+
+<li>Update Release Notes<br />
+<a href="http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html">http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html</a>
+</li>
+
+<li>Java virtual machine: 4.10 Limitations of the Java Virtual Machine<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659</a>
+</li>
+
+<li>Java(TM) Platform, Standard Edition 7 Binary Snapshot Releases<br />
+<a href="http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html">http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>ClosableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>ArrayList (JDK 1.4)<br />
+<a href="http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html">http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2011</small></p>
+</body>
+</html>
+
