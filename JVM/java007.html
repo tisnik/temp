@@ -1,0 +1,928 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Monitorování procesů a správa paměti v JDK6 a JDK7 (1)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Monitorování procesů a správa paměti v JDK6 a JDK7 (1)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;sedmé části seriálu o vlastnostech JDK (samozřejmě včetně OpenJDK) si řekneme základní informace o správě paměti ve virtuálním stroji jazyka Java. Taktéž se seznámíme se základními způsoby monitorování procesů běžících v&nbsp;JVM &ndash; zaměříme se přitom (alespoň prozatím) pouze na nástroje, které jsou dostupné přímo v&nbsp;JDK6 a JDK7.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Automatická správa paměti ve virtuálním stroji jazyka Java</a></p>
+<p><a href="#k02">2. Optimalizace související se správou paměti</a></p>
+<p><a href="#k03">3. Vyvolání správce paměti z&nbsp;běžící aplikace a metoda finalize()</a></p>
+<p><a href="#k04">4. Demonstrační příklady</a></p>
+<p><a href="#k05">5. Základní způsoby monitorování operací prováděných správcem paměti</a></p>
+<p><a href="#k06">6. Alokace paměti pro objekty v&nbsp;JVM</a></p>
+<p><a href="#k07">7. Jak nákladné je vytváření a rušení objektů?</a></p>
+<p><a href="#k08">8. &bdquo;Skryté&ldquo; vytváření objektů</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Automatická správa paměti ve virtuálním stroji jazyka Java</h2>
+
+<p>Každý vývojář, který začíná psát své první aplikace v&nbsp;programovacím
+jazyku Java, se poměrně brzy dozví, že tento jazyk (samozřejmě ve spolupráci
+s&nbsp;jeho běhovým prostředím &ndash; <i>JRE</i>) podporuje automatickou
+správu paměti. To mj.&nbsp;znamená, že se programátoři ve většině případů
+nemusí explicitně starat o to, jakým způsobem se již nepotřebné objekty
+z&nbsp;paměti uvolní a jakým způsobem je vlastně paměť organizovaná,
+popř.&nbsp;zda a jak se tato paměť defragmentuje. Podpora pro automatickou
+správu paměti je zajisté velmi užitečná vlastnost a vývojáři mohou po určité
+době dokonce dojít k&nbsp;názoru, že se o přidělovanou paměť vůbec nemusí
+starat. To však není v&nbsp;některých případech pravda, protože vytváření a
+rušení objektů (a s&nbsp;ním související alokace a dealokace bloků na takzvané
+<i>haldě</i> &ndash; <i>heapu</i>) je operace poměrně náročná na výpočetní
+výkon mikroprocesoru, takže správné zacházení s&nbsp;pamětí &ndash;
+tj.&nbsp;především hlídání toho, zda se například zbytečně (a mnohdy poněkud
+skrytě) nevytváří dočasné objekty &ndash; může někdy i velmi významně ovlivnit
+rychlost běhu aplikace popř.&nbsp;eliminovat prodlevy způsobené automatickou
+správou paměti.</p>
+
+<p>U desktopových aplikací se někdy celá problematika správy paměti ignoruje
+nebo zlehčuje se slovy &bdquo;to je prostě vlastnost pomalé Javy&ldquo;, ovšem
+u serverových aplikací, které například musejí současně vyřizovat několik
+desítek nebo i stovek požadavků za sekundu, je možné <i>vhodnými</i> a cílenými
+zásahy do programového kódu a nastavením některých parametrů JVM zvýšit
+<i>propustnost</i> systému, a to v&nbsp;některých případech i několikanásobně
+(je to ostatně poněkud podobné situaci, s&nbsp;níž se často setkávají
+programátoři píšící SQL příkazy &ndash; pro jednoduché a malé databáze
+postačuje použít jakýkoli SQL dotaz, který &bdquo;nějak&ldquo; provede
+požadovanou operaci, ovšem u složitých a rozsáhlých databází je zapotřebí
+zjišťovat složitosti dotazů a provádět jejich optimalizace nebo dokonce změnit
+celou strukturu databáze). Samozřejmě ještě větší dopad má optimalizovaný
+program v&nbsp;případě použití správců paměti orientovaných na systémy
+běžící v&nbsp;reálném čase (RT-systems). Ovšem jaké optimalizace lze
+v&nbsp;souvislosti se správou paměti provádět v&nbsp;Javě, když jsme si o
+odstavec výše řekli, že se paměť spravuje automaticky?</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Optimalizace související se správou paměti</h2>
+
+<p>Mezi vhodné zásahy ovlivňující funkci a časové i paměťové nároky automatické
+správy paměti patří především změna či optimalizace vlastního algoritmu (což
+ovšem není předmětem tohoto článku, ale analýzy konkrétního problému).
+S&nbsp;tím souvisí i použití vhodných datových struktur, například lineárně
+vázaných seznamů namísto seznamů implementovaných polem, kdy se i přes snahu
+automatického alokátoru pole systém mnohdy nevyhne jeho realokacím &ndash;
+nebezpečnost častých realokací stoupá například při nasazení aplikace do
+ostrého provozu, v&nbsp;němž musí pracovat s&nbsp;jinými a především
+rozsáhlejšími daty, než v&nbsp;provozu testovacím (teoreticky by testovací
+provoz měl simulovat provoz reálný, ale jak všichni víme, teorie se od praxe
+mnohdy liší, například při častých změnách ve specifikaci projektu, kdy se i
+poměrně závažné úpravy implementují na poslední chvíli...). Dále pak je možné
+provést úpravu stávajícího algoritmu takovým způsobem, aby se eliminovalo
+zbytečné vytváření dočasných objektů &ndash; typickým příkladem je náhrada
+objektů typu <strong>String</strong> za objekty typu
+<strong>StringBuffer</strong> nebo <strong>StringBuilder</strong>
+v&nbsp;případě, že se často provádí spojování řetězců.</p>
+
+<p>V&nbsp;případě, kdy není možné změnit použitý algoritmus ani ho jiným
+způsobem upravit, je ještě v&nbsp;záloze další strategie spočívající
+v&nbsp;nastavení vhodných parametrů paměti spravované JVM (haldy) a konečně
+nastavení parametrů automatického správce paměti (garbage collectoru),
+popř.&nbsp;volba, který ze správců paměti má být použit (v&nbsp;současných JVM
+je jich dostupných více). Důležité je samozřejmě také zjistit, jak se
+automatický správce paměti chová při běhu aplikace, popř.&nbsp;které části
+aplikace je nutné upravit (to vůbec nemusí být při studiu statického
+programového kódu zřejmé!). K&nbsp;tomuto účelu slouží různé monitorovací a
+logovací nástroje, které si popíšeme v&nbsp;následujících kapitolách. Příště na
+tuto problematiku navážeme, protože si popíšeme konkrétní způsob práce
+dostupných správců paměti (garbage collectorů) v&nbsp;JVM, včetně prozatím
+nejnovějšího typu správce paměti, který se nazývá <strong>Garbage First Garbage
+Collector</strong> nebo též zkráceně <strong>G1</strong>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Vyvolání správce paměti z&nbsp;běžící aplikace a metoda finalize()</h2>
+
+<p>Před popisem základních monitorovacích nástrojů, které jsou dostupné
+v&nbsp;každé instalaci JDK 6 a JDK 7 si připomeňme, že správce paměti
+(<i>garbage collector</i>) je spouštěn v&nbsp;samostatném vláknu či více
+vláknech, takže pracuje paralelně s&nbsp;běžící aplikací. Operace prováděné
+správcem paměti samozřejmě nemohou probíhat zcela nezávisle na aplikaci,
+protože se například provádí defragmentace haldy (heapu), s&nbsp;čímž souvisí
+potřeba některé objekty uzamykat &ndash; právě v&nbsp;těchto chvílích je běh
+aplikace pozastavován, a to i na systémech, které jsou vybaveny mikroprocesory
+s&nbsp;více jádry. Správce paměti si sám určuje, v&nbsp;jakém okamžiku provede
+nějakou operaci, ovšem v&nbsp;některých případech je vhodné ho spustit
+explicitně &ndash; tím se například může uvolnit část haldy před provedením
+nějaké náročné operace. K&nbsp;tomuto účelu slouží metoda
+<strong>System.gc()</strong>. Některé objekty navíc mohou implementovat metodu
+<strong>protected void finalize()</strong> (její prázdnou deklaraci nalezneme
+už v&nbsp;kořenové třídě <strong>Object</strong>) zavolanou těsně před tím, než
+je objekt skutečně z&nbsp;paměti odstraněn. Takzvanou <i>finalizaci</i> lze
+vynutit zavoláním metody <strong>System.runFinalization()</strong>.</p>
+
+<p>Obě zmíněné metody se mohou volat (a mnohdy se také volají) těsně po sobě.
+Metoda <strong>System.gc()</strong> totiž většinou spustí první část správce
+paměti (takzvanou fázi <i>mark</i> &ndash; označování), během níž je zjištěno,
+které objekty je možné zrušit a tyto objekty jsou vhodným způsobem označeny,
+popř.&nbsp;jsou objekty bez překryté metody <strong>finalize()</strong> přímo
+odstraněny v&nbsp;závislosti na tom, který správce paměti je použit. Metoda
+<strong>System.runFinalization()</strong> zavolá (obecně asynchronně!) metody
+<strong>finalize()</strong> u zbývajících objektů, které mají být zrušeny a
+následně tyto objekty skutečně z&nbsp;paměti odstraní. Přitom je nutné si
+uvědomit, že správce paměti stále běží v&nbsp;samostatném vláknu/vláknech,
+tj.&nbsp;paralelně s&nbsp;vláknem/vlákny aplikace. Navíc není zaručeno pořadí,
+v&nbsp;jakém jsou objekty rušeny ani pořadí volání jejich metody
+<strong>finalize()</strong> (pokud jsou samozřejmě tyto metody překryty).
+Jediná zaručená vlastnost je, že se metoda <strong>finalize()</strong> pro
+jeden objekt vyvolá pouze jedenkrát. Použití popsaných metod si ukážeme na dvou
+jednoduchých demonstračních příkladech, jejichž zdrojové kódy jsou uvedeny
+v&nbsp;následující kapitole.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Demonstrační příklady</h2>
+
+<p>V&nbsp;prvním demonstračním příkladu je nejprve do seznamu uloženo dvacet
+instancí třídy <strong>Item</strong> a následně je celý seznam označen za
+neaktivní objekt (<i>list=null</i>) s&nbsp;následným zavoláním metod
+<strong>System.gc()</strong> a <strong>System.runFinalization()</strong>.
+Povšimněte si, že třída <strong>Item</strong> má překrytou metodu
+<strong>finalize</strong> a taktéž toho, že pro označení objektu jako
+neaktivního postačuje, aby na něj v&nbsp;běžící aplikaci neexistovala žádná
+(aktivní) reference. Současní správci paměti totiž při hledání již nepotřebných
+objektů zjišťují právě to, zda na objekt existuje alespoň jedna přímá či
+nepřímá reference:</p>
+
+<pre>
+import java.util.ArrayList;
+import java.util.List;
+&nbsp;
+class Item
+{
+    private int i;
+&nbsp;
+    public Item(int i)
+    {
+        this.i = i;
+    }
+&nbsp;
+    @Override
+    protected void finalize()
+    {
+        System.out.println( "finalize object #" + this.i );
+    }
+}
+&nbsp;
+public class GcTest1
+{
+    public static void main(String[] args)
+    {
+        List&lt;Item&gt; list = new ArrayList&lt;Item&gt;();
+        for ( int i = 0; i &lt; 20; i++ )
+        {
+            list.add( new Item( i ) );
+        }
+        System.out.println( "Press any key to run gc" );
+        System.console().readLine();
+        list = null;
+        System.gc();
+        System.runFinalization();
+        System.out.println( "Press any key to quit" );
+        System.console().readLine();
+    }
+}
+</pre>
+
+<p>Druhý demonstrační příklad je podobný příkladu prvnímu, ovšem namísto
+označení celého seznamu za neaktivní objekt jsou postupně z&nbsp;tohoto seznamu
+odstraňovány jednotlivé objekty, které do něj byly předtím vloženy. Podoba
+třídy <strong>Item</strong> se přitom nezměnila &ndash; stále obsahuje
+překrytou metodu <strong>protected void finalize()</strong>, která při svém
+zavolání vypíše (obecně asynchronně!) hlášení na standardní výstup:</p>
+
+<pre>
+import java.util.ArrayList;
+import java.util.List;
+&nbsp;
+class Item
+{
+    private int i;
+&nbsp;
+    public Item(int i)
+    {
+        this.i = i;
+    }
+&nbsp;
+    @Override
+    protected void finalize()
+    {
+        System.out.println("finalize object #" + this.i);
+    }
+}
+&nbsp;
+public class GcTest2
+{
+    public static void main(String[] args)
+    {
+        List&lt;Item&gt; list = new ArrayList&lt;Item&gt;();
+        for ( int i = 0; i &lt; 20; i++ )
+        {
+            list.add( new Item( i ) );
+        }
+        System.out.println("Press any key to run gc");
+        System.console().readLine();
+        while (!list.isEmpty())
+        {
+            list.remove(0);
+            System.gc();
+            System.runFinalization();
+        }
+        System.out.println("Press any key to quit");
+        System.console().readLine();
+    }
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Základní způsoby monitorování operací prováděných správcem paměti</h2>
+
+<p>Nejjednodušší způsob, jakým lze monitorovat práci správce paměti (<i>garbage
+collectoru</i>) spočívá v&nbsp;použití volby <strong>-verbose:gc</strong> při
+spouštění libovolné javovské aplikace v&nbsp;<i>JVM</i>. Pokud je tato volba
+použita, vypisuje správce paměti průběžně základní informace o své práci.
+Vzhledem k&nbsp;tomu, že správce paměti běží v&nbsp;samostatných vláknech (viz
+předchozí text), je jeho výstup promíchán s&nbsp;výstupem aplikace, která může
+používat metody <strong>System.out.print|println|format</strong> atd.
+Standardní správce paměti vypisuje na jednom řádku trojici údajů umístěných
+mezi hranaté závorky: operaci, která byla provedena (GC/Full GC/...), stav
+haldy (heapu) před a pro provedení operace a taktéž čas trvání operace. Při
+použití volby <strong>-verbose:gc</strong> je samozřejmě nutné dbát na to, aby
+byla uvedena ještě před jménem třídy s&nbsp;metodou <strong>main()</strong>,
+která má být spuštěná (popř.&nbsp;kde má být spuštěn pouze blok <i>static</i>,
+i když toto jeho použití je poněkud neobvyklé), popř.&nbsp;před specifikací
+Java archivu. Je tomu tak z&nbsp;toho důvodu, aby se tato volba nepředala jako
+parametr aplikace, ale zpracovala se přímo v&nbsp;JVM.</p>
+
+<p>To znamená, že následující příkaz nebude pracovat korektně:</p>
+
+<pre>
+java -jar freemind.jar -verbose:gc
+</pre>
+
+<p>Zatímco tento příkaz bude pracovat takovým způsobem, jak je očekáváno:</p>
+
+<pre>
+java -verbose:gc -jar freemind.jar
+</pre>
+
+<p>Podívejme se nyní, jaké údaje jsou poslány na standardní výstup při spuštění
+prvního demonstračního příkladu s&nbsp;výše uvedenou volbou
+<strong>-verbose:gc</strong>. Vidíme, že po explicitním spuštění správce paměti
+a finalizátoru jsou volány jednotlivé metody <strong>finalize()</strong>
+objektů umístěných v&nbsp;seznamu. Konkrétní pořadí řádků na standardním
+výstupu může být odlišné podle toho, jaký správce paměti je použitý a jak jsou
+v&nbsp;daném okamžiku synchronizována jednotlivá vlákna, v&nbsp;nichž běží
+aplikace a správce paměti:</p>
+
+<pre>
+java -verbose:gc GcTest1
+Press any key to run gc
+&nbsp;
+[Full GC 350K-&gt;166K(5056K), 0.0263670 secs]
+finalize object #19
+finalize object #18
+finalize object #17
+finalize object #16
+finalize object #15
+finalize object #14
+finalize object #13
+finalize object #12
+finalize object #11
+finalize object #10
+finalize object #9
+finalize object #8
+finalize object #7
+finalize object #6
+finalize object #5
+finalize object #4
+finalize object #3
+finalize object #2
+finalize object #1
+finalize object #0
+Press any key to quit
+</pre>
+
+<p>V&nbsp;případě druhého demonstračního příkladu je standardní výstup odlišný,
+což je ostatně logické, protože jednotlivé objekty jsou ze seznamu odstraňovány
+postupně a ihned po jejich odstranění je navíc vynuceno spuštění správce
+paměti. Povšimněte si taktéž toho, že i když správce paměti nemá (zdánlivě) co
+na práci, protože se odstranil (opět zdánlivě) jen jeden zcela minimalistický
+objekt s&nbsp;jediným atributem, trvá celá operace správci paměti poměrně
+dlouho. Pro představu &ndash; zhruba stejný časový interval by trvalo
+vyrendrování průměrně složité trojrozměrné scény na grafickém akcelerátoru:</p>
+
+<pre>
+java -verbose:gc GcTest2
+Press any key to run gc
+&nbsp;
+[Full GC 350K-&gt;166K(5056K), 0.0223676 secs]
+finalize object #0
+[Full GC 202K-&gt;167K(5056K), 0.0180439 secs]
+finalize object #1
+[Full GC 203K-&gt;167K(5056K), 0.0207814 secs]
+finalize object #2
+[Full GC 203K-&gt;166K(5056K), 0.0221718 secs]
+finalize object #3
+[Full GC 202K-&gt;166K(5056K), 0.0218341 secs]
+finalize object #4
+[Full GC 202K-&gt;166K(5056K), 0.0222224 secs]
+finalize object #5
+[Full GC 202K-&gt;166K(5056K), 0.0215910 secs]
+finalize object #6
+[Full GC 202K-&gt;166K(5056K), 0.0216421 secs]
+finalize object #7
+[Full GC 202K-&gt;166K(5056K), 0.0215164 secs]
+finalize object #8
+[Full GC 202K-&gt;166K(5056K), 0.0216905 secs]
+finalize object #9
+[Full GC 202K-&gt;166K(5056K), 0.0209960 secs]
+finalize object #10
+[Full GC 202K-&gt;165K(5056K), 0.0180615 secs]
+finalize object #11
+[Full GC 201K-&gt;166K(5056K), 0.0179299 secs]
+finalize object #12
+[Full GC 202K-&gt;166K(5056K), 0.0179850 secs]
+finalize object #13
+[Full GC 202K-&gt;166K(5056K), 0.0179671 secs]
+finalize object #14
+[Full GC 202K-&gt;165K(5056K), 0.0179981 secs]
+finalize object #15
+[Full GC 201K-&gt;165K(5056K), 0.0179042 secs]
+finalize object #16
+[Full GC 201K-&gt;165K(5056K), 0.0178833 secs]
+finalize object #17
+[Full GC 202K-&gt;166K(5056K), 0.0178539 secs]
+finalize object #18
+[Full GC 202K-&gt;165K(5056K), 0.0180746 secs]
+finalize object #19
+Press any key to quit
+</pre>
+
+<p>V&nbsp;některých případech nemusí být vypisování informací o práci správce
+paměti na standardní výstup tou nejvhodnější metodou. Alternativně lze pomocí
+volby <strong>-Xloggc:jméno_souboru</strong> přesměrovat <i>pouze</i> informace
+vypisované správcem paměti do zvoleného souboru. Oproti informacím zapisovaným
+na standardní výstup je ještě na začátku každého řádku doplněna informace o
+časovém okamžiku (měřeném v&nbsp;sekundách od startu aplikace), kdy byla daná
+operace zahájena. Logovací soubor obsahuje v&nbsp;případě prvního
+demonstračního příkladu pouze jeden řádek:</p>
+
+<pre>
+1.654: [Full GC 349K-&gt;166K(5056K), 0.0267048 secs]
+</pre>
+
+<p>U druhého demonstračního příkladu je do logovacího souboru vypsáno dvacet
+řádků:</p>
+
+<pre>
+1.077: [Full GC 349K-&gt;166K(5056K), 0.0232898 secs]
+1.102: [Full GC 202K-&gt;166K(5056K), 0.0172860 secs]
+1.121: [Full GC 202K-&gt;167K(5056K), 0.0172659 secs]
+1.139: [Full GC 203K-&gt;165K(5056K), 0.0175709 secs]
+1.158: [Full GC 201K-&gt;165K(5056K), 0.0171773 secs]
+1.176: [Full GC 202K-&gt;166K(5056K), 0.0171315 secs]
+1.194: [Full GC 202K-&gt;166K(5056K), 0.0171946 secs]
+1.213: [Full GC 202K-&gt;165K(5056K), 0.0172673 secs]
+1.231: [Full GC 201K-&gt;165K(5056K), 0.0171748 secs]
+1.249: [Full GC 202K-&gt;166K(5056K), 0.0172159 secs]
+1.268: [Full GC 202K-&gt;166K(5056K), 0.0171620 secs]
+1.286: [Full GC 202K-&gt;165K(5056K), 0.0172600 secs]
+1.305: [Full GC 201K-&gt;165K(5056K), 0.0171807 secs]
+1.323: [Full GC 201K-&gt;165K(5056K), 0.0171617 secs]
+1.341: [Full GC 201K-&gt;165K(5056K), 0.0172134 secs]
+1.360: [Full GC 202K-&gt;165K(5056K), 0.0172419 secs]
+1.378: [Full GC 201K-&gt;165K(5056K), 0.0171321 secs]
+1.396: [Full GC 201K-&gt;165K(5056K), 0.0171343 secs]
+1.415: [Full GC 201K-&gt;165K(5056K), 0.0175201 secs]
+1.434: [Full GC 202K-&gt;165K(5056K), 0.0175939 secs]
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Alokace paměti pro objekty v&nbsp;JVM</h2>
+
+<p>Při psaní aplikací v&nbsp;Javě se nevyhneme častému vytváření objektů. Může
+se přitom jednat jak o běžné objekty (obsahující většinou jako své atributy
+reference na další objekty) nebo o pole a řetězce, což jsou taktéž objekty,
+které se od &bdquo;běžných&ldquo; objektů odlišují pouze tím, že pro ně
+existuje podpora v&nbsp;syntaxi jazyka Java. Programovací jazyk Java se navíc
+od některých dalších programovacích jazyků odlišuje v&nbsp;tom, že objekty jsou
+vždy vytvářeny na haldě a nikoli na zásobníku (tam jsou ukládány pouze jejich
+reference). To například znamená, že překladač při vytváření nějakého objektu
+vůbec nemusí zkoumat, zda je objekt používán pouze v&nbsp;rámci některého bloku
+(metody, podmínky, smyčky) nebo zda je reference na něj předána jako návratový
+kód metody popř.&nbsp;je uložena například do atributu objektu. Tato vlastnost
+&ndash; spolu s&nbsp;tím, že se všechny objekty vytváří dynamicky &ndash;
+zabraňuje vznikům chyb způsobených například tím, že se z&nbsp;metody/funkce
+vrátí ukazatel na objekt vytvořený na zásobníku (který může být kdykoli později
+přepsán).</p>
+
+<p>Můžeme se ostatně podívat na to, jakým způsobem se odlišuje bajtkód
+následujících čtyř metod, které vytváří instanci třídy <strong>Integer</strong>
+a následně s&nbsp;ní pracují různým způsobem:</p>
+
+<pre>
+public class Test
+{
+    Integer attribute;
+&nbsp;
+    // reference na vytvořený objekt se vrací
+    // jako návratová hodnota metody
+    Integer method1()
+    {
+        Integer i = new Integer(6502);
+        return i;
+    }
+&nbsp;
+    // objekt je pouze použit v&nbsp;rámci metody
+    void method2()
+    {
+        Integer i = new Integer(6502);
+        System.out.println(i);
+    }
+&nbsp;
+    // uložení reference na vytvořený objekt
+    // do atributu objektu (= instance třídy Test)
+    void method3()
+    {
+        Integer i = new Integer(6502);
+        this.attribute = i;
+    }
+&nbsp;
+    // vrácení instance třídy Integer
+    // bez vytváření lokální reference
+    Integer method4()
+    {
+        return new Integer(6502);
+    }
+}
+</pre>
+
+<p>Po překladu zdrojového kódu třídy <strong>Test</strong> s&nbsp;volbou
+<strong>-g</strong> (konkrétně <i>javac -g Test.java</i>) si můžeme příkazem
+<strong>javap -c Test</strong> nechat vypsat vygenerovaný bajtkód. Shodné řádky
+všech čtyř metod jsou označeny hvězdičkou, první tři metody mají navíc
+společnou instrukci, která ukládá referenci na nový objekt do lokální proměnné.
+Tato instrukce je označena vykřičníkem:</p>
+
+<pre>
+java.lang.Integer method1();
+  Code:
+*   0:  new     #2; //class java/lang/Integer
+*   3:  dup
+*   4:  sipush  6502
+*   7:  invokespecial   #3; //Method java/lang/Integer."&lt;init&gt;":(I)V
+!  10:  astore_1
+   11:  aload_1
+   12:  areturn
+&nbsp;
+void method2();
+  Code:
+*   0:  new     #2; //class java/lang/Integer
+*   3:  dup
+*   4:  sipush  6502
+*   7:  invokespecial   #3; //Method java/lang/Integer."&lt;init&gt;":(I)V
+!  10:  astore_1
+   11:  getstatic       #4; //Field java/lang/System.out:Ljava/io/PrintStream;
+   14:  aload_1
+   15:  invokevirtual   #5; //Method java/io/PrintStream.println:(Ljava/lang/Object;)V
+   18:  return
+&nbsp;
+void method3();
+  Code:
+*   0:  new     #2; //class java/lang/Integer
+*   3:  dup
+*   4:  sipush  6502
+*   7:  invokespecial   #3; //Method java/lang/Integer."&lt;init&gt;":(I)V
+!  10:  astore_1
+   11:  aload_0
+   12:  aload_1
+   13:  putfield        #6; //Field attribute:Ljava/lang/Integer;
+   16:  return
+&nbsp;
+java.lang.Integer method4();
+  Code:
+*   0:  new     #2; //class java/lang/Integer
+*   3:  dup
+*   4:  sipush  6502
+*   7:  invokespecial   #3; //Method java/lang/Integer."&lt;init&gt;":(I)V
+   10:  areturn
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Jak nákladné je vytváření a rušení objektů?</h2>
+
+<p>Vraťme se nyní k&nbsp;problematice vytváření a rušení objektů. Tyto dvě
+operace, z&nbsp;nichž jedna je většinou prováděna explicitně v&nbsp;aplikaci
+(většinou, ale zdaleka ne vždy příkazem <strong>new</strong>) a druhá skrytě
+správcem paměti, samozřejmě nějaký čas trvají, tj.&nbsp;je zapotřebí na ně
+vyhradit určitý a nikoli zanedbatelný výpočetní výkon mikroprocesoru. I když je
+například vytvoření, tj.&nbsp;konstrukce objektu zdánlivě jednoduchá (typicky
+z&nbsp;toho důvodu, že je použit bezparametrický konstruktor, v&nbsp;němž se
+neprovádí žádné složité inicializace), jsou s&nbsp;ní spojeny další skryté
+operce, například alokace bloku/bloků na haldě, požadavek na přidělení dalšího
+bloku paměti poslaný operačnímu systému, v&nbsp;tom horším případě dokonce
+odložení části virtuální paměti na disk (swapování) atd.</p>
+
+<p>Odstraňování již nepotřebného objektu z&nbsp;haldy však může být ještě
+složitější, protože se v&nbsp;rámci správy paměti v&nbsp;určitých intervalech
+(a většinou po poměrně malých částech) provádí defragmentace této paměti. Jaký
+vliv má relativně malá změna v&nbsp;programovém kódu (která eliminuje vytváření
+dočasných objektů) na celkový běh aplikace, a jak lze náročnost aplikace na
+výpočetní výkon mikroprocesoru změřit, si ukážeme v&nbsp;navazujících
+textech.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. &bdquo;Skryté&ldquo; vytváření objektů</h2>
+
+<p>Před popisem různých způsobů monitorování aplikací běžících v&nbsp;JVM si
+ukažme trojici demonstračních příkladů, které provádí stejnou činnost &ndash;
+do řetězce uloží textové reprezentace čísel od nuly do zadané mezní hodnoty
+(zde 10000), která jsou od sebe oddělená mezerou. Jedná se sice o umělý
+příklad, ovšem s&nbsp;podobným problémem se programátoři mohou setkat poměrně
+často &ndash; může se jednat o načítání obsahu nějakého logovacího souboru do
+řetězce, vytváření podoby HTML tabulky v&nbsp;řetězci před jejím posláním ke
+klientovi, programová serializace objektů do formátu XML, formátování nějaké
+tiskové sestavy na základě údajů načítaných z&nbsp;databáze atd. (většinou se
+namísto přidávání mezery do řetězce přidává znak pro konec řádku, ale to je
+již detail).</p>
+
+<p>První demonstrační příklad používá ten nejjednodušší a &ndash; jak uvidíme
+dále &ndash; i z&nbsp;časového hlediska nejhorší způsob: jednotlivá čísla jsou
+převáděna na řetězec, poté je tento řetězec připojen k&nbsp;řetězci
+představujícím mezeru (právě díky této operaci dojde ke konverzi čísla na
+řetězec) a následně se výsledek připojí k&nbsp;již vytvořenému textu. Problém
+skrytý v&nbsp;tomto přístupu spočívá v&nbsp;tom, že řetězce jsou neměnitelné
+objekty, což znamená, že operace <strong>str1 += str2</strong> vytvoří zcela
+nový objekt (typu <strong>String</strong>) a předchozí dva objekty
+(tj.&nbsp;původní <strong>str1</strong> a <strong>str2</strong>) musí být dříve
+či později zrušeny správcem paměti. Tato náročná operace je v&nbsp;mezním
+případě (dlouhé řetězce) provedena celkem <i>LOOP_COUNT</i>-krát, navíc je zde
+ještě problém související s&nbsp;výrazem <strong>i + " "</strong> popsaným
+dále:</p>
+
+<pre>
+public class ConcatTest1
+{
+    private static final int LOOP_COUNT = 10000;
+&nbsp;
+    private static String createString()
+    {
+        String str = "";
+        for (int i = 0; i &lt; LOOP_COUNT; i++)
+        {
+            str += i + " ";
+        }
+        return str;
+    }
+&nbsp;
+    public static void main(String[] args)
+    {
+        String str = createString();
+        System.out.println("String length: " + str.length());
+        System.out.println("*** Running full gc ***");
+        System.gc();
+        System.runFinalization();
+        System.out.println("*** Quitting ***");
+    }
+}
+</pre>
+
+<a href="http://i.iinfo.cz/images/252/java07-1.png"><img src="http://i.iinfo.cz/images/252/java07-1-prev.png" width="370" height="258" alt=" " /></a>
+<p><i>Obrázek 1: Sledování běhu příkladu ConcatTest1 v&nbsp;nástroji jconsole.
+Povšimněte si vytížení procesoru a taktéž obsazení haldy (heapu).</i></p>
+
+<p>Ve druhém demonstračním příkladu je celá problematika řešena poněkud lépe
+&ndash; namísto (neměnných) objektů typu <strong>String</strong> je použit
+objekt typu <strong>StringBuffer</strong> nebo <strong>StringBuilder</strong>,
+k&nbsp;němuž je možné pomocí několika přetížených metod
+<strong>append()</strong> přidávat další znaky. I zde však není situace zcela
+dokonalá, i když je mnohem lepší, než v&nbsp;předchozím příkladu. I přesto, že
+se ve smyčce nenachází žádné klíčové slovo <strong>new</strong>, dochází zde
+poněkud skrytě k&nbsp;neustálému vytváření dočasných objektů, protože zápis
+<strong>i + " "</strong> se do bajtkódu přeloží jako sekvence instrukcí pro
+vytvoření dočasného objektu <strong>StringBuilder</strong>, do něhož se
+postupně uloží původní řetězec, textová podoba proměnné <strong>i</strong> a mezera. Následně je
+tento dočasný objekt převeden na řetězec, jenž je přiřazen lokální proměnné
+<i>str</i> (přesněji řečeno je do proměnné přiřazena reference na vytvořený
+řetězec) a poté se dočasný <strong>StringBuilder</strong> již stane neaktivním
+objektem. Jak uvidíme dále, není zde situace tak závažná, jako v&nbsp;prvním
+demonstračním příkladu, protože dočasný objekt <strong>StringBuilder</strong>
+obsahuje pouze krátký text, takže správce paměti není vyvoláván s&nbsp;tak
+velkou frekvencí:</p>
+
+<pre>
+public class ConcatTest2
+{
+    private static final int LOOP_COUNT = 10000;
+&nbsp;
+    private static String createString()
+    {
+        StringBuffer str = new StringBuffer();
+        for (int i = 0; i &lt; LOOP_COUNT; i++)
+        {
+            str.append(i + " ");
+        }
+        return str.toString();
+    }
+&nbsp;
+    public static void main(String[] args)
+    {
+        String str = createString();
+        System.out.println("String length: " + str.length());
+        System.out.println("*** Running full gc ***");
+        System.gc();
+        System.runFinalization();
+        System.out.println("*** Quitting ***");
+    }
+}
+</pre>
+
+<a href="http://i.iinfo.cz/images/252/java07-2.png"><img src="http://i.iinfo.cz/images/252/java07-2-prev.png" width="370" height="259" alt=" " /></a>
+<p><i>Obrázek 2: Sledování běhu příkladu ConcatTest2 v&nbsp;nástroji jconsole.
+Zde je již vytížení procesoru minimální a taktéž halda je obsazena z&nbsp;méně
+než 50%.</i></p>
+
+<p>Třetí demonstrační příklad je přepsán takovým způsobem, že se ve smyčce
+žádný další pomocný dočasný objekt nevytváří, o čemž se můžeme snadno
+přesvědčit například pohledem do vygenerovaného bajtkódu (ovšem ke skrytému
+vytvoření nového objektu dojít ve skutečnosti může a skutečně i několikrát
+dojde &ndash; přijdete na to, kde a proč?). Jedná se sice o příklad
+(pravděpodobně) nejméně přehledný, ovšem v&nbsp;případě, že by se podobná
+konstrukce &ndash; postupné vytváření dlouhého řetězce z&nbsp;malých částí
+&ndash; měla vyskytovat v&nbsp;kritické části programu, je vhodné a mnohdy i
+nutné se přiklonit k&nbsp;tomuto řešení:</p>
+
+<pre>
+public class ConcatTest3
+{
+    private static final int LOOP_COUNT = 10000;
+&nbsp;
+    private static String createString()
+    {
+        StringBuffer str = new StringBuffer();
+        for (int i = 0; i &lt; LOOP_COUNT; i++)
+        {
+            str.append(i);
+            str.append(' ');
+        }
+        return str.toString();
+    }
+&nbsp;
+    public static void main(String[] args)
+    {
+        String str = createString();
+        System.out.println("String length: " + str.length());
+        System.out.println("*** Running full gc ***");
+        System.gc();
+        System.runFinalization();
+        System.out.println("*** Quitting ***");
+    }
+}
+</pre>
+
+<a href="http://i.iinfo.cz/images/252/java07-3.png"><img src="http://i.iinfo.cz/images/252/java07-3-prev.png" width="370" height="261" alt=" " /></a>
+<p><i>Obrázek 3: Sledování běhu příkladu ConcatTest3 v&nbsp;nástroji jconsole.
+Výsledek je v&nbsp;tomto případě podobný jako u příkladu předchozího.</i></p>
+
+<p>Jak vypadá výpis práce správce paměti v&nbsp;prvním příkladu, je ukázáno
+níže. Z&nbsp;tohoto výpisu je zřejmé, že při běhu programu došlo automaticky
+k&nbsp;vyvolání správce paměti cca 1100&times;(!) a program běžel na testovacím
+počítači celých 2,5 sekundy:</p>
+
+<pre>
+0.109: [GC 896K-&gt;118K(5056K), 0.0026554 secs]
+0.115: [GC 1014K-&gt;123K(5056K), 0.0010161 secs]
+0.119: [GC 1016K-&gt;120K(5056K), 0.0004892 secs]
+...                    ...
+... smazáno 1100 řádků ...
+...                    ...
+2.491: [GC 2208K-&gt;1540K(5056K), 0.0003350 secs]
+2.493: [GC 2399K-&gt;1635K(5056K), 0.0002609 secs]
+2.495: [GC 2495K-&gt;1826K(5056K), 0.0003830 secs]
+2.497: [GC 2686K-&gt;1921K(5056K), 0.0002724 secs]
+2.499: [GC 2782K-&gt;2112K(5056K), 0.0003674 secs]
+2.501: [GC 2973K-&gt;2208K(5056K), 0.0002763 secs]
+2.502: [GC 3069K-&gt;2398K(5056K), 0.0003746 secs]
+2.504: [GC 3260K-&gt;2494K(5056K), 0.0002911 secs]
+2.506: [Full GC 2687K-&gt;211K(5056K), 0.0163401 secs]
+</pre>
+
+<p>Druhý demonstrační příklad běžel znatelně rychleji (0,135s) a navíc se
+správce paměti automaticky zavolal pouze dvakrát (tato hodnota se může mírně
+odlišovat, nicméně by neměla přesáhnout zhruba pět zavolání GC):</p>
+
+<pre>
+0.122: [GC 896K-&gt;152K(5056K), 0.0025894 secs]
+0.130: [GC 906K-&gt;188K(5056K), 0.0009370 secs]
+0.135: [Full GC 825K-&gt;283K(5056K), 0.0199106 secs]
+</pre>
+
+<p>Ve třetím příkladu nedocházelo k&nbsp;vytváření žádných dočasných objektů ve
+smyčce, proto se správce paměti zavolal až po explicitním volání
+<strong>System.gc</strong>():</p>
+
+<pre>
+0.114: [Full GC 615K-&gt;211K(5056K), 0.0240047 secs]
+</pre>
+
+<p>Podrobnější analýzu chování všech tří příkladů si ukážeme příště.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Dr. Dobb's | G1: Java's Garbage First Garbage Collector<br />
+<a href="http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/">http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/</a>
+</li>
+
+<li>Java's garbage-collected heap<br />
+<a href="http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html">http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html</a>
+</li>
+
+<li>Compressed oops in the Hotspot JVM<br />
+<a href="http://wikis.sun.com/display/HotSpotInternals/CompressedOops">http://wikis.sun.com/display/HotSpotInternals/CompressedOops</a>
+</li>
+
+<li>32-bit or 64-bit JVM? How about a Hybrid?<br />
+<a href="http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/">http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/</a>
+</li>
+
+<li>Compressed object pointers in Hotspot VM<br />
+<a href="http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot">http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot</a>
+</li>
+
+<li>Java HotSpot(tm) Virtual Machine Performance Enhancements<br />
+<a href="http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html">http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html</a>
+</li>
+
+<li>Using jconsole<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a>
+</li>
+
+<li>jconsole &ndash; Java Monitoring and Management Console<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>x86-64<br />
+<a href="http://en.wikipedia.org/wiki/X86-64">http://en.wikipedia.org/wiki/X86-64</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>1.6.0_14 (6u14)<br />
+<a href="http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn">http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn</a>
+</li>
+
+<li>Update Release Notes<br />
+<a href="http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html">http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html</a>
+</li>
+
+<li>4.10 Limitations of the Java Virtual Machine<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659</a>
+</li>
+
+<li>Java(TM) Platform, Standard Edition 7 Binary Snapshot Releases<br />
+<a href="http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html">http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>ClosableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>ArrayList (JDK 1.4)<br />
+<a href="http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html">http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2011</small></p>
+</body>
+</html>
+
