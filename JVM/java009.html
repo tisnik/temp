@@ -1,0 +1,557 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 (3)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;deváté části seriálu o vlastnostech JDK 6 a JDK 7 (samozřejmě včetně OpenJDK) se budeme zabývat především principem práce správců paměti. Řekneme si, jaké veličiny se při sledování chování aplikace v&nbsp;reálném provozu vlastně mohou měřit a jak jsou tyto veličiny ovlivněny nastavením parametrů správců paměti při spuštění běhového prostředí Javy (JRE).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Implementace správců paměti v&nbsp;JDK a OpenJDK</a></p>
+<p><a href="#k02">2. Nejdůležitější veličiny sledované při nastavování parametrů JRE</a></p>
+<p><a href="#k03">3. Trasovací algoritmy</a></p>
+<p><a href="#k04">4. Zápory naivních trasovacích algoritmů</a></p>
+<p><a href="#k05">5. Všechny objekty jsou si rovné, ale některé jsou si rovnější</a></p>
+<p><a href="#k06">6. Metoda &bdquo;rozděl a panuj&ldquo;</a></p>
+<p><a href="#k07">7. Kopie (přesuny) objektů v&nbsp;průběhu správy paměti</a></p>
+<p><a href="#k08">8. Parametry ovlivňující efektivitu správců paměti</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Implementace správců paměti v&nbsp;JDK a OpenJDK</h2>
+
+<p>V&nbsp;předchozí části poněkud nepravidelně vycházejícího seriálu o
+programovacím jazyce Java a vlastnostech <i>JDK 6</i> a <i>JDK 7</i> jsme se
+mj.&nbsp;věnovali i tématu implementace správců paměti (<i>gc &ndash; garbage
+collectors</i>). I když je programovací jazyk Java a samozřejmě i jeho běhové
+prostředí (<i>JRE</i>) navrženo takovým způsobem, aby se programátoři ve svých
+aplikacích nemuseli (většinou!) zabývat problematikou alokace a dealokace
+paměti pro vytvářené objekty, s&nbsp;nimiž se v&nbsp;aplikaci pracuje, je
+znalost fungování správců paměti důležitá při nastavování parametrů běhového
+prostředí Javy, především v&nbsp;těch případech, pokud se jedná o aplikaci
+běžící na výkonných systémech s&nbsp;více mikroprocesory nebo s&nbsp;více jádry
+umístěnými na jednom čipu (takový hardware je již zcela běžný jak na serverech,
+tak i na výkonnějších osobních počítačích). V&nbsp;současnosti je
+v&nbsp;<i>JDK</i> a samozřejmě taktéž v&nbsp;<i>OpenJDK</i> implementováno
+větší množství typů správců paměti, přičemž každý z&nbsp;nich je vhodný pro
+jiné typy aplikací a odlišné konfigurace počítačů.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-1.png" width="400" height="300" alt=" " />
+<p><i>Obrázek 1: Při použití správce paměti využívajícího počítání referencí
+(reference counting) je ke každému objektu přiřazeno celé kladné číslo
+vyjadřující počet existujících referencí na tento objekt. Pokud počitadlo
+klesne k&nbsp;hodnotě 0, je objekt z&nbsp;paměti odstraněn. Jak jsme si však
+již řekli minule, tento typ správy paměti se v&nbsp;JDK nepoužívá, i když
+v&nbsp;některých oblastech (například při tvorbě systémů běžících
+v&nbsp;reálném čase) má své využití.</i></p>
+
+<p>V&nbsp;následujících kapitolách si vysvětlíme především princip fungování
+správců paměti založených na takzvaném <i>generačním algoritmu</i>, při jehož
+použití se objekty umístěné na <i>haldě</i> (heapu) heuristicky rozdělují podle
+jejich chování zjištěného přímo za běhu aplikace (nejedná se tedy o vlastnost
+objektů, která by byla zjišťována již při překladu, i když by to bylo
+v&nbsp;některých případech možné). Tito správci paměti mohou běžet buď
+v&nbsp;jednom vlákně, nebo je možné jejich funkci rozdělit do většího množství
+vláken, přičemž strategie jejich práce se liší podle toho, jaké parametry jsou
+nastaveny při startu <i>JRE</i> &ndash; ne všechny aplikace totiž mají shodné
+požadavky na to, jakým způsobem mají správci paměti pracovat (někdy se
+preferuje spíše celková propustnost, u systémů reálného času se však dbá na
+minimalizaci pauz způsobených správci paměti při běhu aplikace). Bližší
+informace o tom, jaké veličiny se většinou při nastavování parametrů <i>JRE</i>
+sledují, si řekneme v&nbsp;další kapitole.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Nejdůležitější veličiny sledované při nastavování parametrů JRE</h2>
+
+<p>Při nastavování parametrů správců paměti či při optimalizacích aplikace
+(tj.&nbsp;úpravách vlastního algoritmu a/nebo používaných datových typů) se
+většinou sledují tři veličiny. První z&nbsp;těchto veličin představuje
+maximální kapacitu operační paměti, která může být alokována při vytváření
+objektů nebo při správě <i>haldy</i> (<i>heap</i>) správcem paměti. Druhou
+důležitou veličinou je <i>propustnost</i> (<i>throughput</i>), která &ndash;
+poněkud zjednodušeně řečeno &ndash; vyjadřuje, kolik procent strojového času
+proces (tj.&nbsp;běžící Javovská aplikace) stráví vlastními výpočty. Přitom se
+předpokládá, že zbylá procenta strojového času jsou využita právě správcem
+paměti při zjišťování a následném uvolňování nepotřebných objektů. Propustnost
+se většinou měří po velmi dlouhý časový interval, kdy se již aplikace
+&bdquo;ustálí&ldquo; a kdy mají správci paměti založení na heuristice možnost
+si objekty roztřídit podle jejich délky existence (viz též další kapitoly).
+Třetí sledovanou veličinou je průměrná či maximální doba, po kterou musí být
+aplikace pozastavena (<i>pause time</i>), aby mohl správce paměti uvolnit
+nepotřebné objekty z&nbsp;haldy, popř.&nbsp;přeorganizovat zde umístěné objekty
+podle nastavené strategie organizace haldy. Na tomto místě je možná dobré
+zdůraznit, že naprostá většina správců paměti musí aplikaci alespoň na krátké
+okamžiky pozastavit.</p>
+
+<p>Podobně jako je tomu i v&nbsp;mnoha dalších oblastech IT (a nejenom tam :-),
+způsobí většinou úprava nastavení <i>JRE</i> tak, aby se preferovala jedna
+z&nbsp;těchto veličin, zhoršení obou zbývajících veličin. Například po zvýšení
+maximální kapacity paměti pro <i>haldu</i> se může snížit frekvence volání
+&bdquo;plného&ldquo; úklidu haldy (viz další text); snížení průměrné či
+maximální doby, po kterou je aplikace kvůli správě paměti pozastavena, může
+snížit její celkovou propustnost apod. Při nastavování parametrů <i>JRE</i> je
+tedy vhodné si ujasnit, o jaký typ aplikace se jedná a jaké chování je ještě
+pro uživatele/zákazníka přijatelné a které již ne. Pokud by se kupříkladu
+jednalo o interaktivní aplikaci s&nbsp;grafickým uživatelským rozhraním
+(v&nbsp;extrémním případě o hru nebo o multimediální přehrávač), je většinou
+nutné minimalizovat pauzy způsobené správcem paměti a naopak &ndash; u
+dlouhotrvajících výpočtů se bude v&nbsp;naprosté většině případů klást větší
+důraz na celkovou propustnost, protože u výpočtu trvajícího například tři
+hodiny bez interakce uživatele asi nikoho nebude trápit, když se celá aplikace
+na několik sekund zastaví, aby správce paměti mohl vykonat všechny potřebné
+činnosti.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Trasovací algoritmy</h2>
+
+<p>V&nbsp;moderních implementacích běhového prostředí jazyka Java (<i>JRE</i>)
+se velmi často můžeme setkat se správci paměti, které jsou založeny na
+testování, které objekty uložené na haldě jsou skutečně &bdquo;živé&ldquo;,
+tj.&nbsp;dostupné z&nbsp;alespoň jednoho vlákna aplikace. Tito správci paměti
+postupně prochází stromem všech objektů, přičemž svoji činnost začínají u
+objektů, jež jsou v&nbsp;daném okamžiku aktivní ve všech vláknech. Mohou
+začínat například u všech objektů, jejichž reference jsou uloženy
+v&nbsp;zásobníkových rámcích vláken. Připomeňme si, že virtuální stroj jazyka
+<i>Java</i> vytváří pro <strong>každé</strong> vlákno aplikace vlastní
+virtuální zásobník (<i>virtual stack</i>), v&nbsp;němž jsou uloženy
+<i>zásobníkové rámce</i> (<i>stack frames</i>). Pro každou zavolanou metodu je
+vytvořen nový zásobníkový rámec, ve kterém jsou uložené jak lokální proměnné,
+tak i mezivýsledky aritmetických a logických operací (tyto operace jsou
+prováděny nad takzvaným <i>zásobníkem operandů</i> &ndash; <i>operand stack</i>
+&ndash; jenž je součástí zásobníkového rámce).</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-2.png" width="400" height="344" alt=" " />
+<p><i>Obrázek 2: Stav haldy (heapu) před spuštěním správce paměti využívajícího
+(naivní) trasovací algoritmus.</i></p>
+
+<p>Zásobníkový rámec je taktéž použit při volání metod (statických, virtuálních
+i konstruktorů) pro předávání parametrů volaným metodám (u nativních metod je
+situace komplikovanější). Vzhledem k&nbsp;tomu, že se s&nbsp;ukazateli na
+zásobníkové rámce nedá v&nbsp;Javě přímo manipulovat, je možné, aby byly tyto
+rámce postupně vytvářeny přímo na <i>haldě</i>, a to na libovolném místě (to je
+však již implementační detail). V&nbsp;každém případě mohou správci paměti
+nejprve označit všechny objekty uložené v&nbsp;jednotlivých virtuálních
+zásobnících jako objekty &bdquo;živé&ldquo;, protože jsou z&nbsp;daného vlákna
+dostupné. Správci paměti posléze postupně prochází všemi atributy těchto
+objektů, které mnohdy obsahují reference na objekty další, a u všech nalezených
+objektů nastavují bitový příznak říkající, že je objekt skutečně
+&bdquo;živý&ldquo;, tj.&nbsp;nějakým způsobem dostupný. Po provedení celého
+trasování mohou být ty objekty, které nemají bitový příznak &bdquo;je
+živý&ldquo; nastaveny na hodnotu <i>true</i>, odstraněny z&nbsp;haldy, protože
+neexistuje způsob, jakým by byly tyto objekty dosažitelné z&nbsp;libovolného
+vlákna aplikace.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-3.png" width="400" height="347" alt=" " />
+<p><i>Obrázek 3: Objekt číslo 1 (zde zvýrazněný žlutě) byl nalezen ve
+virtuálním zásobníku jediného vlákna hypotetické aplikace a z&nbsp;tohoto
+důvodu byl označený bitovým příznakem &bdquo;živý&ldquo;. U modře označených
+objektů ještě jejich stav neznáme.</i></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Zápory naivních trasovacích algoritmů</h2>
+
+<p>Výše uvedený způsob práce správců paměti je ovšem vhodný pouze pro
+teoretické úvahy a v&nbsp;praxi se (tak jak je popsaný) příliš často nepoužívá,
+protože má několik nepříjemných vlastností. Jednou ze špatných vlastností je
+to, že projití celého stromu dosažitelných (živých) objektů může být poměrně
+náročné jak na výpočetní výkon daného počítače, tak i na využití jeho
+vyrovnávacích pamětí, protože správce musí při své činnosti projít i těmi
+objekty, které například nejsou v&nbsp;aplikaci nikdy použity, i když jsou
+stále dostupné (živé). Představme si například serverovou aplikaci napsanou
+v&nbsp;Javě, která nikdy nepoužije pole <strong>args</strong>, v&nbsp;němž jsou
+aplikaci &ndash; přesněji řečeno statické metodě <strong>public static void
+main()</strong> &ndash; předány parametry zadané na příkazové řádce.
+Popř.&nbsp;aplikace tyto parametry skutečně zpracuje, ale pouze ihned po svém
+spuštění. Ovšem pole <strong>args</strong> se ani v&nbsp;tomto případě nemůže
+odstranit, protože reference na něj je uložena prakticky na samotném začátku
+virtuálního zásobníku hlavního vlákna aplikace.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-4.png" width="400" height="344" alt=" " />
+<p><i>Obrázek 4: Objekt číslo 1 obsahoval dva atributy &ndash; reference na
+objekt číslo 2 a objekt číslo 3. I tyto objekty jsou označeny příznakem
+&bdquo;živý&ldquo;, podobně jako objekt číslo 7, jenž je dostupný nepřímo,
+konkrétně přes dvě reference Objekt 1&rarr;Objekt 3&rarr;Objekt 7.</i></p>
+
+<p>Tyto objekty &ndash; pole řetězců &ndash; jsou &bdquo;živé&ldquo; po celou
+dobu práce serverové aplikace, ovšem ve skutečnosti se k&nbsp;nim nemusí i
+několik týdnů či měsíců přistupovat (ano, i Javovské aplikace mnohdy musí
+vydržet běžet tak dlouho ;-). Navíc, což je v&nbsp;praxi mnohem důležitější,
+může projití celého stromu objektů trvat velmi dlouho. To by způsobovalo
+nepříjemné a v&nbsp;mnoha případech i nepřípustné prodlevy &ndash; u
+desktopových aplikací je to nepříjemná vlastnost, u mnoha aplikací serverových
+či aplikací ovládajících nějaké periferní zařízení pak vlastnost zcela
+nepřípustná. Z&nbsp;tohoto důvodu se hledal vhodný způsob, jak by bylo možné
+chování &bdquo;naivních&ldquo; trasovacích algoritmů, které neustále otrocky
+prochází všemi objekty na haldě, vylepšit. Jedna z&nbsp;vhodných a
+implementačně relativně nenáročných metod se skutečně našla. Tato metoda je
+založena na poznatku získaném v&nbsp;praxi: ne všechny objekty, které jsou při
+běhu aplikace vytvořeny, se chovají stejným způsobem. Existuje totiž
+(statistická) závislost mezi dobou existence objektu a pravděpodobností, že se
+tento objekt stane nedostupný (neaktivní). Na tomto poznatku jsou založeny
+takzvané <i>heuristické trasovací algoritmy</i>.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-5.png" width="400" height="343" alt=" " />
+<p><i>Obrázek 5: Všechny ostatní objekty (na předchozím obrázku měly stále
+modré pozadí) neměly příznak &bdquo;živý&ldquo; nastaven na logickou jedničku a
+proto je správce paměti mohl odstranit z&nbsp;haldy. Před odstraněním
+samozřejmě provedl finalizaci objektů, tj.&nbsp;zavolal jejich metody
+<strong>finalize()</strong>.</i></p>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Všechny objekty jsou si rovné, ale některé jsou si rovnější</h2>
+
+<p>V&nbsp;současných verzích správců paměti, které jsou používané v&nbsp;<i>JDK
+6</i> i <i>JDK 7</i>, se sice stále používají trasovací algoritmy, ovšem tyto
+algoritmy nepracují se všemi objekty uloženými na haldě. Namísto toho jsou
+objekty rozděleny do několika navzájem oddělených částí haldy. Nejhrubší dělení
+je na objekty &bdquo;mladé&ldquo; a objekty &bdquo;staré&ldquo;. Objekty jsou
+tedy rozděleny do několika oblastí na haldě podle toho, jak dlouho již existují
+&ndash; čas jejich existence se ovšem neměří pomocí nějakých časovačů, ale
+podle toho, kolik spuštění správce paměti daný objekt &bdquo;přežil&ldquo;,
+tj.&nbsp;kolikrát se objekt nacházel v&nbsp;aktivním (dosažitelném) stavu.
+Využívá se zde přitom faktu zjištěného při zkoumání chování reálných aplikací
+v&nbsp;praxi: poměrně mnoho objektů se vyznačuje velmi krátkou dobou existence
+a naopak &ndash; čím déle je objekt aktivní (dosažitelný alespoň z&nbsp;jednoho
+vlákna aplikace), tím menší je pravděpodobnost, že při dalším běhu správce
+paměti bude muset být odstraněn.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-6.png" width="400" height="413" alt=" " />
+<p><i>Obrázek 6: Většina běžných objektů je vytvořena v&nbsp;menší oblasti
+haldy nazvané <strong>young generation</strong>. Teprve poté, co objekt
+několikrát &bdquo;přežije&ldquo; spuštění správce paměti nad touto oblastí
+haldy, může být přesunut do (obecně) větší oblasti haldy nazvané <strong>old
+generation</strong> či taktéž <strong>tenured generation</strong>.</i></p>
+
+<p>V&nbsp;praxi se tedy při rozdělení haldy na několik oblastí musí změnit
+především způsob alokace paměti při vytváření (konstrukci) objektů. Halda je
+totiž rozdělena na tři oblasti: relativně malou oblast nazvanou <i>young
+generation</i>, větší oblast nazvanou <i>old generation</i> (též <i>tenured
+generation</i>) a třetí oblast se jménem <i>permanent generation</i> (tato
+oblast má poněkud jiný význam a budeme se jí proto zabývat až v&nbsp;některé
+následující části tohoto seriálu). Většina nových objektů je vytvářena
+v&nbsp;oblasti <i>young generation</i>, pouze některé typy velkých objektů musí
+být vytvořeny přímo v&nbsp;<i>old/tenured generation</i>. Nad oblastí <i>young
+generation</i> se relativně často spouští správce paměti optimalizovaný
+s&nbsp;ohledem na to, že velká část objektů bude z&nbsp;této oblasti skutečně
+odstraněna. Objekty, které přežijí několik spuštění tohoto
+&bdquo;rychlého&ldquo; správce paměti, jsou přesunuty do oblasti <i>old
+generation</i>. I nad objekty uloženými v&nbsp;oblasti <i>old generation</i> se
+samozřejmě spouští správce paměti, ovšem s&nbsp;mnohem menší frekvencí (pokud
+se náhodou spouští s&nbsp;velkou frekvencí, značí to buď problém
+v&nbsp;aplikaci, nebo problém v&nbsp;parametrech <i>JRE</i>). Taktéž algoritmus
+tohoto správce paměti je poněkud upravený, protože se počítá s&nbsp;tím, že
+objekty uložené v&nbsp;<i>old generation</i> s&nbsp;větší pravděpodobností
+&bdquo;přežijí&ldquo;, na rozdíl od většiny objektů uložených v&nbsp;<i>young
+generation</i>.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-7.png" width="400" height="357" alt=" " />
+<p><i>Obrázek 7: Oblast haldy nazvaná <strong>young generation</strong> je
+většinou rozdělena na tři podoblasti: <strong>eden</strong>, <strong>survivor
+space #1</strong> a <strong>survivor space #2</strong>. Na některých
+architekturách je však namísto toho použita větší kapacita haldy pro
+<strong>eden</strong> a jedinou podoblast <strong>survivor
+space</strong>.</i></p>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Metoda &bdquo;rozděl a panuj&ldquo;</h2>
+
+<p>Popis rozdělení haldy (heapu) na tři oblasti, který byl uveden
+v&nbsp;předchozí kapitole, není zcela přesný. Týká se to zejména oblasti
+<i>young generation</i>, které je ve skutečnosti ještě rozdělena na několik
+dalších podoblastí. První z&nbsp;těchto podoblastí se nazývá <i>eden</i> a
+právě v&nbsp;této podoblasti jsou vytvářeny nové objekty. V&nbsp;případě, že je
+celá kapacita <i>edenu</i> již alokována, zavolá se správce paměti, který celým
+<i>edenem</i> projde a vyřadí ty objekty, které již nejsou aktivní (živé).
+Zbylé objekty, kterých je (alespoň podle statistických měření provedených nad
+typickými aplikacemi) méně, jsou zkopírovány do jedné z&nbsp;oblastí nazvaných
+<i>survivor space</i>. V&nbsp;této oblasti jsou tedy umístěny pouze ty objekty,
+které přežily masakr způsobený správcem paměti v&nbsp;<i>edenu</i> :-). U
+architektur, v&nbsp;níž se používají dvě podoblasti <i>survivor space</i>, je
+vždy jedna z&nbsp;těchto podoblastí prázdná a druhá podoblast obsahuje objekty
+zkopírované z&nbsp;<i>edenu</i> popř.&nbsp;z&nbsp;podoblasti první (kopírováním
+objektů se totiž <i>survivor space</i> kromě jiného též defragmentuje).</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-8.png" width="401" height="398" alt=" " />
+<p><i>Obrázek 8: Objekty běžné velikosti jsou vždy vytvářeny v&nbsp;edenu.
+Pouze příliš velké objekty jsou alokovány již přímo v&nbsp;oblasti old
+generation, což však může způsobovat problémy &ndash; fragmentaci této oblasti,
+frekventované odstraňování objektů z&nbsp;old generation atd.</i></p>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Kopie (přesuny) objektů v&nbsp;průběhu správy paměti</h2>
+
+<p>Každý objekt může být po svém přesunu z&nbsp;<i>edenu</i> do jedné
+z&nbsp;podoblastí <i>survivor space</i>, mezi těmito oběma podoblastmi
+<i>survivor space</i> přesunut několikrát, než je uznáno jeho právo být
+zkopírován do oblasti <i>old generation</i> (samozřejmě v&nbsp;závislosti na
+nastavených parametrech správce paměti). Ke kopiím objektu ze <i>survivor
+space</i> do <i>edenu</i> však nedochází, protože <i>eden</i> je vyhrazen pouze
+pro nově vytvářené objekty. Po každém proběhnutí jedné iterace
+&bdquo;rychlého&ldquo; správce paměti tedy vypadá celá oblast <i>young
+generation</i> na haldě následovně: <i>eden</i> je vyprázdněný, jedna
+z&nbsp;podoblastí <i>survivor space</i> je taktéž vyprázdněná a druhá
+z&nbsp;těchto podoblastí obsahuje objekty, které jsou sice stále aktivní, ovšem
+ještě nedosáhly stavu dospělosti (navíc je tato podoblast defragmentována). Při
+spuštění další iterace &bdquo;rychlého&ldquo; správce paměti se význam obou
+podoblastí <i>survivor space</i> otočí, tj.&nbsp;objekty umístěné
+v&nbsp;částečně zaplněné podoblasti i přeživší objekty z&nbsp;<i>edenu</i> jsou
+kopírovány do podoblasti, která byla původně prázdná.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-9.png" width="400" height="354" alt=" " />
+<p><i>Obrázek 9: Jakmile je eden zcela zaplněn, nebo pokud v&nbsp;něm již není
+místo pro vytvoření dalšího objektu, spustí se správce paměti, který poctivě
+projde všechny zde uložené objekty. Aktivní objekty jsou uloženy do jedné
+z&nbsp;oblastí survivor space, objekty neaktivní jsou odstraněny.</i></p>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Parametry ovlivňující efektivitu správců paměti</h2>
+
+<p>Efektivita správy paměti implementované podle popisu uvedeného
+v&nbsp;předchozích kapitolách je do značné míry závislá na nastavení velikostí
+jednotlivých oblastí na haldě, tj.&nbsp;zejména poměru mezi velikostí oblasti
+<i>young generation</i> a <i>old (tenured) generation</i>. V&nbsp;neposlední
+řadě efektivitu správců paměti ovlivňuje velikost <i>edenu</i>. Pokud by
+například byla jeho kapacita příliš malá, docházelo by často k&nbsp;jeho
+zaplňování, což znamená, že by se správce paměti volal s&nbsp;velkou frekvencí.
+Na tom by sice nemuselo být při prvním pohledu nic špatného, ovšem v&nbsp;praxi
+se ukazuje, že je vhodné dát některým objektům určitý čas na to, aby se staly
+neaktivní. Příliš malá kapacita <i>edenu</i> by tedy mohla způsobit, že by se i
+objekty s&nbsp;krátkou dobou existence zkopírovaly do <i>survivor space</i> a
+v&nbsp;extrémním případě i do oblasti <i>old generation</i>. Další problém by
+nastal u objektů, které se již při svém vytváření do kapacity <i>edenu</i>
+nedostanou. Takové objekty totiž jsou, jak jsme si již řekli o několik odstavců
+výše, přímo vytvářeny v&nbsp;oblasti <i>old generation</i>.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-10.png" width="400" height="418" alt=" " />
+<p><i>Obrázek 10: Před či po projití <strong>edenu</strong> se navíc projdou i
+všechny objekty uložené v&nbsp;jedné ze <strong>survivor space</strong> a opět
+je na základě trasování objektů zhodnoceno, který objekt je aktivní, který
+neaktivní a který dostatečně starý na to, aby byl přesunut do oblasti
+<strong>old generation</strong>.</i></p>
+
+<p>To ovšem opět může způsobit menší efektivitu při údržbě paměti, protože
+algoritmus správce paměti pracujícího nad oblastí <i>old generation</i> není
+optimalizován na to, že se v&nbsp;této oblasti budou nacházet objekty
+s&nbsp;krátkou dobou existence. Dalším parametrem, který v&nbsp;některých
+případech může i významně ovlivnit chování aplikace, je volba, zda se má použít
+správce paměti běžící v&nbsp;jediném vlákně nebo multivláknový (multithreadový)
+správce paměti. Zatímco jednovláknový (sériový) správce paměti je vhodný pro
+většinu desktopových aplikací běžících na počítačích s&nbsp;malým počtem jader,
+může být použití tohoto správce (který je například standardně použit
+v&nbsp;JDK 1.4.2!) na výkonných serverech s&nbsp;osmi či šestnácti
+procesorovými jádry velmi problematické, protože se zde začne negativně
+uplatňovat <i>Amdahlův zákon</i>. Podrobnosti si řekneme v&nbsp;navazující
+části tohoto seriálu, spolu s&nbsp;vysvětlením voleb, které ovlivňují způsob
+práce správců paměti (a vlastně i to, který správce paměti se skutečně
+použije).</p>
+
+<a href="http://i.iinfo.cz/images/679/java0603.png"><img src="http://i.iinfo.cz/images/679/java0603-prev.png" width="370" height="241" alt=" " /></a>
+<p><i>Obrázek 11: Sledování stavu zaplnění jednotlivých oblastí haldy lze
+provádět i z&nbsp;nástroje jconsole (viz pravý dolní roh okna).</i></p>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Amdahl's law<br />
+<a href="http://en.wikipedia.org/wiki/Amdahl_law">http://en.wikipedia.org/wiki/Amdahl_law</a>
+</li>
+
+<li>Garbage collection (computer science)<br />
+<a href="http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)">http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)</a>
+</li>
+
+<li>Dr. Dobb's | G1: Java's Garbage First Garbage Collector<br />
+<a href="http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/">http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/</a>
+</li>
+
+<li>Java's garbage-collected heap<br />
+<a href="http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html">http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html</a>
+</li>
+
+<li>Compressed oops in the Hotspot JVM<br />
+<a href="http://wikis.sun.com/display/HotSpotInternals/CompressedOops">http://wikis.sun.com/display/HotSpotInternals/CompressedOops</a>
+</li>
+
+<li>32-bit or 64-bit JVM? How about a Hybrid?<br />
+<a href="http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/">http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/</a>
+</li>
+
+<li>Compressed object pointers in Hotspot VM<br />
+<a href="http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot">http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot</a>
+</li>
+
+<li>Java HotSpot(tm) Virtual Machine Performance Enhancements<br />
+<a href="http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html">http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html</a>
+</li>
+
+<li>Using jconsole<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a>
+</li>
+
+<li>jconsole &ndash; Java Monitoring and Management Console<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>x86-64<br />
+<a href="http://en.wikipedia.org/wiki/X86-64">http://en.wikipedia.org/wiki/X86-64</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>1.6.0_14 (6u14)<br />
+<a href="http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn">http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn</a>
+</li>
+
+<li>Update Release Notes<br />
+<a href="http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html">http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html</a>
+</li>
+
+<li>4.10 Limitations of the Java Virtual Machine<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659</a>
+</li>
+
+<li>Java(TM) Platform, Standard Edition 7 Binary Snapshot Releases<br />
+<a href="http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html">http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>ClosableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>ArrayList (JDK 1.4)<br />
+<a href="http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html">http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2011</small></p>
+</body>
+</html>
+
