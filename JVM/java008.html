@@ -1,0 +1,841 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Monitorování procesů a správa paměti v JDK6 a JDK7 (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Monitorování procesů a správa paměti v JDK6 a JDK7 (1)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;osmé části seriálu o vlastnostech JDK (včetně OpenJDK) si ukážeme použití profileru, jenž je přímo součástí standardní instalace JRE. Taktéž si řekneme další důvody, proč není vhodné, aby se v&nbsp;často volaném programovém kódu spojovaly řetězce pomocí operátorů + a +=. V&nbsp;závěru se navíc seznámíme se základními způsoby implementace správců paměti.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Spojování řetězců a další problémy, které je provázejí</a></p>
+<p><a href="#k02">2. Způsob překladu operátorů + a += při práci s&nbsp;řetězci</a></p>
+<p><a href="#k03">3. Opakované skryté provádění interních kopií polí znaků &ndash; AbstractStringBuilder.append(String)</a></p>
+<p><a href="#k04">4. Další skryté kopie pole znaků v&nbsp;metodách String.getChars() a StringBuilder.toString()</a></p>
+<p><a href="#k05">5. Malá rekapitulace</a></p>
+<p><a href="#k06">6. Základní analýza běhu programu &ndash; profiler JDK</a></p>
+<p><a href="#k07">7. Implementace správců paměti: klasický případ &ndash; počítání referencí</a></p>
+<p><a href="#k08">8. Přednosti a zápory správce paměti založeného na počítání referencí</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Spojování řetězců a další problémy, které je provázejí</h2>
+
+<p>V&nbsp;předchozí části seriálu o běhovém prostředí JDK 6 a JDK 7 jsme si
+řekli základní informace o problematice vytváření a rušení objektů.
+V&nbsp;samotném závěru předchozí části byly ukázány tři demonstrační programy,
+které &ndash; každý příklad ovšem pomocí jiného postupu &ndash; ve své metodě
+nazvané <strong>createString()</strong> vytvořily řetězec, v&nbsp;němž byly
+uloženy textové reprezentace čísel od nuly do zadané mezní hodnoty (konkrétně
+se jednalo o hodnotu 10000), přičemž jednotlivá čísla byla od sebe oddělena
+jednou mezerou. První příklad pro vytvoření řetězce používal
+&bdquo;řetězcové&ldquo; operátory <strong>+</strong> a <strong>+=</strong>, ve
+druhém příkladu se použila optimalizace s&nbsp;využitím
+<strong>StringBufferu</strong> a jeho přetížené metody
+<strong>append()</strong>, do něhož se ovšem ukládal lokálně vytvářený řetězec,
+a konečně v&nbsp;příkladu třetím se již žádný lokální řetězec uvnitř programové
+smyčky nevytvářel, protože se jak číselná hodnota, tak i mezera vkládaly přímo
+do <strong>StringBufferu</strong> (číselná hodnota se samozřejmě interně musela
+převést do řetězcové podoby).</p>
+
+<p>Zdrojové kódy demonstračních příkladů už zde nebudu znovu uvádět, aby se
+článek zbytečně neprodlužoval. Pokud si však chcete všechny tři demonstrační
+programy prohlédnout i se zvýrazněním syntaxe, je možné je nalézt pod
+následujícími odkazy:
+<a href="">[1]</a>,
+<a href="">[2]</a> a
+<a href="">[3]</a>.
+Časy běhů všech tří programů i celkové zatížení procesoru se ovšem při měření
+velmi lišily, a to i přesto, že výsledkem práce všech programů byl shodný
+textový řetězec. Již v&nbsp;předchozí části jsme si řekli, že jednou
+z&nbsp;příčin je neustálé vytváření objektů uvnitř programové smyčky. Ovšem to
+není příčina jediná, i když poměrně podstatná, protože si v&nbsp;případě
+prvního příkladu vyžádala hned několikeré volání správce paměti. Druhou
+příčinou, proč je první program o mnoho pomalejší, než další dva programy a
+taktéž proč je třetí program (nepatrně) rychlejší než program druhý, je to, že
+se při práci s&nbsp;řetězci i při převodu <strong>StringBufferu</strong> či
+<strong>StringBuilderu</strong> na řetězec provádí kopie všech znaků, které
+řetězec tvoří (na tuto příčinu správně upozornili někteří čtenáři v&nbsp;
+<a href="">diskusi pod předchozím článkem</a>).
+Pojďme se tedy podívat, jakým způsobem se vlastně interně s&nbsp;řetězci i
+s&nbsp;ostatními dvěma třídami sloužícími primárně pro úschovu řetězců
+pracuje.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Způsob překladu operátorů + a += při práci s&nbsp;řetězci</h2>
+
+<p>Před popisem způsobu profilování programů s&nbsp;využitím nástrojů
+dostupných přímo v&nbsp;<i>JRE</i> si nejdříve ukážeme, v&nbsp;čem konkrétně
+spočívají další problémy skryté zejména v&nbsp;prvním, ale částečně ve i druhém
+demonstračním příkladu. Nejprve se podíváme na to, jakým způsobem se přeloží
+metoda <strong>createString()</strong> z&nbsp;prvního demonstračního příkladu.
+Pro připomenutí &ndash; zdrojový kód této metody má následující tvar:</p>
+
+<pre>
+public static String createString()
+{
+    String str = "";
+    for (int i = 0; i &lt; LOOP_COUNT; i++)
+    {
+        str += i + " ";
+    }
+    return str;
+}
+</pre>
+
+<p>Po překladu demonstračního příkladu do bajtkódu (ideálně provedeném i
+s&nbsp;použitím modifikátoru <strong>-g</strong>) můžeme z&nbsp;bajtkódu
+poměrně snadno zjistit, jak vůbec překladač Javy dokázal přeložit příkaz
+<strong>str += i + " "</strong>. Bajtkód všech veřejných metod získáme pomocí
+příkazu <strong>javap -c ConcatTest1</strong>. Pod tímto odstavcem jsou vypsány
+pouze ty instrukce virtuálního stroje Javy (JVM), které reprezentují metodu
+<strong>createString()</strong>. Způsob vlastní implementace počítané smyčky
+nás v&nbsp;tento okamžik příliš nezajímá, protože mnohem důležitější je to, jak
+je přeložen výše uvedený příkaz <strong>str += i + " "</strong>. Instrukce,
+kterými je tento zdánlivě jednoduchý příkaz implementován, jsou označeny na
+začátku každého řádku hvězdičkou:</p>
+
+<pre>
+public static java.lang.String createString();
+  Code:
+   0:   ldc             #2; //String 
+   2:   astore_0
+   3:   iconst_0
+   4:   istore_1
+   5:   iload_1
+   6:   sipush  10000
+   9:   if_icmpge 42        // na bajtu s indexem 42 je konec smyčky
+*  12:  new             #3; //class java/lang/StringBuilder
+*  15:  dup
+*  16:  invokespecial   #4; //Method java/lang/StringBuilder."(init)":()V
+*  19:  aload_0
+*  20:  invokevirtual   #5; //Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+*  23:  iload_1
+*  24:  invokevirtual   #6; //Method java/lang/StringBuilder.append:(I)Ljava/lang/StringBuilder;
+*  27:  ldc             #7; //String  
+*  29:  invokevirtual   #5; //Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+*  32:  invokevirtual   #8; //Method java/lang/StringBuilder.toString:()Ljava/lang/String;
+*  35:  astore_0
+   36:  iinc    1, 1
+   39:  goto    5           // skok zpět na začátek smyčky
+   42:  aload_0
+   43:  areturn
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že výše uvedený bajtkód je pro velkou část
+programátorů v&nbsp;Javě poměrně nepřehledný a špatně čitelný, je níže pro
+ilustraci vypsán programový kód, který je do co největší míry ekvivalentní
+s&nbsp;instrukcemi, jež se vyskytují ve vygenerovaném bajtkódu. Povšimněte si,
+že se v&nbsp;tomto zdrojovém kódu instance třídy <strong>StringBuilder</strong>
+ihned po svém vytvoření (konstrukci) naplní původním řetězcem, ke kterému se
+mají připisovat další znaky. Posléze se do tohoto objektu přidá textová
+reprezentace celého čísla následovaná řetězcem obsahujícím mezeru. Použití
+řetězce bylo v&nbsp;tomto případě způsobeno tím, že by zápis <strong>i + '
+'</strong> ve skutečnosti znamenal přičtení konstanty 32 k&nbsp;hodnotě
+proměnné <strong>i</strong>, což vůbec není chování, které očekáváme (zmíněná
+konstanta 32 samozřejmě odpovídá ASCII hodnotě mezery &ndash; space). Poslední
+operací, která se s&nbsp;instancí třídy <strong>StringBuffer</strong> provádí,
+je převod jejího atributu na řetězec:</p>
+
+<pre>
+public static String createString()
+{
+    String str = "";
+    for (int i = 0; i &lt; LOOP_COUNT; i++)
+    {
+        StringBuilder tmp = new StringBuilder();
+        tmp.append(str);
+        tmp.append(i);
+        tmp.append(" ");
+        str = tmp.toString();
+    }
+    return str;
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Opakované skryté provádění interních kopií polí znaků &ndash; AbstractStringBuilder.append(String)</h2>
+
+<p>I při letmém pohledu na fragment zdrojového kódu vypsaného v&nbsp;závěru
+předchozí kapitoly můžeme objevit jeden problém &ndash; uvnitř programové
+smyčky se vytváří pomocná instance třídy <strong>StringBuilder</strong>,
+z&nbsp;níž je na konci každé iterace získána nová podoba řetězce
+<strong>str</strong> (navíc je ještě, jak uvidíme dále, vytvořena i nová
+instance třídy <strong>String</strong>). O tomto problému &ndash; konkrétně o
+častém vytváření objektů s&nbsp;velmi krátkou dobou života &ndash; jsme se
+dozvěděli základní informace již v&nbsp;předchozí části tohoto seriálu. Ovšem
+v&nbsp;oněch pěti řádcích uvnitř programové smyčky jsou skryta i další úskalí,
+spočívající v&nbsp;tom, že se (i když skrytě) v&nbsp;operační paměti neustále
+provádí několik kopií polí znaků. S&nbsp;těmito úskalími &ndash; které ovšem
+zdaleka neplatí pouze pro třídu <strong>String</strong>, ale i pro některé
+další často používané programové konstrukce &ndash; se podrobněji seznámíme
+v&nbsp;následujících odstavcích, kde se taktéž podíváme na způsob, jakým jsou
+jednotlivé metody implementovány v&nbsp;knihovnách JDK. Zaměříme se přitom na
+implementaci použitou v&nbsp;(Open)JDK 7, ovšem podobně je tomu i
+v&nbsp;(Open)JDK 6.</p>
+
+<p>První z&nbsp;tohoto pohledu zajímavou metodou je metoda
+<strong>StringBuilder.append(String)</strong>, která je je v&nbsp;OpenJDK 7
+implementována následujícím způsobem:</p>
+
+<pre>
+public AbstractStringBuilder append(String str)
+{
+    if (str == null) str = "null";
+    int len = str.length();
+    ensureCapacityInternal(count + len);
+    str.getChars(0, len, value, count);
+    count += len;
+    return this;
+}
+</pre>
+
+<p>V&nbsp;této metodě jsou potenciálně výpočetně náročné dva příkazy &ndash;
+volání metody <strong>ensureCapacityInternal()</strong>, tj.&nbsp;zajištění,
+aby se do <strong>StringBuilderu</strong> mohl skutečně připojit celý řetězec a
+taktéž volání metody <strong>String.getChars()</strong>, v&nbsp;níž se provádí
+defenzivní kopie pole znaků z&nbsp;řetězce do atributu <strong>value</strong>.
+První ze zmíněných metod &ndash; privátní metoda
+<strong>ensureCapacityInternal()</strong> &ndash; není sama o sobě příliš
+zajímavá; ostatně posuďte sami:</p>
+
+<pre>
+private void ensureCapacityInternal(int minimumCapacity)
+{
+    // overflow-conscious code
+    if (minimumCapacity - value.length &gt; 0)
+        expandCapacity(minimumCapacity);
+}
+</pre>
+
+<p>Zajímavější je již metoda <strong>expandCapacity()</strong>, která je
+zavolaná v&nbsp;případě, kdy je zapotřebí zvětšit kapacitu
+<strong>StringBufferu</strong> nebo <strong>StringBuilderu</strong>.
+V&nbsp;našem demonstračním případu ke zvětšení kapacity určitě dojde již po
+několika málo iteracích (kdy se průběžně rozšiřovaný řetězec zvětší), protože
+standardní velikost pole znaků je v&nbsp;případě
+<strong>StringBufferu()</strong> a <strong>StringBuilderu()</strong> rovna
+pouze 16 znakům. Při rozšíření kapacity bufferu samozřejmě musí dojít ke kopii
+pole znaků na začátek většího pole. Zda je tomu skutečně tak, se dozvíme při
+pohledu na zdrojový kód metody <strong>expandCapacity()</strong>:</p>
+
+<pre>
+void expandCapacity(int minimumCapacity)
+{
+    int newCapacity = value.length * 2 + 2;
+    if (newCapacity - minimumCapacity &lt; 0)
+        newCapacity = minimumCapacity;
+    if (newCapacity &lt; 0) {
+        if (minimumCapacity &lt; 0) // overflow
+            throw new OutOfMemoryError();
+        newCapacity = Integer.MAX_VALUE;
+    }
+    value = Arrays.copyOf(value, newCapacity);
+}
+</pre>
+
+<p>Z&nbsp;výše uvedeného výpisu je patrné, že se kopie pole znaků při zvětšení
+kapacity <strong>StringBufferu</strong> nebo <strong>StringBuilderu</strong>
+skutečně provádí a původní pole uložené v&nbsp;atributu <strong>value</strong>
+musí být následně uvolněno správcem paměti.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Další skryté kopie pole znaků v&nbsp;metodách String.getChars() a StringBuilder.toString()</h2>
+
+<p>To ovšem zdaleka není jediná kopie pole, která se při provádění onoho tak
+nenápadného, ale o to více problematického příkazu <strong>str += i + "&nbsp;"
+</strong> musí provést. Další kopie je skryta ve výše popsané metodě
+<strong>StringBuilder.append(String)</strong>, konkrétně na programovém řádku
+<strong>str.getChars(0, len, value, count);</strong>, protože metoda
+<strong>String.getChars()</strong> provádí defenzivní kopii celého pole znaků
+(toto pole představuje interní podobu řetězce v&nbsp;operační paměti). O tom,
+že se tato kopie skutečně provádí, se můžeme snadno přesvědčit ve zdrojových
+kódech <i>OpenJDK</i>:</p>
+
+<pre>
+public void getChars(int srcBegin, int srcEnd, char dst[], int dstBegin)
+{
+    if (srcBegin &lt; 0)
+    {
+        throw new StringIndexOutOfBoundsException(srcBegin);
+    }
+    if (srcEnd &gt; count)
+    {
+        throw new StringIndexOutOfBoundsException(srcEnd);
+    }
+    if (srcBegin &gt; srcEnd)
+    {
+        throw new StringIndexOutOfBoundsException(srcEnd - srcBegin);
+    }
+    System.arraycopy(value, offset + srcBegin, dst, dstBegin, srcEnd - srcBegin);
+}
+</pre>
+
+<p>Poslední (konečně :-) problematickou část kódu můžeme najít v&nbsp;pátém
+příkazu v&nbsp;programové smyčce, tj.&nbsp;ve volání metody
+<strong>StringBuilder.toString()</strong>. V&nbsp;této metodě se totiž vytvoří
+nová instance třídy <strong>String</strong>, která se bude inicializovat ještě
+jednou zkopírovaným polem znaků, protože metoda
+<strong>StringBuilder.toString()</strong> má následující tvar:</p>
+
+<pre>
+public String toString()
+{
+    // Create a copy, don't share the array
+    return new String(value, 0, count);
+}
+</pre>
+
+<p>Přičemž se v&nbsp;konstruktoru <strong>String(char value[], int offset, int
+count)</strong> volá metoda:</p>
+
+<pre>
+Arrays.copyOfRange(value, offset, offset+count);
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Malá rekapitulace</h2>
+
+<p>Proveďme si malé shrnutí poznatků získaných z&nbsp;předchozích kapitol.
+Původní příkaz:</p>
+
+<pre>
+str += i + " ";
+</pre>
+
+<p>kde proměnná <strong>str</strong> je typu <strong>String</strong> a proměnná
+<strong>i</strong> je typu <strong>int</strong>, se přeloží do následující
+sekvence příkazů:</p>
+
+<pre>
+StringBuilder tmp = new StringBuilder();
+tmp.append(str);
+tmp.append(i);
+tmp.append(" ");
+str = tmp.toString();
+</pre>
+
+<p>V&nbsp;nichž se kromě jiného provádí i následující kopie polí znaků:</p>
+
+<pre>
+tmp.append(str):
+    Arrays.copyOf (pouze v&nbsp;případě, že se zvětšuje kapacita bufferu)
+    System.arraycopy
+&nbsp;
+tmp.toString():
+    Arrays.copyOfRange
+</pre>
+
+<p>Kromě výše zmíněného neustálého kopírování v&nbsp;podstatě stále těch samých
+znaků mezi několika regiony operační paměti se navíc při každé iteraci vytvoří
+tyto objekty:</p>
+
+<pre>
+StringBuilder
+String
+</pre>
+
+<p>Přičemž se původní instance třídy <strong>String</strong> stane neaktivní,
+stejně jako lokálně (v&nbsp;programové smyčce) vytvořený objekt
+<strong>StringBuilder</strong>.</p>
+
+<p>Ještě do této kapitoly doplním malou statistiku &ndash; délka vytvořeného
+řetězce je pro 10000 iterací rovna pouhým 48890 znakům a &ndash; pokud
+zanedbáme kopie polí prováděné v&nbsp;případě zvětšování kapacity bufferu
+&ndash; vyjde nám, že se pro získání takto krátkého řetězce musí v&nbsp;paměti
+přesunout celkem 478858990 znaků, tj.&nbsp;cca 912 MB! Počet kopírovaných znaků
+totiž roste se zvětšujícím se počtem iterací poměrně rychle:</p>
+
+<table>
+<tr><th>Počet iterací</th><th>Zkopírovaných bajtů</th></tr>
+<tr><td>1 </td><td>4  </td></tr>
+<tr><td>2 </td><td>12 </td></tr>
+<tr><td>3 </td><td>24 </td></tr>
+<tr><td>4 </td><td>40 </td></tr>
+<tr><td>5 </td><td>60 </td></tr>
+<tr><td>6 </td><td>84 </td></tr>
+<tr><td>7 </td><td>112</td></tr>
+<tr><td>8 </td><td>144</td></tr>
+<tr><td>9 </td><td>180</td></tr>
+<tr><td>10</td><td>220</td></tr>
+<tr><td>11</td><td>266</td></tr>
+<tr><td>12</td><td>318</td></tr>
+<tr><td>13</td><td>376</td></tr>
+<tr><td>14</td><td>440</td></tr>
+<tr><td>15</td><td>510</td></tr>
+<tr><td>16</td><td>586</td></tr>
+<tr><td>17</td><td>668</td></tr>
+<tr><td>18</td><td>756</td></tr>
+<tr><td>19</td><td>850</td></tr>
+<tr><td>20</td><td>950</td></tr>
+</table>
+
+<p>Mimochodem &ndash; ani druhý demonstrační příklad není zcela bez chybičky,
+protože se jeho programová smyčka ve tvaru:</p>
+
+<pre>
+StringBuffer str = new StringBuffer();
+for (int i = 0; i &lt; LOOP_COUNT; i++)
+{
+    str.append(i + " ");
+}
+return str.toString();
+</pre>
+
+<p>Přeloží takto:</p>
+
+<pre>
+StringBuffer str = new StringBuffer();
+for (int i = 0; i &lt; LOOP_COUNT; i++)
+{
+    StringBuilder tmp = new StringBuilder();
+    tmp.append(i);
+    tmp.append(" ");
+    String s = tmp.toString();
+    str.append(s);
+}
+return str.toString();
+</pre>
+
+<p>Což znamená, že se opět vytváří při každé iteraci několik dočasných objektů
+a taktéž se provádí kopie polí znaků. Ovšem v&nbsp;tomto případě se jedná pouze
+o velmi malá pole, navíc je zde časová složitost prakticky lineární, na rozdíl
+od problematického příkladu prvního.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Základní analýza běhu programu &ndash; profiler JDK</h2>
+
+<p>&bdquo;Statické&ldquo; analýzy programového kódu, které jsme si ukázali
+v&nbsp;předchozích kapitolách, sice mohou vést k&nbsp;základnímu přehledu o
+tom, co se v&nbsp;běžícím procesu děje a kde mohou být jeho slabá místa, ovšem
+v&nbsp;mnoha případech nám nedají přesnou informaci o skutečně kritických
+částech kódu, tj.&nbsp;o částech, které se volají velmi často a které mnohdy
+tvoří nejdůležitější místo v&nbsp;programu, na něž by se měli programátoři
+zaměřit při optimalizacích. Pro tento účel se &ndash; kromě dalších nástrojů
+&ndash; používají i takzvané <i>profilery</i>. V&nbsp;případě použití <i>Oracle
+JDK</i> nebo <i>OpenJDK</i> mají vývojáři výhodu v&nbsp;tom, že mohou použít
+profiler zabudovaný přímo do JRE, tj.&nbsp;do běhového prostředí Javy. Je to
+ostatně to nejlepší místo, kam profiler umístit, protože právě JRE má všechny
+informace jak o načtených knihovnách, tak i o nativních metodách, které jsou
+interně volány z&nbsp;Javovského kódu.</p>
+
+<p>Použití interního profileru JRE je jednoduché &ndash; při startu Javovské
+aplikace postačí použít parametr <i>-Xprof</i> s&nbsp;přesměrováním
+profilovacích informací ze standardního výstupu do souboru:</p>
+
+<pre>
+java -Xprof ConcatTest1 &gt; ConcatTest1.prof
+</pre>
+
+<p>Výsledky běhu profileru mohou být v&nbsp;některých případech zajímavé, jak
+se ostatně ukazuje při spuštění profileru pro první demonstrační příklad,
+tj.&nbsp;pro příklad, ve kterém se provádí konkatenace řetězců v&nbsp;příkazu
+<i>str += i + " ";</i>. Z&nbsp;výstupu profileru je patrné, že nejvíce času
+proces ztratí při volání metod
+<strong>AbstractStringBuilder.expandCapacity()</strong> (tato metoda obsahuje
+volání <strong>Arrays.copyOf()</strong>, jak jsme si již ostatně řekli ve třetí
+kapitole), dále pak v&nbsp;metodě
+<strong>AbstractStringBuilder.append()</strong> (s&nbsp;parametrem String, což
+zde není patrné) a taktéž při inicializaci řetězců:</p>
+
+<pre>
+Flat profile of 5.53 secs (297 total ticks): main
+&nbsp;
+  Interpreted + native   Method
+  1.0%     3  +     0    java.lang.AbstractStringBuilder.append
+  0.7%     2  +     0    java.util.Arrays.copyOf
+  0.3%     1  +     0    java.util.zip.ZipEntry.&lt;init&gt;
+  0.3%     1  +     0    java.util.Arrays.copyOfRange
+  0.3%     1  +     0    sun.misc.URLClassPath$3.run
+  2.7%     8  +     0    Total interpreted
+&nbsp;
+     Compiled + native   Method
+ 29.6%     0  +    88    java.lang.AbstractStringBuilder.expandCapacity
+ 19.9%    59  +     0    java.lang.AbstractStringBuilder.append
+ 18.9%    56  +     0    java.lang.String.&lt;init&gt;
+ 17.2%    51  +     0    java.lang.AbstractStringBuilder.append
+ 11.4%     0  +    34    java.util.Arrays.copyOfRange
+ 97.0%   166  +   122    Total compiled
+&nbsp;
+         Stub + native   Method
+  0.3%     0  +     1    java.lang.System.arraycopy
+  0.3%     0  +     1    Total stub
+&nbsp;
+&nbsp;
+Flat profile of 6.51 secs (1 total ticks): DestroyJavaVM
+&nbsp;
+  Thread-local ticks:
+100.0%     1             Unknown: thread_state
+&nbsp;
+&nbsp;
+Global summary of 12.04 seconds:
+100.0%   399             Received ticks
+ 23.1%    92             Received GC ticks
+  2.0%     8             Other VM operations
+  0.3%     1             Unknown code
+</pre>
+
+<p>Při profilování druhého demonstračního příkladu se ukazuje, že se náhrada
+spojování řetězců za připojování řetězce na konec
+<strong>StringBuilderu</strong> či <strong>StringBufferu</strong>,
+v&nbsp;každém případě vyplácí, neboť program je mnohem rychlejší (první řádek).
+Současně se zcela změnilo pořadí metod, v&nbsp;nichž běžící proces tráví
+nejvíce strojového času &ndash; ze 40% se jedná o nativní metodu
+<strong>System.arraycopy</strong> volanou (interně) v&nbsp;programové
+smyčce:</p>
+
+<pre>
+Flat profile of 0.00 secs (1 total ticks): Secondary finalizer
+&nbsp;
+  Thread-local ticks:
+100.0%     1             Unknown: no last frame
+&nbsp;
+Flat profile of 0.09 secs (6 total ticks): main
+&nbsp;
+  Interpreted + native   Method
+ 20.0%     1  +     0    java.util.Arrays.copyOfRange
+ 20.0%     1  +     0    java.lang.String.indexOf
+ 20.0%     1  +     0    java.lang.AbstractStringBuilder.stringSizeOfInt
+ 60.0%     3  +     0    Total interpreted
+&nbsp;
+         Stub + native   Method
+ 40.0%     0  +     2    java.lang.System.arraycopy
+ 40.0%     0  +     2    Total stub
+&nbsp;
+  Thread-local ticks:
+ 16.7%     1             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 6.51 secs (1 total ticks): DestroyJavaVM
+&nbsp;
+  Thread-local ticks:
+100.0%     1             Unknown: thread_state
+&nbsp;
+&nbsp;
+Global summary of 6.61 seconds:
+100.0%     7             Received ticks
+ 28.6%     2             Unknown code
+</pre>
+
+<p>Ve třetím demonstračním příkladu program strávil většinu svého přiděleného
+strojového času <i>mimo</i> vlastní metodu <strong>createString()</strong>,
+protože jediná metoda, která ovšem zabrala zhruba pouze čtvrtinu času, byla
+metoda <strong>AbstractStringBuilder.append()</strong>. Zde je ovšem nutné
+poznamenat, že pokud by se počet iterací například řádově zvýšil, byly by
+výsledky jiné (na druhou stranu by však první demonstrační příklad běžel i
+několik minut, protože u něj je časová složitost zhruba exponenciální):</p>
+
+<pre>
+Flat profile of 0.06 secs (4 total ticks): main
+&nbsp;
+  Interpreted + native   Method
+ 25.0%     0  +     1    java.util.zip.ZipFile.open
+ 25.0%     1  +     0    java.util.LinkedHashMap.createEntry
+ 25.0%     1  +     0    java.lang.AbstractStringBuilder.append
+ 25.0%     0  +     1    java.lang.Runtime.gc
+100.0%     2  +     2    Total interpreted
+&nbsp;
+&nbsp;
+Flat profile of 6.52 secs (1 total ticks): DestroyJavaVM
+&nbsp;
+  Thread-local ticks:
+100.0%     1             Unknown: thread_state
+&nbsp;
+&nbsp;
+Global summary of 6.57 seconds:
+100.0%     5             Received ticks
+ 20.0%     1             Unknown code
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Implementace správců paměti: klasický případ &ndash; počítání referencí</h2>
+
+<p>Po malé, ale poměrně důležité odbočce, v&nbsp;níž jsme se zabývali problémy
+s&nbsp;výpočetním výkonem a systémovou náročností některých operací
+s&nbsp;řetězci v&nbsp;Javě, se již konečně začneme věnovat popisu funkcí
+správců paměti, které jsou v&nbsp;posledních verzích JVM k&nbsp;dispozici.
+Správci paměti (<i>garbage collectors &ndash; GC</i>) tvoří nezbytnou a
+integrální součást virtuálního stroje jazyka Java, protože tento programovací
+jazyk je přímo navržen takovým způsobem, aby se vývojáři nemuseli ve většině
+případů starat o to, v&nbsp;jakém okamžiku a jakým způsobem mají odstraňovat
+objekty z&nbsp;operační paměti. Jak jsme si již řekli v&nbsp;předchozích
+částech tohoto seriálu, jsou všechny objekty, včetně objektů lokálních
+v&nbsp;dané funkci nebo programovém bloku (například v&nbsp;těle programové
+smyčky), vytvářeny dynamicky na haldě (<i>heapu</i>), nikoli na zásobníku. To
+je poměrně velký rozdíl při porovnání Javy a některých dalších programovacích
+jazyků, které dokážou lokální objekty alokovat v&nbsp;takzvaném zásobníkovém
+rámci (<i>stack frame</i>).</p>
+
+<p>Programátoři navíc v&nbsp;Javě nemají přístup přímo k&nbsp;fyzické podobě
+objektů, tak jak jsou uloženy v&nbsp;operační paměti, ale získají pouze
+<i>referenci</i> na objekt, přes kterou přistupují k&nbsp;atributům a metodám
+objektů (to mimo jiné znamená, že objekty jako své atributy obsahují pouze
+hodnoty primitivních datových typů nebo reference na jiné objekty). Jedním
+z&nbsp;nejjednodušších a velmi pravděpodobně i jedním z&nbsp;prvních typů
+správců paměti, které byly vytvořeny, je správce paměti založený na <i>počítání
+referencí</i> (<i>reference counting</i>). Tento správce paměti sice není
+v&nbsp;JVM běžně používán, nicméně je dobré se s&nbsp;jeho funkcí seznámit a
+zjistit jeho přednosti a zápory. Správce paměti založený na počítání referencí
+přiřazuje každému objektu počitadlo (celočíselnou hodnotu), v&nbsp;němž je
+uložené, kolikrát je daný objekt <i>referencován</i>, jinými slovy, kolik
+k&nbsp;tomuto objektu v&nbsp;běžícím procesu existuje platných referencí či
+ukazatelů.</p>
+
+<p>Správce paměti v&nbsp;tomto případě může odstranit pouze ty objekty, jejichž
+počitadlo dosáhlo nuly. Důležité přitom je, aby se při každém vzniku reference
+počitadlo zvýšilo o jedničku a navíc při každém zániku reference opět o
+jedničku snížilo. To například znamená, že příkaz (zde nikoli výraz!):</p>
+
+<pre>
+new Color(0x000000);
+</pre>
+
+<p>sice vytvoří objekt, ovšem počitadlo referencí bude rovno nule, zatímco
+příkazy:</p>
+
+<pre>
+Color c = new Color(0x000000);
+</pre>
+
+<p>popř:</p>
+
+<pre>
+callMethod(new Color(0x000000));
+</pre>
+
+nebo:
+
+<pre>
+private Color color = new Color(0x000000);
+</pre>
+
+<p>vytvoří objekt, jehož počitadlo referencí je nastaveno na jedničku.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Přednosti a zápory správce paměti založeného na počítání referencí</h2>
+
+<p>Tento typ správce paměti je sice implementačně poměrně jednoduchý a současně
+i rychlý, protože není zapotřebí složitě zjišťovat, které objekty je možné
+odstranit, ovšem má jednu poměrně závažnou nevýhodu &ndash; nedokáže
+z&nbsp;paměti odstranit ty objekty, které tvoří cyklus, tj.&nbsp;například
+objekt <strong>A</strong> obsahující referenci na objekt <strong>B</strong>,
+který naopak obsahuje referenci na objekt <strong>A</strong>. Cyklus samozřejmě
+může být i delší, může se například jednat i o složitou grafovou strukturu
+s&nbsp;alespoň jedním cyklem. Druhou nevýhodou &ndash; i když méně závažnou
+&ndash; je to, že v&nbsp;mnoha případech může být neustálá změna hodnoty
+počitadla referencí výpočetně náročná, zejména kvůli nutnosti jeho
+synchronizace mezi všemi vlákny, které úloha používá (a navíc s&nbsp;vláknem či
+více vlákny samotného správce paměti), protože zvýšení počitadla o jedničku,
+snížení počitadla o jedničku a současný test na jeho nulovou hodnotu nebývají
+na současných procesorech atomické operace. Ovšem již první uvedený důvod
+(neodstranění objektů tvořících cyklus) vedl k&nbsp;tomu, že se s&nbsp;tímto
+správcem paměti v&nbsp;JDK prakticky nesetkáme, i když by se tento správce
+paměti hodil především na realtimeové úlohy.</p>
+
+<p>V&nbsp;moderních implementacích JDK se namísto toho setkáme se správci
+paměti, které jsou založené na zjišťování, které objekty jsou v&nbsp;daném
+okamžiku dostupné z&nbsp;každého vlákna aplikace. Vzhledem k&nbsp;tomu, že test
+na &bdquo;živost&ldquo; objektů je poměrně náročný, jsou objekty podle svého
+chování za běhu aplikace rozdělovány do několika skupin, přičemž se
+s&nbsp;každou skupinou objektů zachází poněkud odlišným způsobem. Bližší
+informace o principu práce těchto správců paměti, způsobů jejich monitorování
+(to je samozřejmě možné a někdy i nutné) i optimalizací jejich parametrů, budou
+uvedeny v&nbsp;následující části tohoto seriálu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Dr. Dobb's | G1: Java's Garbage First Garbage Collector<br />
+<a href="http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/">http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/</a>
+</li>
+
+<li>Java's garbage-collected heap<br />
+<a href="http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html">http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html</a>
+</li>
+
+<li>Compressed oops in the Hotspot JVM<br />
+<a href="http://wikis.sun.com/display/HotSpotInternals/CompressedOops">http://wikis.sun.com/display/HotSpotInternals/CompressedOops</a>
+</li>
+
+<li>32-bit or 64-bit JVM? How about a Hybrid?<br />
+<a href="http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/">http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/</a>
+</li>
+
+<li>Compressed object pointers in Hotspot VM<br />
+<a href="http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot">http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot</a>
+</li>
+
+<li>Java HotSpot(tm) Virtual Machine Performance Enhancements<br />
+<a href="http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html">http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html</a>
+</li>
+
+<li>Using jconsole<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a>
+</li>
+
+<li>jconsole &ndash; Java Monitoring and Management Console<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>x86-64<br />
+<a href="http://en.wikipedia.org/wiki/X86-64">http://en.wikipedia.org/wiki/X86-64</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>1.6.0_14 (6u14)<br />
+<a href="http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn">http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn</a>
+</li>
+
+<li>Update Release Notes<br />
+<a href="http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html">http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html</a>
+</li>
+
+<li>4.10 Limitations of the Java Virtual Machine<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659</a>
+</li>
+
+<li>Java(TM) Platform, Standard Edition 7 Binary Snapshot Releases<br />
+<a href="http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html">http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>ClosableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>ArrayList (JDK 1.4)<br />
+<a href="http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html">http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2011</small></p>
+</body>
+</html>
+
