@@ -1,0 +1,834 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 (4)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 (4)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;desáté části seriálu o vlastnostech JDK 6 a JDK 7 si ukážeme způsob ovlivnění chování správců paměti pomocí parametrů, které je možné specifikovat při spouštění běhového prostředí Javy (JRE). Zaměříme se především na způsob nastavování velikostí paměťových oblastí, ze kterých se skládá halda (heap).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Princip funkce správce paměti typu Mark and Sweep</a></p>
+<p><a href="#k02">2. Základní způsoby monitorování správce paměti</a></p>
+<p><a href="#k03">3. Podrobnější monitorování činnosti správce paměti</a></p>
+<p><a href="#k04">4. Statistika vypsaná při použití volby -XX:PrintGCDetails</a></p>
+<p><a href="#k05">5. Parametry ovlivňující funkci správce paměti</a></p>
+<p><a href="#k06">6. Chování správce paměti při explicitním nastavení velikosti haldy</a></p>
+<p><a href="#k07">7. Změna poměru mezi velikostí jednotlivých oblastí na haldě</a></p>
+<p><a href="#k08">8. Výsledky měření</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Princip funkce správce paměti typu Mark and Sweep</h2>
+
+<p>V&nbsp;předchozí části poněkud nepravidelně vycházejícího seriálu o
+programovacím jazyce Java i o vlastnostech <i>JDK 6</i> a <i>JDK 7</i> jsme se
+zabývali popisem algoritmů, které jsou použity při implementaci správců paměti
+(<i>GC &ndash; Garbage Collectors</i>) a současně i popisem struktury haldy
+(<i>heap</i>). Připomeňme si, že se v&nbsp;moderních implementacích správců
+paměti sice používají trasovací algoritmy, tj.&nbsp;algoritmy prohledávající
+strom objektů a označujících živé objekty, ovšem kvůli větší výkonnosti tyto
+trasovací algoritmy nepracují stejným způsobem se všemi objekty uloženými na
+haldě. Namísto toho jsou objekty podle svých vlastností rozděleny do několika
+navzájem oddělených částí haldy. Nejhrubší dělení je na objekty
+&bdquo;mladé&ldquo; a objekty &bdquo;staré&ldquo;, přičemž &bdquo;mladé
+objekty&ldquo; (u nichž je větší pravděpodobnost, že jejich životnost bude
+krátká &ndash; může se jednat o jednu iteraci smyčky či jedinou metodu) jsou
+umístěny v&nbsp;oblasti haldy nazvané příznačně <i>young generation</i> a
+objekty starší (tj.&nbsp;takové objekty, které již několikrát přežily běh
+správce paměti) jsou uloženy v&nbsp;oblasti nazvané <i>tenured generation</i>
+nebo též <i>old generation</i>.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-6.png" width="400" height="413" alt=" " />
+<p><i>Obrázek 1: Většina běžných objektů je vytvořena v&nbsp;obecně menší
+oblasti haldy nazvané <strong>young generation</strong>. Teprve poté, co objekt
+několikrát &bdquo;přežije&ldquo; spuštění správce paměti nad touto oblastí
+haldy, může být přesunut do (opět obecně) větší oblasti haldy nazvané
+<strong>old generation</strong> či taktéž <strong>tenured generation</strong>.
+Objekty, pro jejichž alokaci je zapotřebí velké množství paměti, však mohou být
+přímo vytvořeny v&nbsp;oblasti <strong>tenured generation</strong>.</i></p>
+
+<p>Nad oblastí <i>young generation</i> se relativně často spouští správce
+paměti optimalizovaný s&nbsp;ohledem na to, že velká část objektů bude
+z&nbsp;této oblasti skutečně prakticky ihned odstraněna (jedná se o fakt
+zjištěný měřením chování objektů v&nbsp;mnoha reálných i modelových
+aplikacích). Objekty, které přežijí několik spuštění tohoto
+&bdquo;rychlého&ldquo; správce paměti, jsou přesunuty do oblasti <i>old/tenured
+generation</i>. I nad objekty uloženými v&nbsp;oblasti <i>old/tenured
+generation</i> se samozřejmě spouští správce paměti, ovšem s&nbsp;mnohem menší
+frekvencí. I samotný algoritmus správce paměti používaný pro tuto paměťovou
+oblast je poněkud odlišný, protože musí mj.&nbsp;správně vyhodnocovat reference
+&bdquo;starých&ldquo; objektů na objekty &bdquo;mladé&ldquo; a naopak. Ovšem i
+samotná oblast <i>young generation</i> je rozdělena na několik podoblastí.
+První z&nbsp;těchto podoblastí se nazývá <i>eden</i> a právě v&nbsp;této
+podoblasti jsou vytvářeny nové objekty.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-7.png" width="400" height="357" alt=" " />
+<p><i>Obrázek 2: Oblast haldy nazvaná <strong>young generation</strong> je
+většinou rozdělena na tři podoblasti: <strong>eden</strong>, <strong>survivor
+space #1</strong> a <strong>survivor space #2</strong>. Na některých
+architekturách je však namísto toho použita větší kapacita haldy pro
+<strong>eden</strong> a jedinou podoblast <strong>survivor
+space</strong> (jak však uvidíme dále, není to případ architektury
+i386).</i></p>
+
+<p>V&nbsp;případě, že je celá kapacita <i>edenu</i> již alokována, zavolá se
+správce paměti, který celým <i>edenem</i> projde a vyřadí ty objekty, které již
+nejsou aktivní (živé). Zbylé objekty, kterých je (alespoň podle statistických
+měření provedených nad typickými aplikacemi) mnohem méně, jsou zkopírovány do
+jedné z&nbsp;oblastí nazvaných <i>survivor space</i>. U architektur,
+v&nbsp;nichž se používají dvě podoblasti <i>survivor space</i>, je vždy jedna
+z&nbsp;těchto podoblastí prázdná a druhá podoblast obsahuje objekty zkopírované
+z&nbsp;<i>edenu</i> popř.&nbsp;z&nbsp;podoblasti první (kopírováním objektů se
+totiž <i>survivor space</i> kromě jiného též defragmentuje). Teprve poté, co je
+objekt několikrát zkopírován mezi oběma podoblastmi <i>survivor space</i>, může
+být přesunut z&nbsp;<i>young generation</i> do větší a méně často modifikované
+oblasti <i>tenured generation</i>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Základní způsoby monitorování správce paměti</h2>
+
+<p>O nejzákladnějším a současně i nejjednodušším způsobu monitorování práce
+správce paměti jsme si již řekli v&nbsp;předchozích částech tohoto seriálu.
+Pokud při startu Javovské aplikace použijeme volbu
+<strong>-verbose:gc</strong>, bude se na standardní výstup postupně vypisovat
+každé zavolání správce paměti &ndash; jedná se jak o správce paměti běžícího
+nad <i>young generation</i>, tak i o správce pracujícího s&nbsp;<i>tenured
+generation</i>. Pro připomenutí si znovu uveďme náš demonstrační příklad
+používající konkatenaci řetězce v&nbsp;programové smyčce, což ve svém důsledku
+vede k&nbsp;opakovanému volání správce paměti nad nově vytvořenými objekty typu
+<strong>String</strong> a <strong>StringBuilder</strong> s&nbsp;velmi krátkou
+dobou života, protože tyto objekty přestávají být platné již po proběhnutí
+jediné iterace (jednoho cyklu) programové smyčky. Zdrojový kód tohoto
+testovacího příkladu je následující:</p>
+
+<pre>
+public class ConcatTest1
+{
+    private static final int LOOP_COUNT = 10000;
+
+    public static String createString()
+    {
+        String str = "";
+        for (int i = 0; i &lt; LOOP_COUNT; i++)
+        {
+            str += i + " ";
+        }
+        return str;
+    }
+
+    public static void main(String[] args)
+    {
+        String str = createString();
+        System.gc(); // lze zakomentovat
+        System.out.println("String length: " + str.length());
+    }
+}
+</pre>
+
+<img src="http://i.iinfo.cz/images/395/java09-8.png" width="401" height="398" alt=" " />
+<p><i>Obrázek 3: Objekty běžné velikosti jsou vždy vytvářeny v&nbsp;edenu.
+Pouze příliš velké objekty jsou alokovány již přímo v&nbsp;oblasti old/tenured
+generation, což však může způsobovat problémy &ndash; fragmentaci této oblasti,
+frekventované odstraňování objektů z&nbsp;old/tenured generation atd.</i></p>
+
+<p>Po přeložení výše uvedeného programu a jeho spuštění pomocí volby...</p>
+
+<pre>
+java -verbose:gc ConcatTest1
+</pre>
+
+<p>... se na standardní výstup vypíše množství údajů o spuštění správce paměti
+nad <i>young generation</i>. Každý výpis vypadá následovně:</p>
+
+<pre>
+[GC 2257K-&gt;153K(7744K), 0.0009370 secs]
+</pre>
+
+<p>Co však jednotlivé údaje znamenají? Písmena <strong>GC</strong> značí, že se
+spustil správce paměti nad <i>young generation</i>; pokud by se však spustil
+správce paměti i nad <i>tenured generation</i>, vypsal by se namísto řetězce
+<strong>GC</strong> řetězec <strong>Full GC</strong>. Hodnota
+<strong>2257K</strong> značí celkovou velikost všech živých objektů před
+spuštěním správce paměti a hodnota <strong>153K</strong> naproti tomu celkovou
+velikost objektů, které zůstaly živé i po proběhnutí celého cyklu správy paměti
+(zde můžeme vidět, že správce paměti byl při čištění <i>edenu</i> skutečně
+velmi úspěšný, protože v&nbsp;tomto &ndash; poněkud umělém &ndash; příkladu
+dokázal uvolnit více než 93% paměťové kapacity <i>edenu</i>). Ve skutečnosti se
+nemusí jednat o skutečně živé objekty, ale taktéž o objekty, na něž existuje
+alespoň jedna reference od objektu uloženého v&nbsp;oblasti <i>tenured
+generation</i>. Takový objekt sice již nemusí být živý, což však správce paměti
+zatím nemůže vědět, protože prozatím prochází pouze oblast <i>young
+generation</i>.</p>
+
+<p>Číslo umístěné v&nbsp;závorkách (<strong>7744K</strong>) je celková velikost
+paměti využitelná pro alokaci objektů. Jedná se o maximální kapacitu haldy, od
+níž je odečtena velikost jedné podoblasti <i>survivor space</i> (to je ostatně
+logické, protože pouze vždy jedna z&nbsp;těchto dvou oblastí je používána pro
+defragmentaci <i>young generation</i>). Význam posledního čísla je zřejmý
+&ndash; jedná se o dobu běhu správce paměti. Na tomto místě je vhodné
+poznamenat, že správce paměti většinou běží v&nbsp;samostatném vláknu a
+<strong>NE</strong>musí zamykat všechny objekty, s&nbsp;nimiž pracuje, což
+znamená, že vlákno/vlákna aplikace ve skutečnosti nemusí být pozastavena na
+takovou dobu, jaká je uvedena ve výpisu.</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-9.png" width="400" height="354" alt=" " />
+<p><i>Obrázek 4: Jakmile je eden zcela zaplněn, nebo pokud v&nbsp;něm již není
+místo pro vytvoření dalšího objektu, spustí se správce paměti, který poctivě
+projde všechny zde uložené objekty. Aktivní objekty jsou uloženy do jedné
+z&nbsp;oblastí survivor space, objekty neaktivní jsou odstraněny.</i></p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Podrobnější monitorování činnosti správce paměti</h2>
+
+<p>Při nutnosti podrobnějšího sledování činnosti správce paměti je však výše zmíněná volba <strong>-verbose:gc</strong> nedostatečná, protože nám nedává přesnou představu o tom, jakým způsobem se jednotlivé oblasti, na něž je halda rozdělena, skutečně využívají (a vlastně ani nemusíme vědět, jak jsou jednotlivé oblasti velké). V&nbsp;takovém případě může být zajímavější a užitečnější použít volbu <strong>-XX:PrintGCDetails</strong>, například následujícím způsobem:</p>
+
+<pre>
+java -XX:+PrintGCDetails ConcatTest1
+</pre>
+
+<p>Způsob výpisu informací při použití této volby sice není doposud plně
+standardizován a může se dokonce lišit podle verze JVM, nicméně
+v&nbsp;<i>OpenJDK 6</i> se při každém zavolání správce paměti nad oblastí
+<i>young generation</i> vypíše následující řádek:</p>
+
+<pre>
+[GC [DefNew: 2159K-&gt;102K(2368K), 0.0014200 secs] 2268K-&gt;211K(7744K), 0.0015800 secs] [Times: user=0.00 sys=0.00, real=0.00 secs]
+</pre>
+
+<p>První tři číslice ve výpisu <strong>2159K-&gt;102K (2368K)</strong> mají
+stejný význam, jaký jsme si již řekli v&nbsp;předchozí kapitole, ovšem vztahují
+se pouze k&nbsp;oblasti <i>young generation</i>. Teprve trojice číslic
+<strong>2268K-&gt;211K(7744K)</strong> se vztahuje k&nbsp;celé haldě (tudíž by
+rozdíl 2159K-102K měl být stejný jako 2268K-211K, samozřejmě za předpokladu, že
+není vytvořen žádný obří objekt, který by byl přímo alokován v&nbsp;<i>tenured
+generation</i>).</p>
+
+<img src="http://i.iinfo.cz/images/395/java09-10.png" width="400" height="418" alt=" " />
+<p><i>Obrázek 5: Před či po projití <strong>edenu</strong> se navíc projdou i
+všechny objekty uložené v&nbsp;jedné z&nbsp;podoblastí <strong>survivor
+space</strong> a opět je na základě trasování objektů zhodnoceno, který objekt
+je aktivní, který neaktivní a který dostatečně starý na to, aby byl přesunut do
+oblasti <strong>old generation</strong>.</i></p>
+
+<p>Pokud dojde ke spuštění správce paměti i nad oblastí <i>tenured
+generation</i>, tj.&nbsp;oblastí, kde se nachází dostatečně staré a/nebo velké
+objekty, je výpis poněkud pozměněn:</p>
+
+<pre>
+[Full GC (System) [Tenured: 125K-&gt;110K(5376K), 0.0792740 secs] 170K-&gt;110K(7872K), [Perm : 24K-&gt;24K(12288K)], 0.0794570 secs] [Times: user=0.07 sys=0.00, real=0.08 secs] 
+</pre>
+
+<p>Zde si kromě na první pohled viditelných rozdílů (odlišná slova na začátku
+zprávy) povšimněte taktéž toho, že celý běh správce paměti je nad oblastí
+<i>tenured generation</i> pomalejší (zde více než 50&times;) a taktéž toho, že
+vlastně v&nbsp;této oblasti nedošlo k&nbsp;významné redukci objektů alokovaných
+na haldě. To je ovšem v&nbsp;pořádku, protože to jen ukazuje na to, že metoda
+&bdquo;rozděl a panuj&ldquo; byla vhodně použitá &ndash; většinu dočasných
+objektů se podařilo &bdquo;zlikvidovat&ldquo; již v&nbsp;oblasti <i>young
+generation</i>.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Statistika vypsaná při použití volby -XX:PrintGCDetails</h2>
+
+<p>Při použití volby <strong>-XX:PrintGCDetails</strong> se před ukončením
+aplikace vypíše zajímavá statistika (následující formát opět platí pro případ,
+že je tato volba použita na <i>OpenJDK 6</i>):</p>
+
+<pre>
+Heap
+ def new generation   total 2496K, used 1288K [0x7feb0000, 0x80160000, 0x85200000)
+  eden space 2240K,  57% used [0x7feb0000, 0x7fff20c0, 0x800e0000)
+  from space 256K,   0% used [0x800e0000, 0x800e0000, 0x80120000)
+  to   space 256K,   0% used [0x80120000, 0x80120000, 0x80160000)
+ tenured generation   total 5376K, used 394K [0x85200000, 0x85740000, 0x8f8b0000)
+   the space 5376K,   7% used [0x85200000, 0x85262b60, 0x85262c00, 0x85740000)
+ compacting perm gen  total 12288K, used 28K [0x8f8b0000, 0x904b0000, 0x938b0000)
+   the space 12288K,   0% used [0x8f8b0000, 0x8f8b72d8, 0x8f8b7400, 0x904b0000)
+    ro space 10240K,  73% used [0x938b0000, 0x94006e40, 0x94007000, 0x942b0000)
+    rw space 12288K,  60% used [0x942b0000, 0x949ef9f8, 0x949efa00, 0x94eb0000)
+</pre>
+
+<p>Na předchozím výpisu je nám virtuálním strojem jazyka Java prozrazeno, jak
+jsou vlastně jednotlivé oblasti <i>young generation</i> (zde je přejmenovaná na
+<i>def new generation</i>) a <i>tenured generation</i> velké a současně jsou
+vypsány i kapacity všech tří podoblastí v&nbsp;<i>young generation</i> &ndash;
+<i>edenu</i> a obou podoblastí <i>survivor space</i> (tyto oblasti jsou na
+výpisu nazvané podle své funkce <i>from</i> a <i>to</i>). Povšimněte si, že
+kapacita <i>young generation</i> je rovna 2496K, což je součet kapacity
+<i>edenu</i> (2240K) a kapacity <strong>jedné</strong> z&nbsp;podoblastí
+<i>survivor space</i> (256K) &ndash; důvod pro tento výpočet jsme si již
+vysvětlili o několik odstavců výše.</p>
+
+<p>Poznámka: volbu <strong>-XX:PrintGCDetails</strong> je možné kombinovat
+s&nbsp;volbou <strong>-XX:PrintGCTimeStamps</strong>, čímž dosáhneme i výpisu
+časových značek odpovídajících volání správce paměti. Samotná volba
+<strong>-XX:PrintGCTimeStamps</strong> však nemá žádný efekt; musí být použita
+spolu s&nbsp;některou volbou povolující výpis informací o běhu správce
+paměti:</p>
+
+<pre>
+java -XX:+PrintGCDetails -XX:+PrintGCTimeStamps ConcatTest1
+</pre>
+
+<p>Výpis je nepatrně pozměněn, ovšem časová značka může být v&nbsp;některých
+případech důležitá, například při sledování, v&nbsp;jakém okamžiku je běžící
+program pozastaven na delší dobu, kdy je halda nejvíce používána atd.:</p>
+
+<pre>
+27.296: [GC 27.296: [DefNew: 2289K-&gt;190K(2368K), 0.0036770 secs] 7552K-&gt;5548K(7744K), 0.0038540 secs] [Times: user=0.01 sys=0.00, real=0.01 secs]
+23.893: [Full GC (System) 23.894: [Tenured: 394K-&gt;203K(5376K), 0.1400310 secs] 1638K-&gt;203K(7872K), [Perm : 26K-&gt;26K(12288K)], 0.1402740 secs] [Times: user=0.07 sys=0.00, real=0.14 secs]
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Parametry ovlivňující funkci správce paměti</h2>
+
+<p>V&nbsp;předchozích kapitolách jsme si řekli základní informace o tom, jakým
+způsobem lze i za pomocí jednoduchých prostředků (tj.&nbsp;pouze vlastního
+<i>JRE</i> a nástrojů, které se v&nbsp;<i>JRE</i> nachází) monitorovat funkci
+správců paměti. Ovšem monitorování samo o sobě by nemělo velký význam tehdy,
+pokud by nebylo možné parametry správy paměti vhodným způsobem modifikovat. Při
+spouštění <i>JRE</i> je skutečně možné chování správce paměti ovlivnit, a to
+hned několika volbami. Nejprve se znovu podívejme na to, jak je rozdělena
+paměťová oblast haldy (pro jednoduchost nyní budeme ignorovat oblast
+<i>PermGen</i> používanou pro poněkud odlišné účely). Obě hlavní oblasti haldy
+&ndash; <i>young generation</i> a <i>tenured generation</i> &ndash; i všechny
+důležité podoblasti jsou zobrazeny na šestém a sedmém obrázku. Dva základní
+parametry, kterými se virtuální stroj jazyka Java při svém spouštění řídí, je
+parametr určující maximální velikost haldy (rezervovanou při startu virtuálního
+stroje) a parametr určující, jak velká paměť je skutečně virtuálnímu stroji po
+rezervaci přiřazena.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-1.png"><img src="http://i.iinfo.cz/images/592/java10-1-prev.png" width="193" height="270" alt=" " /></a>
+<p><i>Obrázek 6: Dvě hlavní oblasti haldy a podrobnější pohled na podoblast
+young generation.</i></p>
+
+<p>Tyto dva parametry je možné při startu virtuálního stroje Javy specifikovat
+pomocí známých voleb <strong>-Xmx</strong> (rezervovaná velikost paměti pro
+haldu) a <strong>-Xms</strong> (paměť skutečně alokovaná pro haldu při startu
+virtuálního stroje). Je zapotřebí si dát pozor na to, že se původní hodnoty
+obou parametrů liší v&nbsp;závislosti na typu operačního systému i na použité
+platformě. Hodnoty obou parametrů mohou být samozřejmě shodné, což je také
+v&nbsp;mnoha případech nejlepší varianta, zejména ve chvíli, kdy je virtuální
+stroj jazyka Java spuštěn na systémech s&nbsp;malými paměťovými stránkami, což
+může být i případ Linuxu, zejména tehdy, když není povolena podpora pro
+<i>Large/Huge pages</i>.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-2.png"><img src="http://i.iinfo.cz/images/592/java10-2-prev.png" width="194" height="270" alt=" " /></a>
+<p><i>Obrázek 7: Dvě hlavní oblasti haldy a podrobnější pohled na podoblast
+tenured generation.</i></p>
+
+<p>Mimochodem, velikost paměťových stránek lze zjistit příkazem <strong>getconf
+PAGESIZE</strong> vracejícího údaje v&nbsp;bajtech. Hodnoty parametrů
+<strong>-Xmx</strong> a <strong>-Xms</strong> ovlivňují jak velikost oblasti
+<i>young generation</i>, tak i oblasti <i>tenured generation</i>, což
+mj.&nbsp;znamená, že se v&nbsp;případě malé kapacity haldy bude správce paměti
+spouštět s&nbsp;větší frekvencí, protože se bude častěji zaplňovat <i>eden</i>
+a objekty se budou kvůli menší velikosti <i>survivor space(s)</i> častěji
+kopírovat do <i>tenured generation</i> i v&nbsp;případě, že ještě nedosáhly
+potřebného &bdquo;stáří&ldquo;.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Chování správce paměti při explicitním nastavení velikosti haldy</h2>
+
+<p>Chování správce paměti při explicitním nastavení velikosti haldy si můžeme
+vyzkoušet na našem demonstračním příkladu:</p>
+
+<pre>
+java -Xmx10M -Xms10M -XX:+PrintGCDetails ConcatTest1
+</pre>
+
+<p>Na dalším výpisu je zobrazeno posledních několik řádků zpráv vypisovaných
+správcem paměti. Povšimněte si velikostí jednotlivých oblastí a podoblastí
+vypočtených samotným virtuálním strojem Javy pouze na základě celkové velikosti
+haldy:</p>
+
+<pre>
+[GC [DefNew: 2865K-&gt;191K(3072K), 0.0022210 secs] 2974K-&gt;299K(9920K), 0.0023930 secs] [Times: user=0.01 sys=0.00, real=0.00 secs] 
+[Full GC (System) [Tenured: 108K-&gt;203K(6848K), 0.1063970 secs] 587K-&gt;203K(9920K), [Perm : 26K-&gt;26K(12288K)], 0.1066690 secs] [Times: user=0.07 sys=0.01, real=0.11 secs] 
+String length: 48890
+Heap
+ def new generation   total 3072K, used 57K [0x8eeb0000, 0x8f200000, 0x8f200000)
+  eden space 2752K,   2% used [0x8eeb0000, 0x8eebe4a0, 0x8f160000)
+  from space 320K,   0% used [0x8f160000, 0x8f160000, 0x8f1b0000)
+  to   space 320K,   0% used [0x8f1b0000, 0x8f1b0000, 0x8f200000)
+ tenured generation   total 6848K, used 203K [0x8f200000, 0x8f8b0000, 0x8f8b0000)
+   the space 6848K,   2% used [0x8f200000, 0x8f232fc8, 0x8f233000, 0x8f8b0000)
+ compacting perm gen  total 12288K, used 28K [0x8f8b0000, 0x904b0000, 0x938b0000)
+   the space 12288K,   0% used [0x8f8b0000, 0x8f8b72f8, 0x8f8b7400, 0x904b0000)
+    ro space 10240K,  73% used [0x938b0000, 0x94006e40, 0x94007000, 0x942b0000)
+    rw space 12288K,  60% used [0x942b0000, 0x949ef9f8, 0x949efa00, 0x94eb0000)
+</pre>
+
+<p>Zajímavé je také zjistit, kolikrát byl v&nbsp;tomto případě zavolaný správce
+paměti nad oblastí <i>young generation</i>:</p>
+
+<pre>
+java -Xmx10M -Xms10M -XX:+PrintGCDetails ConcatTest1 | grep DefNew | wc -l
+694
+</pre>
+
+<p>A taktéž celkový čas běhu aplikace:</p>
+
+<pre>
+time java -Xmx10M -Xms10M ConcatTest1
+
+real    0m14.300s
+user    0m11.477s
+sys     0m0.544s
+</pre>
+
+<p>Jak jsem se již zmínil v&nbsp;předchozí kapitole, má velikost paměti
+rezervované (popř.&nbsp;alokované) pro haldu velký vliv na výkonnost celého
+virtuálního stroje a tím i aplikace, která je ve virtuálním stroji spuštěna.
+Vyzkoušejme nejprve extrémní příklad, kdy je kapacita haldy snížena na velmi
+malé hodnoty, například na 2MB. Zde je nutné poznamenat, že u větších aplikací
+například při spouštění aplikačního serveru, je za &bdquo;malou kapacitu
+haldy&ldquo; považováno i několik (desítek) megabajtů, takže se v&nbsp;případě
+výkonnostních problémů mohou programátoři a/nebo administrátoři zaměřit taktéž
+na volby <strong>-Xmx</strong> a <strong>-Xms</strong>. Jak se změní doba běhu
+aplikace i další vlastnosti JRE při snížení maximální rezervované kapacity
+haldy na 2MB? Nejprve se podívejme, jakým způsobem virtuální stroj rozdělí
+přidělenou 2MB oblast mezi různé oblasti a podoblasti haldy:</p>
+
+<pre>
+Heap
+ def new generation   total 960K, used 20K [0x8f2b0000, 0x8f3b0000, 0x8f4b0000)
+  eden space 896K,   2% used [0x8f2b0000, 0x8f2b5028, 0x8f390000)
+  from space 64K,   0% used [0x8f3a0000, 0x8f3a0000, 0x8f3b0000)
+  to   space 64K,   0% used [0x8f390000, 0x8f390000, 0x8f3a0000)
+ tenured generation   total 1024K, used 201K [0x8f4b0000, 0x8f5b0000, 0x8f8b0000)
+   the space 1024K,  19% used [0x8f4b0000, 0x8f4e2428, 0x8f4e2600, 0x8f5b0000)
+ compacting perm gen  total 12288K, used 27K [0x8f8b0000, 0x904b0000, 0x938b0000)
+   the space 12288K,   0% used [0x8f8b0000, 0x8f8b6e08, 0x8f8b7000, 0x904b0000)
+    ro space 10240K,  73% used [0x938b0000, 0x94006e40, 0x94007000, 0x942b0000)
+    rw space 12288K,  60% used [0x942b0000, 0x949ef9f8, 0x949efa00, 0x94eb0000)
+</pre>
+
+<p>Celková doba běhu aplikace v&nbsp;tomto případě pravděpodobně uživatele
+příliš nepotěší:</p>
+
+<pre>
+time java -Xmx2M -Xms2M ConcatTest1
+
+real   0m45.910s
+user   0m39.334s
+sys    0m1.696s
+
+(trojnásobné zpomalení)
+</pre>
+
+<p>...stejně jako celkový počet spuštění správce paměti (počet jeho spuštění
+koresponduje s&nbsp;celkovým nárůstem doby běhu programu, což u takto
+jednoduchého algoritmu pravděpodobně nepřekvapí)...</p>
+
+<pre>
+java -Xmx2M -Xms2M -XX:+PrintGCDetails ConcatTest1 | grep DefNew | wc -l
+2241
+
+(cca trojnásobný počet spuštění správce paměti)
+</pre>
+
+<p>Vyzkoušejme nyní druhý extrém &ndash; nastavení rezervované velikosti pro
+haldu na 100MB:</p>
+
+<pre>
+Heap
+ def new generation   total 30720K, used 548K [0x894b0000, 0x8b600000, 0x8b600000)
+  eden space 27328K,   2% used [0x894b0000, 0x895392b8, 0x8af60000)
+  from space 3392K,   0% used [0x8af60000, 0x8af60000, 0x8b2b0000)
+  to   space 3392K,   0% used [0x8b2b0000, 0x8b2b0000, 0x8b600000)
+ tenured generation   total 68288K, used 203K [0x8b600000, 0x8f8b0000, 0x8f8b0000)
+   the space 68288K,   0% used [0x8b600000, 0x8b632fc8, 0x8b633000, 0x8f8b0000)
+ compacting perm gen  total 12288K, used 28K [0x8f8b0000, 0x904b0000, 0x938b0000)
+   the space 12288K,   0% used [0x8f8b0000, 0x8f8b72f8, 0x8f8b7400, 0x904b0000)
+    ro space 10240K,  73% used [0x938b0000, 0x94006e40, 0x94007000, 0x942b0000)
+    rw space 12288K,  60% used [0x942b0000, 0x949ef9f8, 0x949efa00, 0x94eb0000)
+</pre>
+
+<p>Celkový čas běhu programu:</p>
+
+<pre>
+time java -Xmx100M -Xms100M ConcatTest1
+
+real    0m11.673s
+user    0m10.081s
+sys     0m0.408s
+</pre>
+
+<p>Počet volání správce paměti:</p>
+
+<pre>
+java -Xmx100M -Xms100M -XX:+PrintGCDetails ConcatTest1 | grep DefNew | wc -l
+68
+
+(10&times; menší než při nastavení 10MB a 33&times; menší než u 2MB)
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Změna poměru mezi velikostí jednotlivých oblastí na haldě</h2>
+
+<p>Po volbách <strong>-Xmx</strong> a <strong>-Xms</strong> má největší vliv na
+výkonnost správců paměti podíl velikostí oblastí <i>young generation</i> a
+<i>tenured generation</i>. Tento poměr lze nastavit pomocí volby
+<strong>-XX:NewRatio=x</strong>, kde <strong>x</strong> je celočíselný (!)
+poměr mezi velikostí <i>tenured generation</i> a <i>young generation</i>. Na
+tomto místě je vhodné si uvědomit, že do celkové velikosti oblasti <i>young
+generation</i> se při výpočtu poměru započítávají všechny tři podoblasti,
+tj.&nbsp;jak <i>eden</i>, tak i obě podoblasti <i>survivor space(s)</i>.
+Celková maximální kapacita paměti vyhrazené pro haldu se sice nemění, i tak
+však má tento parametr v&nbsp;mnoha případech velký vliv na výkonnost či
+propustnost Javovských aplikací &ndash; právě proto je vhodné při výkonnostních
+problémech provést měření při změnách tohoto parametru, protože se u některých
+aplikací může podařit výkon aplikací zvýšit aniž by bylo nutné obětovat další
+operační paměť pro haldu.</p>
+
+<p>Ostatně se o významu tohoto parametru můžeme přesvědčit sami, například
+pomocí jednoduchého skriptu, který do souboru <i>gc_count.txt</i> uloží počet
+volání správce paměti nad <i>young generation</i>, přičemž celková velikost
+haldy zůstává stále nastavena na 10MB:</p>
+
+<pre>
+#!/bin/bash
+
+for i in `seq 1 10`;
+do
+    java -Xmx10M -Xms10M -XX:NewRatio=${i} \
+        -XX:+PrintGCDetails ConcatTest1 | grep DefNew | wc -l &gt;&gt; gc_count.txt
+done
+</pre>
+
+<p>Naměřené výsledky jsem pro větší přehlednost uspořádal do tabulky, do níž je
+navíc přidán i sloupec s&nbsp;dobou běhu aplikace. Z&nbsp;tabulky je patrné, že
+i při omezené velikosti haldy (tu může limitovat jak kapacita operační paměti,
+tak i například kapacita alokovaná pro virtuální stroj, což začíná být
+v&nbsp;době cloudů čím dál tím více důležitější veličina), je možné
+s&nbsp;vhodnými spouštěcími parametry dosáhnout zajímavých zlepšení:</p>
+
+<table>
+<tr><th>Velikost haldy</th><th>Poměr tenured:young</th><th>Volání GC pro young</th><th>Čas běhu</th></tr>
+<tr><td>10&nbsp;M</td><td> 1:1</td><td> 463</td><td>10.86&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 2:1</td><td> 694</td><td>11.37&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 3:1</td><td> 939</td><td>12.01&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 4:1</td><td>1163</td><td>12.41&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 5:1</td><td>1378</td><td>13.38&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 6:1</td><td>1700</td><td>14.33&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 7:1</td><td>1926</td><td>14.91&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 8:1</td><td>2052</td><td>16.29&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td> 9:1</td><td>2239</td><td>16.87&nbsp;s</td></tr>
+<tr><td>10&nbsp;M</td><td>10:1</td><td>2238</td><td>16.80&nbsp;s</td></tr>
+</table>
+
+<p>V&nbsp;mnoha případech nám však nebude nastavení <i>celočíselného</i> poměru
+mezi <i>young generation</i> a <i>tenured generation</i> dostačovat. Namísto
+této hodnoty lze taktéž použít přepínače <strong>-XX:NewSize=kapacita</strong>
+a <strong>-XX:MaxNewSize=kapacita</strong>, pomocí nichž je možné nastavit
+minimální a maximální velikost oblasti <i>young generation</i> v&nbsp;bajtech,
+kilobajtech, megabajtech atd. Velikost <i>tenured generation</i> se
+v&nbsp;tomto případě dopočítá automaticky na základě maximální povolené
+velikosti haldy. Podívejme se na konkrétní příklad, kde je velikost <i>young
+generation</i> nastavena na hodnotu 8192+1024+1024=10240 kB a velikost
+<i>tenured generation</i> na 11M-10M=1 MB (1024 kB):</p>
+
+<pre>
+java -Xmx11M -XX:NewSize=10M -XX:+PrintGCDetails
+
+... informace o možných přepínačích ...
+
+Heap
+ def new generation   total 9216K, used 491K [0x8eab0000, 0x8f4b0000, 0x8f4b0000)
+  eden space 8192K,   6% used [0x8eab0000, 0x8eb2af00, 0x8f2b0000)
+  from space 1024K,   0% used [0x8f2b0000, 0x8f2b0000, 0x8f3b0000)
+  to   space 1024K,   0% used [0x8f3b0000, 0x8f3b0000, 0x8f4b0000)
+ tenured generation   total 1024K, used 0K [0x8f4b0000, 0x8f5b0000, 0x8f8b0000)
+   the space 1024K,   0% used [0x8f4b0000, 0x8f4b0000, 0x8f4b0200, 0x8f5b0000)
+ compacting perm gen  total 12288K, used 43K [0x8f8b0000, 0x904b0000, 0x938b0000)
+   the space 12288K,   0% used [0x8f8b0000, 0x8f8baf88, 0x8f8bb000, 0x904b0000)
+    ro space 10240K,  73% used [0x938b0000, 0x94006e40, 0x94007000, 0x942b0000)
+    rw space 12288K,  60% used [0x942b0000, 0x949ef9f8, 0x949efa00, 0x94eb0000)
+</pre>
+
+<p>Nyní se opět na chvíli vrátíme k&nbsp;našemu testovacímu příkladu. Nejprve
+ho spustíme s&nbsp;velikostí haldy nastavenou na 5 MB, ovšem s&nbsp;tím, že
+způsob rozdělení této kapacity mezi <i>young generation</i> a <i>tenured
+generation</i> ponecháme plně na virtuálním stroji Javy:</p>
+
+<pre>
+time java -Xmx5M -Xms5M -XX:+PrintGCDetails ConcatTest1 | grep DefNew | wc -l
+1311    - počet volání GC
+
+real	0m15.715s
+user	0m14.529s
+sys	0m0.984s
+</pre>
+
+<p>Ovšem vzhledem k&nbsp;tomu, že víme, že náš příklad vytváří velké množství
+objektů s&nbsp;malou životností, které tudíž nemusí (a nemají!) skončit
+v&nbsp;oblasti <i>tenured generation</i>, můžeme velikost této oblasti snížit
+na pouhý jeden megabajt, čímž se jak drasticky sníží počet volání správce
+paměti, tak se i zmenší celková doba běhu aplikace:</p>
+
+<pre>
+time java -Xmx5M -Xms5M -XX:NewSize=4M -XX:+PrintGCDetails ConcatTest1 | grep DefNew | wc -l
+571     - počet volání GC
+
+real	0m11.994s
+user	0m11.221s
+sys	0m0.612s
+</pre>
+
+<p>Poznámka: opět pro jistotu poznamenávám, že pro reálné aplikace budou
+naměřené hodnoty i vhodné nastavované parametry s&nbsp;velkou pravděpodobností
+zcela odlišné, protože náš demonstrační příklad je v&nbsp;určitém ohledu
+extrémem.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Výsledky měření</h2>
+
+<p>Nikdy nezaškodí taktéž uvést nějakou (samozřejmě vhodně zfalšovanou :-)
+statistiku, ideálně podepřenou grafy. S&nbsp;generováním dat tvořících základ
+pro grafy nám může pomoci jednoduchý skript, pomocí něhož zjistíme jak dobu
+běhu testovací aplikace při použití různé velikosti haldy, tak i celkový počet
+volání správce paměti:</p>
+
+<pre>
+#!/bin/bash
+
+# vysledek: dvojice textovych souboru
+# obsahujicich pocet spusteni GC a celkovou
+# dobu behu testovaciho programu
+
+for i in `seq 2 100`;
+do
+    echo "Spoustim JVM s nastavenou velikosti heapu na ${i}MB"
+    # POZOR! nechceme volat interni prikaz time z BASHe
+    /usr/bin/time -o times.txt -a -f "%U" \
+        java -Xmx${i}M -Xms${i}M -XX:+PrintGCDetails \
+        ConcatTest1 | grep DefNew | wc -l &gt;&gt; gc_count.txt
+done
+</pre>
+
+<p>Z&nbsp;vygenerovaných dat lze jednoduše vytvořit grafy, na kterých je patrná
+nelineární závislost mezi celkovou velikostí haldy a časem běhu aplikace.
+Z&nbsp;grafů je patrné také to, že příliš malá velikost haldy vede
+k&nbsp;mnohem delší době trvání běhu aplikace (popř.&nbsp;i ke vzniku výjimek
+typu <strong>java.lang.OutOfMemoryError</strong>), ovšem na druhou stranu nemá
+moc smyslu nastavovat ani příliš velkou kapacitu haldy, protože od určitého
+okamžiku (zcela závislého na povaze běžící aplikace i zpracovávaných dat!) se
+již další zvyšování velikosti haldy projeví na celkovém času běhu aplikace
+(popř.&nbsp;na průchodnosti aplikace) jen zcela nepatrně.</p>
+
+<a href="http://i.iinfo.cz/images/592/java10-3.png"><img src="http://i.iinfo.cz/images/592/java10-3-prev.png" width="223" height="270" alt=" " /></a>
+<p><i>Obrázek 8: Celková doba běhu testovací aplikace (vyjádřená
+v&nbsp;sekundách) v&nbsp;závislosti na maximální velikosti haldy (vyjádřené
+v&nbsp;MB)</i></p>
+
+<a href="http://i.iinfo.cz/images/592/java10-4.png"><img src="http://i.iinfo.cz/images/592/java10-4-prev.png" width="217" height="270" alt=" " /></a>
+<p><i>Obrázek 9: Počet spuštění správce paměti v&nbsp;závislosti na maximální
+velikosti haldy (vyjádřené v&nbsp;MB).</i></p>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Amdahl's law<br />
+<a href="http://en.wikipedia.org/wiki/Amdahl_law">http://en.wikipedia.org/wiki/Amdahl_law</a>
+</li>
+
+<li>Garbage collection (computer science)<br />
+<a href="http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)">http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)</a>
+</li>
+
+<li>Dr. Dobb's | G1: Java's Garbage First Garbage Collector<br />
+<a href="http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/">http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/</a>
+</li>
+
+<li>Java's garbage-collected heap<br />
+<a href="http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html">http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html</a>
+</li>
+
+<li>Compressed oops in the Hotspot JVM<br />
+<a href="http://wikis.sun.com/display/HotSpotInternals/CompressedOops">http://wikis.sun.com/display/HotSpotInternals/CompressedOops</a>
+</li>
+
+<li>32-bit or 64-bit JVM? How about a Hybrid?<br />
+<a href="http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/">http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/</a>
+</li>
+
+<li>Compressed object pointers in Hotspot VM<br />
+<a href="http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot">http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot</a>
+</li>
+
+<li>Java HotSpot(tm) Virtual Machine Performance Enhancements<br />
+<a href="http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html">http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html</a>
+</li>
+
+<li>Using jconsole<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a>
+</li>
+
+<li>jconsole &ndash; Java Monitoring and Management Console<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>x86-64<br />
+<a href="http://en.wikipedia.org/wiki/X86-64">http://en.wikipedia.org/wiki/X86-64</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>1.6.0_14 (6u14)<br />
+<a href="http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn">http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn</a>
+</li>
+
+<li>Update Release Notes<br />
+<a href="http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html">http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html</a>
+</li>
+
+<li>4.10 Limitations of the Java Virtual Machine<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659</a>
+</li>
+
+<li>Java(TM) Platform, Standard Edition 7 Binary Snapshot Releases<br />
+<a href="http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html">http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>ClosableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>ArrayList (JDK 1.4)<br />
+<a href="http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html">http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2011</small></p>
+</body>
+</html>
+
