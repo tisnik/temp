@@ -1,0 +1,546 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 &ndash; využití large pages</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Monitorování procesů a správa paměti v&nbsp;JDK 6 a JDK 7 &ndash; využití large pages</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Ve dvanácté části seriálu o vlastnostech JDK 6 a JDK 7 (samozřejmě včetně OpenJDK) si řekneme, z&nbsp;jakého důvodu může být v&nbsp;některých případech vhodné používat takzvané large pages, známé též pod názvem huge pages. Jedná se o technologii nabízenou některými novějšími procesory, která je podporována i Linuxem (konkrétně jádry 2.6.x) a samozřejmě i běhovým prostředím Javy.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Když všechny další pokusy o zvýšení výkonnosti selžou...</a></p>
+<p><a href="#k02">2. Virtuální adresa vs. fyzická adresa, stránkování</a></p>
+<p><a href="#k03">3. Význam TLB</a></p>
+<p><a href="#k04">4. Vliv velikosti stránek na výkonnost systému</a></p>
+<p><a href="#k05">5. Řešení problému: large (huge) pages</a></p>
+<p><a href="#k06">6. Podpora large (huge) pages v&nbsp;JVM</a></p>
+<p><a href="#k07">7. Povolení large pages v&nbsp;operačním systému (1.část)</a></p>
+<p><a href="#k08">8. Obsah následující části seriálu</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Když všechny další pokusy o zvýšení výkonnosti selžou...</h2>
+
+<p>V&nbsp;předchozích částech seriálu o monitorování a správě paměti, které je
+možné použít v&nbsp;<i>(Open)JDK 6</i> a samozřejmě i v&nbsp;<i>(Open)JDK
+7</i>, jsme si řekli základní informace o funkci správců paměti (<i>GC &ndash;
+Garbage Collectors</i>) i o tom, jakým způsobem je alokována halda
+(<i>heap</i>) i jednotlivé oblasti a podoblasti, na něž je halda z&nbsp;důvodů
+efektivnější správy paměti rozdělena. Ovšem na problémy s&nbsp;výkonností
+aplikací psaných v&nbsp;Javě můžeme narazit i v&nbsp;těch případech, pokud je
+aplikace naprogramována optimálně, je zvolen ten nejlepší dostupný typ správce
+paměti (samozřejmě volaný s&nbsp;ověřenými parametry) a i halda je rozdělena na
+základě údajů zjištěných při testovacích bězích aplikace. Poněkud paradoxně se
+mohou výkonnostní problémy objevit na těch nejlepších počítačových systémech
+vybavených několika procesory a mnoha gigabajty či desítkami gigabajtů operační
+paměti. Celkem logicky si můžeme položit otázku, zda je za těchto okolností
+vůbec možné ještě něco vylepšit?</p>
+
+<p>Samozřejmě, že vždy je možné ještě něco vylepšit či poupravit :-), zejména
+tehdy, když si uvědomíme, že výkonnostní problém může v&nbsp;mnoha případech
+souviset opět se správou paměti, tentokrát ovšem se správou, kterou do značné
+míry automaticky provádí samotný mikroprocesor (či mikroprocesory u
+multiprocesorových systémů) v&nbsp;součinnosti s&nbsp;operačním systémem.
+Prakticky všechny moderní procesorové architektury i operační systémy totiž
+podporují <i>virtualizaci paměti</i>, s&nbsp;čímž ovšem souvisí i to, že se
+přístup do paměti stal poněkud složitější a obecně taktéž pomalejší než na
+architekturách, kde platí rovnost
+<strong>virtuální_adresa=fyzická_adresa</strong>. Důvod, proč tomu tak je, si
+stručně vysvětlíme v&nbsp;navazující kapitole. Upozornění: v&nbsp;dalším textu
+se nebudu zabývat triviálně zjistitelným problémem souvisejícím
+s&nbsp;virtualizací paměti, konkrétně se stavem, kdy je systém pomalý
+z&nbsp;toho důvodu, že neustále odkládá a načítá stránky ze swapovacího
+souboru. Zde by bylo řešení následující: úprava velikosti haldy a taktéž
+velikosti oblastí na haldě, pečlivý výběr správce paměti, použití
+komprimovaných ukazatelů a samozřejmě též pokus o nalezení slabých míst
+v&nbsp;aplikaci.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Virtuální adresa vs. fyzická adresa, stránkování</h2>
+
+<p>Pro začátek si stručně (a v&nbsp;rámci stručnosti i poněkud nepřesně)
+popišme, jakým způsobem je vlastně paměť spravována na moderních
+mikropočítačových architekturách. Předpokládejme, že si nějaká aplikace
+vyžádala od operačního systému pomocí funkce <strong>malloc()</strong>
+například oblast o velikosti 100kB. Operační systém skutečně tuto oblast
+zarezervuje (zde musí spolupracovat s&nbsp;jednotkou <i>MMU</i> mikroprocesoru)
+a vrátí aplikaci ukazatel na první volný bajt v&nbsp;nově alokované paměťové
+oblasti. Aplikaci se sice celá stokilobajtová oblast jeví jako kontinuální,
+ovšem ve skutečnosti je tato oblast na fyzické úrovni rozdělena do takzvaných
+<i>stránek</i>, které mohou být ve fyzické paměti rozmístěny prakticky
+libovolně (čím déle systém běží, tím k&nbsp;větší fragmentaci paměťového
+prostoru dochází) &ndash; dokonce je možné, že některé z&nbsp;méně často
+používaných stránek budou uloženy do swapovacího oddílu nebo do swapovacího
+souboru, tj.&nbsp;nebudou vůbec uloženy ve fyzickém paměťovém modulu.</p>
+
+<p>V&nbsp;praxi to tedy znamená, že virtuální adresy jsou obecně odlišné od
+fyzických adres, tj.&nbsp;od adres, které jsou mikroprocesorem posílány po
+adresové sběrnici ve chvíli čtení či zápisu slova z/do paměťového modulu.
+Dokonce se mohou (a na mnoha systémech i budou) lišit i logické adresy
+používané v&nbsp;aplikacích od adres virtuálních, ovšem to nesouvisí přímo se
+stránkováním, ale se segmentací paměti (přesněji řečeno spodních <i>n</i> bitů
+virtuální a fyzické adresy bude totožných, přičemž <i>n</i> souvisí
+s&nbsp;velikostí stránek). Navíc musí mít mikroprocesor a současně i operační
+systém ve vhodné datové struktuře uloženy všechny potřebné informace o
+stránkách &ndash; na jakou adresu je každá stránka mapována ve fyzické paměti,
+zda je stránka uložena ve swapovacím souboru/oddílu atd. Postupem času se tyto
+údaje začaly ukládat do datových struktur složených z&nbsp;několika
+hierarchicky uspořádaných tabulek &ndash; u architektury <i>x86</i> se jedná o
+dvouúrovňovou hierarchii a v&nbsp;případě použití <i>PAE</i> o hierarchii
+tříúrovňovou (na 64bitových systémech je to pro jistotu ještě o něco složitější
+:-).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Význam TLB</h2>
+
+<p>Přepočet, či možná přesněji řečeno <i>mapování</i> mezi virtuální a fyzickou
+adresou musí být prováděno při čtení či zápisu každého bajtu, samozřejmě i při
+načítání operačních kódů instrukcí tvořících běžící program, ukládání dat na
+zásobník atd. Z&nbsp;toho nutně vyplývá, že mapování adres musí být velmi
+rychlé, protože i zdržení o jeden či dva takty by se negativně projevilo na
+výkonnosti celého systému. Vzhledem k&nbsp;tomu, že procházení hierarchie
+tabulek (i když je vykonáváno mikroprocesorem resp.&nbsp;jeho modulem
+<i>MMU</i>) není tak rychlé, jsou všechny moderní procesory vybaveny takzvaným
+<i>TLB</i> neboli <i>Translation Lookaside Buffer</i>. Jedná se vlastně o velmi
+rychlou cache paměť implementovanou přímo na mikroprocesoru, v&nbsp;níž jsou
+uloženy nejčastěji používané informace z&nbsp;tabulek stránek. Pokud je při
+čtení či zápisu bajtu na virtuální adresu nalezeno v&nbsp;<i>TLB</i> příslušné
+mapování, je vše v&nbsp;pořádku &ndash; virtuální adresa se převede na adresu
+fyzickou.</p>
+
+<p>Problém nastane, pokud se daný vzorek (konkrétně nejvyšších <i>n</i> bitů)
+virtuální adresy v&nbsp;<i>TLB</i> nenachází. Zde již musí mikroprocesor
+skutečně projít celou hierarchií tabulek stránek, což je z&nbsp;časového
+hlediska poněkud náročné, zejména v&nbsp;případě, že je stránek několik desítek
+tisíc, což se poměrně snadno stane, jak si ostatně ukážeme v&nbsp;následující
+kapitole. Pokud se záznam najde, je ihned uložen do <i>TLB</i>, z&nbsp;něhož
+ovšem musí být některý méně často používaný záznam vymazán (konkrétní strategie
+ovládání této paměti cache je před námi ovšem skryta v&nbsp;mikroprocesoru).
+V&nbsp;případě, že ani po projití celé hierarchie není potřebný mapovací záznam
+nalezen, je mikroprocesorem vyvolána výjimka, kterou může operační systém
+obsloužit například tak, že příslušnou stránku (jejíž virtuální adresu má
+samozřejmě k&nbsp;dispozici) přenese ze swapovacího souboru do fyzické paměti a
+opět vloží příslušný záznam do <i>TLB</i>.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Vliv velikosti stránek na výkonnost systému</h2>
+
+<p>Vraťme se nyní do druhé poloviny osmdesátých let minulého století, kdy firma
+<i>Intel</i> uvedla na trh mikroprocesory <i>Intel 80386</i>. Jedná se o první
+mikroprocesory řady <i>x86</i>, které měly implementovanou stránkovací jednotku
+a v&nbsp;instrukční sadě i systému výjimek plně podporovaly stránkování.
+V&nbsp;té době byly v&nbsp;běžných počítačích instalovány paměti o kapacitách
+v&nbsp;řádu megabajtů, od klasického jednoho megabajtu běžného i u starších
+počítačů s&nbsp;procesorem <i>Intel 80286</i> přes poměrně obvyklé 4MB (minimum
+pro spuštění <i>Doomu</i> :-) až do osmi megabajtů, což byla maximální
+dosažitelná kapacita na počítačích s&nbsp;osmi jednomegabajtovými 30pinovými
+moduly <i>SIMM</i> (tyto moduly byly osmibitové, proto se musely u počítačů
+s&nbsp;32bitovými procesory <i>80386DX</i> instalovat vždy po čtveřicích).
+Teoretická maximální kapacita 30pinového modulu <i>SIMM</i> je sice 16 MB,
+ovšem moduly s&nbsp;takto velkou kapacitou nebyly zpočátku k&nbsp;dispozici
+&ndash; typické kapacity byly 256 kB a 1 MB.</p>
+
+<p>Vzhledem k&nbsp;tomu, že velikosti stránek měly být dostatečně malé kvůli
+redukci času nutného pro uložení či načtení stránek ze swapovacího souboru a
+taktéž kvůli tomu, aby se zbytečně nealokovala stránka zaplněná jen
+z&nbsp;několika procent, zvolila firma <i>Intel</i> za výchozí velikost stránky
+hodnotu 4kB, tj.&nbsp;4096 bajtů. Celkový počet stránek se tedy v&nbsp;případě
+tehdy používaných kapacit operačních pamětí pohyboval v&nbsp;celkem rozumných
+mezích. Například u počítače s&nbsp;4MB paměti se jednalo o 4MB/4kB=1024
+stránek (zde se dopouštíme drobné nepřesnosti), což znamenalo, že i <i>TLB</i>
+s&nbsp;relativně malou kapacitou paměti cache měl poměrně velkou úspěšnost
+(<i>hit rate</i>) při vyhledávání stránek, do kterých se četly či zapisovaly
+bajty. Navíc je dobré si uvědomit, že při tehdejších rychlostech procesorů,
+kapacitách RAM a v&nbsp;neposlední řadě i &bdquo;kvalitě&ldquo; operačních
+systémů se prakticky nespouštělo velké množství paralelně běžících úloh
+současně, což při poměrně dobré lokalitě dat u jedné úlohy znamenalo, že se
+úspěšnost <i>TLB</i> opět poměrně významně zvýšila.</p>
+
+<p>Celá situace je znázorněna <a
+href="http://upload.wikimedia.org/wikipedia/commons/2/2d/080810-protected-386-paging.PNG">na
+tomto schématu</a> umístěného na Wikipedii.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Řešení problému: large (huge) pages</h2>
+
+<p>Po uvedení mikroprocesoru <i>Intel 80386</i> na trh se podpora pro
+stránkování stala prakticky nedílnou součástí všech novějších operačních
+systémů, které pro tuto platformu vznikly. Ovšem od uvedení procesoru
+<i>80386</i> už uběhlo 25 let a za tu dobu vzrostly běžně používané kapacity
+operačních pamětí na tisícinásobek (!) a současně se i zvýšil průměrný počet
+úloh, které jsou v&nbsp;systému paralelně provozovány. To mělo značný negativní
+dopad na účinnost <i>TLB</i>, který se sice taktéž neustále vylepšoval a
+zvyšoval svoji kapacitu paměti cache (která musí být typu <i>CAM</i>,
+tj.&nbsp;jde o asociativní paměť), ovšem i přes toto vylepšování byl každý
+výpadek <i>TLB</i> se zvyšující se kapacitou paměti mnohem horší &ndash;
+procesor totiž musel v&nbsp;této chvíli prohledávat tabulky stránek, které již
+dnes neobsahují jen 1024 stránek jako tomu bylo u 4MB RAM, ale mnohdy i několik
+milionů stránek. Výrobci procesorů a ve druhém kole i vývojáři operačních
+systémů tedy hledali nějakou cestu, jak tento problém uspokojivě vyřešit.</p>
+
+<p>Použité řešení je vlastně celkem jednoduché &ndash; kromě dnes již
+klasických stránek o velikosti 4 kB podporují novější procesory i stránky
+mnohem větší, které mají například velikost 2MB nebo 4MB. Oba dva typy
+paměťových stránek mohou být použity společně (myšleno na jednom systému),
+protože všechny datové struktury (hierarchické tabulky stránek) zůstávají
+zachovány &ndash; jedinou novou informaci představuje příznakový bit uložený
+v&nbsp;tabulkách stránek, který určuje, zda se jedná o původní čtyřkilobajtovou
+stránku nebo o stránku &bdquo;velkou&ldquo; (<i>huge</i>, <i>large</i>). Přes
+služby operačního systému je možné zažádat o alokaci libovolného počtu velkých
+stránek, důležité je ovšem to, že ne vždy se alokace povede, a to i
+v&nbsp;případě, že je k&nbsp;dispozici dostatek operační paměti. Důvod, proč se
+někdy alokace nepovede, je pochopitelný &ndash; alokovaná stránka musí být ve
+fyzické paměti umístěna na kontinuálních adresách (tj.&nbsp;jedná se o jeden
+blok o délce 2MB nebo 4MB), tento blok se však v&nbsp;případě fragmentované
+paměti systému nepodaří nalézt. Z&nbsp;tohoto důvodu je nejlepší zažádat o
+alokaci velkých stránek ihned po startu systému nebo dokonce i v&nbsp;průběhu
+startování inicializačních skriptů.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Podpora large (huge) pages v&nbsp;JVM</h2>
+
+<p>Nyní se dostáváme k&nbsp;podpoře velkých stránek v&nbsp;JVM. Tato
+technologie je podporována již od JDK 5.0 a dá se zapnout přepínačem
+<strong>-XX:+UseLargePages</strong>, například následovně při spouštění testu,
+jehož zdrojový kód byl uveden minule:</p>
+
+<pre>
+java -XX:+UseLargePages ConcurrentConcatenationTest
+</pre>
+
+<p>V&nbsp;případě, že se paměť pro haldu (a nejenom pro ni) nepodařila
+naalokovat přes velké stránky, nejedná se o zásadní chybu a aplikace bude
+pokračovat v&nbsp;běhu (i když s&nbsp;cca o 10 až 15 procent menším výkonem).
+Ovšem na standardní výstup (ne na výstup chybový!) se vypíše podobné
+varování:</p>
+
+<pre>
+OpenJDK Server VM warning: Failed to reserve shared memory (errno = 5).
+</pre>
+
+<p>popř.:</p>
+
+<pre>
+OpenJDK Server VM warning: Failed to reserve shared memory (errno = 22).
+</pre>
+
+<p>Pokud se toto hlášení objeví, je možné, že velkých stránek není dostatečné
+množství (JVM buď použije malé stránky nebo stránky velké, nikdy ne jejich
+mix), že jsou již zaalokované jiným procesem, nebo (což je na
+nenakonfigurovaných systémech pravděpodobné) není podpora pro velké stránky
+zapnuta.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Povolení large pages v&nbsp;operačním systému (1.část)</h2>
+
+<p>Nejprve se musíme přesvědčit, jestli daná platforma, tj.&nbsp;jak
+mikroprocesor, tak současně i jádro operačního systému, podporuje práci
+s&nbsp;velkými stránkami. To můžeme zjistit více způsoby, pravděpodobně
+nejjednodušeji následovně:</p>
+
+<pre>
+grep Huge /proc/meminfo
+</pre>
+
+<p>Pokud platforma velké stránky podporuje (i když není ani jedna naalokována),
+vypíšou se čtyři řádky (u nichž se číselné údaje samozřejmě mohou lišit):</p>
+
+<pre>
+HugePages_Total:     0
+HugePages_Free:      0
+HugePages_Rsvd:      0
+Hugepagesize:     2048 kB
+</pre>
+
+<p>Dále je již možné velké stránky naalokovat. Pokud například potřebujeme na
+systému, jehož velké stránky mají velikost 2MB, použít aplikaci
+s&nbsp;velikostí haldy 20MB, postačuje naalokovat 10 velkých stránek (jedná se
+pouze o příklad, ve skutečnosti bude halda spíše stokrát větší a bude tedy
+potřebovat stokrát více velkých stránek). Následující příkaz se musí spouštět
+pod rootem:</p>
+
+<pre>
+echo 10 &gt; /proc/sys/vm/nr_hugepages
+</pre>
+
+<p>O tom, zda alokace skutečně proběhla, se můžeme přesvědčit zpětným
+výpisem pseudosouboru:</p>
+
+<pre>
+cat /proc/sys/vm/nr_hugepages
+10
+</pre>
+
+<p>a samozřejmě též výše uvedeným příkazem:</p>
+
+<pre>
+grep Huge /proc/meminfo
+HugePages_Total:    10
+HugePages_Free:     10
+HugePages_Rsvd:      0
+HugePages_Surp:      0
+Hugepagesize:     2048 kB
+</pre>
+
+<p>Poznámka: výše uvedený postup je vhodný spíše pro testování. Pokud se mají
+velké stránky alokovat automaticky při startu systému, lze provést změnu
+v&nbsp;souboru <i>/etc/sysctl.conf</i>, například přidáním následujícího
+řádku:</p>
+
+<pre>
+vm.nr_hugepages = 10
+</pre>
+
+<p>Nezávisle na způsobu specifikace celkového počtu velkých stránek je dobré si
+uvědomit, že JVM buď bude alokovat haldu pouze s&nbsp;využitím velkých stránek
+nebo ji naopak bude alokovat s&nbsp;využitím běžných malých čtyřkilobajtových
+stránek. To znamená, že by celková kapacita rezervovaných velkých stránek
+(tj.&nbsp;jejich počet&times;kapacita) měla přesahovat velikost haldy
+specifikovanou pomocí přepínače <strong>-Xmx</strong>, jinak bude výsledek
+celého snažení spíše kontraproduktivní.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Obsah následující části seriálu</h2>
+
+<p>Další postup při nastavování velkých stránek je již do určité míry závislý
+na typu operačního systému a taktéž na tom, jaká JDK se používá (Oracle JDK,
+OpenJDK, IBM JDK atd.). Každý typ JDK totiž může k&nbsp;velkým stránkám
+přistupovat odlišným způsobem &ndash; buď přes sdílenou paměť nebo přes
+virtuální souborový systém. Z&nbsp;důvodu velké rozsáhlosti se problematikou
+dalšího nastavení a především měření výkonnosti Javovských aplikací
+využívajících velké stránky, budeme věnovat ještě v&nbsp;následující části
+tohoto seriálu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2>9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>HugePages<br />
+<a href="http://linux-mm.org/HugePages">http://linux-mm.org/HugePages</a>
+</li>
+
+<li>Tuning big java heap and linux huge pages<br />
+<a href="http://www.tikalk.com/alm/forums/tuning-big-java-heap-and-linux-huge-pages">http://www.tikalk.com/alm/forums/tuning-big-java-heap-and-linux-huge-pages</a>
+</li>
+
+<li>How do I set up hugepages in Red Hat Enterprise Linux 4<br />
+<a href="http://magazine.redhat.com/2007/05/29/how-do-i-set-up-hugepages-in-red-hat-enterprise-linux-4/">http://magazine.redhat.com/2007/05/29/how-do-i-set-up-hugepages-in-red-hat-enterprise-linux-4/</a>
+</li>
+
+<li>Java SE Tuning Tip: Large Pages on Windows and Linux<br />
+<a href="http://blogs.sun.com/dagastine/entry/java_se_tuning_tip_large">http://blogs.sun.com/dagastine/entry/java_se_tuning_tip_large</a>
+</li>
+
+<li>Translation lookaside buffer<br />
+<a href="http://en.wikipedia.org/wiki/Translation_lookaside_buffer">http://en.wikipedia.org/wiki/Translation_lookaside_buffer</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Amdahl's law<br />
+<a href="http://en.wikipedia.org/wiki/Amdahl_law">http://en.wikipedia.org/wiki/Amdahl_law</a>
+</li>
+
+<li>Garbage collection (computer science)<br />
+<a href="http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)">http://en.wikipedia.org/wiki/Garbage_collection_(computer_science)</a>
+</li>
+
+<li>Dr. Dobb's | G1: Java's Garbage First Garbage Collector<br />
+<a href="http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/">http://www.drdobbs.com/article/printableArticle.jhtml?articleId=219401061&amp;dept_url=/java/</a>
+</li>
+
+<li>Java's garbage-collected heap<br />
+<a href="http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html">http://www.javaworld.com/javaworld/jw-08-1996/jw-08-gc.html</a>
+</li>
+
+<li>Compressed oops in the Hotspot JVM<br />
+<a href="http://wikis.sun.com/display/HotSpotInternals/CompressedOops">http://wikis.sun.com/display/HotSpotInternals/CompressedOops</a>
+</li>
+
+<li>32-bit or 64-bit JVM? How about a Hybrid?<br />
+<a href="http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/">http://blog.juma.me.uk/2008/10/14/32-bit-or-64-bit-jvm-how-about-a-hybrid/</a>
+</li>
+
+<li>Compressed object pointers in Hotspot VM<br />
+<a href="http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot">http://blogs.sun.com/nike/entry/compressed_object_pointers_in_hotspot</a>
+</li>
+
+<li>Java HotSpot(tm) Virtual Machine Performance Enhancements<br />
+<a href="http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html">http://download.oracle.com/javase/7/docs/technotes/guides/vm/performance-enhancements-7.html</a>
+</li>
+
+<li>Using jconsole<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a>
+</li>
+
+<li>jconsole &ndash; Java Monitoring and Management Console<br />
+<a href="http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html">http://download.oracle.com/javase/1.5.0/docs/tooldocs/share/jconsole.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>x86-64<br />
+<a href="http://en.wikipedia.org/wiki/X86-64">http://en.wikipedia.org/wiki/X86-64</a>
+</li>
+
+<li>Physical Address Extension<br />
+<a href="http://en.wikipedia.org/wiki/Physical_Address_Extension">http://en.wikipedia.org/wiki/Physical_Address_Extension</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>1.6.0_14 (6u14)<br />
+<a href="http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn">http://www.oracle.com/technetwork/java/javase/6u14-137039.html?ssSourceSiteId=otncn</a>
+</li>
+
+<li>Update Release Notes<br />
+<a href="http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html">http://www.oracle.com/technetwork/java/javase/releasenotes-136954.html</a>
+</li>
+
+<li>Java virtual machine: 4.10 Limitations of the Java Virtual Machine<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html#88659</a>
+</li>
+
+<li>Java(TM) Platform, Standard Edition 7 Binary Snapshot Releases<br />
+<a href="http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html">http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>ClosableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>ArrayList (JDK 1.4)<br />
+<a href="http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html">http://download.oracle.com/javase/1.4.2/docs/api/java/util/ArrayList.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2011</small></p>
+</body>
+</html>
+
