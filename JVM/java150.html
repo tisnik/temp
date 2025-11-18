@@ -1,0 +1,816 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>LuaJIT - Just in Time překladač pro programovací jazyk Lua (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>LuaJIT - Just in Time překladač pro programovací jazyk Lua (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Ve druhé části článku o Just in Time překladači LuaJIT si popíšeme způsob překladu aritmetických výrazů do mezijazyka LuaJITu. Kromě toho se taktéž budeme zabývat instrukcemi IR, které slouží pro implementaci podmínek a skoků. Tyto instrukce jsou použity jak při větvení, tak i při překladu programových smyček.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (2)</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k011">1.1 Základní aritmetické instrukce</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k012">1.2 Instrukce pro podmíněné a nepodmíněné skoky</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k013">1.3 Instrukce počítané programové smyčky <strong>for</strong></a></p>
+<p><a href="#k02">2. Demonstrační příklad číslo 6: překlad jednoduchých aritmetických výrazů</a></p>
+<p><a href="#k03">3. Demonstrační příklad číslo 7: překlad složitějších aritmetických výrazů</a></p>
+<p><a href="#k04">4. Demonstrační příklad číslo 8: rozhodovací konstrukce <strong>if-then</strong></a></p>
+<p><a href="#k05">5. Demonstrační příklad číslo 9: rozhodovací konstrukce <strong>if-then-else</strong></a></p>
+<p><a href="#k06">6. Demonstrační příklad číslo 10: rozhodovací konstrukce <strong>if-then-elseif-else</strong></a></p>
+<p><a href="#k07">7. Demonstrační příklad číslo 11: počítaná programová smyčka typu <strong>for</strong></a></p>
+<p><a href="#k08">8. Demonstrační příklad číslo 12: složitější počítaná programová smyčka typu <strong>for</strong></a></p>
+<p><a href="#k09">9. Repositář se zdrojovými kódy dnešních demonstračních příkladů</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (2)</h2>
+
+<p>V&nbsp;první části článku o Just in Time překladači LuaJIT jsme si
+mj.&nbsp;popsali i několik základních instrukcí použitých v&nbsp;mezijazyku
+(<i>IR &ndash; Intermediate Representation</i>). Připomeňme si, že každý
+program napsaný v&nbsp;Lue je nejprve překompilován do tohoto mezijazyka a
+teprve poté může být přeložen do nativního strojového kódu. Dnes si popíšeme
+další instrukce, které jsou v&nbsp;IR použity. Instrukční soubor IR lze
+považovat za reprezentaci ekvivalentní bajtkódům používaným v&nbsp;JVM, Lua VM
+či Python VM, ovšem jak uvidíme dále, je IR LuaJITu v&nbsp;některých ohledech
+velmi elegantní a lépe připraven pro překlad do nativního kódu než například
+zásobníkově orientovaný bajtkód JVM.</p>
+
+
+
+<p><a name="k011"></a></p>
+<h2 id="k011">1.1 Základní aritmetické instrukce</h2>
+
+<p>V&nbsp;IR LuaJITu se nachází poměrně velké množství aritmetických instrukcí,
+přičemž všechny instrukce využívají takzvaný <i>tříadresový kód</i>. To
+znamená, že se v&nbsp;instrukci nachází jak adresy či indexy dvou zdrojových
+operandů, tak i adresa/index operandu cílového. Díky tomu se i poměrně složité
+aritmetické výrazy daří překládat do velmi krátké sekvence instrukcí, na rozdíl
+od zásobníkově orientovaného bajtkódu, který sice bude obsahovat instrukce
+s&nbsp;menší bitovou šířkou, ale manipulací s&nbsp;operandy bude prováděno
+větší množství. Následující pětice instrukcí slouží k&nbsp;provedení základních
+aritmetických operací nad operandy uloženými ve slotech (pro práci
+s&nbsp;konstantami se používají odlišné instrukce):</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ADDVV</td><td>slot, slot</td><td>součet</td></tr>
+<tr><td>2</td><td>SUBVV</td><td>slot, slot</td><td>rozdíl</td></tr>
+<tr><td>3</td><td>MULVV</td><td>slot, slot</td><td>součin</td></tr>
+<tr><td>4</td><td>DIVVV</td><td>slot, slot</td><td>podíl</td></tr>
+<tr><td>5</td><td>MODVV</td><td>slot, slot</td><td>podíl modulo</td></tr>
+</table>
+
+
+
+<p><a name="k012"></a></p>
+<h2 id="k012">1.2 Instrukce pro podmíněné a nepodmíněné skoky</h2>
+
+<p>Následují instrukce pro podmíněné a nepodmíněné skoky. Instrukcí pro
+podmíněné skoky taktéž existuje velké množství; my se však dnes seznámíme jen
+s&nbsp;šesti instrukcemi, které porovnají dva operandy uložené ve slotech.
+Jedná se o instrukce <strong>ISLT</strong>, <strong>ISGE</strong>,
+<strong>ISLE</strong>, <strong>ISGT</strong>, <strong>ISEQV</strong> a
+<strong>ISNEV</strong>. Na těchto instrukcích je zvláštní fakt, že pouze
+provedou test na splnění či nesplnění dané podmínky, ovšem skok musí být
+proveden až instrukcí <strong>JMP</strong>. Pokud je před <strong>JMP</strong>
+uvedena některá z&nbsp;instrukcí <strong>I*</strong>, jedná se o podmíněný skok
+provedený pouze ve chvíli, kdy je podmínka splněna. Pokud se však před
+instrukcí skoku <strong>JMP</strong> nachází jiná instrukce, jde o skok
+nepodmíněný. Toto řešení je velmi zajímavé a v&nbsp;určitém ohledu připomíná
+instrukční sadu mikroprocesorů ARM:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>JMP  </td><td>adresa</td><td>nepodmíněný skok, popř.&nbsp;podmíněný skok, pokud mu předchází instrukce I*</td></tr>
+<tr><td>1</td><td>ISLT </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &lt; D</td></tr>
+<tr><td>2</td><td>ISGE </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &ge; D</td></tr>
+<tr><td>3</td><td>ISLE </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &le; D</td></tr>
+<tr><td>4</td><td>ISGT </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &gt; D</td></tr>
+<tr><td>5</td><td>ISEQV</td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A = D   </td></tr>
+<tr><td>6</td><td>ISNEV</td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &ne; D</td></tr>
+</table>
+
+
+
+<p><a name="k013"></a></p>
+<h2 id="k013">1.3 Instrukce počítané programové smyčky <strong>for</strong></h2>
+
+<p>Poslední dvě dnes popsané instrukce slouží pro implementaci počítané
+programové smyčky typu <strong>for</strong>. Jedná se o instrukce nazvané
+<strong>FORI</strong> a <strong>FORL</strong>. První z&nbsp;těchto instrukcí se
+používá na začátku smyčky (před jejím tělem), druhá instrukce se používá vždy
+jako poslední instrukce v&nbsp;těle smyčky <strong>for</strong>. V&nbsp;obou
+případech se testuje podmínka na ukončení smyčky, což je opět zajímavé, protože
+u jiných VM/bajtkódů je typicky podmínka testována jen na začátku smyčky,
+kdežto na jejím konci je umístěn nepodmíněný skok (které řešení je
+elegantnější, je nasnadě):</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Popis</th></tr>
+<tr><td>1</td><td>FORI</td><td>test i&le;max pro krok&ge;0 či i&ge;min pro krok&lt;0<br />
+            skok ZA tělo smyčky při nesplnění této podmínky</td></tr>
+<tr><td>2</td><td>FORL</td><td>i=i+krok<br />
+            test i&le;max pro krok&ge;0 či i&ge;min pro krok&lt;0<br />
+            skok na začátek smyčky při splnění této podmínky</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Demonstrační příklad číslo 6: překlad jednoduchých aritmetických výrazů</h2>
+
+<p>V&nbsp;(celkově) šestém demonstračním příkladu si ukážeme, jak se do IR
+přeloží jednoduché aritmetické výrazy, konkrétně výrazy s&nbsp;jedinou operací
+a dvěma operandy:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 6</i>
+<i>--</i>
+<i>-- Jednoduché výrazy.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace proměnných konstantami</i>
+<strong>local</strong> a = 1
+<strong>local</strong> b = 2
+&nbsp;
+<i>-- inicializace proměnných s využitím aritmetických výrazů</i>
+<strong>local</strong> c = a + b
+<strong>local</strong> d = a - b
+<strong>local</strong> e = a * b
+<strong>local</strong> f = a / b
+<strong>local</strong> g = a % b
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- tisk hodnot všech proměnných</i>
+print(a)
+print(b)
+print(c)
+print(d)
+print(e)
+print(f)
+print(g)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>Samotný překlad aritmetických výrazů je velmi přímočarý, a to díky již
+zmíněnému tříadresovému kódu. Dále si povšimněte, že tisk hodnot
+s&nbsp;využitím funkce <strong>print()</strong> není žádným způsobem
+optimalizován a každé volání <strong>print(proměnná)</strong> je otrocky
+přeloženo do sekvence tří instrukcí:</p>
+
+<pre>
+<i>-- BYTECODE -- test06.lua:0-24</i>
+0001    <strong>KSHORT</strong>   0   1       <i>; do slotu číslo 0 uložit hodnotu 1</i>
+0002    <strong>KSHORT</strong>   1   2       <i>; do slotu číslo 1 uložit hodnotu 2</i>
+&nbsp;
+0003    <strong>ADDVV</strong>    2   0   1   <i>; součet hodnot ve slotech 0 a 1, výsledek se ukládá do slotu 2</i>
+0004    <strong>SUBVV</strong>    3   0   1   <i>; rozdíl hodnot ve slotech 0 a 1, výsledek se ukládá do slotu 3</i>
+0005    <strong>MULVV</strong>    4   0   1   <i>; součin hodnot ve slotech 0 a 1, výsledek se ukládá do slotu 4</i>
+0006    <strong>DIVVV</strong>    5   0   1   <i>; podíl hodnot ve slotech 0 a 1, výsledek se ukládá do slotu 5</i>
+0007    <strong>MODVV</strong>    6   0   1   <i>; podíl modulo hodnot ve slotech 0 a 1, výsledek se ukládá do slotu 6</i>
+&nbsp;
+0008    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0009    <strong>MOV</strong>      8   0       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0010    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0011    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0012    <strong>MOV</strong>      8   1       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0013    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0014    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0015    <strong>MOV</strong>      8   2       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0016    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0017    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0018    <strong>MOV</strong>      8   3       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0019    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0020    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0021    <strong>MOV</strong>      8   4       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0022    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0023    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0024    <strong>MOV</strong>      8   5       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0025    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0026    <strong>GGET</strong>     7   0       <i>; získání reference na funkci se jménem "print"</i>
+0027    <strong>MOV</strong>      8   6       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 8</i>
+0028    <strong>CALL</strong>     7   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0029    <strong>RET0</strong>     0   1       <i>; návrat z programu</i>
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad číslo 7: překlad složitějších aritmetických výrazů</h2>
+
+<p>Nyní se podívejme na to, jak si LuaJIT poradí s&nbsp;překladem složitějších
+aritmetických výrazů, konkrétně výrazů se dvěma až třemi operacemi a tím pádem
+se třemi či čtyřmi operandy:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 7</i>
+<i>--</i>
+<i>-- Složitější aritmetické výrazy.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace proměnných konstantami</i>
+<strong>local</strong> a = 1
+<strong>local</strong> b = 2
+<strong>local</strong> c = 3
+&nbsp;
+<i>-- inicializace proměnných s využitím aritmetických výrazů</i>
+<strong>local</strong> x = a + b + c
+<strong>local</strong> y = a - b * c
+<strong>local</strong> z = a * (b + c)
+<strong>local</strong> w = (a + b) * (b + c)
+<strong>local</strong> q = (a % b) / (b % c)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- tisk hodnot všech proměnných</i>
+print(a)
+print(b)
+print(c)
+print(x)
+print(y)
+print(z)
+print(w)
+print(q)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>Překlad aritmetických výrazů je stále velmi jednoduchý, a to opět díky
+použití tříadresového kódu. Nejsložitější výraz <i>w = (a + b) * (b + c)</i> je
+přeložen do dvou instrukcí <strong>ADDVV</strong> s&nbsp;uložením mezivýsledků
+do slotů 6 a 7. Za těmito instrukcemi následuje instrukce
+<strong>MULVV</strong>, která oba mezivýsledky vynásobí:</p>
+
+<pre>
+<i>-- BYTECODE -- test07.lua:0-37</i>
+0001    <strong>KSHORT</strong>   0   1       <i>; do slotu číslo 0 uložit hodnotu 1</i>
+0002    <strong>KSHORT</strong>   1   2       <i>; do slotu číslo 1 uložit hodnotu 2</i>
+0003    <strong>KSHORT</strong>   2   3       <i>; do slotu číslo 2 uložit hodnotu 3</i>
+&nbsp;
+0004    <strong>ADDVV</strong>    3   0   1
+0005    <strong>ADDVV</strong>    3   3   2   <i>; x = a + b + c</i>
+&nbsp;
+0006    <strong>MULVV</strong>    4   1   2
+0007    <strong>SUBVV</strong>    4   0   4   <i>; y = a - b * c</i>
+&nbsp;
+0008    <strong>ADDVV</strong>    5   1   2
+0009    <strong>MULVV</strong>    5   0   5   <i>; z = a * (b + c)</i>
+&nbsp;
+0010    <strong>ADDVV</strong>    6   0   1
+0011    <strong>ADDVV</strong>    7   1   2
+0012    <strong>MULVV</strong>    6   6   7   <i>; w = (a + b) * (b + c)</i>
+&nbsp;
+0013    <strong>MODVV</strong>    7   0   1
+0014    <strong>MODVV</strong>    8   1   2
+0015    <strong>DIVVV</strong>    7   7   8   <i>; q = (a % b) / (b % c)</i>
+&nbsp;
+0016    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0017    <strong>MOV</strong>      9   0       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0018    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0019    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0020    <strong>MOV</strong>      9   1       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0021    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0022    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0023    <strong>MOV</strong>      9   2       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0024    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0025    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0026    <strong>MOV</strong>      9   3       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0027    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0028    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0029    <strong>MOV</strong>      9   4       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0030    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0031    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0032    <strong>MOV</strong>      9   5       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0033    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0034    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0035    <strong>MOV</strong>      9   6       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0036    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0037    <strong>GGET</strong>     8   0       <i>; získání reference na funkci se jménem "print"</i>
+0038    <strong>MOV</strong>      9   7       <i>; parametr pro funkci <strong>print</strong> se uloží do slotu číslo 9</i>
+0039    <strong>CALL</strong>     8   1   2   <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0040    <strong>RET0</strong>     0   1       <i>; návrat z programu</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad číslo 8: rozhodovací konstrukce <strong>if-then</strong></h2>
+
+<p>V&nbsp;celkově osmém demonstračním příkladu si ukážeme způsob překladu
+programové konstrukce <strong>if-then</strong>, tj.&nbsp;jednoduchého větvení.
+V&nbsp;podmínce se vyskytuje prosté porovnání hodnot dvou proměnných,
+tj.&nbsp;jedná se o jednu z&nbsp;nejjednodušších a pravděpodobně i
+nejpoužívanějších podmínek vůbec:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 8</i>
+<i>--</i>
+<i>-- Rozhodovací konstrukce if-then</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace proměnných konstantami</i>
+<strong>local</strong> a = 1
+<strong>local</strong> b = 2
+&nbsp;
+<i>-- rozhodovací konstrukce if-then</i>
+<strong>if</strong> a &gt; b <strong>then</strong>
+    print("a &gt; b")
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>V&nbsp;IR tohoto demonstračního příkladu se poprvé setkáváme
+s&nbsp;instrukcí typu <strong>I*</strong>, za níž následuje instrukce skoku
+<strong>JMP</strong>. Pokud je podmínka splněna, dojde ke skoku a tím pádem i
+k&nbsp;přeskočení celého těla větve <strong>then</strong>:</p>
+
+<pre>
+<i>-- BYTECODE -- test08.lua:0-22</i>
+0001    <strong>KSHORT</strong>   0   1        <i>; do slotu číslo 0 uložit hodnotu 1</i>
+0002    <strong>KSHORT</strong>   1   2        <i>; do slotu číslo 1 uložit hodnotu 2</i>
+&nbsp;
+0003    <strong>ISGE</strong>     1   0        <i>; porovnání hodnot ve slotech 1 a 0</i>
+0004    <strong>JMP</strong>      2 =&gt; 0008    <i>; podmíněný skok na adresu 0008</i>
+&nbsp;
+0005    <strong>GGET</strong>     2   0        <i>; získání reference na funkci se jménem "print"</i>
+0006    <strong>KSTR</strong>     3   1        <i>; řetězec "a &gt;b", který se bude tisknout na obrazovku</i>
+0007    <strong>CALL</strong>     2   1   2    <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0008 =&gt; <strong>RET0</strong>     0   1        <i>; návrat z programu</i>
+</pre>
+
+<p>Poznámka: instrukce <strong>KSTR</strong> získá referenci na konstantní
+řetězec, tato reference je následně použita při volání funkce
+<strong>print()</strong>.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklad číslo 9: rozhodovací konstrukce <strong>if-then-else</strong></h2>
+
+<p>V&nbsp;dalším &ndash; již devátém &ndash; demonstračním příkladu se namísto
+jednoduchého větvení typu <strong>if-then</strong> používá úplné rozvětvení
+typu <strong>if-then-else</strong>, tj.&nbsp;na základě splnění či naopak
+nesplnění zadané podmínky se vykoná první či druhá větev programu:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 9</i>
+<i>--</i>
+<i>-- Rozhodovací konstrukce if-then-else</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace proměnných konstantami</i>
+<strong>local</strong> a = 1
+<strong>local</strong> b = 2
+&nbsp;
+<i>-- rozhodovací konstrukce if-then-else</i>
+<strong>if</strong> a &gt; b <strong>then</strong>
+    print("a &gt; b")
+<strong>else</strong>
+    print("a &lt;= b")
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>IR tohoto demonstračního příkladu je již velmi zajímavý, a to především
+proto, že se zde vyskytuje instrukce <strong>JMP</strong>, a to dokonce
+dvakrát. Poprvé zde najdeme dvojici <strong>ISGE+JMP</strong> sloužící
+k&nbsp;<i>podmíněnému přeskočení</i> větve <strong>then</strong>, podruhé je
+instrukce <strong>JMP</strong> použita ve větvi <strong>then</strong>
+k&nbsp;<i>nepodmíněnému přeskočení</i> větve <strong>else</strong>. Bajtkód je
+však stále velmi dobře čitelný a samotná rozhodovací konstrukce je vlastně
+vytvořena jen třemi instrukcemi:</p>
+
+<pre>
+<i>-- BYTECODE -- test09.lua:0-24</i>
+0001    <strong>KSHORT</strong>   0   1        <i>; do slotu číslo 0 uložit hodnotu 1</i>
+0002    <strong>KSHORT</strong>   1   2        <i>; do slotu číslo 1 uložit hodnotu 2</i>
+&nbsp;
+0003    <strong>ISGE</strong>     1   0        <i>; porovnání hodnot ve slotech 0 a 1</i>
+0004    <strong>JMP</strong>      2 =&gt; 0009    <i>; podmíněný skok na adresu 0009</i>
+&nbsp;
+0005    <strong>GGET</strong>     2   0        <i>; získání reference na funkci se jménem "print"</i>
+0006    <strong>KSTR</strong>     3   1        <i>; řetězec "a &gt; b"</i>
+0007    <strong>CALL</strong>     2   1   2    <i>; volání funkce <strong>print()</strong></i>
+0008    <strong>JMP</strong>      2 =&gt; 0012    <i>; nepodmíněný skok na adresu 0012</i>
+&nbsp;
+0009 =&gt; <strong>GGET</strong>     2   0        <i>; získání reference na funkci se jménem "print"</i>
+0010    <strong>KSTR</strong>     3   2        <i>; řetězec "a &lt;= b"</i>
+0011    <strong>CALL</strong>     2   1   2    <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0012 =&gt; <strong>RET0</strong>     0   1        <i>; návrat z programu</i>
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad číslo 10: rozhodovací konstrukce <strong>if-then-elseif-else</strong></h2>
+
+<p>Zkusme si nyní předchozí dva příklady udělat ještě složitější a to konkrétně
+použitím úplné rozhodovací konstrukce typu
+<strong>if-then-elseif-else</strong>. V&nbsp;takto vytvořeném větvení se již
+nachází dvě podmínky a překladač LuaJITu bude mít při překladu zdrojového kódu
+do IR ještě více zábavy :-)</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 10</i>
+<i>--</i>
+<i>-- Rozhodovací konstrukce if-then-elseif--else</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace proměnných konstantami</i>
+<strong>local</strong> a = 1
+<strong>local</strong> b = 2
+&nbsp;
+<i>-- rozhodovací konstrukce if-then-else</i>
+<strong>if</strong> a &gt; b <strong>then</strong>
+    print("a &gt; b")
+<strong>elseif</strong> a &lt; b <strong>then</strong>
+    print("a &lt; b")
+<strong>else</strong>
+    print("a == b")
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>V&nbsp;IR tohoto demonstračního příkladu můžeme nalézt jednu zajímavost
+&ndash; pro překlad obou opačných podmínek je použita táž dvojice instrukcí
+<strong>ISGE</strong> + <strong>JMP</strong>, ovšem operandy jsou ve druhém
+případu přehozeny. Ostatní části IR se do značné míry podobají nám již známému
+kódu, včetně použití samostatné instrukce <strong>JMP</strong> pro
+<i>nepodmíněné přeskočení</i> větví <strong>elseif</strong> i
+<strong>else</strong>:</p>
+
+<pre>
+<i>-- BYTECODE -- test10.lua:0-26</i>
+0001    <strong>KSHORT</strong>   0   1        <i>; do slotu číslo 0 uložit hodnotu 1</i>
+0002    <strong>KSHORT</strong>   1   2        <i>; do slotu číslo 1 uložit hodnotu 2</i>
+&nbsp;
+0003    <strong>ISGE</strong>     1   0        <i>; porovnání hodnot ve slotech 0 a 1</i>
+0004    <strong>JMP</strong>      2 =&gt; 0009    <i>; podmíněný skok na adresu 0009</i>
+&nbsp;
+0005    <strong>GGET</strong>     2   0        <i>; získání reference na funkci se jménem "print"</i>
+0006    <strong>KSTR</strong>     3   1        <i>; řetězec "a &gt; b"</i>
+0007    <strong>CALL</strong>     2   1   2    <i>; volání funkce <strong>print()</strong></i>
+0008    <strong>JMP</strong>      2 =&gt; 0018    <i>; nepodmíněný skok na adresu 0018</i>
+&nbsp;
+0009 =&gt; <strong>ISGE</strong>     0   1        <i>; opačné porovnání hodnot ve slotech 0 a 1</i>
+0010    <strong>JMP</strong>      2 =&gt; 0015    <i>; podmíněný skok na adresu 0015</i>
+&nbsp;
+0011    <strong>GGET</strong>     2   0        <i>; získání reference na funkci se jménem "print"</i>
+0012    <strong>KSTR</strong>     3   2        <i>; řetězec "a &lt; b"</i>
+0013    <strong>CALL</strong>     2   1   2    <i>; volání funkce <strong>print()</strong></i>
+0014    <strong>JMP</strong>      2 =&gt; 0018    <i>; nepodmíněný skok na adresu 0018</i>
+&nbsp;
+0015 =&gt; <strong>GGET</strong>     2   00       <i>; získání reference na funkci se jménem "print"</i>
+0016    <strong>KSTR</strong>     3   3        <i>; řetězec "a == b"</i>
+0017    <strong>CALL</strong>     2   1   2    <i>; volání funkce <strong>print()</strong></i>
+&nbsp;
+0018 =&gt; <strong>RET0</strong>     0   1        <i>; návrat z programu</i>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Demonstrační příklad číslo 11: počítaná programová smyčka typu <strong>for</strong></h2>
+
+<p>V&nbsp;dalším demonstračním příkladu je implementována počítaná programová
+smyčka typu <strong>for</strong>, zde ve velmi jednoduché formě, kdy se
+postupně čítají hodnoty od 1 do 10 s&nbsp;krokem automaticky nastaveným na
+jedničku:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 11</i>
+<i>--</i>
+<i>-- Počítaná programová smyčka for.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- počítaná programová smyčka for</i>
+<strong>for</strong> i = 1,10 <strong>do</strong>
+    print(i)
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>V&nbsp;přeloženém IR můžeme vidět použití dvojice instrukcí
+<strong>FORI</strong> a <strong>FORL</strong>. Instrukce <strong>FORI</strong>
+je skutečně použita na začátku programové smyčky, ještě před jejím tělem, a to
+pro zjištění, zda již před vstupem do smyčky náhodou nedošlo k&nbsp;situaci
+typu <i>for i = 10,9</i> atd. Naopak instrukce <strong>FORL</strong> na konci
+smyčky provádí mnoho operací &ndash; zvýšení hodnoty počitadla, test na
+ukončení smyčky a současně i podmíněný skok na začátek smyčky. Jak
+<strong>FORI</strong> tak i <strong>FORL</strong> pracuje se třemi sloty
+&ndash; počitadlem, koncovou hodnotou a krokem:</p>
+
+<pre>
+<i>-- BYTECODE -- test11.lua:0-18</i>
+0001    <strong>KSHORT</strong>   0   1        <i>; do slotu číslo 0 uložit hodnotu 1 (počáteční hodnota počitadla)</i>
+0002    <strong>KSHORT</strong>   1  10        <i>; do slotu číslo 1 uložit hodnotu 10 (koncová hodnota počitadla)</i>
+0003    <strong>KSHORT</strong>   2   1        <i>; do slotu číslo 2 uložit hodnotu 1 (krok)</i>
+&nbsp;
+0004    <strong>FORI</strong>     0 =&gt; 0009    <i>; vstup do počítané programové smyčky typu <strong>for</strong>, první instrukce za smyčkou je na adrese 0009</i>
+&nbsp;
+0005 =&gt; <strong>GGET</strong>     4   0        <i>; získání reference na funkci se jménem "print"</i>
+0006    <strong>MOV</strong>      5   3        <i>; parametr použitý při volání funkce <strong>print()</strong></i>
+0007    <strong>CALL</strong>     4   1   2    <i>; volání funkce <strong>print()</strong></i>
+0008    <strong>FORL</strong>     0 =&gt; 0005    <i>; další iterace, tělo smyčky začíná na adrese 0005</i>
+&nbsp;
+0009 =&gt; <strong>RET0</strong>     0   1        <i>; návrat z programu</i>
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační příklad číslo 12: složitější počítaná programová smyčka typu <strong>for</strong></h2>
+
+<p>Zkusme nyní vytvořit počítanou programovou smyčku typu <strong>for</strong>,
+v&nbsp;níž se hodnota počitadla naopak snižuje, a to s&nbsp;krokem 1. Pro tento
+typ smyčky v&nbsp;jazyce Lua existuje jednoduchý zápis <i>for i =
+začátek,konec,záporný_krok do</i>:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 12</i>
+<i>--</i>
+<i>-- Počítaná programová smyčka for.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- počítaná programová smyčka for</i>
+<strong>for</strong> i = 10,1,-1 <strong>do</strong>
+    print(i)
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>Tato programová smyčka se přeloží naprosto stejným způsobem jako smyčka
+implementovaná v&nbsp;předchozím demonstračním příkladu. Tento příklad jsme si
+uváděli zejména z&nbsp;toho důvodu, že v&nbsp;jiných VM (a taktéž v&nbsp;mnoha
+instrukčních sadách reálných mikroprocesorů) se v&nbsp;některých příkladech
+programové smyčky s&nbsp;kladným krokem rovným jedné dokáží přeložit
+efektivnějším způsobem. V&nbsp;LuaJITu tomu tak však není a všechny počítané
+smyčky <strong>for</strong> jsou si z&nbsp;tohoto hlediska rovnocenné:</p>
+
+<pre>
+<i>-- BYTECODE -- test12.lua:0-18</i>
+0001    <strong>KSHORT</strong>   0  10        <i>; do slotu číslo 0 uložit hodnotu 10 (počáteční hodnota počitadla)</i>
+0002    <strong>KSHORT</strong>   1   1        <i>; do slotu číslo 1 uložit hodnotu 1 (koncová hodnota počitadla)</i>
+0003    <strong>KSHORT</strong>   2  -1        <i>; do slotu číslo 2 uložit hodnotu -1 (krok)</i>
+&nbsp;
+0004    <strong>FORI</strong>     0 =&gt; 0009    <i>; vstup do počítané programové smyčky typu <strong>for</strong>, první instrukce za smyčkou je na adrese 0009</i>
+&nbsp;
+0005 =&gt; <strong>GGET</strong>     4   0        <i>; získání reference na funkci se jménem "print"</i>
+0006    <strong>MOV</strong>      5   3        <i>; parametr použitý při volání funkce <strong>print()</strong></i>
+0007    <strong>CALL</strong>     4   1   2    <i>; volání funkce <strong>print()</strong></i>
+0008    <strong>FORL</strong>     0 =&gt; 0005    <i>; další iterace, tělo smyčky začíná na adrese 0005</i>
+&nbsp;
+0009 =&gt; <strong>RET0</strong>     0   1        <i>; návrat z programu</i>
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Repositář se zdrojovými kódy dnešních demonstračních příkladů</h2>
+
+<p>Všechny dnes popsané a taktéž &bdquo;disasemblované&ldquo; demonstrační
+příklady byly uloženy do Git repositáře umístěného na adrese <a
+href="https://github.com/tisnik/luajit-examples">https://github.com/tisnik/luajit-examples</a>.
+Odkazy na prozatím poslední verze těchto příkladů naleznete v&nbsp;tabulce
+umístěné pod tímto odstavcem:</p>
+
+<table>
+<tr><th> #</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td> 1</td><td>test06.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test06.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test06.lua</a></td></tr>
+<tr><td> 2</td><td>test07.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test07.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test07.lua</a></td></tr>
+<tr><td> 3</td><td>test08.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test08.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test08.lua</a></td></tr>
+<tr><td> 4</td><td>test09.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test09.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test09.lua</a></td></tr>
+<tr><td> 5</td><td>test10.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test10.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test10.lua</a></td></tr>
+<tr><td> 6</td><td>test11.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test11.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test11.lua</a></td></tr>
+<tr><td> 7</td><td>test12.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test12.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test12.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>test06.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test06.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test06.asm</a></td></tr>
+<tr><td> 9</td><td>test07.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test07.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test07.asm</a></td></tr>
+<tr><td>10</td><td>test08.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test08.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test08.asm</a></td></tr>
+<tr><td>11</td><td>test09.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test09.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test09.asm</a></td></tr>
+<tr><td>12</td><td>test10.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test10.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test10.asm</a></td></tr>
+<tr><td>13</td><td>test11.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test11.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test11.asm</a></td></tr>
+<tr><td>14</td><td>test12.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test12.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test12.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>15</td><td>Makefile</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/Makefile">https://github.com/tisnik/luajit-examples/blob/master/Makefile</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Wikipedia: Mezijazyk<br />
+<a href="http://cs.wikipedia.org/wiki/Mezijazyk">http://cs.wikipedia.org/wiki/Mezijazyk</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes,<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
