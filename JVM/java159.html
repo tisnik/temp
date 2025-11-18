@@ -1,0 +1,807 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>LuaJIT - Just in Time překladač pro programovací jazyk Lua (11 - JIT překlad do nativního kódu procesorů s architekturami x86 a ARM)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>LuaJIT - Just in Time překladač pro programovací jazyk Lua (11 - JIT překlad do nativního kódu procesorů s architekturami x86 a ARM)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Třetím krokem JIT překladu prováděného LuaJITem je transformace pseudoinstrukcí do nativního kódu mikroprocesoru, na němž je LuaJIT spuštěn. LuaJIT podporuje překlad s využitím instrukčních sad mikroprocesorů Intel i AMD (32 bit, 64 bit), ARM (prozatím 32 bit), MIPS a PowerPC. Právě touto problematikou se budeme zabývat dnes.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (11 - JIT překlad do nativního kódu procesorů s architekturami x86 a ARM)</a></p>
+<p><a href="#k02">2. Specifika překladu pro různé mikroprocesorové architektury</a></p>
+<p><a href="#k03">3. x86 (32 bit)</a></p>
+<p><a href="#k04">4. x86_64 (64 bit)</a></p>
+<p><a href="#k05">5. ARM (32 bit)</a></p>
+<p><a href="#k06">6. Demonstrační příklad: jednoduchá programová smyčka typu <strong>while</strong></a></p>
+<p><a href="#k07">7. Překlad demonstračního příkladu do nativního kódu</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k071">7.1 Překlad pro architekturu x86 (32 bit)</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k072">7.2 Překlad pro architekturu x86_64 (64 bit)</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k073">7.3 Překlad pro architekturu ARM (32 bit)</a></p>
+<p><a href="#k08">8. Literatura</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (11 - JIT překlad do nativního kódu procesorů s architekturami x86 a ARM)</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+trasovacím just-in-time překladači LuaJIT</a> se budeme zabývat převážně
+způsobem transformace pseudokódu do nativního (strojového) kódu zvoleného typu
+mikroprocesoru. Připomeňme si, že se jedná o třetí překlad (či možná lépe
+řečeno transformaci) prováděný LuaJITem. První překlad je aplikován na veškerý
+spouštěný kód: zdrojový text napsaný v&nbsp;Lue je překládán do bajtkódu (<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-2/">[1]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-3/">[2]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-4/">[3]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-5-tabulky-a-pole/">[4]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-6-preklad-programovych-smycek-do-mezijazyka-luajitu/">[5]</a>
+a <a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-7-dokonceni-popisu-mezijazyka-luajitu/">[6]</a>).</p>
+
+<p>Tento bajtkód je následně interpretován a teprve ve chvíli, kdy se zjistí,
+že nějakou část bajtkódu lze považovat za <i>hot loop</i> či <i>hot call</i>,
+je spuštěn vlastní just-in-time překlad, který detekované &bdquo;stopy&ldquo;
+(<i>trace</i>) transformuje do mezikódu a následně pak do nativního kódu
+kompatibilního s&nbsp;aktuálně používaným mikroprocesorem.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Specifika překladu pro různé mikroprocesorové architektury</h2>
+
+<p><i>LuaJIT</i> při překladu do nativního kódu využívá některé optimalizační
+techniky, ovšem velmi důležitý je i fakt, že se snaží o zjištění, zda se
+v&nbsp;proměnných (a výrazech, programových smyčkách apod.) při práci
+s&nbsp;numerickými hodnotami používají celá čísla (<i>integer</i>) či čísla
+reálná (<i>float/double</i>). V&nbsp;programovacím jazyku Lua, přesněji řečeno
+v&nbsp;jeho doposud používaných verzích, se totiž předpokládá, že numerické
+hodnoty jsou typu <i>double</i>, což je z&nbsp;hlediska vysokoúrovňového
+skriptovacího jazyka pochopitelné (omezí se tím poměrně velký počet běhových
+chyb typu přetečení apod.).</p>
+
+<p>Na druhou stranu ovšem naprostá většina v&nbsp;současnosti používaných
+mikroprocesorových architektur je postavena na bázi celočíselné
+aritmeticko-logické jednotky (ALU), která je sice (většinou!) doplněna
+matematickým koprocesorem, ovšem pro některé operace, typicky pro implementace
+programových smyček atd., je výhodnější využívat celočíselnou ALU a taktéž
+celočíselné pracovní registry. Detekce těch proměnných, v&nbsp;nichž se pracuje
+jen s&nbsp;celými čísly, je tedy pro LuaJIT důležitá, především na architektuře
+ARM se soft-float. <i>LuaJIT</i> ovšem musí počítat s&nbsp;tím, že může dojít
+k&nbsp;přetečení, kterému se musí zabránit a tedy tiše a zejména bez ovlivnění
+běhu aplikace přejít z&nbsp;celočíselného typu <i>int</i> na <i>double</i>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. x86 (32 bit)</h2>
+
+<p>Na 32bitové platformě x86 se využívají jak celočíselné registry
+<strong>EAX</strong>, <strong>EBX</strong>, <strong>ECX</strong>,
+<strong>EDX</strong>, <strong>ESI</strong>, <strong>EDI</strong> a částečně i
+<strong>EBP</strong>, tak i registry přidané v&nbsp;rámci rozšiřující
+instrukční sady <i>SSE</i>. Nová sada registrů je pojmenovaná
+<strong>XMM0</strong> až <strong>XMM7</strong>. Všechny nové registry mají
+šířku 128 bitů, tj.&nbsp;jsou dvakrát širší, než registry používané
+v&nbsp;<i>MMX</i> i <i>3DNow!</i> a čtyřikrát širší, než běžné pracovní
+registry na platformě <i>x86</i> (bavíme se nyní o 32bitovém režimu). Do
+každého registru je možné uložit čtveřici reálných numerických hodnot
+reprezentovaných v&nbsp;systému plovoucí řádové tečky podle normy <i>IEEE 754
+(single)</i>, přičemž tato norma je dodržována přesněji, než v&nbsp;případě
+<i>3DNow!</i> (různé zaokrouhlovací režimy či práce s&nbsp;denormalizovanými
+čísly sice mohou vypadat trošku jako černá magie, ovšem například
+v&nbsp;knihovnách pro numerické výpočty, které musí vždy za specifikovaných
+okolností dát stejný výsledek, se jedná o velmi důležitou vlastnost).
+K&nbsp;osmi novým registrům <strong>XMM*</strong> byl ještě přidán jeden
+32bitový registr nazvaný <strong>MXCSR</strong>, jenž byl určený pro nastavení
+(řízení) režimů výpočtu.</p>
+
+<p>Ve skutečnosti je však většina instrukcí <i>SSE</i> pro jazyk Lua
+nepoužitelná :-), protože tyto instrukce pracují pouze s&nbsp;numerickými
+hodnotami typu <i>single</i>. Podpora pro hodnoty typu <i>double</i> se
+objevuje až v&nbsp;rozšiřující instrukční sadě <i>SSE2</i>. V&nbsp;rámci
+<i>SSE2</i> totiž byly zavedeny dvouprvkové vektory obsahující hodnoty
+reprezentované ve formátu plovoucí řádové čárky, ovšem tentokrát se jedná o
+čísla uložená v&nbsp;64 bitech (2&times;64=128) odpovídající dvojité přesnosti
+(<i>double</i>) z&nbsp;normy <i>IEEE 754</i>. LuaJIT <i>SSE2</i> dokáže velmi
+efektivně využít, což ostatně uvidíme i na způsobu překladu demonstračního
+příkladu. Všechny nové operace implementované v&nbsp;<i>SSE2</i> jsou vypsány
+v&nbsp;následující tabulce. Ve třetím sloupci je naznačeno, jaké vektory jsou
+danou operací zpracovávány, přičemž první číslo znamená počet prvků vektoru, za
+nímž následuje bitová šířka jednotlivých prvků:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operace/funkce</th><th>Struktura vektoru</th><th>Datový typ</th><th>Saturace?</th><th>Poznámka</th></tr>
+<tr><td> 1</td><td>addpd  </td><td>součet            </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td> 2</td><td>addsd  </td><td>součet            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 3</td><td>subpd  </td><td>rozdíl            </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td> 4</td><td>subsd  </td><td>rozdíl            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 5</td><td>mulpd  </td><td>součin            </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>mulsd  </td><td>součin            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 7</td><td>divpd  </td><td>podíl             </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>divsd  </td><td>podíl             </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 9</td><td>paddb  </td><td>součet            </td><td>16&times;8bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>10</td><td>paddw  </td><td>součet            </td><td>8&times;16bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>paddd  </td><td>součet            </td><td>4&times;32bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>12</td><td>paddq  </td><td>součet            </td><td>2&times;64bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>paddsb </td><td>součet            </td><td>16&times;8bit</td><td>integer </td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>14</td><td>paddsw </td><td>součet            </td><td>8&times;16bit</td><td>integer </td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>15</td><td>paddusb</td><td>součet            </td><td>16&times;8bit</td><td>unsigned</td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>16</td><td>paddusw</td><td>součet            </td><td>8&times;16bit</td><td>unsigned</td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>17</td><td>psubb  </td><td>rozdíl            </td><td>16&times;8bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>18</td><td>psubw  </td><td>rozdíl            </td><td>8&times;16bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>19</td><td>psubd  </td><td>rozdíl            </td><td>4&times;32bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>20</td><td>psubq  </td><td>rozdíl            </td><td>2&times;64bit</td><td>integer </td><td>ne </td><td>&nbsp;</td></tr>
+<tr><td>21</td><td>psubsb </td><td>rozdíl            </td><td>16&times;8bit</td><td>integer </td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>22</td><td>psubsw </td><td>rozdíl            </td><td>8&times;16bit</td><td>integer </td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>23</td><td>psubusb</td><td>rozdíl            </td><td>16&times;8bit</td><td>unsigned</td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>24</td><td>psubusw</td><td>rozdíl            </td><td>8&times;16bit</td><td>unsigned</td><td>ano</td><td>&nbsp;</td></tr>
+<tr><td>25</td><td>maxpd  </td><td>maximum           </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td>26</td><td>maxsd  </td><td>maximum           </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td>27</td><td>minpd  </td><td>minimum           </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td>28</td><td>minsd  </td><td>minimum           </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td>29</td><td>pmaddwd</td><td>součin/add        </td><td>8&times;16bit</td><td>integer </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td>30</td><td>pmulhw </td><td>součin            </td><td>8&times;16bit</td><td>integer </td><td>&times;</td><td>vrací vektor horních 16 bitů výsledků</td></tr>
+<tr><td>31</td><td>pmullw </td><td>součin            </td><td>8&times;16bit</td><td>integer </td><td>&times;</td><td>vrací vektor dolních 16 bitů výsledků</td></tr>
+<tr><td>32</td><td>pmuludq</td><td>součin            </td><td>4&times;32bit</td><td>integer </td><td>&times;</td><td>64 bitový výsledek pro každý součin  </td></tr>
+<tr><td>33</td><td>rcpps  </td><td>převrácená hodnota</td><td>4&times;32bit</td><td>single  </td><td>&times;</td><td>aproximace</td></tr>
+<tr><td>34</td><td>rcpss  </td><td>převrácená hodnota</td><td>4&times;32bit</td><td>single  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td>35</td><td>sqrtpd </td><td>druhá odmocnina   </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td>36</td><td>sqrtsd </td><td>druhá odmocnina   </td><td>2&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp; operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+</table>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. x86_64 (64 bit)</h2>
+
+<p>Pokud <i>LuaJIT</i> zjistí, že je provozován na mikroprocesoru, který
+podporuje 64bitovou instrukční sadu x86_64 (x64) a současně běžícího
+v&nbsp;64bitovém režimu, dokáže při just-in-time překladu využít všech šestnáct
+univerzálních pracovních registrů (namísto původních osmi registrů),
+v&nbsp;nichž lze navíc pracovat s&nbsp;64bitovými hodnotami a nejenom
+s&nbsp;hodnotami 32bitovými. Možná důležitější je však fakt, že i počet
+<strong>XMM*</strong> registrů používaných v&nbsp;<i>SSE/SSE2</i> se
+zdvojnásobil z&nbsp;osmi (<strong>XMM0</strong>-<strong>XMM7</strong>) na
+šestnáct, takže lineární alokátor registrů zde má poněkud snazší práci.
+V&nbsp;mnoha dalších ohledech se však nativní kód určený pro 32bitový režim a
+64bitový režim lišit nebude, alespoň u těch demonstračních příkladů, které si
+budeme ukazovat v&nbsp;navazujících kapitolách popř.&nbsp;i v&nbsp;následujícím
+pokračování tohoto seriálu.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. ARM (32 bit)</h2>
+
+<p>V&nbsp;případě procesorů z&nbsp;rodiny <i>ARM</i> může LuaJIT, na základě
+konkrétní konfigurace a možností daného procesoru, využívat soft-float ABI a
+soft-float operace s&nbsp;numerickými hodnotami typu <i>double</i> (což je
+nejpomalejší varianta), dále pak soft-float ABI a operace VFPv2
+popř.&nbsp;hard-float ABI a taktéž operace VFPv2. Kdykoli je to možné &ndash;
+například u mnoha typů programových smyček &ndash; provádí se operace
+s&nbsp;celočíselnými registry a tím pádem se tyto výpočty odehrávají v&nbsp;ALU
+procesorů ARM. Význam některých &bdquo;celočíselných&ldquo; instrukcí použitých
+v&nbsp;nativním kódu <a href="#k06">dále popsaného demonstračního příkladu</a>
+je uveden v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Význam</th></tr>
+<tr><td>1</td><td>adds</td><td>r0:=r1+r2 a nastav příznaky N, V, Z, C</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>2</td><td>cmp </td><td>operand1-operand2 (compare a nastav příznaky N, V, Z, C)</td></tr>
+<tr><td>3</td><td>cmn </td><td>operand1+operand2 (compare negative a nastav příznaky N, V, Z, C)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>4</td><td>blne</td><td>podmíněný skok provedený při nerovnosti (Z=0)</td></tr>
+<tr><td>5</td><td>blvs</td><td>podmíněný skok provedený při přetečení (V=1)</td></tr>
+<tr><td>6</td><td>blge</td><td>podmíněný skok provedený při N=V</td></tr>
+<tr><td>7</td><td>blt </td><td>podmíněný skok provedený při N!=V</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>8</td><td>bl  </td><td>skok do subrutiny</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>9</td><td>ldrd</td><td>načtení hodnoty do registru</td></tr>
+</table>
+
+<p>Vraťme se nyní na chvíli k&nbsp;numerickým hodnotám s&nbsp;plovoucí řádovou
+čárkou. Technologie <i>VFP</i> byla navržena takovým způsobem, aby ji bylo
+možné použít v&nbsp;mnoha aplikačních oblastech, například v&nbsp;řídicích
+jednotkách automobilů, pro zpracování obrazu (konvoluční filtry, rychlá
+Fourierova transformace, rasterizace a další operace prováděné v&nbsp;tiskových
+procesorech), při zpracování řeči (kodeky) a taktéž pro provádění různých 3D
+operací (transformace) &ndash; právě v&nbsp;těchto oblastech lze totiž využít
+práci nikoli pouze se skalárními hodnotami, ale taktéž s&nbsp;vektory o dvou až
+osmi prvcích. Zajímavé je, že později došlo ke sloučení <i>VFP</i>
+s&nbsp;architekturou <i>NEON</i>.</p>
+
+<p>Původní architektura <i>VFPv1</i> je již dnes považována za překonanou a
+v&nbsp;žádných současných čipech se s&nbsp;níž již nesetkáme. Druhá verze této
+architektury <i>VFPv2</i> začala být používána na některých čipech ARMv5E,
+ARMv5TEJ a taktéž na ARMv6 &ndash; instrukce <i>VFP</i> v&nbsp;tomto případě
+rozšiřovaly původní instrukční sady <i>ARM</i>. Zajímavější je dnes třetí verze
+architektury <i>VFP</i> značená <i>VFPv3</i> používaná od <i>ARMv7</i>
+(samozřejmě jen u vybraných čipů &ndash; zdaleka ne všechny aplikační oblasti
+totiž nutně vyžadují matematický koprocesor). V&nbsp;tomto případě lze nové
+&bdquo;vektorové&ldquo; instrukce používat v&nbsp;instrukční sadě ARM, Thumb i
+ThumbEE.</p>
+
+<p>Z&nbsp;hlediska programovacího jazyka Lua je důležité, že se u technologie
+<i>VFP</i> používají především formáty <i>single/float</i> a <i>double</i>,
+přičemž existují rozšíření i pro formáty s&nbsp;poloviční přesností
+(<i>half-float</i>), které lze v&nbsp;některých oblastech s&nbsp;výhodou
+používat, například pro ukládání barvových složek pixelů (zvýší se tím
+mj.&nbsp;i dynamický rozsah při filtraci obrazu). Vzhledem k&nbsp;tomu, že
+technologie <i>VFP</i> je určena i pro aplikaci v&nbsp;systémech, v&nbsp;nichž
+je mnohdy důležité dosáhnout co největšího výpočetního výkonu popř.&nbsp;co
+nejkratší doby odezvy (RT aplikace), může matematický koprocesor <i>VFP</i>
+pracovat buď v&nbsp;režimu <i>full compliance</i>, který je přímo kompatibilní
+s&nbsp;normou <i>IEEE 754</i>, popř.&nbsp;je možné provést přepnutí do režimu
+<i>RunFast</i>, v&nbsp;němž se negenerují některé výjimky a taktéž může dojít
+ke ztrátě přesnosti v&nbsp;nejnižších bitech mantisy (většinou pouze
+v&nbsp;bitu nejnižším). Vlastnosti obou režimů jsou samozřejmě velmi přesně
+popsány, takže záleží jen na vývojáři, který režim v&nbsp;daný okamžik použije
+&ndash; v&nbsp;případě jazyka Lua to bude typ <i>double</i> a pravděpodobně i
+režim <i>full compliance</i>.</p>
+
+<p>Matematické koprocesory <i>VFP</i> obecně obsahují šestnáct pracovních
+registrů, každý o šířce 64 bitů. Tyto registry lze použít buď pro práci
+s&nbsp;hodnotami s&nbsp;dvojitou přesností (<i>double</i>) &ndash; potom se
+tyto registry v&nbsp;assembleru označují jmény <strong>d0</strong> až
+<strong>d15</strong> (podobně jsou označeny ve zdrojových kódech <i>LuaJITu</i>,
+akorát s&nbsp;velkými písmeny). Ovšem taktéž je možné libovolný registr
+rozdělit na dva registry o šířce 32 bitů, z&nbsp;nichž každý dokáže pojmout
+číselnou hodnotu s&nbsp;jednoduchou přesností (<i>single/float</i>). Díky
+tomuto rozdělení se počet registrů pro formát <i>single</i> zvětšil na
+dvojnásobek &ndash; tyto registry jsou v&nbsp;assembleru pojmenovány
+<strong>s0</strong> až <strong>s31</strong>. Podle konvence dodržované jak
+překladači, tak i v&nbsp;programových knihovnách se při volání subrutin
+používají registry <strong>d0</strong> až <strong>d7</strong> pro předávání
+parametrů subrutině, popř.&nbsp;pro získání návratových hodnot ze subrutiny.
+Samozřejmě se tyto registry taktéž používají při výpočtech v&nbsp;subrutině.
+Ostatní registry lze taktéž použít, ovšem jejich hodnota by měla být při
+návratu ze subrutiny obnovena.</p>
+
+<p>Při vzniku technologie <i>VFP</i> se její tvůrci zaměřili na to, aby
+instrukční sada <i>VFP</i> umožňovala jak práci se skalárními hodnotami, tak i
+práci s&nbsp;vektory. Na první pohled by se tedy mohlo zdát, že se jedná o
+jednu z&nbsp;mnoha aplikací architektury <i>SIMD</i>, ve skutečnosti se ovšem
+v&nbsp;případě <i>VFP</i> vektory zpracovávají sekvenčně. To například znamená,
+že součet dvou osmiprvkových vektorů realizovaný instrukcí
+<strong>VADD</strong> používá tu samou FP-sčítačku a prvky vektorů jsou tedy
+sečítány postupně. Stále se jedná o rychlejší operaci, než osm krát opakovaná
+instrukce <strong>ADF</strong> (mimo jiné se ušetří cykly strávené při načítání
+a dekódování instrukce &ndash; <i>instruction fetch</i> a <i>instruction
+decode</i>) &ndash; ovšem reálný <i>SIMD</i> systém to není, na rozdíl od na
+první pohled obdobných technologií: <i>3DNow!</i>, <i>SSE</i> atd. Změna přišla
+až při sloučení <i>VFP</i> s&nbsp;technologií <i>NEON</i>, která na procesory
+<i>ARM</i> přinesla skutečné operace <i>SIMD</i>.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad: jednoduchá programová smyčka typu <strong>while</strong></h2>
+
+<p>Pro ukázku překladu z&nbsp;mezikódu do nativního kódu bude použit
+demonstrační příklad, s&nbsp;nímž jsme se již ve stručnosti seznámili minule.
+V&nbsp;tomto příkladu je implementována programová smyčka typu
+<strong>while</strong>, v&nbsp;níž se pracuje s&nbsp;dvojicí proměnných &ndash;
+počitadla <strong>i</strong> a taktéž proměnné <strong>sum</strong>. Po
+provedení 100 iterací je vypsána aktuální hodnota proměnné
+<strong>sum</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 43.</i>
+<i>--</i>
+<i>-- Test JITu.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>local</strong> i = 0
+<strong>local</strong> sum = 0
+&nbsp;
+<strong>while</strong> i &lt; 100 <strong>do</strong>
+    sum = sum + 1
+    i = i + 1
+<strong>end</strong>
+&nbsp;
+print(sum)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Tento typ programové smyčky je díky provedení 100 iterací detekován jako
+stopa vhodná pro JITování (<i>hot loop</i>). Struktura bajtkódu detekované
+stopy používá instrukci <strong>LOOP</strong>, která je doplněna o
+<strong>ISGE</strong>:</p>
+
+<pre>
+---- TRACE 1 start test43.lua:12
+0007  ADDVN    1   1   0  ; 1
+0008  ADDVN    0   0   0  ; 1
+0009  JMP      2 =&gt; 0003
+0003  KSHORT   2 100
+0004  ISGE     0   2
+0005  JMP      2 =&gt; 0010
+0006  LOOP     2 =&gt; 0010
+</pre>
+
+<p>Transformace bajtkódu do sekvence pseudoinstrukcí:</p>
+
+<pre>
+---- TRACE 1 IR
+0001 &gt;  int SLOAD  #2    T
+0002 &gt;+ int ADDOV  0001  +1  
+0003 &gt;  int SLOAD  #1    T
+0004 &gt;+ int ADDOV  0003  +1  
+0005 &gt;  int LT     0004  +100
+0006 ------ LOOP ------------
+0007 &gt;+ int ADDOV  0002  +1  
+0008 &gt;+ int ADDOV  0004  +1  
+0009 &gt;  int LT     0008  +100
+0010    int PHI    0002  0007
+0011    int PHI    0004  0008
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Povšimněte si především použití datového typu <i>int</i> a taktéž využití
+pseudoinstrukcí <strong>ADDOV</strong>. <i>LuaJIT</i> předpokládá, že jak
+proměnná <strong>i</strong>, tak i proměnná <strong>sum</strong> bude obsahovat
+celá čísla typu <i>int</i>, což je sice pravda, ovšem při zvyšování hodnoty
+těchto proměnných může dojít k&nbsp;přetečení, kterému je zapotřebí zamezit.
+V&nbsp;následujících podkapitolách uvidíme, že se tyto pseudoinstrukce
+v&nbsp;některých případech překládají poměrně složitým způsobem, a to kvůli
+tomu, aby se detekovalo již zmíněné přetečení výsledku a přechod na použití
+jiného datového typu.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Překlad demonstračního příkladu do nativního kódu</h2>
+
+<p>Pojďme se nyní podívat na překlad demonstračního příkladu just-in-time
+překladačem do nativního kódu procesorů s&nbsp;architekturou x86 (32bit),
+x86_64 (64bit) a ARM (32bit).</p>
+
+
+
+<p><a name="k071"></a></p>
+<h3 id="k071">7.1 Překlad pro architekturu x86 (32 bit)</h3>
+
+<p>Pro 32bitovou platformu x86 se detekovaný <i>hot loop</i> přeloží
+následujícím způsobem:</p>
+
+<pre>
+---- TRACE 1 mcode 95
+0xb7f68f97  mov      dword [0xb7d9f2bc], 0x1
+0xb7f68fa1  movsd    xmm1, [0xb7db1bb0]
+0xb7f68fa9  movsd    xmm0, [0xb7db1bb8]
+0xb7f68fb1  cmp      dword [edx+0xc], -0x0f
+0xb7f68fb5  jnb      0xb7f61008    -&gt;0
+0xb7f68fbb  movsd    xmm6, [edx+0x8]
+0xb7f68fc0  addsd    xmm6, xmm1
+0xb7f68fc4  cmp      dword [edx+0x4], -0x0f
+0xb7f68fc8  jnb      0xb7f61008    -&gt;0
+0xb7f68fce  movsd    xmm7, [edx]
+0xb7f68fd2  addsd    xmm7, xmm1
+0xb7f68fd6  ucomisd  xmm0, xmm7
+0xb7f68fda  jbe      0xb7f6100c    -&gt;1
+-&gt;LOOP:
+0xb7f68fe0  addsd   xmm6, xmm1          <i>; registr xmm1 obsahuje jedničku, která se přičte k obsahu xmm6</i>
+0xb7f68fe4  movaps  xmm5, xmm7
+0xb7f68fe7  addsd   xmm7, xmm1          <i>; další přičtení jedničky</i>
+0xb7f68feb  ucomisd xmm0, xmm7          <i>; test, zda nemá dojít k ukončení smyčky</i>
+0xb7f68fef  ja      0xb7f68fe0 -&gt;LOOP   <i>; opakování smyčky</i>
+0xb7f68ff1  jmp     0xb7f61014    -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Můžeme zde vidět několik podmíněných skoků (<strong>jnb</strong> &ndash;
+<i>jump if not below</i>, <strong>jbe</strong> &ndash; <i>jump if below or
+equal</i>) a <strong>ja</strong> &ndash; <i>jump if above</i> s&nbsp;podobným
+významem jako v&nbsp;předchozím nativním kódu.</p>
+
+<p>Z&nbsp;instrukcí, které nebyly vypsány <a href="#k03">ve třetí kapitole</a>
+stojí za zmínku <strong>movaps</strong> (přenos celého 128bitového slova mezi
+dvěma XMM registry) a <strong>ucomisd</strong> (porovnání obsahu spodní
+poloviny dvou registrů a nastavení příznaků v&nbsp;EFLAGS podobným způsobem,
+jako u instrukce <strong>cmp</strong> &ndash; zde se však porovnávají dvě
+hodnoty typu <i>double</i>). Vidíme, že všechny výpočty probíhají
+v&nbsp;registrech XMM a využívá se zde instrukční sada <i>SSE2</i>, což se
+pozná podle toho, že instrukce končí na písmeno <strong>d</strong> &ndash;
+<i>double</i>.</p>
+
+
+
+<p><a name="k072"></a></p>
+<h3 id="k072">7.2 Překlad pro architekturu x86_64 (64 bit)</h3>
+
+<p>Pro platformu x86_64 dostaneme v&nbsp;detailech nepatrně odlišný
+&bdquo;stroják&ldquo;:</p>
+
+<pre>
+---- TRACE 1 mcode 104
+0x0bceff8e  mov     dword [0x409604a0], 0x1
+0x0bceff99  movsd   xmm1, [0x404b0d38]
+0x0bceffa2  movsd   xmm0, [0x404b0d40]
+0x0bceffab  cmp     dword [rdx+0xc], 0xfffeffff
+0x0bceffb2  jnb     0x0bce0010        -&gt;0
+0x0bceffb8  movsd   xmm6, [rdx+0x8]
+0x0bceffbd  addsd   xmm6, xmm1
+0x0bceffc1  cmp     dword [rdx+0x4], 0xfffeffff
+0x0bceffc8  jnb     0x0bce0010        -&gt;0
+0x0bceffce  movsd   xmm7, [rdx]
+0x0bceffd2  addsd   xmm7, xmm1
+0x0bceffd6  ucomisd xmm0, xmm7
+0x0bceffda  jbe     0x0bce0014        -&gt;1
+-&gt;LOOP:
+0x0bceffe0  addsd   xmm6, xmm1          <i>; registr xmm1 obsahuje jedničku, která se přičte k obsahu xmm6</i>
+0x0bceffe4  movaps  xmm5, xmm7
+0x0bceffe7  addsd   xmm7, xmm1          <i>; další přičtení jedničky</i>
+0x0bceffeb  ucomisd xmm0, xmm7          <i>; test, zda nemá dojít k ukončení smyčky</i>
+0x0bceffef  ja      0x0bceffe0 -&gt;LOOP   <i>; opakování smyčky</i>
+0x0bcefff1  jmp     0x0bce001c        -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>V&nbsp;tomto jednoduchém demonstračním příkladu se od sebe oba vygenerované
+kódy na úrovni zdrojových kódů prakticky neliší, až na použití odlišných
+registrů: <strong>EDX</strong> vs. <strong>RDX</strong>. Programová smyčka typu
+<i>while</i> dokonce byla přeložena totožným způsobem:</p>
+
+<pre>
+x86 (32bit)                    x86_64 (64bit)
+-----------------------------------------------------------
+addsd   xmm6, xmm1             addsd   xmm6, xmm1
+movaps  xmm5, xmm7             movaps  xmm5, xmm7
+addsd   xmm7, xmm1             addsd   xmm7, xmm1
+ucomisd xmm0, xmm7             ucomisd xmm0, xmm7
+ja      0xb7f68fe0 -&gt;LOOP      ja      0x0bceffe0 -&gt;LOOP
+</pre>
+
+<p>Ve skutečnosti se dá toto chování očekávat, protože část <i>LuaJITu</i>,
+která se stará o překlad na 32bitovou a 64bitovou architekturu, je prakticky
+shodná.</p>
+
+
+
+<p><a name="k073"></a></p>
+<h3 id="k073">7.3 Překlad pro architekturu ARM (32 bit)</h3>
+
+<p>Překlad do nativního strojového kódu pro 32bitové mikroprocesory ARM vypadá
+již na první pohled velmi čitelně (což jen ukazuje, jak může být RISCová
+instrukční sada elegantní):</p>
+
+<pre>
+---- TRACE 1 start test43.lua:12
+---- TRACE 1 mcode 84
+0x00397fac  ldrd  r4, [r9, #8]
+0x00397fb0  cmn   r5, #14
+0x00397fb4  blne  0x00390018      -&gt;0
+0x00397fb8  adds  r4, r4, #1
+0x00397fbc  blvs  0x00390018      -&gt;0
+0x00397fc0  ldrd  r6, [r9]
+0x00397fc4  cmn   r7, #14
+0x00397fc8  blne  0x00390018      -&gt;0
+0x00397fcc  adds  r6, r6, #1
+0x00397fd0  blvs  0x00390018      -&gt;0
+0x00397fd4  cmp   r6, #100
+0x00397fd8  blge  0x0039001c      -&gt;1
+-&gt;LOOP:
+0x00397fdc  mov   r11, r6                <i>; přenos hodnot proměnných do pracovních registrů</i>
+0x00397fe0  mov   r10, r4
+0x00397fe4  adds  r4, r10, #1            <i>; přičtení jedničky s uložením výsledku do nového registru a nastavením příznaků</i>
+0x00397fe8  blvs  0x00390020      -&gt;2    <i>; test na přetečení</i>
+0x00397fec  adds  r6, r11, #1            <i>; přičtení jedničky s uložením výsledku do nového registru a nastavením příznaků</i>
+0x00397ff0  blvs  0x00390020      -&gt;2    <i>; test na přetečení</i>
+0x00397ff4  cmp   r6, #100               <i>; test na ukončení smyčky</i>
+0x00397ff8  blt   0x00397fdc      -&gt;LOOP <i>; skok na začátek smyčky - další iterace</i>
+0x00397ffc  bl    0x00390024      -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Povšimněte si především množství podmíněných skoků (<strong>blne</strong>,
+<strong>blvs</strong>), kterými jsou realizovány asserce zmíněné
+v&nbsp;předchozím textu. Dále stojí za zmínku použití instrukcí pracujících
+pouze s&nbsp;celočíselnými registry &ndash; v&nbsp;tomto případě <i>LuaJIT</i>
+zvolil použití operací s&nbsp;celými čísly typu <i>integer</i> o šířce 32 bitů.
+To si vyžádalo úpravu programové smyčky takovým způsobem, aby se kontrolovalo
+přetečení (instrukce <strong>adds</strong> nastaví všechny potřebné příznaky
+testované ihned poté podmíněným skokem <strong>blvs</strong>). Pokud by měl
+<i>LuaJIT</i> jistotu, že k&nbsp;přetečení nedojde, mohly by se instrukce
+<strong>adds</strong> nahradit za <strong>add</strong> a skoky
+<strong>blvs</strong> zcela odstranit (snad se dočkáme v&nbsp;další verzi).</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Literatura</h2>
+
+<ol>
+
+<li>Bolz, Cuni, Fijalkowski, Rigo:<br />
+&bdquo;Tracing the Meta-Level: PyPy's Tracing JIT Compiler&ldquo;
+</li>
+
+<li>Vasanth Bala, Evelyn Duesterwald, Sanjeev Banerjia:<br />
+&bdquo;Dynamo: A Transparent Dynamic Optimization System&ldquo;
+</li>
+
+<li>Bolz, Cuni, Fijalkowski, Leuschel, Pedroni, Rigo:
+&bdquo;Allocation removal by partial evaluation in a tracing JIT&ldquo;
+</li>
+
+<li>Bolz:<br />
+&bdquo;Automatic JIT Compiler Generation with Runtime Partial Evaluation&ldquo;
+</li>
+
+<li>Bolz, Kuhn, Lienhard, Matsakis, Nierstrasz, Renggli, Rigo and T. Verwaest:<br />
+&bdquo;Back to the Future in One Week - Implementing a Smalltalk VM in PyPy&ldquo;<br />
+pages 123-139. 2008.
+</li>
+
+<li>Bolz  and Rigo:<br />
+&bdquo;How to not write a virtual machine&ldquo;<br />
+In Proceedings of the 3rd Workshop on Dynamic Languages and Applications (DYLA), 2007
+</li>
+
+<li>Bruni, Verwaest:<br />
+&bdquo;PyGirl: generating Whole-System VMs from High-Level prototypes using PyPy&ldquo;<br />
+In Tools, accepted for publication, 2009.
+</li>
+
+<li>Sullivan, Bruening, Baron, Garnett and Amarasinghe:<br />
+&bdquo;Dynamic native optimization of interpreters&ldquo;<br />
+In Proceedings of the 2003 Workshop on Interpreters,<br />
+Virtual Machines and Emulators pages 50-57, San Diego, California, 2003. ACM.
+</li>
+
+</ol>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Static single assignment form (SSA)<br />
+<a href="http://en.wikipedia.org/wiki/Static_single_assignment_form">http://en.wikipedia.org/wiki/Static_single_assignment_form</a>
+</li>
+
+<li>LuaJIT 2.0 SSA IR</li>
+<a href="http://wiki.luajit.org/SSA-IR-2.0">http://wiki.luajit.org/SSA-IR-2.0</a>
+</li>
+
+<li>Dynamic Assembler<br />
+<a href="http://luajit.org/dynasm.html">http://luajit.org/dynasm.html</a>
+</li>
+
+<li>The Unofficial DynASM Documentation: Introduction<br />
+<a href="http://corsix.github.io/dynasm-doc/index.html">http://corsix.github.io/dynasm-doc/index.html</a>
+</li>
+
+<li>Have tracing JIT compilers won?<br />
+<a href="http://lambda-the-ultimate.org/node/3851">http://lambda-the-ultimate.org/node/3851</a>
+</li>
+
+<li>Tracing just-in-time compilation<br />
+<a href="http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation">http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1">http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work">http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="https://wiki.mozilla.org/JavaScript:TraceMonkey">https://wiki.mozilla.org/JavaScript:TraceMonkey</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/">http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/</a>
+</li>
+
+<li>Improving JavaScript performance with JägerMonkey<br />
+<a href="http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/">http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/</a>
+</li>
+
+<li>Wikipedia: Mezijazyk<br />
+<a href="http://cs.wikipedia.org/wiki/Mezijazyk">http://cs.wikipedia.org/wiki/Mezijazyk</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the World's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>Sixth Generation Processors<br />
+<a href="http://www.pcguide.com/ref/cpu/fam/g6.htm">http://www.pcguide.com/ref/cpu/fam/g6.htm</a>
+</li>
+
+<li>Great Microprocessors of the Past and Present<br />
+<a href="http://www.cpushack.com/CPU/cpu1.html">http://www.cpushack.com/CPU/cpu1.html</a>
+</li>
+
+<li>The VFP architecture<br />
+<a href="http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0056d/Bcfibfha.html">http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0056d/Bcfibfha.html</a>
+</li>
+
+<li>ARM Floating Point Accelerator (ARM FPA)<br />
+<a href="http://vswww.kaist.ac.kr/ver4.0/index.php/research/past-research/arm-fpa.html">http://vswww.kaist.ac.kr/ver4.0/index.php/research/past-research/arm-fpa.html</a>
+</li>
+
+<li>The ARM Processor Architecture<br />
+<a href="http://www.arm.com/products/processors/technologies/instruction-set-architectures.php">http://www.arm.com/products/processors/technologies/instruction-set-architectures.php</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
