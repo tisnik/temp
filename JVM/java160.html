@@ -1,0 +1,891 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>LuaJIT - Just in Time překladač pro programovací jazyk Lua (12 - překlad operací s reálnými čísly)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>LuaJIT - Just in Time překladač pro programovací jazyk Lua (12 - překlad operací s reálnými čísly)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V programovacím jazyku Lua jsou základním numerickým datovým typem čísla s plovoucí řádovou čárkou s dvojitou přesností (IEEE 754) známé v mnoha dalších jazycích pod názvem double. Pokud se s tímto datovým typem ve zdrojových kódech pracuje, musí LuaJIT při překladu vygenerovat příslušné strojové instrukce, což je téma dnešního článku.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (12 - překlad operací s reálnými čísly)</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k011">1.1 Tabulka se strojovými instrukcemi použitými při překladu do strojového kódu mikroprocesorů x86_64</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k012">1.2 Tabulka se strojovými instrukcemi použitými při překladu do strojového kódu mikroprocesorů ARM</a></p>
+<p><a href="#k02">2. První demonstrační příklad <strong>test54.lua</strong> &ndash; výpočet (konvergující) geometrické řady</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k021">2.1 Zdrojový kód</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k022">2.2 Detekovaná stopa <i>hot-loop</i></a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k023">2.3 Překlad stopy do sekvence meziinstrukcí</a></p>
+<p><a href="#k03">3. Překlad prvního demonstračního příkladu do strojového kódu procesorů x86_64</a></p>
+<p><a href="#k04">4. Překlad prvního demonstračního příkladu do strojového kódu procesorů ARM</a></p>
+<p><a href="#k05">5. Druhý demonstrační příklad <strong>test55.lua</strong> &ndash; složitější výpočty prováděné ve smyčce <strong>while</strong></a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k051">5.1 Zdrojový kód</a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k052">5.2 Detekovaná stopa <i>hot-loop</i></a></p>
+<p>&nbsp;&nbsp;&nbsp;<a href="#k053">5.3 Překlad stopy do sekvence meziinstrukcí</a></p>
+<p><a href="#k06">6. Překlad druhého demonstračního příkladu do strojového kódu procesorů x86_64</a></p>
+<p><a href="#k07">7. Překlad druhého demonstračního příkladu do strojového kódu procesoru ARM</a></p>
+<p><a href="#k08">8. Odkazy na zdrojové texty demonstračních příkladů i na JITované sekvence instrukcí</a></p>
+<p><a href="#k09">9. Literatura</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (12 - překlad operací s reálnými čísly)</h2>
+
+<p>V&nbsp;demonstračním příkladu, jehož just-in-time překlad jsme si popsali
+v&nbsp;předchozí části tohoto seriálu, byla implementována programová smyčka
+typu <strong>while</strong>, v&nbsp;níž se provádělo prosté zvyšování počitadla
+smyčky o jedničku a současně i zvyšování další lokální proměnné
+(resp.&nbsp;přesněji řečeno proměnné lokální v&nbsp;aktuálně používaném
+modulu). Vzhledem k&nbsp;tomu, že počáteční hodnota obou proměnných byla
+nastavena na nulu a v&nbsp;každé iteraci došlo ke zvýšení jejich hodnoty o
+jedničku (celé číslo), mohl <i>LuaJIT</i> v&nbsp;tomto případě použít pouze
+celočíselné operace, což je ostatně patrné i při pohledu na vygenerovanou
+sekvenci meziinstrukcí:</p>
+
+<pre>
+---- TRACE 1 IR
+0001 &gt;  int SLOAD  #2    T
+0002 &gt;+ int ADDOV  0001  +1  
+0003 &gt;  int SLOAD  #1    T
+0004 &gt;+ int ADDOV  0003  +1  
+0005 &gt;  int LT     0004  +100
+0006 ------ LOOP ------------
+0007 &gt;+ int ADDOV  0002  +1  
+0008 &gt;+ int ADDOV  0004  +1  
+0009 &gt;  int LT     0008  +100
+0010    int PHI    0002  0007
+0011    int PHI    0004  0008
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Povšimněte si především prefixu <strong>int</strong> uvedeného před všemi
+instrukcemi. Tento prefix znamená, že <i>LuaJIT</i> může (ale nemusí!) při
+vygenerování nativního kódu použít celočíselné operace. Ostatně již minule jsme
+mohli vidět, že zatímco na 32bitové platformě ARM se skutečně využívala pouze
+celočíselná aritmeticko-logická jednotka i celočíselné pracovní registry, na
+platformě x86_64 vybavené mj.&nbsp;i instrukčními sadami SSE a SSE2 se již
+pracovalo s&nbsp;registry XMM. Dnes si ukážeme formu just-in-time překladu u
+krátkých demonstračních programů, kde se již používají operace s&nbsp;reálnými
+čísly i na platformě ARM.</p>
+
+
+
+<p><a name="k011"></a></p>
+<h3 id="k011">1.1 Tabulka se strojovými instrukcemi použitými při překladu do strojového kódu mikroprocesorů x86_64</h3>
+
+<p>V&nbsp;následující tabulce jsou pro úplnost vypsány všechny strojové
+instrukce mikroprocesorů s&nbsp;architekturou x86_64, s&nbsp;nimiž se setkáme
+v&nbsp;navazujících kapitolách. Zajímavé je, že <i>LuaJIT</i> si u překladu
+mnoha programů vystačí skutečně jen s&nbsp;relativně malou sadou instrukcí,
+takže zbylých několik set (!) instrukcí ze základní sady i z&nbsp;několika
+rozšiřujících sad (8087, 80387, MMX, SSEx...) zůstává většinou nevyužito:</p>
+
+<table>
+<tr><th> #</th><th>Instrukce</th><th>Typ</th><th>Popis</th></tr>
+<tr><td> 1</td><td>add     </td><td>aritmetická operace</td><td>součet dvou skalárních hodnot</td></tr>
+<tr><td> 2</td><td>addsd   </td><td>aritmetická operace</td><td>součet prvků vektorů bez saturace, operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 3</td><td>mulsd   </td><td>aritmetická operace</td><td>součin prvků vektorů, operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 4</td><td>divsd   </td><td>aritmetická operace</td><td>podíl prvků vektorů, operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td> 5</td><td>cmp     </td><td>porovnání</td><td>porovnání dvou skalárních hodnot, nastavení příznaků v&nbsp;EFLAGS</td></tr>
+<tr><td> 6</td><td>ucomisd </td><td>porovnání</td><td>porovnání dvou hodnot typu <i>dobule</i>, nastavení příznaků v&nbsp;EFLAGS</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>jmp     </td><td>skok</td><td>nepodmíněný skok</td></tr>
+<tr><td> 8</td><td>ja      </td><td>skok</td><td>podmíněný skok vykonaný při splnění: CF = 0 and ZF = 0</td></tr>
+<tr><td> 9</td><td>jbe     </td><td>skok</td><td>podmíněný skok vykonaný při splnění: CF = 1 or  ZF = 1 (negace předchozího)</td></tr>
+<tr><td>10</td><td>jg      </td><td>skok</td><td>podmíněný skok vykonaný při splnění: ZF = 0 and SF = OF</td></tr>
+<tr><td>11</td><td>jle     </td><td>skok</td><td>podmíněný skok vykonaný při splnění: ZF = 1 or SF != OF (negace předchozího)</td></tr>
+<tr><td>12</td><td>jnb     </td><td>skok</td><td>podmíněný skok vykonaný při splnění: CF = 0</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>mov     </td><td>přenos dat</td><td>přenos skalárních hodnot</td></tr>
+<tr><td>14</td><td>movsd   </td><td>přenos dat</td><td>přenos vektorů</td></tr>
+<tr><td>15</td><td>movaps  </td><td>přenos dat</td><td>přenos (vektoru) hodnot typu <i>single</i></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>16</td><td>cvtsd2si</td><td>konverze</td><td>konverze hodnot z&nbsp;typu <i>double</i> na <i>int</i></td></tr>
+</table>
+
+<p>Tabulka je rozdělena do několika sekcí. V&nbsp;první sekci lze najít
+aritmetické instrukce prováděné s&nbsp;celými čísly i s&nbsp;vektory
+definovanými v&nbsp;SSE/SSE2. Instrukce končící postfixem &bdquo;sd&ldquo;
+pracují s&nbsp;hodnotami typu <i>double</i>. Ve druhé sekci lze nalézt
+nepodmíněný skok i několik podmíněných skoků, v&nbsp;sekci následující pak
+instrukce pro přenos dat mezi pamětí, celočíselnými registry a registry XMM.
+Poslední instrukce slouží ke konverzi dat.</p>
+
+
+
+<p><a name="k012"></a></p>
+<h3 id="k012">1.2 Tabulka se strojovými instrukcemi použitými při překladu do strojového kódu mikroprocesorů ARM</h3>
+
+<p>Podobnou tabulku si uveďme i pro instrukce využívané <i>LuaJITem</i> při
+překladu do strojového kódu 32bitových mikroprocesorů s&nbsp;architekturou ARM,
+přesněji řečeno těch mikroprocesorů, které mají ve svém jádře implementovaný
+<i>VFPv2 (Vector Floating Point)</i>:</p>
+
+<table>
+<tr><th> #</th><th>Instrukce</th><th>Typ</th><th>Popis</th></tr>
+<tr><td> 1</td><td>add     </td><td>aritmetická operace</td><td>r0:=r1+r2, ovšem bez nastavení příznaků</td></tr>
+<tr><td> 2</td><td>adds    </td><td>aritmetická operace</td><td>r0:=r1+r2 a nastav příznaky N, V, Z, C</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>vadd.f64</td><td>aritmetická operace</td><td>součet prvků vektorů uložených ve VFP registrech</td></tr>
+<tr><td> 4</td><td>vmul.f64</td><td>aritmetická operace</td><td>součin prvků vektorů uložených ve VFP registrech</td></tr>
+<tr><td> 5</td><td>vdiv.f64</td><td>aritmetická operace</td><td>podíl prvků vektorů uložených ve VFP registrech</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>cmp     </td><td>porovnání</td><td>operand1-operand2 (compare a nastav příznaky N, V, Z, C)</td></tr>
+<tr><td> 7</td><td>cmn     </td><td>porovnání</td><td>operand1+operand2 (compare negative a nastav příznaky N, V, Z, C)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>orr     </td><td>logická/bitová operace</td><td>r0:=r1+r2</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 9</td><td>bl      </td><td>skok</td><td>skok do subrutiny</td></tr>
+<tr><td>10</td><td>ble     </td><td>skok</td><td>podmíněný skok provedený při N!=V</td></tr>
+<tr><td>11</td><td>blge    </td><td>skok</td><td>podmíněný skok provedený při N=V</td></tr>
+<tr><td>12</td><td>blgt    </td><td>skok</td><td>podmíněný skok provedený při Z=0 and N=V</td></tr>
+<tr><td>13</td><td>blhs    </td><td>skok</td><td>podmíněný skok provedený při C=1</td></tr>
+<tr><td>14</td><td>blne    </td><td>skok</td><td>podmíněný skok provedený při nerovnosti (Z=0)</td></tr>
+<tr><td>15</td><td>blt     </td><td>skok</td><td>podmíněný skok provedený při N!=V</td></tr>
+<tr><td>16</td><td>blvs    </td><td>skok</td><td>podmíněný skok provedený při přetečení (V=1)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>17</td><td>ldr     </td><td>přenos dat</td><td>načtení slova do registru</td></tr>
+<tr><td>18</td><td>ldrd    </td><td>přenos dat</td><td>načtení hodnoty do registru</td></tr>
+<tr><td>19</td><td>mov     </td><td>přenos dat</td><td>načtení druhého operandu do registru</td></tr>
+<tr><td>20</td><td>vldr    </td><td>přenos dat</td><td>načtení (jedné) hodnoty do vybraného VFP registru</td></tr>
+</table>
+
+<p>Opět můžeme vidět, že tabulka je rozdělena do několika sekcí. Nejprve jsou
+uvedeny dvě celočíselné aritmetické instrukce, dále pak tři instrukce prováděné
+s&nbsp;hodnotami uloženými ve VFP registrech. Další dvojici instrukcí již známe
+z&nbsp;minula &ndash; jedná se o porovnání dvou operandů (registrů) a nastavení
+příslušných příznaků N (negative), V (overflow), Z (zero) a C (carry)
+využívaných mj.&nbsp;i v&nbsp;podmíněných skocích vypsaných v&nbsp;páté sekci.
+V&nbsp;instrukcích sloužících pro přenos dat můžeme mj.&nbsp;vidět i instrukci
+<strong>vldr</strong> pro přenos do VFP registru.</p>
+
+<p>Zajímavý je postfix u instrukcí <strong>vadd</strong>, <strong>vmul</strong>
+a <strong>vdiv</strong>. Ten určuje typ dat a současně i sadu registrů,
+s&nbsp;kterými daná instrukce pracuje:</p>
+
+<table>
+<tr><th>Postfix</th><th>Typ dat (IEEE 754)</th><th>Registry (operandy)</th></tr>
+<tr><td>f32</td><td>single precision</td><td>Sd, Sn, Sm</td></tr>
+<tr><td>f64</td><td>double precision</td><td>Dd, Dn, Dm</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. První demonstrační příklad <strong>test54.lua</strong> &ndash; výpočet (konvergující) geometrické řady</h2>
+
+<p>V&nbsp;dnešním prvním demonstračním příkladu nazvaném
+<strong>test54.lua</strong> se provádí výpočet geometrické řady konvergující ke
+dvojce. Implementace je velmi jednoduchá, protože je použita počítaná
+programová smyčka typu <strong>for</strong>, v&nbsp;níž se v&nbsp;tisíci
+iteracích sčítají jednotlivé prvky řady, přičemž každý prvek má hodnotu
+2<sup>-n</sup>. Vzhledem k&nbsp;tomu, že se ve výpočtu používá dělení 1/x, je
+zřejmé, že <i>LuaJIT</i> nemůže použít optimalizaci spočívající
+v&nbsp;přetypování proměnných na typ <i>integer</i>, ale veškeré výpočty musí
+být prováděny s&nbsp;hodnotami typu <i>double</i> (a to navíc ideálně takovým
+způsobem, aby geometrická řada na všech platformách skutečně konvergovala ke
+dvojce :-).</p>
+
+
+
+<p><a name="k021"></a></p>
+<h3 id="k021">2.1 Zdrojový kód</h3>
+
+<p>Podívejme se nejdříve na zdrojový kód tohoto příkladu:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 54.</i>
+<i>--</i>
+<i>-- Test JITu - prekladu do nativniho kodu.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>local</strong> i
+<strong>local</strong> geom = 0
+<strong>local</strong> x = 1
+&nbsp;
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    geom = geom + 1/x
+    x = x * 2
+<strong>end</strong>
+&nbsp;
+print(geom)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k022"></a></p>
+<h3 id="k022">2.2 Detekovaná stopa <i>hot-loop</i></h3>
+
+<p>Trasovací just-it-time překladač <i>LuaJIT</i> po několika desítkách iterací
+(konkrétně po padesáté šesté iteraci, jak jsme se již ostatně dozvěděli
+v&nbsp;předchozích částech tohoto seriálu) nalezne následující <i>hot-loop</i>
+reprezentovanou snadno pochopitelným bajtkódem:</p>
+
+<pre>
+---- TRACE 1 start test53.lua:13
+0008  <strong>DIVNV</strong>    7   2   0  ; 1
+0009  <strong>ADDVV</strong>    1   1   7
+0010  <strong>MULVN</strong>    2   2   1  ; 2
+0011  <strong>FORL</strong>     3 =&gt; 0008
+</pre>
+
+<p>První tři instrukce (s&nbsp;tříadresovým kódem) tvoří tělo počítané
+programové smyčky. U každé instrukce jsou uvedeny tři registry: jeden registr
+cílový a dva registry zdrojové. Výsledek operace <strong>DIVNV</strong> je
+přičten k&nbsp;registru číslo 1 ve druhé operaci <strong>ADDVN</strong> a
+následně je obsah registru číslo 2 zdvojnásoben (i když by zde teoreticky bylo
+možné použít pouhé přičtení).</p>
+
+
+
+<p><a name="k023"></a></p>
+<h3 id="k023">2.3 Překlad stopy do sekvence meziinstrukcí</h3>
+
+<p>Bajtkód je následně přetransformován do následující sekvence meziinstrukcí,
+kde je ke každé operaci doplněn datový typ. Prefix <strong>num</strong> značí
+použití čísel reprezentovaných v&nbsp;systému plovoucí řádové čárky
+(tečky):</p>
+
+<pre>
+---- TRACE 1 IR
+0001    int SLOAD  #4    CI
+0002 &gt;  num SLOAD  #3    T
+0003    num DIV    +1    0002
+0004 &gt;  num SLOAD  #2    T
+0005  + num ADD    0004  0003
+0006  + num ADD    0002  0002
+0007  + int ADD    0001  +1  
+0008 &gt;  int LE     0007  +1000
+0009 ------ LOOP ------------
+0010    num DIV    +1    0006
+0011  + num ADD    0010  0005
+0012  + num ADD    0006  0006
+0013  + int ADD    0007  +1  
+0014 &gt;  int LE     0013  +1000
+0015    int PHI    0007  0013
+0016    num PHI    0006  0012
+0017    num PHI    0005  0011
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Překlad prvního demonstračního příkladu do strojového kódu procesorů x86_64</h2>
+
+<p>Nyní se podívejme, jakým způsobem provedl <i>LuaJIT</i> překlad výše uvedené
+programové smyčky do (nativního) strojového kódu mikroprocesorů
+s&nbsp;architekturou x86_64 vybavenými navíc doplňkovou instrukční sadou SSE a
+SSE2:</p>
+
+<pre>
+---- TRACE 1 mcode 118
+0bceff89  <strong>mov</strong>       dword [0x41f9e4a0], 0x1
+0bceff94  <strong>movsd</strong>     xmm0, [0x400d9090]
+0bceff9d  <strong>cvtsd2si</strong>  ebp, [rdx+0x18]
+0bceffa2  <strong>cmp</strong>       dword [rdx+0x14], 0xfffeffff
+0bceffa9  <strong>jnb</strong>       0x0bce0010  -&gt;0
+0bceffaf  <strong>movsd</strong>     xmm6, [rdx+0x10]
+0bceffb4  <strong>movaps</strong>    xmm7, xmm0
+0bceffb7  <strong>divsd</strong>     xmm7, xmm6
+0bceffbb  <strong>cmp</strong>       dword [rdx+0xc], 0xfffeffff
+0bceffc2  <strong>jnb</strong>       0x0bce0010     -&gt;0
+0bceffc8  <strong>addsd</strong>     xmm7, [rdx+0x8]
+0bceffcd  <strong>addsd</strong>     xmm6, xmm6
+0bceffd1  <strong>add</strong>       ebp, +0x01
+0bceffd4  <strong>cmp</strong>       ebp, 0x3e8
+0bceffda  <strong>jg</strong>        0x0bce0014     -&gt;1
+-&gt;LOOP:
+0bceffe0  <strong>movaps</strong>    xmm5, xmm0
+0bceffe3  <strong>divsd</strong>     xmm5, xmm6
+0bceffe7  <strong>addsd</strong>     xmm7, xmm5
+0bceffeb  <strong>addsd</strong>     xmm6, xmm6
+0bceffef  <strong>add</strong>       ebp, +0x01
+0bcefff2  <strong>cmp</strong>       ebp, 0x3e8
+0bcefff8  <strong>jle</strong>       0x0bceffe0        -&gt;LOOP
+0bcefffa  <strong>jmp</strong>       0x0bce001c        -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Samotná programová smyčka je přeložena zajímavým způsobem &ndash; můžeme zde
+vidět, že prakticky všechny konstanty použité při výpočtu jsou uloženy
+v&nbsp;registrech XMMx (což je samozřejmě dobře) a taktéž použití celočíselného
+registru <strong>EBP</strong> ve funkci počitadla (konstanta 0x3e8 odpovídá
+dekadické hodnotě 1000 a tím pádem i maximálnímu počtu iterací). Zatímco
+vlastní výpočet je do jisté míry optimalizován &ndash; viz náhrada násobení za
+pouhý součet provedený v&nbsp;instrukci <strong>addsd</strong> xmm6, xmm6, tak
+řízení programové smyčky je přeloženo značně šablonovitým způsobem (zpětné
+počítání by bylo rychlejší, což ale platí pro sekvenci <strong>DEC+JNZ</strong>
+a nikoli pro <strong>LOOP</strong>).</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Překlad prvního demonstračního příkladu do strojového kódu procesorů ARM</h2>
+
+<p>Zajímavé bude porovnat předchozí kód s&nbsp;kódem vytvořeným pro procesory
+s&nbsp;architekturou ARM:</p>
+
+<pre>
+---- TRACE 1 mcode 104
+00397f98  <strong>mov</strong>      r0, #-1342177280
+00397f9c  <strong>orr</strong>      r0, r0, #114294784
+00397fa0  <strong>orr</strong>      r0, r0, #97280
+00397fa4  <strong>vldr</strong>     d0, [r0, #424]
+00397fa8  <strong>ldr</strong>      r11, [r9, #24]
+00397fac  <strong>ldr</strong>      lr, [r9, #20]
+00397fb0  <strong>vldr</strong>     d1, [r9, #16]
+00397fb4  <strong>cmn</strong>      lr, #15
+00397fb8  <strong>blhs</strong>     0x00390018  -&gt;0
+00397fbc  <strong>vdiv.f64</strong> d3, d0, d1
+00397fc0  <strong>ldr</strong>      lr, [r9, #12]
+00397fc4  <strong>vldr</strong>     d2, [r9, #8]
+00397fc8  <strong>cmn</strong>      lr, #15
+00397fcc  <strong>blhs</strong>     0x00390018  -&gt;0
+00397fd0  <strong>vadd.f64</strong> d15, d2, d3
+00397fd4  <strong>vadd.f64</strong> d14, d1, d1
+00397fd8  <strong>add</strong>      r11, r11, #1
+00397fdc  <strong>cmp</strong>      r11, #1000
+00397fe0  <strong>blgt</strong>     0x0039001c  -&gt;1
+-&gt;LOOP:
+00397fe4  <strong>vdiv.f64</strong> d13, d0, d14
+00397fe8  <strong>vadd.f64</strong> d15, d13, d15
+00397fec  <strong>vadd.f64</strong> d14, d14, d14
+00397ff0  <strong>add</strong>      r11, r11, #1
+00397ff4  <strong>cmp</strong>      r11, #1000
+00397ff8  <strong>ble</strong>      0x00397fe4  -&gt;LOOP
+00397ffc  <strong>bl</strong>       0x00390024  -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Vlastní programová smyčka je implementována s&nbsp;využitím šesti instrukcí,
+tj.&nbsp;je zde o jednu instrukci méně, než u konkurenčního x86_64, a to
+zejména díky pěkně navržené tříadresové instrukční sadě. Opět zde můžeme vidět
+optimalizaci v&nbsp;instrukci <strong>vadd.f64</strong> d14, d14, d14, která
+nahrazuje pomalé násobení rychlejším součtem. Jako počitadlo smyčky je použit
+registr <strong>r11</strong>, jehož hodnota je postupně zvyšována o jedničku a
+testována proti konstantně 1000, což je opět dosti šablonovitý překlad, protože
+aritmetické instrukce s&nbsp;postfixem "s" dokážou nastavovat příznakové bity
+automaticky (takže by zde bylo možné použít operaci pro odečítání).</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Druhý demonstrační příklad <strong>test55.lua</strong> &ndash; složitější výpočty prováděné ve smyčce <strong>while</strong></h2>
+
+<p>Ve druhém demonstračním příkladu nazvaném <strong>test55.lua</strong> je
+použita programová smyčka typu <strong>while</strong>, což mj.&nbsp;znamená, že
+základní struktura bude odpovídat demonstračnímu příkladu uvedenému minule.
+V&nbsp;těle smyčky se zvyšuje hodnota počitadla <strong>i</strong> a navíc se
+ještě provádí další dva výpočty &ndash; hodnota lokální proměnné
+<strong>x</strong> se ztrojnásobí a hodnota proměnné <strong>y</strong> násobí
+konstantou pět. <i>LuaJIT</i> zde nebude moci použít celočíselné operace,
+především kvůli tomu, že se bude pracovat (po 56 iteraci) s&nbsp;příliš velkými
+čísly.</p>
+
+
+
+<p><a name="k051"></a></p>
+<h3 id="k051">5.1 Zdrojový kód</h3>
+
+<p>Opět si nejprve uveďme zdrojový kód tohoto příkladu:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 55.</i>
+<i>--</i>
+<i>-- Test JITu - prekladu do nativniho kodu.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>local</strong> i = 0
+<strong>local</strong> x = 1
+<strong>local</strong> y = 1
+&nbsp;
+<strong>while</strong> i &lt; 100 <strong>do</strong>
+    i = i + 1
+    x = x * 3
+    y = y * 5
+<strong>end</strong>
+&nbsp;
+print(i)
+print(x)
+print(y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k052"></a></p>
+<h3 id="k052">5.2 Detekovaná stopa <i>hot-loop</i></h3>
+
+<p>Programová smyčka &ndash; <i>hot-loop</i> &ndash; detekovaná <i>LuaJITem</i>
+je zde poněkud delší a kupodivu i sekvence instrukcí v&nbsp;nalezené trase je
+&bdquo;rozsekaná&ldquo;:</p>
+
+<pre>
+---- TRACE 1 start test53.lua:13
+0008  <strong>ADDVN</strong>    0   0   0  ; 1
+0009  <strong>MULVN</strong>    1   1   1  ; 3
+0010  <strong>MULVN</strong>    2   2   2  ; 5
+0011  <strong>JMP</strong>      3 =&gt; 0004
+0004  <strong>KSHORT</strong>   3 100
+0005  <strong>ISGE</strong>     0   3
+0006  <strong>JMP</strong>      3 =&gt; 0012
+0007  <strong>LOOP</strong>     3 =&gt; 0012
+</pre>
+
+
+
+<p><a name="k053"></a></p>
+<h3 id="k053">5.3 Překlad stopy do sekvence meziinstrukcí</h3>
+
+<p>Pro úplnost se podívejme na mezikód, tj.&nbsp;na sekvenci meziinstrukcí
+vygenerovaných z&nbsp;výše vypsaného bajtkódu:</p>
+
+<pre>
+---- TRACE 1 IR
+0001 &gt;  num SLOAD  #1    T
+0002  + num ADD    0001  +1  
+0003 &gt;  num SLOAD  #2    T
+0004  + num MUL    0003  +3  
+0005 &gt;  num SLOAD  #3    T
+0006  + num MUL    0005  +5  
+0007 &gt;  num LT     0002  +100
+0008 ------ LOOP ------------
+0009  + num ADD    0002  +1  
+0010  + num MUL    0004  +3  
+0011  + num MUL    0006  +5  
+0012 &gt;  num LT     0009  +100
+0013    num PHI    0002  0009
+0014    num PHI    0004  0010
+0015    num PHI    0006  0011
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Překlad druhého demonstračního příkladu do strojového kódu procesorů x86_64</h2>
+
+<p>Překlad do nativního kódu mikroprocesorů x86_64 vypadá následovně:</p>
+
+<pre>
+---- TRACE 1 mcode 145
+0bceff66  <strong>mov</strong>     dword [0x406bc4a0], 0x1
+0bceff71  <strong>movsd</strong>   xmm3, [0x406c8bf0]
+0bceff7a  <strong>movsd</strong>   xmm2, [0x406c8bf8]
+0bceff83  <strong>movsd</strong>   xmm1, [0x406c8c00]
+0bceff8c  <strong>movsd</strong>   xmm0, [0x406c8c08]
+0bceff95  <strong>cmp</strong>     dword [rdx+0x4], 0xfffeffff
+0bceff9c  <strong>jnb</strong>     0x0bce0010        -&gt;0
+0bceffa2  <strong>movsd</strong>   xmm5, [rdx]
+0bceffa6  <strong>addsd</strong>   xmm5, xmm3
+0bceffaa  <strong>cmp</strong>     dword [rdx+0xc], 0xfffeffff
+0bceffb1  <strong>jnb</strong>     0x0bce0010        -&gt;0
+0bceffb7  <strong>movsd</strong>   xmm6, [rdx+0x8]
+0bceffbc  <strong>mulsd</strong>   xmm6, xmm2
+0bceffc0  <strong>cmp</strong>     dword [rdx+0x14], 0xfffeffff
+0bceffc7  <strong>jnb</strong>     0x0bce0010        -&gt;0
+0bceffcd  <strong>movsd</strong>   xmm7, [rdx+0x10]
+0bceffd2  <strong>mulsd</strong>   xmm7, xmm1
+0bceffd6  <strong>ucomisd</strong> xmm0, xmm5
+0bceffda  <strong>jbe</strong>     0x0bce0014        -&gt;1
+-&gt;LOOP:
+0bceffe0  <strong>addsd</strong>   xmm5, xmm3
+0bceffe4  <strong>mulsd</strong>   xmm6, xmm2
+0bceffe8  <strong>mulsd</strong>   xmm7, xmm1
+0bceffec  <strong>ucomisd</strong> xmm0, xmm5
+0bcefff0  <strong>ja</strong>      0x0bceffe0 -&gt;LOOP
+0bcefff2  <strong>jmp</strong>     0x0bce001c        -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>V&nbsp;těle smyčky nalezneme podle očekávání dvojici operací
+<strong>mulsd</strong> následovanou instrukcí <strong>ucomisd</strong>, která
+provede porovnání počitadla s&nbsp;konstantou uloženou v&nbsp;registru xmm0. To
+je docela zajímavé, protože v&nbsp;předchozím příkladu se podařilo počítanou
+smyčku <strong>for</strong> přeložit s&nbsp;využitím celočíselných operací
+&ndash; zde se skrývá jedna z&nbsp;předností této programové smyčky pro ty
+programátory, kteří se snaží o tvorbu co nejefektivnějšího kódu.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Překlad druhého demonstračního příkladu do strojového kódu procesoru ARM</h2>
+
+<p>Překlad do nativního kódu mikroprocesorů s&nbsp;architekturou ARM vypadá
+následovně:</p>
+
+<pre>
+---- TRACE 1 mcode 120
+00397f88  <strong>mov</strong>      r0, #-1275068416
+00397f8c  <strong>orr</strong>      r0, r0, #47710208
+00397f90  <strong>orr</strong>      r0, r0, #23552
+00397f94  <strong>vldr</strong>     d1, [r0, #424]
+00397f98  <strong>vldr</strong>     d0, [r0, #432]
+00397f9c  <strong>ldrd</strong>     r4, [r9]
+00397fa0  <strong>cmn</strong>      r5, #14
+00397fa4  <strong>blne</strong>     0x00390018	-&gt;0
+00397fa8  <strong>adds</strong>     r4, r4, #1
+00397fac  <strong>blvs</strong>     0x00390018	-&gt;0
+00397fb0  <strong>ldr</strong>      lr, [r9, #12]
+00397fb4  <strong>vldr</strong>     d3, [r9, #8]
+00397fb8  <strong>cmn</strong>      lr, #15
+00397fbc  <strong>blhs</strong>     0x00390018	-&gt;0
+00397fc0  <strong>vmul.f64</strong> d14, d3, d1
+00397fc4  <strong>ldr</strong>      lr, [r9, #20]
+00397fc8  <strong>vldr</strong>     d2, [r9, #16]
+00397fcc  <strong>cmn</strong>      lr, #15
+00397fd0  <strong>blhs</strong>     0x00390018	-&gt;0
+00397fd4  <strong>vmul.f64</strong> d15, d2, d0
+00397fd8  <strong>cmp</strong>      r4, #100
+00397fdc  <strong>blge</strong>     0x0039001c	-&gt;1
+-&gt;LOOP:
+00397fe0  <strong>mov</strong>      r11, r4
+00397fe4  <strong>adds</strong>     r4, r11, #1
+00397fe8  <strong>blvs</strong>     0x00390020	-&gt;2
+00397fec  <strong>vmul.f64</strong> d14, d14, d1
+00397ff0  <strong>vmul.f64</strong> d15, d15, d0
+00397ff4  <strong>cmp</strong>      r4, #100
+00397ff8  <strong>blt</strong>      0x00397fe0	-&gt;LOOP
+00397ffc  <strong>bl</strong>       0x00390024	-&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Zde je kupodivu programová smyčka implementována v&nbsp;sedmi instrukcích,
+což je ve skutečnosti zbytečné &ndash; stačí se podívat na to, jakým způsobem
+se manipuluje s&nbsp;registry r4 a r11. Výpočet je realizován dvojicí instrukcí
+<strong>vmul.f64</strong>, řízení programové smyčky zajišťuje čtveřice
+<strong>adds+blvs+cmp+blt</strong> (<strong>blvs</strong> by se nemuselo
+provádět, jedná se o kontrolu přetečení).</p>
+
+<p>Překlad do nativního kódu provedený například s&nbsp;využitím
+<strong>gcc</strong> by v&nbsp;tomto případě vypadal odlišně, a to i
+v&nbsp;případě, že by se při překladu nepoužily optimalizační metody typu
+rozbalení smyček apod.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Odkazy na zdrojové texty demonstračních příkladů i na JITované sekvence instrukcí</h2>
+
+<p>Oba dnes použité demonstrační příklady byly, jak je tomu ostatně
+v&nbsp;tomto seriálu již dlouhodobějším zvykem, uloženy do Git (přesněji řečeno
+do <a href="http://github.com/">GitHub</a>) repositáře umístěného na adrese <a
+href="https://github.com/tisnik/luajit-examples">https://github.com/tisnik/luajit-examples</a>.</p>
+
+<p>Následuje tabulka obsahující odkazy na poslední verze obou dnešních příkladů
+i na výstup vygenerovaný LuaJITem:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>test54.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test54.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test54.lua</a></td></tr>
+<tr><td>2</td><td>test55.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test55.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test55.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>3</td><td>test54.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test54.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test54.ir</a></td></tr>
+<tr><td>4</td><td>test55.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test55.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test55.ir</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>5</td><td>test54_arm.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test54_arm.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test54_arm.asm</a></td></tr>
+<tr><td>6</td><td>test54_x86.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test54_x86.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test54_x86.asm</a></td></tr>
+<tr><td>7</td><td>test55_arm.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test55_arm.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test55_arm.asm</a></td></tr>
+<tr><td>8</td><td>test55_x86.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test55_x86.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test55_x86.asm</a></td></tr>
+</table>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Literatura</h2>
+
+<ol>
+
+<li>Bolz, Cuni, Fijalkowski, Rigo:<br />
+&bdquo;Tracing the Meta-Level: PyPy's Tracing JIT Compiler&ldquo;
+</li>
+
+<li>Vasanth Bala, Evelyn Duesterwald, Sanjeev Banerjia:<br />
+&bdquo;Dynamo: A Transparent Dynamic Optimization System&ldquo;
+</li>
+
+<li>Bolz, Cuni, Fijalkowski, Leuschel, Pedroni, Rigo:
+&bdquo;Allocation removal by partial evaluation in a tracing JIT&ldquo;
+</li>
+
+<li>Bolz:<br />
+&bdquo;Automatic JIT Compiler Generation with Runtime Partial Evaluation&ldquo;
+</li>
+
+<li>Bolz, Kuhn, Lienhard, Matsakis, Nierstrasz, Renggli, Rigo and T. Verwaest:<br />
+&bdquo;Back to the Future in One Week - Implementing a Smalltalk VM in PyPy&ldquo;<br />
+pages 123-139. 2008.
+</li>
+
+<li>Bolz  and Rigo:<br />
+&bdquo;How to not write a virtual machine&ldquo;<br />
+In Proceedings of the 3rd Workshop on Dynamic Languages and Applications (DYLA), 2007
+</li>
+
+<li>Bruni, Verwaest:<br />
+&bdquo;PyGirl: generating Whole-System VMs from High-Level prototypes using PyPy&ldquo;<br />
+In Tools, accepted for publication, 2009.
+</li>
+
+<li>Sullivan, Bruening, Baron, Garnett and Amarasinghe:<br />
+&bdquo;Dynamic native optimization of interpreters&ldquo;<br />
+In Proceedings of the 2003 Workshop on Interpreters,<br />
+Virtual Machines and Emulators pages 50-57, San Diego, California, 2003. ACM.
+</li>
+
+</ol>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Static single assignment form (SSA)<br />
+<a href="http://en.wikipedia.org/wiki/Static_single_assignment_form">http://en.wikipedia.org/wiki/Static_single_assignment_form</a>
+</li>
+
+<li>LuaJIT 2.0 SSA IR
+<a href="http://wiki.luajit.org/SSA-IR-2.0">http://wiki.luajit.org/SSA-IR-2.0</a>
+</li>
+
+<li>Dynamic Assembler<br />
+<a href="http://luajit.org/dynasm.html">http://luajit.org/dynasm.html</a>
+</li>
+
+<li>The Unofficial DynASM Documentation: Introduction<br />
+<a href="http://corsix.github.io/dynasm-doc/index.html">http://corsix.github.io/dynasm-doc/index.html</a>
+</li>
+
+<li>Have tracing JIT compilers won?<br />
+<a href="http://lambda-the-ultimate.org/node/3851">http://lambda-the-ultimate.org/node/3851</a>
+</li>
+
+<li>Tracing just-in-time compilation<br />
+<a href="http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation">http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1">http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work">http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="https://wiki.mozilla.org/JavaScript:TraceMonkey">https://wiki.mozilla.org/JavaScript:TraceMonkey</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/">http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/</a>
+</li>
+
+<li>Improving JavaScript performance with JägerMonkey<br />
+<a href="http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/">http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/</a>
+</li>
+
+<li>Wikipedia: Mezijazyk<br />
+<a href="http://cs.wikipedia.org/wiki/Mezijazyk">http://cs.wikipedia.org/wiki/Mezijazyk</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the World's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>Sixth Generation Processors<br />
+<a href="http://www.pcguide.com/ref/cpu/fam/g6.htm">http://www.pcguide.com/ref/cpu/fam/g6.htm</a>
+</li>
+
+<li>Great Microprocessors of the Past and Present<br />
+<a href="http://www.cpushack.com/CPU/cpu1.html">http://www.cpushack.com/CPU/cpu1.html</a>
+</li>
+
+<li>The VFP architecture<br />
+<a href="http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0056d/Bcfibfha.html">http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0056d/Bcfibfha.html</a>
+</li>
+
+<li>ARM Floating Point Accelerator (ARM FPA)<br />
+<a href="http://vswww.kaist.ac.kr/ver4.0/index.php/research/past-research/arm-fpa.html">http://vswww.kaist.ac.kr/ver4.0/index.php/research/past-research/arm-fpa.html</a>
+</li>
+
+<li>The ARM Processor Architecture<br />
+<a href="http://www.arm.com/products/processors/technologies/instruction-set-architectures.php">http://www.arm.com/products/processors/technologies/instruction-set-architectures.php</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2015</small></p>
+</body>
+</html>
+
