@@ -1,0 +1,1252 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>LuaJIT - Just in Time překladač pro programovací jazyk Lua (9 - další vlastnosti trasovacího JITu)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>LuaJIT - Just in Time překladač pro programovací jazyk Lua (9 - další vlastnosti trasovacího JITu)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V další části seriálu o just in time překladači nazvaném LuaJIT budeme pokračovat v popisu funkce trasovacího překladače. Minule jsme si ukázali, jak trasovací překladač dokáže detekovat často používané programové smyčky, dnes se podíváme na způsob detekce větví ve smyčkách a taktéž detekce funkcí volaných s velkou frekvencí.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (9 - další vlastnosti trasovacího JITu)</a></p>
+<p><a href="#k02">2. Trasovací JIT a programové smyčky obsahující rozvětvení</a></p>
+<p><a href="#k021">&nbsp;&nbsp;&nbsp;2.1 Demonstrační příklad <strong>test48.lua</strong> &ndash; programová smyčka s&nbsp;rozvětvením (malý počet iterací)</a></p>
+<p><a href="#k022">&nbsp;&nbsp;&nbsp;2.2 Demonstrační příklad <strong>test49.lua</strong> &ndash; programová smyčka s&nbsp;rozvětvením (velký počet iterací)</a></p>
+<p><a href="#k03">3. Programové smyčky se složitějším systémem větvení</a></p>
+<p><a href="#k031">&nbsp;&nbsp;&nbsp;3.1 Demonstrační příklad <strong>test50.lua</strong> &ndash; programová smyčka se složitějším rozvětvením</a></p>
+<p><a href="#k032">&nbsp;&nbsp;&nbsp;3.2 Demonstrační příklad <strong>test51.lua</strong> &ndash; vnořené větve</a></p>
+<p><a href="#k04">4. Trasovací JIT a volání funkcí</a></p>
+<p><a href="#k05">5. Zjištění, která funkce se má JITovat</a></p>
+<p><a href="#k06">6. Demonstrační příklady</a></p>
+<p><a href="#k061">&nbsp;&nbsp;&nbsp;6.1 Demonstrační příklad <strong>test52.lua</strong> &ndash; opakované volání funkce</a></p>
+<p><a href="#k062">&nbsp;&nbsp;&nbsp;6.2 Demonstrační příklad <strong>test53.lua</strong> &ndash; opakované volání funkce z&nbsp;programové smyčky</a></p>
+<p><a href="#k07">7. Zdrojové kódy všech šesti dnešních demonstračních příkladů</a></p>
+<p><a href="#k08">8. Literatura</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (9 - další vlastnosti trasovacího JITu)</h2>
+
+<p><a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-8-zakladni-vlastnosti-trasovaciho-jitu/">V&nbsp;předchozí části</a> <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu
+(nejenom) o just in time překladači LuaJIT</a> jsme si řekli základní informace
+o takzvaných trasovacích JIT překladačích, které se v&nbsp;mnoha ohledech
+chovají odlišně od známějších JIT překladačů typu hot spot. Trasovací JIT
+překladače i hot spot JITy se soustředí na detekci často používaných
+programových smyček a funkcí volaných s&nbsp;velkou frekvencí. Ovšem na rozdíl
+od klasických hot spot překladačů se trasovací JIT překladače zaměřují na
+sledování sekvence generovaných a následně prováděných instrukcí a nikoli na
+(potenciálně složitou) analýzu bajtkódu a už vůbec ne na analýzu zdrojového
+kódu (právě zde se ukazuje, že vhodně navržený bajtkód popř.&nbsp;mezijazyk
+může významným způsobem zjednodušit nebo naopak ztížit práci JIT překladačů;
+problémy tohoto typu jsou patrné i v&nbsp;bajtkódu JVM).</p>
+
+<p>Sledování a následná analýza sekvence generovaných a následně prováděných
+instrukcí (tato sekvence se nazývá <i>stopa</i> neboli <i>trace</i>)
+trasovacími JIT překladači vlastně automaticky vede k&nbsp;tomu, že mohou být
+eliminovány některé podmíněné skoky ve vytvářeném nativním (strojovém) kódu
+(představme si programovou smyčku s&nbsp;vnitřním rozvětvením). Na druhou
+stranu se však do nativního kódu musí navíc vkládat strojové instrukce
+testující, zda se běh programu skutečně ubírá správným směrem (tyto testovací
+instrukce však v&nbsp;ideálním případě nevedou k&nbsp;provedení podmíněných
+skoků, což je u moderních mikroprocesorů dosti náročná operace). Nezávisle na
+tom, zda je použit hot spot JIT či trasovací JIT, je další fáze překladu,
+tj.&nbsp;optimalizace, prováděna s&nbsp;využitím podobných technologií. Setkáme
+se zde s&nbsp;eliminací mrtvého kódu, rozbalením smyček, vložením těla kratších
+funkcí do místa, kde se původně tato funkce volala apod.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Trasovací JIT a programové smyčky obsahující rozvětvení</h2>
+
+<p>Zatímco detekce programových smyček trasovacími JIT je poměrně jednoduchá
+úloha, které je navíc v&nbsp;případě <i>LuaJIT</i> ještě ulehčena způsobem
+překladu smyček do bajtkódu, je detekce rozvětvení ve smyčkách již složitější,
+a to zejména z&nbsp;toho důvodu, že trasovací JIT překladač vlastně nemá
+&bdquo;představu&ldquo; o celkové struktuře prováděného algoritmu, pouze dokáže
+detekovat sekvenci opakujících se instrukcí. Podívejme se proto na několik
+demonstračních příkladů, v&nbsp;nichž se vyskytuje počítaná programová smyčka a
+uvnitř této smyčky rozvětvení prováděné na základě nějaké podmínky. U všech
+následujících příkladů bude uveden jejich zdrojový kód, standardní výstup a
+taktéž zprávy vypisované tracerem při specifikaci volby <strong>-jv</strong>.
+Právě výstup z&nbsp;traceru nám dá poměrně dobrou představu o tom, jaká část
+programového kódu již byla JITována a jaká nikoli. Výsledky mohou být
+v&nbsp;některých případech překvapující, o čemž autor <i>LuaJITu</i> suše říká
+&bdquo;race compilers are full of surprises like this &ndash; have fun!
+:-)&ldquo;</p>
+
+
+
+<p><a name="k021"></a></p>
+<h3 id="k021">2.1 Demonstrační příklad <strong>test48.lua</strong> &ndash; programová smyčka s&nbsp;rozvětvením (malý počet iterací)</h3>
+
+<p>Dnešní první demonstrační příklad je velmi jednoduchý, protože obsahuje
+pouze jedinou počítanou programovou smyčku, v&nbsp;níž se nachází jedno
+rozvětvení &ndash; příkazová struktura <strong>if-then-end</strong>. Povšimněte
+si, že počet iterací programové smyčky je nastaven na 100, takže se tato smyčka
+dostane do skupiny <i>hot loops</i> a provede se její překlad do nativního kódu
+(počet iterací překročí magickou hodnotu <strong>hotloop=56</strong>). Naproti
+tomu se interní rozvětvení provede pouze padesátkrát, což znamená, že tato část
+programového kódu se nebude automaticky překládat a to jednoduše z&nbsp;toho
+důvodu, že se sice detekuje stopa (<i>trace</i>), ale ta nebude prováděna tak
+často, aby si to vyžádalo použití potenciálně náročného JIT překladu. Tato
+programová smyčka tedy bude přeložena jen z&nbsp;poloviny a bude se přecházet
+mezi interpretovaným bajtkódem a nativním kódem:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 48.</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka s rozvětvením.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,100 <strong>do</strong>
+    x = x + 1
+    <strong>if</strong> i &gt; 50 <strong>then</strong>
+        y = y + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Výsledek výpočtu provedeného prvním demonstračním příkladem:</p>
+
+<pre>
+100     50
+</pre>
+
+<p>Z&nbsp;výpisu trasovacích informací získaných díky přepínači
+<strong>-jv</strong> je patrné, že se detekovala a JITovala skutečně pouze
+počítaná programová smyčka a nikoli již rozvětvení uvnitř této smyčky:</p>
+
+<pre>
+[TRACE   1 test48.lua:17 loop]
+</pre>
+
+
+
+<p><a name="k022"></a></p>
+<h3 id="k022">2.2 Demonstrační příklad <strong>test49.lua</strong> &ndash; programová smyčka s&nbsp;rozvětvením (velký počet iterací)</h3>
+
+<p>Donutit <i>LuaJIT</i> k&nbsp;tomu, aby provedl i překlad podmínky umístěné
+uvnitř počítané programové smyčky, je ve skutečnosti velmi snadné &ndash;
+postačuje totiž zvýšit počet iterací smyčky a současně i počet vstupů do
+podmíněného bloku. Dnešní druhý demonstrační příklad pojmenovaný
+<strong>test49.lua</strong> se od příkladu předchozího liší pouze v&nbsp;těchto
+dvou detailech (viz limit na počet iterací a porovnání počitadla
+s&nbsp;hodnotou 500):</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 49.</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka s rozvětvením, zvýšení počtu iteraci.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    x = x + 1
+    <strong>if</strong> i &gt; 500 <strong>then</strong>
+        y = y + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Výsledek výpočtu provedeného prvním demonstračním příkladem:</p>
+
+<pre>
+1000    500
+</pre>
+
+<p>Výpis trasovacích informací, ze kterého je patrné, že se správně detekovala
+a přeložila jak celá programová smyčka (první řádek), tak i blok příkazů
+umístěný v&nbsp;podmínce (druhý řádek):</p>
+
+<pre>
+[TRACE   1 test49.lua:17 loop]
+[TRACE   2 (1/1) test49.lua:20 -&gt; 1]
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Programové smyčky se složitějším systémem větvení</h2>
+
+<p>Trasovací JIT překladače se samozřejmě musí umět vyrovnat i se složitějším
+systémem větvení prováděného uvnitř programových smyček. Ve skutečnosti je to
+dokonce nutnost, protože jen zcela triviální programové smyčky neobsahují větší
+množství programové logiky a právě takové smyčky typicky bývají jádrem velkého
+množství algoritmů. Aby bylo možné si otestovat chování <i>LuaJITu</i> i
+v&nbsp;takovýchto případech, byly vytvořeny další dva demonstrační příklady
+pojmenované <strong>test50.lua</strong> a <strong>test51.lua</strong>,
+v&nbsp;nichž je (opět) použita vnější počítaná programová smyčka s&nbsp;tisíci
+iteracemi. Takto velký počet iterací si vynutí použití JIT překladu, o čemž se
+ostatně sami přesvědčíme.</p>
+
+
+
+<p><a name="k031"></a></p>
+<h3 id="k031">3.1 Demonstrační příklad <strong>test50.lua</strong> &ndash; programová smyčka se složitějším rozvětvením</h3>
+
+<p>V&nbsp;demonstračním příkladu <strong>test50.lua</strong> se ve vnější
+programové smyčce nachází hned tři větve. Vzhledem k&nbsp;tomu, že je počet
+iterací nastaven na hodnotu 1000 a podmínky ve větvích umožní vstup do
+podmíněných bloků v&nbsp;1000-100=900, 1000-200=800 a 1000-300=700 iteracích,
+budou detekovány a následně přeloženy celkem čtyři stopy &ndash; vlastní
+programová smyčka a tři stopy obsahující jednotlivé větve:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 50.</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka se složitějším rozvětvením</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+<strong>local</strong> z = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    <strong>if</strong> i &gt; 100 <strong>then</strong>
+        x = x + 1
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 200 <strong>then</strong>
+        y = y + 1
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 300 <strong>then</strong>
+        z = z + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y, z)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Výstupní hodnoty tohoto demonstračního příkladu nám ve skutečnosti říkají,
+kolikrát se provedly jednotlivé podmíněné bloky:</p>
+
+<pre>
+900     800     700
+</pre>
+
+<p>Nejzajímavější informace o trasování získáme opět s&nbsp;využitím přepínače
+<strong>-jv</strong>:</p>
+
+<pre>
+[TRACE   1 test50.lua:18 loop]
+[TRACE   2 (1/1) test50.lua:20 -&gt; 1]
+[TRACE   3 (2/1) test50.lua:23 -&gt; 1]
+[TRACE   4 (3/1) test50.lua:26 -&gt; 1]
+</pre>
+
+<p>Z&nbsp;tohoto výpisu je patrné, že smyčka byla detekována na řádku 18, což
+je samozřejmě správné. Posléze byla detekována nová stopa začínající na řádku
+20, což je taktéž korektní, protože právě zde začíná první podmíněný blok. Tato
+stopa je navázána na smyčku (viz hodnota 1 v&nbsp;závorce). Další stopa začíná
+na řádku 23 a poslední stopa pak na řádku 26. Povšimněte si, že detekce stop je
+provedena ve správném pořadí, protože nejprve je provedeno (minimálně) 56
+iterací vnější programové smyčky, poté se detekuje vstup do prvního podmíněného
+bloku (ve 157 iteraci), následně vstup do druhého bloku (iterace číslo 257) a
+konečně v&nbsp;iteraci 357 do bloku třetího. Co se však stane, když se prohodí
+hodnoty 100, 200 a 300 v&nbsp;těchto blocích? Podle očekávání se stopy budou
+detekovat v&nbsp;opačném pořadí:</p>
+
+<pre>
+[TRACE   1 test50.lua:18 loop]
+[TRACE   2 (1/3) test50.lua:26 -&gt; 1]
+[TRACE   3 (1/2) test50.lua:23 -&gt; 1]
+[TRACE   4 (1/1) test50.lua:20 -&gt; 1]
+</pre>
+
+<p>Pro úplnost si uveďme upravený příklad:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 50 (úprava!!!).</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka se složitějším rozvětvením</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+<strong>local</strong> z = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    <strong>if</strong> i &gt; 300 <strong>then</strong>
+        x = x + 1
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 200 <strong>then</strong>
+        y = y + 1
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 100 <strong>then</strong>
+        z = z + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y, z)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k032"></a></p>
+<h3 id="k032">3.2 Demonstrační příklad <strong>test51.lua</strong> &ndash; vnořené větve</h3>
+
+<p>Již tak nelehký úkol trasovacího JIT překladače můžeme udělat poněkud
+složitější tím, že podmínky budou vzájemně zanořeny. Tím se samozřejmě zcela
+změní struktury jednotlivých stop. Nejprve se však podívejme na zdrojový kód
+příkladu, v&nbsp;němž se nachází vnější počítaná programová smyčka a trojice
+vnořených větví:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 51.</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka se složitějším rozvětvením</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+<strong>local</strong> z = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    <strong>if</strong> i &gt; 100 <strong>then</strong>
+        x = x + 1
+        <strong>if</strong> i &gt; 200 <strong>then</strong>
+            y = y + 1
+            <strong>if</strong> i &gt; 300 <strong>then</strong>
+                z = z + 1
+            <strong>end</strong>
+        <strong>end</strong>
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y, z)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Podobně jako tomu bylo v&nbsp;předchozím příkladu, i zde se na výstup vypíše
+počet vstupů do jednotlivých podmíněných bloků:</p>
+
+<pre>
+900     800     700
+</pre>
+
+<p>Výsledek trasování možná někoho překvapí svou jednoduchostí:</p>
+
+<pre>
+[TRACE   1 test51.lua:18 loop]
+[TRACE   2 (1/1) test51.lua:20 -&gt; 1]
+[TRACE   3 (2/1) test51.lua:22 -&gt; 1]
+[TRACE   4 (3/1) test51.lua:24 -&gt; 1]
+</pre>
+
+<p>Můžeme zde (opět) vidět detekci vnější programové smyčky, což pravděpodobně
+již nikoho nepřekvapí. Následně jsou detekovány tři další stopy na řádcích 20,
+22 a 24. To je možná poněkud zvláštní, když si uvědomíme, že velmi podobný
+výsledek jsme získali z&nbsp;předchozího příkladu (odlišují se jen čísla
+řádků, to kvůli zápisu <strong>end</strong> v&nbsp;předchozím příkladu):</p>
+
+<pre>
+[TRACE   1 test50.lua:18 loop]
+[TRACE   2 (1/1) test50.lua:20 -&gt; 1]
+[TRACE   3 (2/1) test50.lua:23 -&gt; 1]
+[TRACE   4 (3/1) test50.lua:26 -&gt; 1]
+</pre>
+
+<p>Ve skutečnosti se však trasovací JIT zachoval správně, protože
+implementovaná logika je stejná :-) Toto je jedna ze základních vlastností
+všech trasovacích JITů &ndash; nezávisle na zdrojovém textu sledují, co se děje
+v&nbsp;runtime.</p>
+
+<p>Zkusme si příklad ještě více upravit a vytvořit pořádné bludiště:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 51 (upraveno!!!).</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka se složitějším rozvětvením</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+<strong>local</strong> z = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    <strong>if</strong> i &gt; 100 <strong>then</strong>
+        x = x + 1
+        <strong>if</strong> i &gt; 200 <strong>then</strong>
+            y = y + 1
+            <strong>if</strong> i &gt; 300 <strong>then</strong>
+                z = z + 1
+            <strong>end</strong>
+        <strong>end</strong>
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 60 <strong>then</strong>
+        x = x * 1.5
+        <strong>if</strong> i &gt; 400 <strong>then</strong>
+            y = y * 1.5
+            <strong>if</strong> i &gt; 600 <strong>then</strong>
+                z = z * 1.5
+            <strong>end</strong>
+        <strong>end</strong>
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y, z)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Trasovací modul se nyní trošku zapotí, protože nalezne a JITuje hned sedm
+stop:</p>
+
+<pre>
+[TRACE   1 test51.lua:18 loop]
+[TRACE   2 (1/2) test51.lua:29 -&gt; 1]
+[TRACE   3 (1/1) test51.lua:20 -&gt; 1]
+[TRACE   4 (3/1) test51.lua:22 -&gt; 1]
+[TRACE   5 (4/1) test51.lua:24 -&gt; 1]
+[TRACE   6 (5/2) test51.lua:31 -&gt; 1]
+[TRACE   7 (6/1) test51.lua:33 -&gt; 1]
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Trasovací JIT a volání funkcí</h2>
+
+<p>Již v&nbsp;předchozím textu jsme si naznačili, že se <i>LuaJIT</i> zaměřuje
+na hledání a optimalizaci jak počítaných i nepočítaných programových smyček,
+tak i často volaných funkcí. Zatímco se programové smyčky s&nbsp;velkým počtem
+iterací, které se překládají do nativního kódu, označují termínem <i>hot
+loops</i>, jsou často volané funkce nazývány <i>hot calls</i>. V&nbsp;dalším
+textu se zaměříme především na detekci <i>hot calls</i>, prozatím však
+vynecháme drobnou specialitku <i>LuaJITu</i>, kterou je detekce některých typů
+koncové rekurze (<i>tail call</i>). U volaných funkcí se při překladu obecně
+mohou provádět podobné typy optimalizací, o jakých jsme se zmiňovali
+v&nbsp;souvislosti s&nbsp;programovými smyčkami. Jedná se především o detekci
+mrtvého kódu a taktéž o inlining těl funkcí do volajícího kódu.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zjištění, která funkce se má JITovat</h2>
+
+<p>Možná bude zajímavé zjistit, po kolika voláních se nějaká volaná funkce
+(resp.&nbsp;přesněji řečeno její volání &ndash; call) zařadí do skupiny <i>hot
+calls</i>. Již minule jsme si řekli, že programová smyčka či její část
+(větvení) je zařazena do skupiny <i>hot loops</i> ve chvíli, kdy je překročen
+počet padesáti šesti iterací (opakování těla smyčky). Tuto
+&bdquo;magickou&ldquo; konstantu nalezneme v&nbsp;souboru
+<strong>lj_jit.h</strong>, konkrétně v&nbsp;následujícím makru:</p>
+
+<pre>
+/* Optimization parameters and their defaults. Length is a char in octal! */
+#define JIT_PARAMDEF(_) \
+  _(\010, maxtrace,     1000)   /* Max. # of traces in cache. */ \
+  _(\011, maxrecord,    4000)   /* Max. # of recorded IR instructions. */ \
+  _(\012, maxirconst,   500)    /* Max. # of IR constants of a trace. */ \
+  _(\007, maxside,      100)    /* Max. # of side traces of a root trace. */ \
+  _(\007, maxsnap,      500)    /* Max. # of snapshots for a trace. */ \
+  \
+  _(\007, <strong>hotloop,      56</strong>)    /* # of iter. to detect a hot loop/call. */ \
+  _(\007, hotexit,      10)     /* # of taken exits to start a side trace. */ \
+  _(\007, tryside,      4)      /* # of attempts to compile a side trace. */ \
+  \
+  _(\012, instunroll,   4)      /* Max. unroll for instable loops. */ \
+  _(\012, loopunroll,   15)     /* Max. unroll for loop ops in side traces. */ \
+  _(\012, callunroll,   3)      /* Max. unroll for recursive calls. */ \
+  _(\011, recunroll,    2)      /* Min. unroll for true recursion. */ \
+  \
+  /* Size of each machine code area (in KBytes). */ \
+  _(\011, sizemcode,    JIT_P_sizemcode_DEFAULT) \
+  /* Max. total size of all machine code areas (in KBytes). */ \
+  _(\010, maxmcode,     512) \
+  /* End of list. */
+</pre>
+
+<p>Ve skutečnosti je však hodnota <strong>hotloop</strong> použita jak pro
+detekci <i>hot loops</i>, tak i pro detekci <i>hot calls</i>, což však bohužel
+není přímo ze zdrojových kódů ihned patrné. Vtip spočívá v&nbsp;tom, že pro
+každou stopu (<i>trace</i>) je nastavena počáteční hodnota počitadla na hodnotu
+<strong>hotloop*2</strong> (<strong>hotloop*HOTCOUNT_LOOP</strong>). Pokud
+stopa obsahuje programovou smyčku, je po každé další iteraci snížena hodnota
+počitadla o dvojku (konkrétně o konstantu <strong>HOTCOUNT_LOOP</strong>, pokud
+se naopak volá nějaká funkce, je v&nbsp;této stopě snížena hodnota počitadla o
+jedničku (konkrétně o konstantu <strong>HOTCOUNT_CALL</strong>). Ve chvíli, kdy
+hodnota počitadla dosáhne nuly, byla detekována buď <i>hot loop</i> nebo <i>hot
+call</i> a je možné provést JIT překlad. Zmíněné konstanty
+<strong>HOTCOUNT_LOOP</strong> a <strong>HOTCOUNT_CALL</strong> nalezneme ve
+zdrojovém souboru <strong>lj_dispatch.h</strong>:</p>
+
+<pre>
+/* Hotcount decrements. */
+#define HOTCOUNT_LOOP           2
+#define HOTCOUNT_CALL           1
+</pre>
+
+<p>Inicializaci počitadla hledejte v&nbsp;souboru
+<strong>lj_trace.c</strong>:</p>
+
+<pre>
+lj_trace_hot:
+&nbsp;
+  /* Reset hotcount. */
+  hotcount_set(J2GG(J), pc, J-&gt;param[JIT_P_hotloop]*HOTCOUNT_LOOP);
+</pre>
+
+<p>Samotný programový kód, v&nbsp;němž se počitadla snižují a testují na nulu,
+je již naprogramován v&nbsp;assembleru, podobně jako i další části
+<i>LuaJITu</i>. Jen pro zajímavost se podívejme, jak vypadají makra provádějící
+tuto činnost v&nbsp;assemblerech pro procesory s&nbsp;architekturou x86, MIPS a
+ARM (32bit):</p>
+
+<p><strong>vm_x86.dasc</strong>:</p>
+
+<pre>
+|// Decrement hashed hotcount and trigger trace recorder if zero.
+|.macro <strong>hotloop</strong>, reg
+|  mov reg, PC
+|  shr reg, 1
+|  and reg, HOTCOUNT_PCMASK
+|  sub word [DISPATCH+reg+GG_DISP2HOT], HOTCOUNT_LOOP
+|  jb -&gt;vm_hotloop
+|.endmacro
+|
+|.macro <strong>hotcall</strong>, reg
+|  mov reg, PC
+|  shr reg, 1
+|  and reg, HOTCOUNT_PCMASK
+|  sub word [DISPATCH+reg+GG_DISP2HOT], HOTCOUNT_CALL
+|  jb -&gt;vm_hotcall
+|.endmacro
+</pre>
+
+<p><strong>vm_mips.dasc</strong>:</p>
+
+<pre>
+|.macro <strong>hotloop</strong>
+|  hotcheck HOTCOUNT_LOOP, -&gt;vm_hotloop
+|.endmacro
+|
+|.macro <strong>hotcall</strong>
+|  hotcheck HOTCOUNT_CALL, -&gt;vm_hotcall
+|.endmacro
+</pre>
+
+<p><strong>vm_arm.dasc</strong>:</p>
+
+<pre>
+|.macro <strong>hotloop</strong>
+|  hotcheck HOTCOUNT_LOOP
+|  blo -&gt;vm_hotloop
+|.endmacro
+|
+|.macro <strong>hotcall</strong>
+|  hotcheck HOTCOUNT_CALL
+|  blo -&gt;vm_hotcall
+|.endmacro
+</pre>
+
+<p>Aby byla celá situace ještě zajímavější, byl pro potřeby <i>LuaJITu</i>
+vyvinut i vlastní assembler nazvaný <i>Dynamic Assembler</i>. Podrobnější
+informace o tomto nástroji lze nalézt na adrese <a
+href="http://luajit.org/dynasm.html">http://luajit.org/dynasm.html</a> a <a
+href="http://corsix.github.io/dynasm-doc/tutorial.html">http://corsix.github.io/dynasm-doc/tutorial.html</a>.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklady</h2>
+
+<p>Podívejme se nyní na dvojici demonstračních příkladů, na nichž si ukážeme
+základní vlastnosti detekce <i>hot calls</i>. Ani jeden z&nbsp;obou příkladů
+popsaných v&nbsp;navazujících dvou podkapitolách není příliš složitý, protože
+se budeme snažit izolovat jen ty části <i>LuaJITu</i>, které se skutečně <i>hot
+calls</i> týkají.</p>
+
+
+<p><a name="k061"></a></p>
+<h3 id="k061">6.1 Demonstrační příklad <strong>test52.lua</strong> &ndash; opakované volání funkce</h3>
+
+<p>Dnešní pátý demonstrační příklad nazvaný <strong>test52.lua</strong> je sice
+velmi dlouhý, ovšem při podrobném pohledu značně primitivní :-). Je zde
+deklarována funkce pojmenovaná <strong>adder</strong>, v&nbsp;níž se zvyšují
+hodnoty proměnných x a y (jedná se o lokální proměnné v&nbsp;rámci celého
+modulu, takže k&nbsp;nim má funkce samozřejmě přístup). Následně je přesně
+112&times; funkce <strong>adder</strong> volána. Proč zrovna 112&times;? Jedná
+se o dvojnásobek hodnoty <strong>hotloop</strong>, přičemž z&nbsp;předchozí
+kapitoly víme, že právě hodnota <strong>hotloop*2</strong> je použita při
+detekci často volaných funkcí. Pokud se pokusíte jedno volání funkce
+<strong>adder</strong> odstranit, neprovede se její JITování (což je velmi
+snadné odzkoušet):</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 52.</i>
+<i>--</i>
+<i>-- Test JITu - volání funkce</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- funkce, která se bude JITovat</i>
+<strong>function</strong> adder()
+    x = x + 1
+    y = y + 1
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+adder()
+&nbsp;
+&nbsp;
+&nbsp;
+print(x,y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Výsledek běhu tohoto příkladu není příliš překvapující, ovšem dovoluje nám
+otestovat, kolikrát se funkce <strong>adder</strong> skutečně volala:</p>
+
+<pre>
+112     112
+</pre>
+
+<p>Trasovací modul <i>LuaJITu</i> nakonec při posledním volání funkce
+<strong>adder</strong> uznal, že je tato funkce vhodná pro JITování, takže po
+spuštění výše uvedeného příkladu s&nbsp;přepínačem <strong>-jv</strong>
+dostaneme následující zprávu:</p>
+
+<pre>
+[TRACE   1 test52.lua:16 return]
+</pre>
+
+
+
+<p><a name="k062"></a></p>
+<h3 id="k062">6.2 Demonstrační příklad <strong>test53.lua</strong> &ndash; opakované volání funkce z&nbsp;programové smyčky</h3>
+
+<p>Šestý a současně i dnešní poslední demonstrační příklad taktéž deklaruje
+funkci <strong>adder</strong>, která se chová podobně jako v&nbsp;předchozím
+příkladu. Tato funkce je ovšem volána v&nbsp;trojici programových smyček.
+V&nbsp;první smyčce se provede prvních padesát volání, v&nbsp;další smyčce
+dalších padesát volání a konečně ve smyčce třetí se funkce zavolá po 101 až
+150. Proč je příklad organizován takovým způsobem? Jde nám o to zabránit
+<i>LuaJITu</i> v&nbsp;detekci smyček s&nbsp;velkým počtem iterací, přičemž
+hodnota 50 leží pod hraniční hodnotou <strong>hotcall=56</strong>, takže smyčky
+samotné JITovány nebudou, ale funkce <strong>adder</strong> nakonec ano
+(samozřejmě až v&nbsp;poslední smyčce):</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 53.</i>
+<i>--</i>
+<i>-- Test JITu - volání funkce</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- funkce, která se bude JITovat</i>
+<strong>function</strong> adder()
+    x = x + 1
+    y = y + 1
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka, která se neJITuje</i>
+<strong>for</strong> i = 1,50 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("1")
+&nbsp;
+<i>-- programová smyčka, která se neJITuje</i>
+<strong>for</strong> i = 1,50 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("2")
+&nbsp;
+<i>-- programová smyčka, která se neJITuje</i>
+<strong>for</strong> i = 1,50 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("3")
+&nbsp;
+print(x,y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Výsledek běhu příkladu:</p>
+
+<pre>
+1
+2
+3
+150     150
+</pre>
+
+<p>Z&nbsp;následujícího řádku je patrné, že trasovací modul <i>LuaJITu</i>
+skutečně našel pouze jediné místo, které se bude JITovat, a tím je funkce
+<strong>adder</strong>:</p>
+
+<pre>
+[TRACE   1 test53.lua:17 return]
+</pre>
+
+<p>Pokud tento demonstrační příklad nepatrně upravíme takovým způsobem, že se
+namísto padesáti iterací provede v&nbsp;každé smyčce iterací 150, bude již
+výsledek mnohem zajímavější, protože se budou překládat jak všechny smyčky, tak
+i funkce (která se navíc dostane do množiny <i>hot calls</i> již ve smyčce
+první a nikoli poslední):</p>
+
+<pre>
+[TRACE   1 test53.lua:25 loop]
+1
+[TRACE   2 test53.lua:17 return]
+[TRACE   3 test53.lua:31 loop]
+2
+[TRACE   4 test53.lua:37 loop]
+3
+450     450
+</pre>
+
+<p>Upravený zdrojový kód:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 53 (úprava!!!).</i>
+<i>--</i>
+<i>-- Test JITu - volání funkce</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- funkce, která se bude JITovat</i>
+<strong>function</strong> adder()
+    x = x + 1
+    y = y + 1
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka, která se JITuje</i>
+<strong>for</strong> i = 1,150 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("1")
+&nbsp;
+<i>-- programová smyčka, která se JITuje</i>
+<strong>for</strong> i = 1,150 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("2")
+&nbsp;
+<i>-- programová smyčka, která se JITuje</i>
+<strong>for</strong> i = 1,150 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("3")
+&nbsp;
+print(x,y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zdrojové kódy všech šesti dnešních demonstračních příkladů</h2>
+
+<p>Všech šest dnes použitých demonstračních příkladů bylo, jak je tomu ostatně
+v&nbsp;tomto seriálu již dlouhodobějším zvykem, uloženo do Git (přesněji řečeno
+do <a href="http://github.com/">GitHub</a>) repositáře umístěného na adrese <a
+href="https://github.com/tisnik/luajit-examples">https://github.com/tisnik/luajit-examples</a>.</p>
+
+<p>Následuje tabulka obsahující odkazy na poslední verze dnešních příkladů i
+upraveného souboru <strong>Makefile</strong>, který obsahuje mj.&nbsp;i všechny
+příkazy pro spuštění příkladů a vygenerování všech potřebných výstupních
+souborů (trasovací informace apod.):</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td>1</td><td>test48.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test48.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test48.lua</a></td></tr>
+<tr><td>2</td><td>test49.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test49.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test49.lua</a></td></tr>
+<tr><td>3</td><td>test50.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test50.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test50.lua</a></td></tr>
+<tr><td>4</td><td>test51.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test51.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test51.lua</a></td></tr>
+<tr><td>5</td><td>test52.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test52.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test52.lua</a></td></tr>
+<tr><td>6</td><td>test53.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test53.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test53.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>7</td><td>Makefile</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/Makefile">https://github.com/tisnik/luajit-examples/blob/master/Makefile</a></td></tr>
+</table>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Literatura</h2>
+
+<ol>
+
+<li>Bolz, Cuni, Fijalkowski, Rigo:<br />
+&bdquo;Tracing the Meta-Level: PyPy's Tracing JIT Compiler&ldquo;
+</li>
+
+<li>Vasanth Bala, Evelyn Duesterwald, Sanjeev Banerjia:<br />
+&bdquo;Dynamo: A Transparent Dynamic Optimization System&ldquo;
+</li>
+
+<li>Bolz, Cuni, Fijalkowski, Leuschel, Pedroni, Rigo:
+&bdquo;Allocation removal by partial evaluation in a tracing JIT&ldquo;
+</li>
+
+<li>Bolz:<br />
+&bdquo;Automatic JIT Compiler Generation with Runtime Partial Evaluation&ldquo;
+</li>
+
+<li>Bolz, Kuhn, Lienhard, Matsakis, Nierstrasz, Renggli, Rigo and T. Verwaest:<br />
+&bdquo;Back to the Future in One Week - Implementing a Smalltalk VM in PyPy&ldquo;<br />
+pages 123-139. 2008.
+</li>
+
+<li>Bolz  and Rigo:<br />
+&bdquo;How to not write a virtual machine&ldquo;<br />
+In Proceedings of the 3rd Workshop on Dynamic Languages and Applications (DYLA), 2007
+</li>
+
+<li>Bruni, Verwaest:<br />
+&bdquo;PyGirl: generating Whole-System VMs from High-Level prototypes using PyPy&ldquo;<br />
+In Tools, accepted for publication, 2009.
+</li>
+
+<li>Sullivan, Bruening, Baron, Garnett and Amarasinghe:<br />
+&bdquo;Dynamic native optimization of interpreters&ldquo;<br />
+In Proceedings of the 2003 Workshop on Interpreters,<br />
+Virtual Machines and Emulators pages 50-57, San Diego, California, 2003. ACM.
+</li>
+
+</ol>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Dynamic Assembler<br />
+<a href="http://luajit.org/dynasm.html">http://luajit.org/dynasm.html</a>
+</li>
+
+<li>The Unofficial DynASM Documentation: Introduction<br />
+<a href="http://corsix.github.io/dynasm-doc/index.html">http://corsix.github.io/dynasm-doc/index.html</a>
+</li>
+
+<li>Have tracing JIT compilers won?<br />
+<a href="http://lambda-the-ultimate.org/node/3851">http://lambda-the-ultimate.org/node/3851</a>
+</li>
+
+<li>Tracing just-in-time compilation<br />
+<a href="http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation">http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1">http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work">http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="https://wiki.mozilla.org/JavaScript:TraceMonkey">https://wiki.mozilla.org/JavaScript:TraceMonkey</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/">http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/</a>
+</li>
+
+<li>improving JavaScript performance with JägerMonkey<br />
+<a href="http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/">http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/</a>
+</li>
+
+<li>Wikipedia: Mezijazyk<br />
+<a href="http://cs.wikipedia.org/wiki/Mezijazyk">http://cs.wikipedia.org/wiki/Mezijazyk</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
