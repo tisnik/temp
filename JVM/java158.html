@@ -1,0 +1,1232 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>LuaJIT - Just in Time překladač pro programovací jazyk Lua (10 - JIT překlad do nativního kódu)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>LuaJIT - Just in Time překladač pro programovací jazyk Lua (10 - JIT překlad do nativního kódu)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Zatímco jsme se v předchozích dvou částech seriálu o just in time překladači nazvaném LuaJIT zabývali především způsobem detekce stop (traces) v bajtkódu aplikací naprogramovaných v jazyku Lua, dnes se budeme zabývat druhým a částečně i třetím krokem, který musí trasovací JIT překladač provést. Jedná se o generování pseudoinstrukcí a následně i vytváření nativního kódu.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (10 - JIT překlad do nativního kódu)</a></p>
+<p><a href="#k02">2. Zdrojový text &rarr; bajtkód &rarr; sekvence pseudoinstrukcí &rarr; nativní kód</a></p>
+<p><a href="#k03">3. Reprezentace nalezené trasy mezikódem (pseudoinstrukcemi)</a></p>
+<p><a href="#k031">&nbsp;&nbsp;&nbsp;3.1 Typy operandů</a></p>
+<p><a href="#k032">&nbsp;&nbsp;&nbsp;3.2 Vybrané pseudoinstrukce</a></p>
+<p><a href="#k033">&nbsp;&nbsp;&nbsp;3.3 Formát výpisu sekvence pseudoinstrukcí</a></p>
+<p><a href="#k04">4. Demonstrační příklady &ndash; jednoduché programové smyčku přeložené do sekvence pseudoinstrukcí</a></p>
+<p><a href="#k041">&nbsp;&nbsp;&nbsp;4.1 Just-in-time překlad počítané programové smyčky typu <strong>for</strong></a></p>
+<p><a href="#k042">&nbsp;&nbsp;&nbsp;4.2 Just-in-time překlad programové smyčky typu <strong>while</strong></a></p>
+<p><a href="#k05">5. Demonstrační příklady &ndash; překlad smyček s&nbsp;podmínkami do sekvence pseudoinstrukcí</a></p>
+<p><a href="#k051">&nbsp;&nbsp;&nbsp;5.1 Just-in-time překlad programové smyčky s&nbsp;jedním rozvětvením</a></p>
+<p><a href="#k052">&nbsp;&nbsp;&nbsp;5.2 Just-in-time překlad programové smyčky se složitějším rozvětvením</a></p>
+<p><a href="#k06">6. Demonstrační příklad &ndash; překlad volání funkce do sekvence pseudoinstrukcí</a></p>
+<p><a href="#k07">7. Překlad ze sekvence pseudoinstrukcí do nativního kódu</a></p>
+<p><a href="#k08">8. Zdrojové kódy dnes použitých demonstračních příkladů i vygenerované sekvence pseudoinstrukcí</a></p>
+<p><a href="#k09">9. Literatura</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (10 - JIT překlad do nativního kódu)</h2>
+
+<p><a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-9-dalsi-vlastnosti-trasovaciho-jitu/">V&nbsp;minulé</a>
+a taktéž i <a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-8-zakladni-vlastnosti-trasovaciho-jitu/">předminulé</a>
+části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> jsme si vysvětlili princip činnosti trasovacího JITu, na němž je
+celý <i>LuaJIT</i> postaven. Ovšem samotné trasování slouží zejména pro
+zjištění, které části programového kódu, konkrétně které instrukce bajtkódu je
+zapotřebí přeložit, tj.&nbsp;jakou část bajtkódu lze považovat za <i>hot
+loop</i> či <i>hot call</i>. Jakmile jsou vhodné trasy detekovány, je nutné
+provést vlastní just-in-time překlad. Právě toto je téma, jemuž se budeme
+věnovat dnes. Na několika demonstračních příkladech, s&nbsp;nimiž jsme se již
+seznámili v&nbsp;předchozích částech tohoto seriálu, si ukážeme a taktéž
+zjednodušeně popíšeme způsob, jakým je proveden kýžený překlad a popř.&nbsp;i
+optimalizace nativního strojového kódu.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Zdrojový text &rarr; bajtkód &rarr; sekvence pseudoinstrukcí &rarr; nativní kód</h2>
+
+<p>Před podrobnějším popisem funkce překladače implementovaného
+v&nbsp;<i>LuaJITu</i> si zkusme stručně popsat, jaká cesta vede od zdrojového
+textu napsaného v&nbsp;jazyku Lua až k&nbsp;nativnímu (strojovému) kódu:</p>
+
+<ol>
+
+<li>Na začátku celého řetězce se nachází zdrojový text, který typicky napíše
+vývojář v&nbsp;textovém editoru. V&nbsp;některých případech se jedná o
+generovaný zdrojový text, což se však nijak nedotýká problematiky JITu.</li>
+
+<li>Při spuštění <i>LuaJITu</i> příkazem <strong>luajit jméno_projektu</strong>
+je zdrojový text postupně překládán do bajtkódu, kterému jsme se podrobně
+věnovali v&nbsp;šesti dílech tohoto seriálu: <a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-2/">[2]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-3/">[3]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-4/">[4]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-5-tabulky-a-pole/">[5]</a>,
+<a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-6-preklad-programovych-smycek-do-mezijazyka-luajitu/">[6]</a>
+a <a
+href="http://www.root.cz/clanky/luajit-just-in-time-prekladac-pro-programovaci-jazyk-lua-7-dokonceni-popisu-mezijazyka-luajitu/">[7]</a>.</li>
+
+<li>Bajtkód je ihned interpretován a současně se v&nbsp;něm vyhledávají <i>hot
+calls</i> a <i>hot loops</i>, tedy takové sekvence instrukcí bajtkódu, které by
+bylo vhodné JITovat.</li>
+
+<li>Jakmile je nalezena vhodná stopa, je sekvence instrukcí bajtkódu tvořící
+tuto stopu přeložena do sekvence pseudoinstrukcí. V&nbsp;tomto mezistupni se
+již pracuje s&nbsp;konkrétními datovými typy a samotný formát pseudoinstrukcí
+je zvolen takovým způsobem, aby se dobře prováděly optimalizace i poslední
+krok.</li>
+
+<p>Posledním krokem je transformace z&nbsp;pseudoinstrukcí do nativního
+strojového kódu. Zde se používají šablony připravené pro konkrétní typy
+mikroprocesorů a hlavním úkolem JITu je alokace registrů. Strojový kód však
+stále obsahuje vložené kontroly, zda jsou dodrženy výchozí podmínky provádění
+stopy. Pokud se například dojde k&nbsp;tomu, že se má vykonat jiná větev, je
+běh nativní části přerušen.</p>
+
+</ol>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Reprezentace nalezené trasy mezikódem (pseudoinstrukcemi)</h2>
+
+<p>Trasovací překladač při nalezení stopy vhodné pro JITování provede nejdříve
+překlad této stopy do sekvence pseudoinstrukcí. Přitom se využívá takzvaná
+<i>SSA</i> forma, jejíž základní vlastnosti jsou popsány například na stránce
+<a
+href="http://en.wikipedia.org/wiki/Static_single_assignment_form">http://en.wikipedia.org/wiki/Static_single_assignment_form</a>.
+Většina pseudoinstrukcí používaných <i>LuaJITem</i> obsahuje dva operandy, až
+na několik výjimek (jednou z&nbsp;výjimek je pseudoinstrukce rezervovaná pro
+volání funkce). Navíc je u každé pseudoinstrukce specifikován i typ výsledku,
+což je možná poněkud překvapivé, protože jak programovací jazyk Lua, tak i
+bajtkód <i>LuaJITu</i> využívá dynamické typování. Nicméně na úrovni
+pseudoinstrukcí se již nacházíme na tak nízké úrovni, že je nutné začít
+pracovat s&nbsp;konkrétními datovými typy, protože i samotné instrukce
+mikroprocesoru pracují s&nbsp;konkrétními datovými typy (bajt, short, int,
+float atd. atd.). Pro nás je v&nbsp;tuto chvíli důležitý zejména fakt, že se na
+sekvenci pseudoinstrukcí můžeme snadno podívat, a to s&nbsp;využitím volby
+<strong>-jdump</strong> (s&nbsp;případnými parametry).</p>
+
+
+
+<p><a name="k031"></a></p>
+<h3 id="k031">3.1 Typy operandů</h3>
+
+<p>V&nbsp;předchozím odstavci jsme se dozvěděli, že u každé pseudoinstrukce je
+kromě vlastního operačního kódu a popř.&nbsp;i operandů navíc specifikován i
+typ výsledku. To například znamená, že dále zmíněná pseudoinstrukce nazvaná
+<strong>SLOAD</strong> může načítat (a vracet) celá čísla (<i>int</i>), hodnoty
+s&nbsp;plovoucí řádovou čárkou (<i>flt</i>/<i>num</i>) atd. JIT překladač
+následně na základě páru datový_typ+pseudoinstrukce začne generovat nativní
+kód, samozřejmě s&nbsp;ohledem na vlastnosti instrukční sady cílového
+mikroprocesoru. V&nbsp;následující tabulce jsou vypsány typy výsledků, které se
+mohou objevit u všech pseudoinstrukcí:</p>
+
+<table>
+<tr><th> #</th><th>Typ</th><th>Význam</th></tr>
+<tr><td> 1</td><td>nil</td><td>odpovídá hodnotě <strong>nil</strong> v&nbsp;bajtkódu i v&nbsp;jazyku Lua</td></tr>
+<tr><td> 2</td><td>fal</td><td>odpovídá hodnotě <strong>false</strong> v&nbsp;bajtkódu i v&nbsp;jazyku Lua</td></tr>
+<tr><td> 3</td><td>tru</td><td>odpovídá hodnotě <strong>true</strong> v&nbsp;bajtkódu i v&nbsp;jazyku Lua</td></tr>
+<tr><td> 4</td><td>lud</td><td>light user data</td></tr>
+<tr><td> 5</td><td>str</td><td>řetězec</td></tr>
+<tr><td> 6</td><td>p32</td><td>32bitový ukazatel</td></tr>
+<tr><td> 7</td><td>thr</td><td>objekt reprezentující vlákno</td></tr>
+<tr><td> 8</td><td>pro</td><td>prototyp funkce</td></tr>
+<tr><td> 9</td><td>fun</td><td>uzávěr</td></tr>
+<tr><td>10</td><td>p64</td><td>64bitový ukazatel</td></tr>
+<tr><td>11</td><td>cdt</td><td>cdata (z&nbsp;nich se například může vytvořit řetězec atd.)</td></tr>
+<tr><td>12</td><td>tab</td><td>tabulka</td></tr>
+<tr><td>13</td><td>udt</td><td>user data</td></tr>
+<tr><td>14</td><td>flt</td><td>32bitová hodnota typu float (číslo s&nbsp;plovoucí řádovou čárkou)</td></tr>
+<tr><td>15</td><td>num</td><td>64bitová hodnota typu double (číslo s&nbsp;plovoucí řádovou čárkou)</td></tr>
+<tr><td>16</td><td>i8 </td><td>8bitová hodnota typu signed integer (celé číslo se znaménkem)</td></tr>
+<tr><td>17</td><td>u8 </td><td>8bitová hodnota typu unsigned integer (kladné celé číslo)</td></tr>
+<tr><td>18</td><td>i16</td><td>16bitová hodnota typu signed integer (celé číslo se znaménkem)</td></tr>
+<tr><td>19</td><td>u16</td><td>16bitová hodnota typu unsigned integer (kladné celé číslo)</td></tr>
+<tr><td>20</td><td>int</td><td>32bitová hodnota typu signed integer (celé číslo se znaménkem)</td></tr>
+<tr><td>21</td><td>u32</td><td>32bitová hodnota typu unsigned integer (kladné celé číslo)</td></tr>
+<tr><td>22</td><td>i64</td><td>64bitová hodnota typu signed integer (celé číslo se znaménkem)</td></tr>
+<tr><td>23</td><td>u64</td><td>64bitová hodnota typu unsigned integer (kladné celé číslo)</td></tr>
+</table>
+
+<p>Zajímavé je, že se v&nbsp;dalších čtyřech příkladech setkáme jen a pouze
+s&nbsp;typem <i>int</i>, tj.&nbsp;s&nbsp;pseudoinstrukcemi pracujícími
+s&nbsp;32bitovými hodnotami se znaménkem a navíc ještě s&nbsp;typem <i>num</i>,
+který odpovídá běžným numerickým hodnotám používaným v&nbsp;jazyku <i>Lua</i>.
+Pouze u pátého příkladu se pracuje s&nbsp;typem <i>fun</i> (reference na
+funkci).</p>
+
+
+
+<p><a name="k032"></a></p>
+<h3 id="k032">3.2 Vybrané pseudoinstrukce</h3>
+
+<p>V&nbsp;následujících demonstračních příkladech, resp.&nbsp;přesněji řečeno
+v&nbsp;sekvenci vygenerovaných pseudoinstrukcí, se setkáme s&nbsp;výpisem
+nalezených stop reprezentovaných jak bajtkódem, tak i posloupností
+pseudoinstrukcí. Kupodivu si v&nbsp;prvních čtyřech demonstračních příkladech
+vystačíme jen se šesti pseudoinstrukcemi, které jsou vypsány v&nbsp;tabulce
+umístěné pod tímto odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Pseudoinstrukce</th><th>Operandy</th><th>Význam</th></tr>
+<tr><td>1</td><td><strong>SLOAD</strong></td><td>#slot,#flags</td><td>stack slot load, #slot obsahuje 1 pro první lokální proměnnou atd. (v bytecode je to 0)</td></tr>
+<tr><td>2</td><td><strong>ADD</strong>  </td><td>left, right</td><td>aritmetická operace: left+right (záleží na typu operandů)</td></tr>
+<tr><td>3</td><td><strong>ADDOV</strong></td><td>left, right</td><td>součet s kontrolou přetečení</td></tr>
+<tr><td>4</td><td><strong>LE</strong>   </td><td>left, right</td><td>předpoklad left&le;right, nesplnění podmínky vede k ukončení stopy</td></tr>
+<tr><td>5</td><td><strong>LT</strong>   </td><td>left, right</td><td>předpoklad left&lt;right, nesplnění podmínky vede k ukončení stopy</td></tr>
+<tr><td>6</td><td><strong>PHI</strong>  </td><td>left, right</td><td>typicky umístěno na konci smyčky, left obsahuje referenci na počáteční hodnotu, right na hodnotu po provedení smyčky</td></tr>
+</table>
+
+<p>Instrukce nazvaná <strong>SLOAD</strong> bude v&nbsp;demonstračních
+příkladech používána pravidelně. Slouží pro načtení hodnoty ze slotu, výsledkem
+instrukce je pak načtená hodnota (daného typu). Zajímavé je adresování slotů,
+protože index první lokální proměnné má hodnotu 1 a ne 0. Při porovnání
+bajtkódu s&nbsp;pseudoinstrukcemi to může být poněkud matoucí. Pseudoinstrukce
+<strong>ADD</strong> a <strong>ADDOV</strong> provádí součet obou operandů,
+druhá z&nbsp;těchto pseudoinstrukcí navíc provádí kontrolu, zda nedošlo
+k&nbsp;přetečení výsledku. Tato pseudoinstrukce se často používá právě při
+implementaci programových smyček.</p>
+
+<p>Zvláštní postavení mají pseudoinstrukce <strong>LE</strong>,
+<strong>LT</strong> a ještě dalších deset podobných pseudoinstrukcí, o nichž se
+zmíníme příště. Tyto pseudoinstrukce se podobají podmíněným skokům, ovšem
+s&nbsp;tím rozdílem, že neobsahují explicitně zadanou adresu cíle. Pokud je
+podmínka reprezentovaná těmito pseudoinstrukcemi splněna, neprovede se žádná
+činnost, pokud však podmínka splněna není, dojde k&nbsp;ukončení běhu stopy a
+navíc k&nbsp;obnově předchozího stavu procesu. Díky tomuto mechanismu je možné
+v&nbsp;runtime reagovat na stav, kdy dojde k&nbsp;porušení nějaké podmínky,
+která platila při nalezení stopy &ndash; typickým příkladem je programová
+smyčka s&nbsp;větvením uvnitř této smyčky.</p>
+
+<p>V&nbsp;pátém příkladu, kde je zpracováno volání funkce, se objevují i další
+pseudoinstrukce:</p>
+
+<table>
+<tr><th>#</th><th>Pseudoinstrukce</th><th>Operandy</th><th>Význam</th></tr>
+<tr><td>1</td><td><strong>UREFO</strong></td><td>func, #uv</td><td>získání reference na aktuálně prováděnou funkci</td></tr>
+<tr><td>2</td><td><strong>ULOAD</strong></td><td>uref</td><td>načtení vázané proměnné, použito pro překlad instrukce UGET (tato instrukce je použita v&nbsp;bajtkódu)</td></tr>
+<tr><td>3</td><td><strong>USTORE</strong></td><td>uref, val</td><td>uložení nové hodnoty do vázané proměnné, použito pro překlad instrukcí USETV, USETS, USETN a USETP</td></tr>
+</table>
+
+
+
+<p><a name="k033"></a></p>
+<h3 id="k033">3.3 Formát výpisu sekvence pseudoinstrukcí</h3>
+
+<p>Sekvenci pseudoinstrukcí lze snadno vypsat s&nbsp;využitím přepínače
+<strong>-jdump</strong>. Při použití tohoto přepínače lze specifikovat poměrně
+velké množství voleb:</p>
+
+<table>
+<tr><th>#</th><th>Výchozí?</th><th>Volba</th><th>Význam</th></tr>
+<tr><td>1</td><td>ano</td><td>t</td><td>výpis informace o každé nalezené či ukončené stopě</td></tr>
+<tr><td>2</td><td>ano</td><td>b</td><td>výpis bajtkódu stopy</td></tr>
+<tr><td>3</td><td>ano</td><td>i</td><td>výpis sekvence pseudoinstrukcí stopy</td></tr>
+<tr><td>4</td><td>ne </td><td>s</td><td>vytvoří se snapshot</td></tr>
+<tr><td>5</td><td>ano</td><td>m</td><td>výpis sekvence nativních instrukcí stopy (závislé na architektuře)</td></tr>
+<tr><td>6</td><td>ano</td><td>T</td><td>výstup v plaintextu</td></tr>
+<tr><td>7</td><td>ne </td><td>A</td><td>výstup v plaintextu+řídicí symboly pro terminál pro změnu barvy</td></tr>
+<tr><td>8</td><td>ne </td><td>H</td><td>výstup v HTML+CSS</td></tr>
+</table>
+
+<p>Podívejme se nyní na to, jak vypadá výchozí výstupní formát do plaintextu.
+Jedná se o stopu jednoduché programové smyčky, v&nbsp;níž se neprovádí
+větvení:</p>
+
+<pre>
+---- TRACE 1 IR
+0001    int SLOAD  #3    I
+0002 &gt;  int SLOAD  #2    T
+0003 &gt;+ int ADDOV  0002  +1  
+0004  + int ADD    0001  +1  
+0005 &gt;  int LE     0004  +60 
+0006 ------ LOOP ------------
+0007 &gt;+ int ADDOV  0003  +1  
+0008  + int ADD    0004  +1  
+0009 &gt;  int LE     0008  +60 
+0010    int PHI    0004  0008
+0011    int PHI    0003  0007
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Význam údajů umístěných v&nbsp;jednotlivých sloupcích:</p>
+
+<table>
+<tr><th>Sloupec</th><th>Význam</th></tr>
+<tr><td>1</td><td>číslo (index) pseudoinstrukce</td></tr>
+<tr><td>2</td><td>příznaky: &gt; zde může dojít k&nbsp;ukončení stopy, + existuje reference pseudoinstrukcí PHI</td></tr>
+<tr><td>3</td><td>typ výsledku pseudoinstrukce</td></tr>
+<tr><td>4</td><td>operační kód pseudoinstrukce</td></tr>
+<tr><td>5</td><td>operandy pseudoinstrukce (reference nebo konstanty)</td></tr>
+</table>
+
+<p>Typ operandů lze jednoduše rozpoznat podle jejich prvního znaku:</p>
+
+<table>
+<tr><th>První znak operandu</th><th>Význam</th><th>Příklad</th></tr>
+<tr><td>#</td><td>číslo slotu</td><td>#3</td></tr>
+<tr><td>+</td><td>kladná numerická hodnota</td><td>+1</td></tr>
+<tr><td>-</td><td>záporná numerická hodnota</td><td>-60 (málokdy ji skutečně uvidíme)</td></tr>
+<tr><td>(nic)</td><td>adresa</td><td>0007</td></tr>
+</table>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklady &ndash; jednoduché programové smyčku přeložené do sekvence pseudoinstrukcí</h2>
+
+<p>Způsob činnosti just-in-time překladače implementovaného
+v&nbsp;<i>LuaJITu</i> si ukážeme na pětici demonstračních příkladů,
+s&nbsp;nimiž jsme se již setkali v&nbsp;minulé a předminulé části tohoto
+seriálu. U každého příkladu bude (znovu) uveden jeho zdrojový text, sekvence
+instrukcí bajtkódu detekovaná pro každou stopu a samozřejmě též sekvence
+pseudoinstrukcí vygenerovaných z&nbsp;bajtkódu.</p>
+
+
+
+<p><a name="k041"></a></p>
+<h3 id="k041">4.1 Just-in-time překlad počítané programové smyčky typu <strong>for</strong></h3>
+
+<p>Podívejme se na dnešní první demonstrační příklad nazvaný
+<strong>test41.lua</strong> (s&nbsp;tímto příkladem jsme se již setkali
+předminule). Tento demonstrační příklad je velmi jednoduchý, protože se
+v&nbsp;něm nachází pouze jediná počítaná programová smyčka typu
+<strong>for</strong>, která je prováděna celkem 60&times;. Toto číslo již
+zajistí detekci <i>hot loop</i> a tedy i JIT překlad:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 41.</i>
+<i>--</i>
+<i>-- Test JITu.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>local</strong> i
+<strong>local</strong> sum = 0
+&nbsp;
+<strong>for</strong> i = 1,60 <strong>do</strong>
+    sum = sum + 1
+<strong>end</strong>
+&nbsp;
+print(sum)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Při běhu tohoto programu se nalezne pouze jediná stopa (trace) tvořená
+samozřejmě tělem programové smyčky. <i>LuaJIT</i> vypíše informace o této stopě
+následujícím způsobem (včetně instrukcí bajtkódu, které stopu tvoří):</p>
+
+<pre>
+---- TRACE 1 start test41.lua:12
+0007  ADDVN    1   1   0  ; 1
+0008  FORL     2 =&gt; 0007
+</pre>
+
+<p>Po transformaci do pseudoinstrukcí vypadá programová smyčka a její
+inicializační část následovně:</p>
+
+<pre>
+---- TRACE 1 IR
+0001    int SLOAD  #3    I
+0002 &gt;  int SLOAD  #2    T
+0003 &gt;+ int ADDOV  0002  +1  
+0004  + int ADD    0001  +1  
+0005 &gt;  int LE     0004  +60 
+0006 ------ LOOP ------------
+0007 &gt;+ int ADDOV  0003  +1  
+0008  + int ADD    0004  +1  
+0009 &gt;  int LE     0008  +60 
+0010    int PHI    0004  0008
+0011    int PHI    0003  0007
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Za povšimnutí stojí několik zajímavostí. První z&nbsp;nich je, že řídicí
+proměnná (počitadlo) smyčky je typu <i>int</i> a nikoli <i>num</i>, což
+znamená, že <i>LuaJIT</i> korektně odhadl strukturu aplikace a datové typy
+použité v&nbsp;runtime. Dále zde můžeme vidět asserce (předpoklady) tvořené
+pseudoinstrukcemi <strong>LE</strong> použitými jak před vlastním tělem smyčky,
+tak i na začátku jejího těla. Instrukce <strong>ADD</strong> slouží ke zvýšení
+počitadla smyčky, zatímco instrukce <strong>ADDOV</strong> ke zvýšení hodnoty
+proměnné <i>sum</i>.</p>
+
+<p>Pokud by se hodnota proměnné <i>sum</i> snižovala o jedničku, vypadal by
+bajtkód odlišně:</p>
+
+<pre>
+---- TRACE 1 start test41.lua:12
+0007  SUBVN    1   1   0  ; 1
+0008  FORL     2 =&gt; 0007
+</pre>
+
+<p>A samozřejmě by se změnila i sekvence pseudoinstrukcí (včetně změny typu dat):</p>
+
+<pre>
+---- TRACE 1 IR
+0001    int SLOAD  #3    CI
+0002 &gt;  int SLOAD  #2    T
+0003  + num SUB    0002  +1  
+0004  + int ADD    0001  +1  
+0005 &gt;  int LE     0004  +60 
+0006 ------ LOOP ------------
+0007  + num SUB    0003  +1  
+0008  + int ADD    0004  +1  
+0009 &gt;  int LE     0008  +60 
+0010    int PHI    0004  0008
+0011    int PHI    0003  0007
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+
+
+<p><a name="k042"></a></p>
+<h3 id="k042">4.2 Just-in-time překlad programové smyčky typu <strong>while</strong></h3>
+
+<p>V&nbsp;dnešním druhém demonstračním příkladu je namísto počítané programové
+smyčky typu <strong>for</strong> použita univerzální smyčka
+<strong>while</strong> s&nbsp;podmínkou vyhodnocovanou na začátku.
+V&nbsp;bajtkódu <i>LuaJITu</i> se namísto speciální instrukce
+<strong>FORI</strong> v&nbsp;tomto případě používá instrukce
+<strong>LOOP</strong> a podmíněný skok realizovaný instrukcí
+<strong>ISGE</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 43.</i>
+<i>--</i>
+<i>-- Test JITu.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<strong>local</strong> i = 0
+<strong>local</strong> sum = 0
+&nbsp;
+<strong>while</strong> i &lt; 100 <strong>do</strong>
+    sum = sum + 1
+    i = i + 1
+<strong>end</strong>
+&nbsp;
+print(sum)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Programová smyčka je opět &ndash; podle očekávání &ndash; detekována jako
+stopa vhodná pro JITování, ovšem na rozdíl od předchozího demonstračního
+příkladu je struktura bajtkódu zcela odlišná, protože se namísto speciální
+instrukce <strong>FORL</strong> používá instrukce <strong>LOOP</strong>
+doplněná o <strong>ISGE</strong>:</p>
+
+<pre>
+---- TRACE 1 start test43.lua:12
+0007  ADDVN    1   1   0  ; 1
+0008  ADDVN    0   0   0  ; 1
+0009  JMP      2 =&gt; 0003
+0003  KSHORT   2 100
+0004  ISGE     0   2
+0005  JMP      2 =&gt; 0010
+0006  LOOP     2 =&gt; 0010
+</pre>
+
+<p>Odlišný bajtkód se samozřejmě projeví i na sekvenci pseudoinstrukcí:</p>
+
+<pre>
+---- TRACE 1 IR
+0001 &gt;  int SLOAD  #2    T
+0002 &gt;+ int ADDOV  0001  +1  
+0003 &gt;  int SLOAD  #1    T
+0004 &gt;+ int ADDOV  0003  +1  
+0005 &gt;  int LT     0004  +100
+0006 ------ LOOP ------------
+0007 &gt;+ int ADDOV  0002  +1  
+0008 &gt;+ int ADDOV  0004  +1  
+0009 &gt;  int LT     0008  +100
+0010    int PHI    0002  0007
+0011    int PHI    0004  0008
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Opět si povšimněte použití datového typu <i>int</i> a taktéž využití
+pseudoinstrukcí <strong>ADDOV</strong>. Příště uvidíme, že se tyto
+pseudoinstrukce překládají poměrně složitým způsobem, a to kvůli tomu, aby se
+detekovalo přetečení výsledku a přechod na použití jiného datového typu.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklady &ndash; překlad smyček s&nbsp;podmínkami do sekvence pseudoinstrukcí</h2>
+
+<p>Již minule jsme se zabývali problematikou programových smyček obsahujících
+ve svém těle podmínku či větší množství podmínek (větvení). Víme již, že se
+větvení &ndash; pokud se samozřejmě provádí dostatečně často &ndash; přeloží do
+samostatné stopy, takže si pojďme toto tvrzení ověřit na dvojici demonstračních
+příkladů.</p>
+
+
+
+<p><a name="k051"></a></p>
+<h3 id="k051">5.1 Just-in-time překlad programové smyčky s&nbsp;jedním rozvětvením</h3>
+
+<p>Donutit <i>LuaJIT</i> k&nbsp;tomu, aby provedl i překlad podmínky umístěné
+uvnitř počítané programové smyčky, je ve skutečnosti velmi snadné, jak jsme si
+ostatně vysvětlili minule &ndash; postačuje totiž zvýšit počet iterací smyčky a
+současně i počet vstupů do podmíněného bloku. Dnešní třetí demonstrační příklad
+pojmenovaný <strong>test49.lua</strong> používá pro smyčku tisíc iterací a
+uvnitř smyčky se po 500 iteracích provádí vnitřní větev:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 49.</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka s rozvětvením, zvýšení počtu iteraci.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    x = x + 1
+    <strong>if</strong> i &gt; 500 <strong>then</strong>
+        y = y + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Nyní si musíme ověřit, že se větvení skutečně přeložilo do samostatné stopy.
+Nejprve trasovací JIT odhalil celou programovou smyčku, a to včetně podmíněného
+skoku:</p>
+
+<pre>
+---- TRACE 1 start test49.lua:17
+0008  ADDVN    1   1   0  ; 1
+0009  KSHORT   7 500
+0010  ISGE     7   6
+0011  JMP      7 =&gt; 0013
+0013  FORL     3 =&gt; 0008
+</pre>
+
+<p>A následně našel a JIToval i její větev (pouze tuto větev):</p>
+
+<pre>
+---- TRACE 2 start 1/1 test49.lua:20
+0012  ADDVN    2   2   0  ; 1
+0013  JFORL    3   1
+</pre>
+
+<p>Jak vypadá transformace bajtkódu do pseudokódu můžeme vidět níže:</p>
+
+<pre>
+---- TRACE 1 IR
+0001    int SLOAD  #4    I
+0002 &gt;  int SLOAD  #2    T
+0003 &gt;+ int ADDOV  0002  +1  
+0004 &gt;  int LE     0001  +500
+0005  + int ADD    0001  +1  
+0006 &gt;  int LE     0005  +1000
+0007 ------ LOOP ------------
+0008 &gt;+ int ADDOV  0003  +1  
+0009 &gt;  int LE     0005  +500
+0010  + int ADD    0005  +1  
+0011 &gt;  int LE     0010  +1000
+0012    int PHI    0005  0010
+0013    int PHI    0003  0008
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Stopa nalezená pro větvení ve smyčce je oproti kódu celé smyčky dosti
+krátká, a to z&nbsp;toho důvodu, že tato stopa má přímou návaznost na stopu
+vlastní smyčky:</p>
+
+<pre>
+---- TRACE 2 IR
+0001    int SLOAD  #2    PI
+0002    int SLOAD  #4    PI
+0003 &gt;  int SLOAD  #3    T
+0004 &gt;  int ADDOV  0003  +1  
+0005    int ADD    0002  +1  
+0006 &gt;  int LE     0005  +1000
+---- TRACE 2 stop -&gt; 1
+</pre>
+
+<p>Poprvé zde vidíme, že pseudoinstrukce jsou v&nbsp;každé stopě indexovány od
+jedničky.</p>
+
+
+
+<p><a name="k052"></a></p>
+<h3 id="k052">5.2 Just-in-time překlad programové smyčky se složitějším rozvětvením</h3>
+
+<p>V&nbsp;demonstračním příkladu se jménem <strong>test50.lua</strong> se ve
+vnější programové smyčce nachází hned tři větve. Vzhledem k&nbsp;tomu, že je
+počet iterací nastaven na hodnotu 1000 a podmínky ve větvích umožní vstup do
+podmíněných bloků v&nbsp;1000-100=900, 1000-200=800 a 1000-300=700 iteracích,
+budou detekovány a následně přeloženy celkem čtyři stopy &ndash; vlastní
+programová smyčka a tři stopy obsahující jednotlivé větve:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 50.</i>
+<i>--</i>
+<i>-- Test JITu - programová smyčka se složitějším rozvětvením</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+<strong>local</strong> z = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka s rozvětvením</i>
+<strong>for</strong> i = 1,1000 <strong>do</strong>
+    <strong>if</strong> i &gt; 100 <strong>then</strong>
+        x = x + 1
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 200 <strong>then</strong>
+        y = y + 1
+    <strong>end</strong>
+    <strong>if</strong> i &gt; 300 <strong>then</strong>
+        z = z + 1
+    <strong>end</strong>
+<strong>end</strong>
+&nbsp;
+print(x, y, z)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Nyní bude velmi zajímavé sledovat především strukturu bajtkódu. Podle
+očekávání dostaneme celkem čtyři stopy, přičemž tři stopy budou navázány na
+nadřazenou stopu programové smyčky.</p>
+
+<p>Stopa celé smyčky, včetně přeskoků větvení (jednotlivé větve se totiž
+neprovádí od začátku!):</p>
+
+<pre>
+---- TRACE 1 start test50.lua:18
+0009  KSHORT   8 100
+0010  ISGE     8   7
+0011  JMP      8 =&gt; 0013
+0013  KSHORT   8 200
+0014  ISGE     8   7
+0015  JMP      8 =&gt; 0017
+0017  KSHORT   8 300
+0018  ISGE     8   7
+0019  JMP      8 =&gt; 0021
+0021  FORL     4 =&gt; 0009
+</pre>
+
+<p>Stopa prvního větvení, včetně přeskoku dalších dvou větvení (důvod je stejný
+jako důvod uvedený výše):</p>
+
+<pre>
+---- TRACE 2 start 1/1 test50.lua:20
+0012  ADDVN    1   1   0  ; 1
+0013  KSHORT   8 200
+0014  ISGE     8   7
+0015  JMP      8 =&gt; 0017
+0017  KSHORT   8 300
+0018  ISGE     8   7
+0019  JMP      8 =&gt; 0021
+0021  JFORL    4   1
+</pre>
+
+<p>Stopa druhého větvení, včetně přeskoku třetí podmínky:</p>
+
+<pre>
+---- TRACE 3 start 2/1 test50.lua:23
+0016  ADDVN    2   2   0  ; 1
+0017  KSHORT   8 300
+0018  ISGE     8   7
+0019  JMP      8 =&gt; 0021
+0021  JFORL    4   1
+</pre>
+
+<p>Konečně zbývá třetí podmínka, která je splněna a tudíž i detekována
+naposledy:</p>
+
+<pre>
+---- TRACE 4 start 3/1 test50.lua:26
+0020  ADDVN    3   3   0  ; 1
+0021  JFORL    4   1
+</pre>
+
+<p>Sekvence pseudoinstrukcí vygenerovaných z&nbsp;výše vypsaných bajtkódů jsou
+již poměrně složité (a ještě složitější bude transformace do nativního
+strojového kódu :-):</p>
+
+<pre>
+---- TRACE 1 IR
+0001    int SLOAD  #5    I
+0002 &gt;  int LE     0001  +100
+0003 &gt;  int LE     0001  +200
+0004 &gt;  int LE     0001  +300
+0005  + int ADD    0001  +1  
+0006 &gt;  int LE     0005  +1000
+0007 ------ LOOP ------------
+0008 &gt;  int LE     0005  +100
+0009 &gt;  int LE     0005  +200
+0010 &gt;  int LE     0005  +300
+0011  + int ADD    0005  +1  
+0012 &gt;  int LE     0011  +1000
+0013    int PHI    0005  0011
+---- TRACE 1 stop -&gt; loop
+&nbsp;
+---- TRACE 2 IR
+0001    int SLOAD  #5    PI
+0002 &gt;  int SLOAD  #2    T
+0003 &gt;  int ADDOV  0002  +1  
+0004 &gt;  int LE     0001  +200
+0005 &gt;  int LE     0001  +300
+0006    int ADD    0001  +1  
+0007 &gt;  int LE     0006  +1000
+---- TRACE 2 stop -&gt; 1
+&nbsp;
+---- TRACE 3 IR
+0001    int SLOAD  #2    PI
+0002    int SLOAD  #5    PI
+0003 &gt;  int SLOAD  #3    T
+0004 &gt;  int ADDOV  0003  +1  
+0005 &gt;  int LE     0002  +300
+0006    int ADD    0002  +1  
+0007 &gt;  int LE     0006  +1000
+---- TRACE 3 stop -&gt; 1
+&nbsp;
+---- TRACE 4 IR
+0001    int SLOAD  #2    PI
+0002    int SLOAD  #3    PI
+0003    int SLOAD  #5    PI
+0004 &gt;  int SLOAD  #4    T
+0005 &gt;  int ADDOV  0004  +1  
+0006    int ADD    0003  +1  
+0007 &gt;  int LE     0006  +1000
+---- TRACE 4 stop -&gt; 1
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad &ndash; překlad volání funkce do sekvence pseudoinstrukcí</h2>
+
+<p>Dnešní pátý a současně i poslední demonstrační příklad je založen na
+deklaraci funkce <strong>adder</strong>. Tato funkce je volána v&nbsp;trojici
+programových smyček. V&nbsp;první smyčce se provede prvních padesát volání,
+v&nbsp;další smyčce dalších padesát volání a konečně ve smyčce třetí se funkce
+zavolá po 101 až 150. Proč je příklad organizován takovým způsobem? Jde nám o
+to zabránit <i>LuaJITu</i> v&nbsp;detekci smyček s&nbsp;velkým počtem iterací,
+přičemž hodnota 50 leží pod hraniční hodnotou <strong>hotcall=56</strong>,
+takže smyčky samotné JITovány nebudou, ale funkce <strong>adder</strong>
+nakonec ano (samozřejmě až v&nbsp;poslední smyčce):</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstrační příklad číslo 53.</i>
+<i>--</i>
+<i>-- Test JITu - volání funkce</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- deklarace a inicializace lokálních proměnných</i>
+<strong>local</strong> i
+<strong>local</strong> x = 0
+<strong>local</strong> y = 0
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- funkce, která se bude JITovat</i>
+<strong>function</strong> adder()
+    x = x + 1
+    y = y + 1
+<strong>end</strong>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- programová smyčka, která se neJITuje</i>
+<strong>for</strong> i = 1,50 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("1")
+&nbsp;
+<i>-- programová smyčka, která se neJITuje</i>
+<strong>for</strong> i = 1,50 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("2")
+&nbsp;
+<i>-- programová smyčka, která se neJITuje</i>
+<strong>for</strong> i = 1,50 <strong>do</strong>
+    adder()
+<strong>end</strong>
+print("3")
+&nbsp;
+print(x,y)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>--</i>
+<i>-- Finito.</i>
+<i>--</i>
+</pre>
+
+<p>Instrukce bajtkódu v&nbsp;detekované stopě nám prozradí, že je stopa
+skutečně nalezena ve funkci <strong>adder</strong>, protože zde můžeme vidět
+přístup k&nbsp;vázaným proměnným x a y. Instrukcí <strong>UGET</strong> se
+přečte aktuální hodnota vázané proměnné a instrukcí <strong>USETV</strong> se
+do této proměnné uloží nová hodnota z&nbsp;registru (zde konkrétně
+z&nbsp;registru číslo 1):</p>
+
+<pre>
+---- TRACE 1 start test53.lua:17
+0001  UGET     0   0      ; x
+0002  ADDVN    0   0   0  ; 1
+0003  USETV    0   0      ; x
+0004  UGET     0   1      ; y
+0005  ADDVN    0   0   0  ; 1
+0006  USETV    1   0      ; y
+0007  RET0     0   1
+</pre>
+
+<p>Po transformaci do sekvence pseudoinstrukcí můžeme vidět náhradu
+<strong>UGET</strong> za <strong>ULOAD</strong> a <strong>USETV</strong> za
+<strong>USTORE</strong>. Navíc se zde &ndash; zcela poprvé &ndash; objevuje i
+pseudoinstrukce <strong>UREFO</strong> vracející referenci na funkci:</p>
+
+<pre>
+---- TRACE 1 IR
+0001    fun SLOAD  #0    R
+0002 &gt;  p32 UREFO  0001  #0  
+0003 &gt;  int ULOAD  0002
+0004 &gt;  int ADDOV  0003  +1  
+0005    int USTORE 0002  0004
+0006 &gt;  p32 UREFO  0001  #1  
+0007 &gt;  int ULOAD  0006
+0008 &gt;  int ADDOV  0007  +1  
+0009    int USTORE 0006  0008
+---- TRACE 1 stop -&gt; return
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Překlad ze sekvence pseudoinstrukcí do nativního kódu</h2>
+
+<p>Posledním krokem JIT překladu je transformace pseudoinstrukcí do nativního
+kódu. Ukažme si transformaci stopy z&nbsp;dnešního druhého demonstračního
+příkladu:</p>
+
+<pre>
+---- TRACE 1 IR
+0001 &gt;  int SLOAD  #2    T
+0002 &gt;+ int ADDOV  0001  +1  
+0003 &gt;  int SLOAD  #1    T
+0004 &gt;+ int ADDOV  0003  +1  
+0005 &gt;  int LT     0004  +100
+0006 ------ LOOP ------------
+0007 &gt;+ int ADDOV  0002  +1  
+0008 &gt;+ int ADDOV  0004  +1  
+0009 &gt;  int LT     0008  +100
+0010    int PHI    0002  0007
+0011    int PHI    0004  0008
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Překlad do nativního strojového kódu pro 32bitové mikroprocesory ARM vypadá
+následovně:</p>
+
+<pre>
+---- TRACE 1 start test43.lua:12
+---- TRACE 1 mcode 84
+00397fac  ldrd  r4, [r9, #8]
+00397fb0  cmn   r5, #14
+00397fb4  blne  0x00390018      -&gt;0
+00397fb8  adds  r4, r4, #1
+00397fbc  blvs  0x00390018      -&gt;0
+00397fc0  ldrd  r6, [r9]
+00397fc4  cmn   r7, #14
+00397fc8  blne  0x00390018      -&gt;0
+00397fcc  adds  r6, r6, #1
+00397fd0  blvs  0x00390018      -&gt;0
+00397fd4  cmp   r6, #100
+00397fd8  blge  0x0039001c      -&gt;1
+-&gt;LOOP:
+00397fdc  mov   r11, r6
+00397fe0  mov   r10, r4
+00397fe4  adds  r4, r10, #1
+00397fe8  blvs  0x00390020      -&gt;2
+00397fec  adds  r6, r11, #1
+00397ff0  blvs  0x00390020      -&gt;2
+00397ff4  cmp   r6, #100
+00397ff8  blt   0x00397fdc      -&gt;LOOP
+00397ffc  bl    0x00390024      -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>Povšimněte si především množství podmíněných skoků (<strong>blne</strong>,
+<strong>blvs</strong>), kterými jsou realizovány asserce zmíněné
+v&nbsp;předchozím textu.</p>
+
+<p>Pro platformu x86_64 dostaneme &ndash; podle očekávání &ndash; sice
+identický, ale v&nbsp;detailech přece jen odlišný &bdquo;stroják&ldquo;:</p>
+
+<pre>
+---- TRACE 1 mcode 104
+0bceff8e  mov dword [0x409604a0], 0x1
+0bceff99  movsd xmm1, [0x404b0d38]
+0bceffa2  movsd xmm0, [0x404b0d40]
+0bceffab  cmp dword [rdx+0xc], 0xfffeffff
+0bceffb2  jnb 0x0bce0010        -&gt;0
+0bceffb8  movsd xmm6, [rdx+0x8]
+0bceffbd  addsd xmm6, xmm1
+0bceffc1  cmp dword [rdx+0x4], 0xfffeffff
+0bceffc8  jnb 0x0bce0010        -&gt;0
+0bceffce  movsd xmm7, [rdx]
+0bceffd2  addsd xmm7, xmm1
+0bceffd6  ucomisd xmm0, xmm7
+0bceffda  jbe 0x0bce0014        -&gt;1
+-&gt;LOOP:
+0bceffe0  addsd xmm6, xmm1
+0bceffe4  movaps xmm5, xmm7
+0bceffe7  addsd xmm7, xmm1
+0bceffeb  ucomisd xmm0, xmm7
+0bceffef  ja 0x0bceffe0 -&gt;LOOP
+0bcefff1  jmp 0x0bce001c        -&gt;3
+---- TRACE 1 stop -&gt; loop
+</pre>
+
+<p>I zde můžeme vidět několik podmíněných skoků (<strong>jnb</strong>,
+<strong>jbe</strong>) s&nbsp;podobným významem jako v&nbsp;předchozím nativním
+kódu. Podrobnosti si v&nbsp;případě zájmu vysvětlíme příště.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Zdrojové kódy dnes použitých demonstračních příkladů i vygenerované sekvence pseudoinstrukcí</h2>
+
+<p>Všechny dnes použité demonstrační příklady byly, jak je tomu ostatně
+v&nbsp;tomto seriálu již dlouhodobějším zvykem, uloženy do Git (přesněji řečeno
+do <a href="http://github.com/">GitHub</a>) repositáře umístěného na adrese <a
+href="https://github.com/tisnik/luajit-examples">https://github.com/tisnik/luajit-examples</a>.</p>
+
+<p>Následuje tabulka obsahující odkazy na poslední verze dnešních příkladů i
+výstupních souborů: trasovací informace, mezikód i nově upravený
+<i>Makefile</i>:</p>
+
+<table>
+<tr><th> #</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td> 1</td><td>test41.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test41.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test41.lua</a></td></tr>
+<tr><td> 2</td><td>test43.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test43.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test43.lua</a></td></tr>
+<tr><td> 3</td><td>test49.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test49.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test49.lua</a></td></tr>
+<tr><td> 4</td><td>test50.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test50.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test50.lua</a></td></tr>
+<tr><td> 5</td><td>test53.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test53.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test53.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>test41.out</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/out/test41.out">https://github.com/tisnik/luajit-examples/blob/master/out/test41.out</a></td></tr>
+<tr><td> 7</td><td>test43.out</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/out/test43.out">https://github.com/tisnik/luajit-examples/blob/master/out/test43.out</a></td></tr>
+<tr><td> 8</td><td>test49.out</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/out/test49.out">https://github.com/tisnik/luajit-examples/blob/master/out/test49.out</a></td></tr>
+<tr><td> 9</td><td>test50.out</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/out/test50.out">https://github.com/tisnik/luajit-examples/blob/master/out/test50.out</a></td></tr>
+<tr><td>10</td><td>test53.out</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/out/test53.out">https://github.com/tisnik/luajit-examples/blob/master/out/test53.out</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>test41.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test41.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test41.ir</a></td></tr>
+<tr><td>12</td><td>test43.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test43.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test43.ir</a></td></tr>
+<tr><td>13</td><td>test49.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test49.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test49.ir</a></td></tr>
+<tr><td>14</td><td>test50.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test50.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test50.ir</a></td></tr>
+<tr><td>15</td><td>test53.ir</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/ir/test53.ir">https://github.com/tisnik/luajit-examples/blob/master/ir/test53.ir</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>16</td><td>Makefile</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/Makefile">https://github.com/tisnik/luajit-examples/blob/master/Makefile</a></td></tr>
+</table>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Literatura</h2>
+
+<ol>
+
+<li>Bolz, Cuni, Fijalkowski, Rigo:<br />
+&bdquo;Tracing the Meta-Level: PyPy's Tracing JIT Compiler&ldquo;
+</li>
+
+<li>Vasanth Bala, Evelyn Duesterwald, Sanjeev Banerjia:<br />
+&bdquo;Dynamo: A Transparent Dynamic Optimization System&ldquo;
+</li>
+
+<li>Bolz, Cuni, Fijalkowski, Leuschel, Pedroni, Rigo:
+&bdquo;Allocation removal by partial evaluation in a tracing JIT&ldquo;
+</li>
+
+<li>Bolz:<br />
+&bdquo;Automatic JIT Compiler Generation with Runtime Partial Evaluation&ldquo;
+</li>
+
+<li>Bolz, Kuhn, Lienhard, Matsakis, Nierstrasz, Renggli, Rigo and T. Verwaest:<br />
+&bdquo;Back to the Future in One Week - Implementing a Smalltalk VM in PyPy&ldquo;<br />
+pages 123-139. 2008.
+</li>
+
+<li>Bolz  and Rigo:<br />
+&bdquo;How to not write a virtual machine&ldquo;<br />
+In Proceedings of the 3rd Workshop on Dynamic Languages and Applications (DYLA), 2007
+</li>
+
+<li>Bruni, Verwaest:<br />
+&bdquo;PyGirl: generating Whole-System VMs from High-Level prototypes using PyPy&ldquo;<br />
+In Tools, accepted for publication, 2009.
+</li>
+
+<li>Sullivan, Bruening, Baron, Garnett and Amarasinghe:<br />
+&bdquo;Dynamic native optimization of interpreters&ldquo;<br />
+In Proceedings of the 2003 Workshop on Interpreters,<br />
+Virtual Machines and Emulators pages 50-57, San Diego, California, 2003. ACM.
+</li>
+
+</ol>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Static single assignment form (SSA)<br />
+<a href="http://en.wikipedia.org/wiki/Static_single_assignment_form">http://en.wikipedia.org/wiki/Static_single_assignment_form</a>
+</li>
+
+<li>LuaJIT 2.0 SSA IR</li>
+<a href="http://wiki.luajit.org/SSA-IR-2.0">http://wiki.luajit.org/SSA-IR-2.0</a>
+</li>
+
+<li>Dynamic Assembler<br />
+<a href="http://luajit.org/dynasm.html">http://luajit.org/dynasm.html</a>
+</li>
+
+<li>The Unofficial DynASM Documentation: Introduction<br />
+<a href="http://corsix.github.io/dynasm-doc/index.html">http://corsix.github.io/dynasm-doc/index.html</a>
+</li>
+
+<li>Have tracing JIT compilers won?<br />
+<a href="http://lambda-the-ultimate.org/node/3851">http://lambda-the-ultimate.org/node/3851</a>
+</li>
+
+<li>Tracing just-in-time compilation<br />
+<a href="http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation">http://en.wikipedia.org/wiki/Tracing_just-in-time_compilation</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1">http://www.freelists.org/post/luajit/How-does-LuaJITs-trace-compiler-work,1</a>
+</li>
+
+<li>How does LuaJIT's trace compiler work?<br />
+<a href="http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work">http://stackoverflow.com/questions/20266523/how-does-luajits-trace-compiler-work</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="https://wiki.mozilla.org/JavaScript:TraceMonkey">https://wiki.mozilla.org/JavaScript:TraceMonkey</a>
+</li>
+
+<li>TraceMonkey<br />
+<a href="http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/">http://brendaneich.com/2008/08/tracemonkey-javascript-lightspeed/</a>
+</li>
+
+<li>improving JavaScript performance with JägerMonkey<br />
+<a href="http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/">http://hacks.mozilla.org/2010/03/improving-javascript-performance-with-jagermonkey/</a>
+</li>
+
+<li>Wikipedia: Mezijazyk<br />
+<a href="http://cs.wikipedia.org/wiki/Mezijazyk">http://cs.wikipedia.org/wiki/Mezijazyk</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
