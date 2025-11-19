@@ -1,0 +1,1205 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>LuaJIT - Just in Time překladač pro programovací jazyk Lua (3)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>LuaJIT - Just in Time překladač pro programovací jazyk Lua (3)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Ve třetí části článku o Just in Time překladači LuaJIT si popíšeme všechny instrukce mezijazyka (IR) sloužící k implementaci podmínek a relačních operátorů. Jedná se o rozšíření tématu, kterému jsme se věnovali minule, dnes se však budeme zabývat mj. i porovnáním obsahu proměnných s řetězci či se speciálními hodnotami true, false a nil.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (3)</a></p>
+<p><a href="#k02">2. Demonstrační příklad číslo 13: relační operátory pro proměnné obsahujících numerické hodnoty</a></p>
+<p><a href="#k03">3. Demonstrační příklad číslo 14: relační operátory pro porovnání proměnné s&nbsp;číselnou konstantou</a></p>
+<p><a href="#k04">4. Demonstrační příklad číslo 15: porovnání hodnoty proměnné s&nbsp;booleovskou konstantou <strong>true</strong> či <strong>false</strong></a></p>
+<p><a href="#k05">5. Demonstrační příklad číslo 16: porovnání hodnoty proměnné s&nbsp;konstantou <strong>nil</strong></a></p>
+<p><a href="#k06">6. Demonstrační příklad číslo 17: porovnání hodnoty proměnné s&nbsp;řetězcem</a></p>
+<p><a href="#k07">7. Demonstrační příklad číslo 18: způsob překladu jednoduchých podmínek typu <strong>if x then</strong> a <strong>if not x then</strong></a></p>
+<p><a href="#k08">8. Repositář se zdrojovými kódy všech šesti dnešních demonstračních příkladů</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. LuaJIT - Just in Time překladač pro programovací jazyk Lua (3)</h2>
+
+<p>Ve druhé části článku o Just in Time překladači nazvaném <i>LuaJIT</i> jsme
+si s&nbsp;využitím demonstračních příkladů ukázali, jak se používají základní
+instrukce IR implementované pro porovnání dvou hodnot. Připomeňme si, že se
+jedná o čtveřici instrukcí nazvaných <strong>ISLT</strong>,
+<strong>ISGE</strong>, <strong>ISLE</strong> a <strong>ISGT</strong>. Tyto
+instrukce porovnají hodnoty uložené ve dvou slotech (lokálních proměnných) a na
+základě výsledků porovnání se buď provede nebo naopak neprovede skok, jehož
+instrukce <strong>JMP</strong> musí být umístěna ihned za zmíněnými čtyřmi
+instrukcemi pro porovnání. Je zajímavé, že IR obsahuje instrukce pro všechny
+typy relací, tj. &lt;, &le;, &ge;, &gt; (o relacích typu = a &ne; se budeme
+podrobněji bavit v&nbsp;navazujících kapitolách), i když by teoreticky bylo
+možné nahradit například instrukci <strong>ISLT</strong> instrukcí
+<strong>ISLE</strong> s&nbsp;prohozenými operandy. Ve skutečnosti je však
+nutné, aby se v&nbsp;IR korektně pracovalo i s&nbsp;hodnotou
+<strong>NaN</strong> (<i>Not a Number</i>), takže především pro práci
+s&nbsp;numerickými hodnotami se používají všechny instrukce implementující test
+na relace.</p>
+
+<p>V&nbsp;následující tabulce jsou vypsány čtyři instrukce testující relace
+&lt;, &le;, &ge; a &gt; pro hodnoty uložené ve slotech (lokálních proměnných).
+Tyto instrukce jsou použity pro všechny typy hodnot, tj.&nbsp;jak pro numerické
+hodnoty, tak i pro řetězce atd.:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ISLT </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &lt; D</td></tr>
+<tr><td>2</td><td>ISGE </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &ge; D</td></tr>
+<tr><td>3</td><td>ISLE </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &le; D</td></tr>
+<tr><td>4</td><td>ISGT </td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &gt; D</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Demonstrační příklad číslo 13: relační operátory pro proměnné obsahujících numerické hodnoty</h2>
+
+<p><a href="#k01">V&nbsp;úvodní kapitole</a> jsme se seznámili se čtyřmi
+základními instrukcemi použitými pro porovnání dvou hodnot uložených ve
+slotech. Pokud je nutné zjistit, zda jsou si dvě hodnoty rovny či naopak
+nerovny, je nutné v&nbsp;IR rozlišit, jakého typu porovnávané hodnoty jsou a
+zda jsou uloženy v&nbsp;proměnných či zda jsou naopak reprezentovány
+konstantou. Pokud se jedná o dvě proměnné, je situace velmi jednoduchá, protože
+lze pro porovnání obsahu těchto proměnných použít instrukce
+<strong>ISEQV</strong> a <strong>ISNEV</strong> vypsané ve druhé tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ISEQV</td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A = D</td></tr>
+<tr><td>2</td><td>ISNEV</td><td>slot, slot</td><td>následuje skok provedený při splnění podmínky A &ne; D</td></tr>
+</table>
+
+<p>Použití instrukcí <strong>ISLT</strong>, <strong>ISLE</strong>,
+<strong>ISGT</strong>, <strong>ISGE</strong> a taktéž <strong>ISEQV</strong> a
+<strong>ISNEV</strong> bude ukázáno v&nbsp;dnešním prvním demonstračním
+příkladu:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 13</i>
+<i>--</i>
+<i>-- Porovnavani promennych obsahujicich numericke hodnoty.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych numerickymi konstantami</i>
+<strong>local</strong> a = 1
+<strong>local</strong> b = 2
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych s vyuzitim relacnich vyrazu</i>
+<strong>local</strong> x1 = a == b
+<strong>local</strong> x2 = a ~= b
+<strong>local</strong> x3 = a &lt;  b
+<strong>local</strong> x4 = a &lt;= b
+<strong>local</strong> x5 = a &gt;  b
+<strong>local</strong> x6 = a &gt; b
+&nbsp;
+<i>-- tisk hodnot vsech promennych</i>
+print(a)
+print(b)
+&nbsp;
+print()
+&nbsp;
+print(x1)
+print(x2)
+print(x3)
+print(x4)
+print(x5)
+print(x6)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>Podívejme se nyní na překlad tohoto příkladu do IR. Z&nbsp;vygenerovaného IR
+je patrné, že se výrazy s&nbsp;relačními operátory přeložily do sekvence
+instrukcí s&nbsp;podmíněnými a nepodmíněnými skoky (a to zajímavější bude
+zjištění, co s&nbsp;těmito skoky provede vlastní JIT :-):</p>
+
+<pre>
+;<i> Překlad demonstračního příkladu test13.lua</i>
+;<i> do IR využívaného virtuálním strojem a JIT</i>
+;<i> překladačem LuaJIT.</i>
+&nbsp;
+-- BYTECODE -- test13.lua:0-40
+0001    KSHORT   0   1        ;<i> do slotu číslo 0 uložit hodnotu 1</i>
+0002    KSHORT   1   2        ;<i> do slotu číslo 1 uložit hodnotu 2</i>
+&nbsp;
+0003    ISEQV    0   1        ;<i> porovnání dvou proměnných na rovnost</i>
+0004    JMP      2 =&gt; 0007    ;<i> skok provedený při splnění podmínky</i>
+0005    KPRI     2   1        ;<i> speciální hodnota false</i>
+0006    JMP      3 =&gt; 0008    ;<i> nepodmíněný skok</i>
+0007 =&gt; KPRI     2   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0008 =&gt; ISNEV    0   1        ;<i> porovnání dvou proměnných na nerovnost</i>
+0009    JMP      3 =&gt; 0012    ;<i> skok provedený při splnění podmínky</i>
+0010    KPRI     3   1        ;<i> speciální hodnota false</i>
+0011    JMP      4 =&gt; 0013    ;<i> nepodmíněný skok</i>
+0012 =&gt; KPRI     3   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0013 =&gt; ISLT     0   1        ;<i> porovnání dvou proměnných na relaci "menší než"</i>
+0014    JMP      4 =&gt; 0017    ;<i> skok provedený při splnění podmínky</i>
+0015    KPRI     4   1        ;<i> speciální hodnota false</i>
+0016    JMP      5 =&gt; 0018    ;<i> nepodmíněný skok</i>
+0017 =&gt; KPRI     4   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0018 =&gt; ISLE     0   1        ;<i> porovnání dvou proměnných na relaci "menší nebo rovno"</i>
+0019    JMP      5 =&gt; 0022    ;<i> skok provedený při splnění podmínky</i>
+0020    KPRI     5   1        ;<i> speciální hodnota false</i>
+0021    JMP      6 =&gt; 0023    ;<i> nepodmíněný skok</i>
+0022 =&gt; KPRI     5   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0023 =&gt; ISLT     1   0        ;<i> porovnání dvou proměnných na relaci "menší než"</i>
+0024    JMP      6 =&gt; 0027    ;<i> skok provedený při splnění podmínky</i>
+0025    KPRI     6   1        ;<i> speciální hodnota false</i>
+0026    JMP      7 =&gt; 0028    ;<i> nepodmíněný skok</i>
+0027 =&gt; KPRI     6   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0028 =&gt; ISLE     1   0        ;<i> porovnání dvou proměnných na relaci "menší nebo rovno"</i>
+0029    JMP      7 =&gt; 0032    ;<i> skok provedený při splnění podmínky</i>
+0030    KPRI     7   1        ;<i> speciální hodnota false</i>
+0031    JMP      8 =&gt; 0033    ;<i> nepodmíněný skok</i>
+0032 =&gt; KPRI     7   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0033 =&gt; GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0034    MOV      9   0        ;<i> parametr použitý při volání funkce print()</i>
+0035    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0036    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0037    MOV      9   1        ;<i> parametr použitý při volání funkce print()</i>
+0038    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0039    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0040    CALL     8   1   1    ;<i> volání funkce print() - odřádkování</i>
+&nbsp;
+0041    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0042    MOV      9   2        ;<i> parametr použitý při volání funkce print()</i>
+0043    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0044    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0045    MOV      9   3        ;<i> parametr použitý při volání funkce print()</i>
+0046    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0047    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0048    MOV      9   4        ;<i> parametr použitý při volání funkce print()</i>
+0049    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0050    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0051    MOV      9   5        ;<i> parametr použitý při volání funkce print()</i>
+0052    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0053    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0054    MOV      9   6        ;<i> parametr použitý při volání funkce print()</i>
+0055    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0056    GGET     8   0        ;<i> získání reference na funkci se jménem "print"</i>
+0057    MOV      9   7        ;<i> parametr použitý při volání funkce print()</i>
+0058    CALL     8   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0059    RET0     0   1        ;<i> návrat z programu</i>
+&nbsp;
+;<i> konec</i>
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad číslo 14: relační operátory pro porovnání proměnné s&nbsp;číselnou konstantou</h2>
+
+<p>V&nbsp;mnoha aplikacích se využívá porovnání hodnoty proměnné
+s&nbsp;numerickou (číselnou) konstantou. V&nbsp;tomto případě nám IR LuaJITu
+nabízí dvě další instrukce nazvané <strong>ISEQN</strong> a
+<strong>ISNEN</strong>, kde <strong>N</strong> na konci jména instrukce znamená
+<i>number</i>, podobně jako <strong>V</strong> na konci dvou instrukcí
+zmíněných <a href="#k02">v&nbsp;předchozí kapitole</a> znamená <i>variable</i>.
+Tyto dvě nové instrukce jsou vypsány ve třetí tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ISEQN</td><td>slot, konstanta</td><td>následuje skok provedený při splnění podmínky A = konstanta</td></tr>
+<tr><td>2</td><td>ISNEN</td><td>slot, konstanta</td><td>následuje skok provedený při splnění podmínky A &ne; konstanta</td></tr>
+</table>
+
+<p>Opět se podívejme na způsob využití obou dvou instrukcí (a současně i
+instrukcí <strong>ISLE</strong>, <strong>ISLT</strong>, <strong>ISGE</strong> a
+<strong>ISGT</strong>) v&nbsp;jednoduchém demonstračním příkladu:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 14</i>
+<i>--</i>
+<i>-- Porovnavani promennych obsahujicich numericke hodnoty s konstantami.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promenne konstantou</i>
+<strong>local</strong> a = 1
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych s vyuzitim relacnich vyrazu</i>
+<strong>local</strong> x1 = a == 10
+<strong>local</strong> x2 = a ~= 10
+<strong>local</strong> x3 = a &lt; 10
+<strong>local</strong> x4 = a &lt;= 10
+<strong>local</strong> x5 = a &gt;  10
+<strong>local</strong> x6 = a &gt;= 10
+&nbsp;
+<i>-- tisk hodnot vsech promennych</i>
+print(a)
+&nbsp;
+print()
+&nbsp;
+print(x1)
+print(x2)
+print(x3)
+print(x4)
+print(x5)
+print(x6)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>Následuje výpis IR tohoto demonstračního příkladu:</p>
+
+<pre>
+;<i> Překlad demonstračního příkladu test14.lua</i>
+;<i> do IR využívaného virtuálním strojem a JIT</i>
+;<i> překladačem LuaJIT.</i>
+&nbsp;
+-- BYTECODE -- test14.lua:0-38
+0001    KSHORT   0   1        ;<i> do slotu číslo 0 uložit hodnotu 1</i>
+&nbsp;
+0002    ISEQN    0   0        ;<i> porovnání obsahu slotu/proměnné 0 s konstantou 10</i>
+0003    JMP      1 =&gt; 0006    ;<i> skok provedený při splnění podmínky</i>
+0004    KPRI     1   1        ;<i> speciální hodnota false</i>
+0005    JMP      2 =&gt; 0007    ;<i> nepodmíněný skok</i>
+0006 =&gt; KPRI     1   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0007 =&gt; ISNEN    0   0        ;<i> porovnání obsahu slotu/proměnné 0 s konstantou 10</i>
+0008    JMP      2 =&gt; 0011    ;<i> skok provedený při splnění podmínky</i>
+0009    KPRI     2   1        ;<i> speciální hodnota false</i>
+0010    JMP      3 =&gt; 0012    ;<i> nepodmíněný skok</i>
+0011 =&gt; KPRI     2   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0012 =&gt; KSHORT   3  10        ;<i> konstanta 10 použitá pro porovnávání</i>
+0013    ISLT     0   3        ;<i> porovnání obsahu slotu/proměnné 0 s hodnotou 10 uloženou do dalšího slotu</i>
+0014    JMP      3 =&gt; 0017    ;<i> skok provedený při splnění podmínky</i>
+0015    KPRI     3   1        ;<i> speciální hodnota false</i>
+0016    JMP      4 =&gt; 0018    ;<i> nepodmíněný skok</i>
+0017 =&gt; KPRI     3   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0018 =&gt; KSHORT   4  10        ;<i> konstanta 10 použitá pro porovnávání</i>
+0019    ISLE     0   4        ;<i> porovnání obsahu slotu/proměnné 0 s hodnotou 10 uloženou do dalšího slotu</i>
+0020    JMP      4 =&gt; 0023    ;<i> skok provedený při splnění podmínky</i>
+0021    KPRI     4   1        ;<i> speciální hodnota false</i>
+0022    JMP      5 =&gt; 0024    ;<i> nepodmíněný skok</i>
+0023 =&gt; KPRI     4   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0024 =&gt; KSHORT   5  10        ;<i> konstanta 10 použitá pro porovnávání</i>
+0025    ISLT     5   0        ;<i> porovnání obsahu slotu/proměnné 0 s hodnotou 10 uloženou do dalšího slotu</i>
+0026    JMP      5 =&gt; 0029    ;<i> skok provedený při splnění podmínky</i>
+0027    KPRI     5   1        ;<i> speciální hodnota false</i>
+0028    JMP      6 =&gt; 0030    ;<i> nepodmíněný skok</i>
+0029 =&gt; KPRI     5   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0030 =&gt; KSHORT   6  10        ;<i> konstanta 10 použitá pro porovnávání</i>
+0031    ISLE     6   0        ;<i> porovnání obsahu slotu/proměnné 0 s hodnotou 10 uloženou do dalšího slotu</i>
+0032    JMP      6 =&gt; 0035    ;<i> skok provedený při splnění podmínky</i>
+0033    KPRI     6   1        ;<i> speciální hodnota false</i>
+0034    JMP      7 =&gt; 0036    ;<i> nepodmíněný skok</i>
+0035 =&gt; KPRI     6   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0036 =&gt; GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0037    MOV      8   0        ;<i> parametr použitý při volání funkce print()</i>
+0038    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0039    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0040    CALL     7   1   1    ;<i> volání funkce print()</i>
+&nbsp;
+0041    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0042    MOV      8   1        ;<i> parametr použitý při volání funkce print()</i>
+0043    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0044    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0045    MOV      8   2        ;<i> parametr použitý při volání funkce print()</i>
+0046    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0047    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0048    MOV      8   3        ;<i> parametr použitý při volání funkce print()</i>
+0049    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0050    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0051    MOV      8   4        ;<i> parametr použitý při volání funkce print()</i>
+0052    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0053    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0054    MOV      8   5        ;<i> parametr použitý při volání funkce print()</i>
+0055    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0056    GGET     7   0        ;<i> získání reference na funkci se jménem "print"</i>
+0057    MOV      8   6        ;<i> parametr použitý při volání funkce print()</i>
+0058    CALL     7   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0059    RET0     0   1        ;<i> návrat z programu</i>
+&nbsp;
+;<i> konec</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad číslo 15: porovnání hodnoty proměnné s&nbsp;booleovskou konstantou <strong>true</strong> či <strong>false</strong></h2>
+
+<p>IR LuaJITu obsahuje dvě další instrukce nazvané <strong>ISEQP</strong> a
+<strong>ISNEP</strong>. Tyto instrukce slouží pro porovnání obsahu
+slotu/proměnné s&nbsp;jednou ze tří speciálních konstant jazyka Lua:
+<strong>true</strong>, <strong>false</strong> či <strong>nil</strong>. Tyto
+hodnoty jsou v&nbsp;instrukčním slově IR reprezentovány čísly 0, 1 a 2, což
+jsme již ostatně viděli v&nbsp;předchozích výpisech IR, konkrétně u instrukce
+<strong>KPRI</strong>. Použití instrukcí <strong>ISEQP</strong> a
+<strong>ISNEP</strong> je velmi snadné:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ISEQP</td><td>slot, pri</td><td>následuje skok provedený při splnění podmínky A = pri_type</td></tr>
+<tr><td>2</td><td>ISNEP</td><td>slot, pri</td><td>následuje skok provedený při splnění podmínky A &ne; pri_type</td></tr>
+</table>
+
+<p>Nejdříve se podívejme na způsob porovnání obsahu proměnné s&nbsp;hodnotou
+<strong>true</strong> či <strong>false</strong> (ve skutečnosti takto přímé
+porovnání není většinou zapotřebí provádět, minimálně ne v&nbsp;jazyku
+Lua):</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 15</i>
+<i>--</i>
+<i>-- Porovnavani promennych obsahujicich booleovske hodnoty s booleovskymi konstantami.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promenne booleovskou konstantou</i>
+<strong>local</strong> a = true
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych s vyuzitim porovnani s booleovskou konstantou</i>
+<strong>local</strong> x1 = a == true
+<strong>local</strong> x2 = a ~= true
+<strong>local</strong> x3 = a == false
+<strong>local</strong> x4 = a ~= false
+&nbsp;
+<i>-- tisk hodnot vsech promennych</i>
+print(a)
+&nbsp;
+print()
+&nbsp;
+print(x1)
+print(x2)
+print(x3)
+print(x4)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>V&nbsp;přeloženém IR skutečně můžeme vidět použití instrukcí
+<strong>ISEQP</strong> a <strong>ISNEP</strong>:</p>
+
+<pre>
+;<i> Překlad demonstračního příkladu test15.lua</i>
+;<i> do IR využívaného virtuálním strojem a JIT</i>
+;<i> překladačem LuaJIT.</i>
+&nbsp;
+-- BYTECODE -- test15.lua:0-34
+0001    KPRI     0   2        ;<i> do slotu číslo 0 uložit hodnotu true</i>
+&nbsp;
+0002    ISEQP    0   2        ;<i> porovnání obsahu proměnné s hodnotou true</i>
+0003    JMP      1 =&gt; 0006    ;<i> skok provedený při splnění podmínky</i>
+0004    KPRI     1   1        ;<i> speciální hodnota false</i>
+0005    JMP      2 =&gt; 0007    ;<i> nepodmíněný skok</i>
+0006 =&gt; KPRI     1   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0007 =&gt; ISNEP    0   2        ;<i> porovnání obsahu proměnné s hodnotou true</i>
+0008    JMP      2 =&gt; 0011    ;<i> skok provedený při splnění podmínky</i>
+0009    KPRI     2   1        ;<i> speciální hodnota false</i>
+0010    JMP      3 =&gt; 0012    ;<i> nepodmíněný skok</i>
+0011 =&gt; KPRI     2   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0012 =&gt; ISEQP    0   1        ;<i> porovnání obsahu proměnné s hodnotou false</i>
+0013    JMP      3 =&gt; 0016    ;<i> skok provedený při splnění podmínky</i>
+0014    KPRI     3   1        ;<i> speciální hodnota false</i>
+0015    JMP      4 =&gt; 0017    ;<i> nepodmíněný skok</i>
+0016 =&gt; KPRI     3   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0017 =&gt; ISNEP    0   1        ;<i> porovnání obsahu proměnné s hodnotou false</i>
+0018    JMP      4 =&gt; 0021    ;<i> skok provedený při splnění podmínky</i>
+0019    KPRI     4   1        ;<i> speciální hodnota false</i>
+0020    JMP      5 =&gt; 0022    ;<i> nepodmíněný skok</i>
+0021 =&gt; KPRI     4   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0022 =&gt; GGET     5   0        ;<i> získání reference na funkci se jménem "print"</i>
+0023    MOV      6   0        ;<i> parametr použitý při volání funkce print()</i>
+0024    CALL     5   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0025    GGET     5   0        ;<i> získání reference na funkci se jménem "print"</i>
+0026    CALL     5   1   1    ;<i> volání funkce print()</i>
+&nbsp;
+0027    GGET     5   0        ;<i> získání reference na funkci se jménem "print"</i>
+0028    MOV      6   1        ;<i> parametr použitý při volání funkce print()</i>
+0029    CALL     5   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0030    GGET     5   0        ;<i> získání reference na funkci se jménem "print"</i>
+0031    MOV      6   2        ;<i> parametr použitý při volání funkce print()</i>
+0032    CALL     5   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0033    GGET     5   0        ;<i> získání reference na funkci se jménem "print"</i>
+0034    MOV      6   3        ;<i> parametr použitý při volání funkce print()</i>
+0035    CALL     5   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0036    GGET     5   0        ;<i> získání reference na funkci se jménem "print"</i>
+0037    MOV      6   4        ;<i> parametr použitý při volání funkce print()</i>
+0038    CALL     5   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0039    RET0     0   1        ;<i> návrat z programu</i>
+&nbsp;
+;<i> konec</i>
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklad číslo 16: porovnání hodnoty proměnné s&nbsp;konstantou <strong>nil</strong></h2>
+
+<p>Stejné dvě instrukce <strong>ISEQP</strong> a <strong>ISNEP</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ISEQP</td><td>slot, pri</td><td>následuje skok provedený při splnění podmínky A = pri_type</td></tr>
+<tr><td>2</td><td>ISNEP</td><td>slot, pri</td><td>následuje skok provedený při splnění podmínky A &ne; pri_type</td></tr>
+</table>
+
+<p>mohou být použity pro porovnání libovolné proměnné s&nbsp;hodnotou
+<strong>nil</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 16</i>
+<i>--</i>
+<i>-- Porovnavani promennych obsahujicich libovolnou hodnoty s konstantou nil.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych konstantami ruznych typu</i>
+<strong>local</strong> a = true
+<strong>local</strong> b = false
+<strong>local</strong> c = nil
+<strong>local</strong> d = 42
+<strong>local</strong> e = {1,2}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych s vyuzitim porovnani s konstantou nil.</i>
+<strong>local</strong> x1  = a == nil
+<strong>local</strong> x2  = a ~= nil
+<strong>local</strong> x3  = b == nil
+<strong>local</strong> x4  = b ~= nil
+<strong>local</strong> x5  = c == nil
+<strong>local</strong> x6  = c ~= nil
+<strong>local</strong> x7  = d == nil
+<strong>local</strong> x8  = d ~= nil
+<strong>local</strong> x9  = e == nil
+<strong>local</strong> x10 = e ~= nil
+&nbsp;
+<i>-- tisk hodnot vsech promennych</i>
+print(a)
+&nbsp;
+print()
+&nbsp;
+print(x1)
+print(x2)
+print(x3)
+print(x4)
+print(x5)
+print(x6)
+print(x7)
+print(x8)
+print(x9)
+print(x10)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>Opět se podívejme na IR vygenerovaný LuaJITem:</p>
+
+<pre>
+;<i> Překlad demonstračního příkladu test16.lua</i>
+;<i> do IR využívaného virtuálním strojem a JIT</i>
+;<i> překladačem LuaJIT.</i>
+&nbsp;
+-- BYTECODE -- test16.lua:0-50
+0001    KPRI     0   2        ;<i> local a = true</i>
+0002    KPRI     1   1        ;<i> local b = false</i>
+0003    KPRI     2   0        ;<i> local c = nil</i>
+0004    KSHORT   3  42        ;<i> local d = 42</i>
+0005    TDUP     4   0        ;<i> local e = {1,2}</i>
+&nbsp;
+0006    ISEQP    0   0        ;<i> porovnání obsahu proměnné s hodnotou nil</i>
+0007    JMP      5 =&gt; 0010    ;<i> skok provedený při splnění podmínky</i>
+0008    KPRI     5   1        ;<i> speciální hodnota false</i>
+0009    JMP      6 =&gt; 0011    ;<i> nepodmíněný skok</i>
+0010 =&gt; KPRI     5   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0011 =&gt; ISNEP    0   0        ;<i> porovnání obsahu proměnné s hodnotou nil (opačná podmínka)</i>
+0012    JMP      6 =&gt; 0015    ;<i> skok provedený při splnění podmínky</i>
+0013    KPRI     6   1        ;<i> speciální hodnota false</i>
+0014    JMP      7 =&gt; 0016    ;<i> nepodmíněný skok</i>
+0015 =&gt; KPRI     6   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0016 =&gt; ISEQP    1   0        ;<i> porovnání obsahu proměnné s hodnotou nil</i>
+0017    JMP      7 =&gt; 0020    ;<i> skok provedený při splnění podmínky</i>
+0018    KPRI     7   1        ;<i> speciální hodnota false</i>
+0019    JMP      8 =&gt; 0021    ;<i> nepodmíněný skok</i>
+0020 =&gt; KPRI     7   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0021 =&gt; ISNEP    1   0        ;<i> porovnání obsahu proměnné s hodnotou nil (opačná podmínka)</i>
+0022    JMP      8 =&gt; 0025    ;<i> skok provedený při splnění podmínky</i>
+0023    KPRI     8   1        ;<i> speciální hodnota false</i>
+0024    JMP      9 =&gt; 0026    ;<i> nepodmíněný skok</i>
+0025 =&gt; KPRI     8   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0026 =&gt; ISEQP    2   0        ;<i> porovnání obsahu proměnné s hodnotou nil</i>
+0027    JMP      9 =&gt; 0030    ;<i> skok provedený při splnění podmínky</i>
+0028    KPRI     9   1        ;<i> speciální hodnota false</i>
+0029    JMP     10 =&gt; 0031    ;<i> nepodmíněný skok</i>
+0030 =&gt; KPRI     9   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0031 =&gt; ISNEP    2   0        ;<i> porovnání obsahu proměnné s hodnotou nil (opačná podmínka)</i>
+0032    JMP     10 =&gt; 0035    ;<i> skok provedený při splnění podmínky</i>
+0033    KPRI    10   1        ;<i> speciální hodnota false</i>
+0034    JMP     11 =&gt; 0036    ;<i> nepodmíněný skok</i>
+0035 =&gt; KPRI    10   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0036 =&gt; ISEQP    3   0        ;<i> porovnání obsahu proměnné s hodnotou nil</i>
+0037    JMP     11 =&gt; 0040    ;<i> skok provedený při splnění podmínky</i>
+0038    KPRI    11   1        ;<i> speciální hodnota false</i>
+0039    JMP     12 =&gt; 0041    ;<i> nepodmíněný skok</i>
+0040 =&gt; KPRI    11   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0041 =&gt; ISNEP    3   0        ;<i> porovnání obsahu proměnné s hodnotou nil (opačná podmínka)</i>
+0042    JMP     12 =&gt; 0045    ;<i> skok provedený při splnění podmínky</i>
+0043    KPRI    12   1        ;<i> speciální hodnota false</i>
+0044    JMP     13 =&gt; 0046    ;<i> nepodmíněný skok</i>
+0045 =&gt; KPRI    12   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0046 =&gt; ISEQP    4   0        ;<i> porovnání obsahu proměnné s hodnotou nil</i>
+0047    JMP     13 =&gt; 0050    ;<i> skok provedený při splnění podmínky</i>
+0048    KPRI    13   1        ;<i> speciální hodnota false</i>
+0049    JMP     14 =&gt; 0051    ;<i> nepodmíněný skok</i>
+0050 =&gt; KPRI    13   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0051 =&gt; ISNEP    4   0        ;<i> porovnání obsahu proměnné s hodnotou nil (opačná podmínka)</i>
+0052    JMP     14 =&gt; 0055    ;<i> skok provedený při splnění podmínky</i>
+0053    KPRI    14   1        ;<i> speciální hodnota false</i>
+0054    JMP     15 =&gt; 0056    ;<i> nepodmíněný skok</i>
+0055 =&gt; KPRI    14   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0056 =&gt; GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0057    MOV     16   0        ;<i> parametr použitý při volání funkce print()</i>
+0058    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0059    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0060    CALL    15   1   1    ;<i> volání funkce print()</i>
+&nbsp;
+0061    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0062    MOV     16   5        ;<i> parametr použitý při volání funkce print()</i>
+0063    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0064    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0065    MOV     16   6        ;<i> parametr použitý při volání funkce print()</i>
+0066    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0067    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0068    MOV     16   7        ;<i> parametr použitý při volání funkce print()</i>
+0069    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0070    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0071    MOV     16   8        ;<i> parametr použitý při volání funkce print()</i>
+0072    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0073    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0074    MOV     16   9        ;<i> parametr použitý při volání funkce print()</i>
+0075    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0076    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0077    MOV     16  10        ;<i> parametr použitý při volání funkce print()</i>
+0078    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0079    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0080    MOV     16  11        ;<i> parametr použitý při volání funkce print()</i>
+0081    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0082    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0083    MOV     16  12        ;<i> parametr použitý při volání funkce print()</i>
+0084    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0085    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0086    MOV     16  13        ;<i> parametr použitý při volání funkce print()</i>
+0087    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0088    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0089    MOV     16  14        ;<i> parametr použitý při volání funkce print()</i>
+0090    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0091    RET0     0   1        ;<i> návrat z programu</i>
+&nbsp;
+;<i> konec</i>
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad číslo 17: porovnání hodnoty proměnné s&nbsp;řetězcem</h2>
+
+<p>Další dvě instrukce pojmenované <strong>ISEQS</strong> a
+<strong>ISNES</strong> slouží pro porovnání hodnoty proměnné s&nbsp;řetězcem,
+přesněji řečeno s&nbsp;řetězcovou konstantou (literálem). Vznik jména těchto
+instrukcí je zřejmý: <i>is</i>+<i>equal/not equal</i> + <i>string</i>.
+V&nbsp;instrukčním slově je uložen operační kód instrukce, číslo slotu/indexu
+lokální proměnné a taktéž index řetězcové konstanty:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>ISEQS</td><td>slot, string</td><td>následuje skok provedený při splnění podmínky A = string</td></tr>
+<tr><td>2</td><td>ISNES</td><td>slot, string</td><td>následuje skok provedený při splnění podmínky A &ne; string</td></tr>
+</table>
+
+<p>Opět se podívejme na jednoduchý příklad, v&nbsp;němž se porovnávají obsahy
+proměnných různých typů s&nbsp;řetězcovou konstantou:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 17</i>
+<i>--</i>
+<i>-- Porovnavani promennych s retezcem.</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych konstantami ruznych typu</i>
+<strong>local</strong> a = true
+<strong>local</strong> b = false
+<strong>local</strong> c = nil
+<strong>local</strong> d = 42
+<strong>local</strong> e = "hello"
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych s vyuzitim porovnani s konstantou nil.</i>
+<strong>local</strong> x1  = a == "hello"
+<strong>local</strong> x2  = a ~= "hello"
+<strong>local</strong> x3  = b == "hello"
+<strong>local</strong> x4  = b ~= "hello"
+<strong>local</strong> x5  = c == "hello"
+<strong>local</strong> x6  = c ~= "hello"
+<strong>local</strong> x7  = d == "hello"
+<strong>local</strong> x8  = d ~= "hello"
+<strong>local</strong> x9  = e == "hello"
+<strong>local</strong> x10 = e ~= "hello"
+&nbsp;
+<i>-- tisk hodnot vsech promennych</i>
+print(a)
+&nbsp;
+print()
+&nbsp;
+print(x1)
+print(x2)
+print(x3)
+print(x4)
+print(x5)
+print(x6)
+print(x7)
+print(x8)
+print(x9)
+print(x10)
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>V&nbsp;přeloženém IR vidíme použití instrukcí <strong>ISEQS</strong> a
+<strong>ISNES</strong>:</p>
+
+<pre>
+;<i> Překlad demonstračního příkladu test17.lua</i>
+;<i> do IR využívaného virtuálním strojem a JIT</i>
+;<i> překladačem LuaJIT.</i>
+&nbsp;
+-- BYTECODE -- test17.lua:0-50
+0001    KPRI     0   2        ;<i> deklarace a inicializace lokální proměnné a=true</i>
+0002    KPRI     1   1        ;<i> deklarace a inicializace lokální proměnné b=false</i>
+0003    KPRI     2   0        ;<i> deklarace a inicializace lokální proměnné c=nil</i>
+0004    KSHORT   3  42        ;<i> deklarace a inicializace lokální proměnné d=42</i>
+0005    KSTR     4   0        ;<i> deklarace a inicializace lokální proměnné e="hello"</i>
+&nbsp;
+0006    ISEQS    0   0        ;<i> porovnání obsahu proměnné s řetězcem "hello"</i>
+0007    JMP      5 =&gt; 0010    ;<i> skok provedený při splnění podmínky</i>
+0008    KPRI     5   1        ;<i> speciální hodnota false</i>
+0009    JMP      6 =&gt; 0011    ;<i> nepodmíněný skok</i>
+0010 =&gt; KPRI     5   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0011 =&gt; ISNES    0   0        ;<i> porovnání obsahu proměnné s řetězcem "hello" (opačná podmínka)</i>
+0012    JMP      6 =&gt; 0015    ;<i> skok provedený při splnění podmínky</i>
+0013    KPRI     6   1        ;<i> speciální hodnota false</i>
+0014    JMP      7 =&gt; 0016    ;<i> nepodmíněný skok</i>
+0015 =&gt; KPRI     6   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0016 =&gt; ISEQS    1   0        ;<i> porovnání obsahu proměnné s řetězcem "hello"</i>
+0017    JMP      7 =&gt; 0020    ;<i> skok provedený při splnění podmínky</i>
+0018    KPRI     7   1        ;<i> speciální hodnota false</i>
+0019    JMP      8 =&gt; 0021    ;<i> nepodmíněný skok</i>
+0020 =&gt; KPRI     7   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0021 =&gt; ISNES    1   0        ;<i> porovnání obsahu proměnné s řetězcem "hello" (opačná podmínka)</i>
+0022    JMP      8 =&gt; 0025    ;<i> skok provedený při splnění podmínky</i>
+0023    KPRI     8   1        ;<i> speciální hodnota false</i>
+0024    JMP      9 =&gt; 0026    ;<i> nepodmíněný skok</i>
+0025 =&gt; KPRI     8   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0026 =&gt; ISEQS    2   0        ;<i> porovnání obsahu proměnné s řetězcem "hello"</i>
+0027    JMP      9 =&gt; 0030    ;<i> skok provedený při splnění podmínky</i>
+0028    KPRI     9   1        ;<i> speciální hodnota false</i>
+0029    JMP     10 =&gt; 0031    ;<i> nepodmíněný skok</i>
+0030 =&gt; KPRI     9   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0031 =&gt; ISNES    2   0        ;<i> porovnání obsahu proměnné s řetězcem "hello" (opačná podmínka)</i>
+0032    JMP     10 =&gt; 0035    ;<i> skok provedený při splnění podmínky</i>
+0033    KPRI    10   1        ;<i> speciální hodnota false</i>
+0034    JMP     11 =&gt; 0036    ;<i> nepodmíněný skok</i>
+0035 =&gt; KPRI    10   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0036 =&gt; ISEQS    3   0        ;<i> porovnání obsahu proměnné s řetězcem "hello"</i>
+0037    JMP     11 =&gt; 0040    ;<i> skok provedený při splnění podmínky</i>
+0038    KPRI    11   1        ;<i> speciální hodnota false</i>
+0039    JMP     12 =&gt; 0041    ;<i> nepodmíněný skok</i>
+0040 =&gt; KPRI    11   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0041 =&gt; ISNES    3   0        ;<i> porovnání obsahu proměnné s řetězcem "hello" (opačná podmínka)</i>
+0042    JMP     12 =&gt; 0045    ;<i> skok provedený při splnění podmínky</i>
+0043    KPRI    12   1        ;<i> speciální hodnota false</i>
+0044    JMP     13 =&gt; 0046    ;<i> nepodmíněný skok</i>
+0045 =&gt; KPRI    12   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0046 =&gt; ISEQS    4   0        ;<i> porovnání obsahu proměnné s řetězcem "hello"</i>
+0047    JMP     13 =&gt; 0050    ;<i> skok provedený při splnění podmínky</i>
+0048    KPRI    13   1        ;<i> speciální hodnota false</i>
+0049    JMP     14 =&gt; 0051    ;<i> nepodmíněný skok</i>
+0050 =&gt; KPRI    13   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0051 =&gt; ISNES    4   0        ;<i> porovnání obsahu proměnné s řetězcem "hello" (opačná podmínka)</i>
+0052    JMP     14 =&gt; 0055    ;<i> skok provedený při splnění podmínky</i>
+0053    KPRI    14   1        ;<i> speciální hodnota false</i>
+0054    JMP     15 =&gt; 0056    ;<i> nepodmíněný skok</i>
+0055 =&gt; KPRI    14   2        ;<i> speciální hodnota true</i>
+&nbsp;
+0056 =&gt; GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0057    MOV     16   0        ;<i> parametr použitý při volání funkce print()</i>
+0058    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0059    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0060    CALL    15   1   1    ;<i> volání funkce print()</i>
+&nbsp;
+0061    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0062    MOV     16   5        ;<i> parametr použitý při volání funkce print()</i>
+0063    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0064    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0065    MOV     16   6        ;<i> parametr použitý při volání funkce print()</i>
+0066    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0067    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0068    MOV     16   7        ;<i> parametr použitý při volání funkce print()</i>
+0069    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0070    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0071    MOV     16   8        ;<i> parametr použitý při volání funkce print()</i>
+0072    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0073    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0074    MOV     16   9        ;<i> parametr použitý při volání funkce print()</i>
+0075    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0076    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0077    MOV     16  10        ;<i> parametr použitý při volání funkce print()</i>
+0078    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0079    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0080    MOV     16  11        ;<i> parametr použitý při volání funkce print()</i>
+0081    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0082    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0083    MOV     16  12        ;<i> parametr použitý při volání funkce print()</i>
+0084    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0085    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0086    MOV     16  13        ;<i> parametr použitý při volání funkce print()</i>
+0087    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0088    GGET    15   1        ;<i> získání reference na funkci se jménem "print"</i>
+0089    MOV     16  14        ;<i> parametr použitý při volání funkce print()</i>
+0090    CALL    15   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0091    RET0     0   1        ;<i> návrat z programu</i>
+&nbsp;
+;<i> konec</i>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Demonstrační příklad číslo 18: způsob překladu jednoduchých podmínek typu <strong>if x then</strong> a <strong>if not x then</strong></h2>
+
+<p>Posledními dnes popsanými instrukcemi IR jsou instrukce pojmenované
+<strong>IST</strong> a <strong>ISF</strong>. Jedná se o velmi jednoduše
+použitelné instrukce, které testují, zda je hodnota lokální proměnné nastavena
+na hodnotu <strong>true</strong> či <strong>false</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>IST</td><td>slot</td><td>následuje skok provedený při splnění podmínky A = true</td></tr>
+<tr><td>2</td><td>ISF</td><td>slot</td><td>následuje skok provedený při splnění podmínky A = false</td></tr>
+</table>
+
+<p>Tyto instrukce se typicky používají pro implementaci jednoduchých podmínek
+typu <strong>if x then</strong> a <strong>if not x then</strong>:</p>
+
+<pre>
+<i>--</i>
+<i>-- LuaJIT: demonstracni priklad cislo 18</i>
+<i>--</i>
+<i>-- Zpracovani jednoduchych podminek typu if x then...</i>
+<i>--</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- inicializace promennych konstantami ruznych typu</i>
+<strong>local</strong> a = true
+<strong>local</strong> b = false
+<strong>local</strong> c = nil
+<strong>local</strong> d = 42
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- jednoduche podminky typu if x then</i>
+<strong>if</strong> a <strong>then</strong>
+    print("a")
+end
+&nbsp;
+<strong>if</strong> <strong>not</strong> a <strong>then</strong>
+    print("!a")
+end
+&nbsp;
+<strong>if</strong> b <strong>then</strong>
+    print("b")
+end
+&nbsp;
+<strong>if</strong> <strong>not</strong> b <strong>then</strong>
+    print("!b")
+end
+&nbsp;
+<strong>if</strong> c <strong>then</strong>
+    print("c")
+end
+&nbsp;
+<strong>if</strong> <strong>not</strong> c <strong>then</strong>
+    print("!c")
+end
+&nbsp;
+<strong>if</strong> d <strong>then</strong>
+    print("d")
+end
+&nbsp;
+<strong>if</strong> <strong>not</strong> e <strong>then</strong>
+    print("!e")
+end
+&nbsp;
+&nbsp;
+&nbsp;
+<i>-- finito</i>
+</pre>
+
+<p>V&nbsp;přeloženém IR vidíme velmi přímočaré použití instrukcí
+<strong>IST</strong> a <strong>IST</strong>:</p>
+
+<pre>
+;<i> Překlad demonstračního příkladu test18.lua</i>
+;<i> do IR využívaného virtuálním strojem a JIT</i>
+;<i> překladačem LuaJIT.</i>
+&nbsp;
+-- BYTECODE -- test18.lua:0-54
+0001    KPRI     0   2        ;<i> deklarace a inicializace lokální proměnné a=true</i>
+0002    KPRI     1   1        ;<i> deklarace a inicializace lokální proměnné b=false</i>
+0003    KPRI     2   0        ;<i> deklarace a inicializace lokální proměnné c=nil</i>
+0004    KSHORT   3  42        ;<i> deklarace a inicializace lokální proměnné d=42</i>
+&nbsp;
+0005    ISF          0        ;<i> test hodnoty lokální proměnné na hodnotu false</i>
+0006    JMP      4 =&gt; 0010    ;<i> skok provedený při splnění podmínky</i>
+0007    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0008    KSTR     5   1        ;<i> načtení řetězce "a", který se bude tisknout</i>
+0009    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0010 =&gt; IST          0        ;<i> test hodnoty lokální proměnné na hodnotu true</i>
+0011    JMP      4 =&gt; 0015    ;<i> skok provedený při splnění podmínky</i>
+0012    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0013    KSTR     5   2        ;<i> načtení řetězce "!a", který se bude tisknout</i>
+0014    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0015 =&gt; ISF          1        ;<i> test hodnoty lokální proměnné na hodnotu false</i>
+0016    JMP      4 =&gt; 0020    ;<i> skok provedený při splnění podmínky</i>
+0017    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0018    KSTR     5   3        ;<i> načtení řetězce "b", který se bude tisknout</i>
+0019    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0020 =&gt; IST          1        ;<i> test hodnoty lokální proměnné na hodnotu true</i>
+0021    JMP      4 =&gt; 0025    ;<i> skok provedený při splnění podmínky</i>
+0022    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0023    KSTR     5   4        ;<i> načtení řetězce "!b", který se bude tisknout</i>
+0024    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0025 =&gt; ISF          2        ;<i> test hodnoty lokální proměnné na hodnotu false</i>
+0026    JMP      4 =&gt; 0030    ;<i> skok provedený při splnění podmínky</i>
+0027    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0028    KSTR     5   5        ;<i> načtení řetězce "c", který se bude tisknout</i>
+0029    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0030 =&gt; IST          2        ;<i> test hodnoty lokální proměnné na hodnotu true</i>
+0031    JMP      4 =&gt; 0035    ;<i> skok provedený při splnění podmínky</i>
+0032    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0033    KSTR     5   6        ;<i> načtení řetězce "!c", který se bude tisknout</i>
+0034    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0035 =&gt; ISF          3        ;<i> test hodnoty lokální proměnné na hodnotu false</i>
+0036    JMP      4 =&gt; 0040    ;<i> skok provedený při splnění podmínky</i>
+0037    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0038    KSTR     5   7        ;<i> načtení řetězce "d", který se bude tisknout</i>
+0039    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0040 =&gt; GGET     4   8        ;<i> načtení řetězce "e", který se bude tisknout</i>
+&nbsp;
+0041    IST          4        ;<i> test hodnoty lokální proměnné na hodnotu true</i>
+0042    JMP      4 =&gt; 0046    ;<i> skok provedený při splnění podmínky</i>
+0043    GGET     4   0        ;<i> získání reference na funkci se jménem "print"</i>
+0044    KSTR     5   9        ;<i> načtení řetězce "!e", který se bude tisknout</i>
+0045    CALL     4   1   2    ;<i> volání funkce print()</i>
+&nbsp;
+0046 =&gt; RET0     0   1        ;<i> návrat z programu</i>
+&nbsp;
+;<i> konec</i>
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Repositář se zdrojovými kódy všech šesti dnešních demonstračních příkladů</h2>
+
+<p>Všech šest dnes popsaných a taktéž &bdquo;disasemblovaných&ldquo;
+demonstračních příkladů bylo uloženo do Git repositáře umístěného na adrese <a
+href="https://github.com/tisnik/luajit-examples">https://github.com/tisnik/luajit-examples</a>.
+Odkazy na prozatím poslední verze těchto příkladů naleznete v&nbsp;tabulce
+umístěné pod tímto odstavcem:</p>
+
+<table>
+<tr><th> #</th><th>Zdrojový kód</th><th>Umístění</th></tr>
+<tr><td> 1</td><td>test13.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test13.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test13.lua</a></td></tr>
+<tr><td> 2</td><td>test14.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test14.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test14.lua</a></td></tr>
+<tr><td> 3</td><td>test15.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test15.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test15.lua</a></td></tr>
+<tr><td> 4</td><td>test16.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test16.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test16.lua</a></td></tr>
+<tr><td> 5</td><td>test17.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test17.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test17.lua</a></td></tr>
+<tr><td> 6</td><td>test18.lua</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/src/test18.lua">https://github.com/tisnik/luajit-examples/blob/master/src/test18.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>test13.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test13.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test13.asm</a></td></tr>
+<tr><td> 8</td><td>test14.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test14.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test14.asm</a></td></tr>
+<tr><td> 9</td><td>test15.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test15.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test15.asm</a></td></tr>
+<tr><td>10</td><td>test16.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test16.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test16.asm</a></td></tr>
+<tr><td>11</td><td>test17.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test17.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test17.asm</a></td></tr>
+<tr><td>12</td><td>test18.asm</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/asm/test18.asm">https://github.com/tisnik/luajit-examples/blob/master/asm/test18.asm</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>Makefile</td><td><a href="https://github.com/tisnik/luajit-examples/blob/master/Makefile">https://github.com/tisnik/luajit-examples/blob/master/Makefile</a></td></tr>
+</table>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Wikipedia: Mezijazyk<br />
+<a href="http://cs.wikipedia.org/wiki/Mezijazyk">http://cs.wikipedia.org/wiki/Mezijazyk</a>
+</li>
+
+<li>The LuaJIT Project<br />
+<a href="http://luajit.org/index.html">http://luajit.org/index.html</a>
+</li>
+
+<li>LuaJIT FAQ<br />
+<a href="http://luajit.org/faq.html">http://luajit.org/faq.html</a>
+</li>
+
+<li>LuaJIT Performance Comparison<br />
+<a href="http://luajit.org/performance.html">http://luajit.org/performance.html</a>
+</li>
+
+<li>LuaJIT 2.0 intellectual property disclosure and research opportunities<br />
+<a href="http://article.gmane.org/gmane.comp.lang.lua.general/58908">http://article.gmane.org/gmane.comp.lang.lua.general/58908</a>
+</li>
+
+<li>LuaJIT Wiki<br />
+<a href="http://wiki.luajit.org/Home">http://wiki.luajit.org/Home</a>
+</li>
+
+<li>LuaJIT 2.0 Bytecode Instructions<br />
+<a href="http://wiki.luajit.org/Bytecode-2.0">http://wiki.luajit.org/Bytecode-2.0</a>
+</li>
+
+<li>Programming in Lua 9.1 &ndash; Coroutine Basics,<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua (first edition)<br />
+<a href="http://www.lua.org/pil/contents.html">http://www.lua.org/pil/contents.html</a>
+</li>
+
+<li>Programming in Lua: 6 - More about Functions<br />
+<a href="http://www.lua.org/pil/6.html">http://www.lua.org/pil/6.html</a>
+</li>
+
+<li>Lua Lanes<br />
+<a href="http://kotisivu.dnainternet.net/askok/bin/lanes/">http://kotisivu.dnainternet.net/askok/bin/lanes/</a>
+</li>
+
+<li>Programming in Lua: 6.1 - Closures<br />
+<a href="http://www.lua.org/pil/6.1.html">http://www.lua.org/pil/6.1.html</a>
+</li>
+
+<li>Programming in Lua: 9.1 - Coroutine Basics<br />
+<a href="http://www.lua.org/pil/9.1.html">http://www.lua.org/pil/9.1.html</a>
+</li>
+
+<li>Programming in Lua: Numeric for<br />
+<a href="http://www.lua.org/pil/4.3.4.html">http://www.lua.org/pil/4.3.4.html</a>
+</li>
+
+<li>Programming in Lua: break and return<br />
+<a href="http://www.lua.org/pil/4.4.html">http://www.lua.org/pil/4.4.html</a>
+</li>
+
+<li>Programming in Lua: Tables<br />
+<a href="http://www.lua.org/pil/2.5.html">http://www.lua.org/pil/2.5.html</a>
+</li>
+
+<li>Programming in Lua: Table Constructors<br />
+<a href="http://www.lua.org/pil/3.6.html">http://www.lua.org/pil/3.6.html</a>
+</li>
+
+<li>Programovací jazyk Lua<br />
+<a href="http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm">http://palmknihy.cz/web/kniha/programovaci-jazyk-lua-12651.htm</a>
+</li>
+
+<li>Lua: Tables Tutorial<br />
+<a href="http://lua-users.org/wiki/TablesTutorial">http://lua-users.org/wiki/TablesTutorial</a>
+</li>
+
+<li>Lua: Control Structure Tutorial<br />
+<a href="http://lua-users.org/wiki/ControlStructureTutorial">http://lua-users.org/wiki/ControlStructureTutorial</a>
+</li>
+
+<li>Lua Types Tutorial<br />
+<a href="http://lua-users.org/wiki/LuaTypesTutorial">http://lua-users.org/wiki/LuaTypesTutorial</a>
+</li>
+
+<li>Goto Statement in Lua<br />
+<a href="http://lua-users.org/wiki/GotoStatement">http://lua-users.org/wiki/GotoStatement</a>
+</li>
+
+<li>Lua 5.2 sources<br />
+<a href="http://www.lua.org/source/5.2/">http://www.lua.org/source/5.2/</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.h<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.h.html">http://www.lua.org/source/5.2/lopcodes.h.html</a>
+</li>
+
+<li>Lua 5.2 sources - lopcodes.c<br />
+<a href="http://www.lua.org/source/5.2/lopcodes.c.html">http://www.lua.org/source/5.2/lopcodes.c.html</a>
+</li>
+
+<li>Lambda the Ultimate: Coroutines in Lua,<br />
+<a href="http://lambda-the-ultimate.org/node/438">http://lambda-the-ultimate.org/node/438</a>
+</li>
+
+<li>Coroutines Tutorial,<br />
+<a href="http://lua-users.org/wiki/CoroutinesTutorial">http://lua-users.org/wiki/CoroutinesTutorial</a>
+</li>
+
+<li>Lua Coroutines Versus Python Generators,<br />
+<a href="http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators">http://lua-users.org/wiki/LuaCoroutinesVersusPythonGenerators</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2014</small></p>
+</body>
+</html>
+
