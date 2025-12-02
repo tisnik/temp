@@ -1,0 +1,814 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM (9.část - tajemství instrukcí lookupswitch a tableswitch)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM (9.část - tajemství instrukcí lookupswitch a tableswitch)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM se již počtvrté budeme zabývat popisem instrukčního souboru virtuálního stroje Javy. Zaměříme se především na dvojici poměrně komplikovaných instrukcí nazvaných tableswitch a lookupswitch, pomocí nichž se implementují větvení programů realizované příkazy switch.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Rozvětvení programů realizované sadou příkazů <strong>if</strong></a></p>
+<p><a href="#k02">2. Rozvětvení programů vytvořené příkazy <strong>if-elseif</strong></a></p>
+<p><a href="#k03">3. Programová konstrukce <strong>switch</strong> v&nbsp;Javě</a></p>
+<p><a href="#k04">4. Struktura instrukce <strong>tableswitch</strong></a></p>
+<p><a href="#k05">5. Příklad využití instrukce <strong>tableswitch</strong></a></p>
+<p><a href="#k06">6. Bajtkód instrukce <strong>tableswitch</strong> pod lupou hexa editoru</a></p>
+<p><a href="#k07">7. Struktura instrukce <strong>lookupswitch</strong></a></p>
+<p><a href="#k08">8. Příklad využití instrukce <strong>lookupswitch</strong></a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Rozvětvení programů realizované sadou příkazů <strong>if</strong></h2>
+
+<p><a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-8-cast-instrukce-urcene-pro-rizeni-behu-programu/">V&nbsp;předchozí
+části</a> seriálu o <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">programovacím
+jazyku Java i o vlastnostech JVM</a> jsme si popsali všechny základní instrukce
+používané pro řízení běhu programu. Jednalo se především o nepodmíněné a
+podmíněné skoky, pomocí nichž je možné realizovat jak podmíněné příkazy typu
+<strong>if-then-else</strong> či výrazy <strong>?:</strong>, tak i počítané a
+nepočítané programové smyčky. Teoreticky je sice možné <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-8-cast-instrukce-urcene-pro-rizeni-behu-programu/">minule
+uvedené instrukce</a> použít i pro implementaci příkazu <strong>switch</strong>,
+ve skutečnosti je však virtuální stroj Javy vybaven dvojicí poměrně složitých
+instrukcí nazvaných <strong>tableswitch</strong> a
+<strong>lookupswitch</strong> určených právě pro co nejefektivnější
+implementaci tohoto příkazu (jehož užitečnost je popravdě řečeno
+v&nbsp;objektově orientovaném jazyce poněkud diskutabilní :-), nicméně se
+poněkud vylepšila v&nbsp;Javě 7).</p>
+
+<p>Začněme jednoduchým demonstračním příkladem &ndash; implementací rozvětvení
+s&nbsp;využitím příkazu <strong>if</strong>. Následující demonstrační program
+obsahuje jen jedinou statickou metodu, která na základě hodnoty svého prvního a
+jediného parametru vrátí celočíselnou hodnotu zjištěnou v&nbsp;sekvenci příkazů
+<strong>if</strong> (prozatím ignorujme fakt, že se celá věc dá snadno vyřešit
+s&nbsp;využitím pole):</p>
+
+<pre>
+class Test1 {
+&nbsp;
+    static char ifChain(int x) {
+        if (x == 0) return 'a';
+        if (x == 1) return 'b';
+        if (x == 2) return 'c';
+        if (x == 3) return 'd';
+        return ' ';
+    }
+&nbsp;
+}
+</pre>
+
+<p>Přeložený bajtkód je celkem snadno pochopitelný a vyskytují se v&nbsp;něm
+pouze ty instrukce, které jsme si již popsali dříve (poznámky a šipky
+podmíněných skoků jsou samozřejmě dopsány ručně):</p>
+
+<pre>
+static char ifChain(int);
+  Code:
+   0:   iload_0
+   1:   ifne          7   -------+
+   4:   bipush  97   // 'a'      |
+   6:   ireturn                  |
+                                 |
+   7:   iload_0     &lt;------------+
+   8:   iconst_1
+   9:   if_icmpne     15  -------+
+   12:  bipush  98   // 'b'      |
+   14:  ireturn                  |
+                                 |
+   15:  iload_0     &lt;------------+
+   16:  iconst_2
+   17:  if_icmpne     23  -------+
+   20:  bipush  99   // 'c'      |
+   22:  ireturn                  |
+                                 |
+   23:  iload_0     &lt;------------+
+   24:  iconst_3
+   25:  if_icmpne     31  -------+
+   28:  bipush  100  // 'd'      |
+   30:  ireturn                  |
+                                 |
+   31:  bipush  32  &lt;------------+
+   33:  ireturn
+}
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Rozvětvení programů vytvořené příkazy <strong>if-elseif</strong></h2>
+
+<p>Zajímavé je, že prakticky stejný bajtkód je vygenerován i v&nbsp;případě, že
+se namísto sekvence izolovaných příkazů <strong>if</strong> použije schéma
+<strong>if-elseif-elseif-...</strong>. Je to vlastně vcelku pochopitelné,
+protože se v&nbsp;našem demonstračním příkazu nachází za každou podmínkou pouze
+příkaz <strong>return</strong>, který v&nbsp;případě splnění podmínky ukončí
+běh testovací metody:</p>
+
+<pre>
+class Test2 {
+&nbsp;
+    static char ifElseChain(int x) {
+        if (x == 0) return 'a';
+        else if (x == 1) return 'b';
+        else if (x == 2) return 'c';
+        else if (x == 3) return 'd';
+        return ' ';
+    }
+&nbsp;
+}
+</pre>
+
+<p>Vygenerovaný bajtkód je zcela stejný, jako u příkladu <a
+href="#k01">z&nbsp;první kapitoly</a>:</p>
+
+<pre>
+static char ifElseChain(int);
+  Code:
+   0:   iload_0
+   1:   ifne          7   -------+
+   4:   bipush  97   // 'a'      |
+   6:   ireturn                  |
+                                 |
+   7:   iload_0     &lt;------------+
+   8:   iconst_1
+   9:   if_icmpne     15  -------+
+   12:  bipush  98   // 'b'      |
+   14:  ireturn                  |
+                                 |
+   15:  iload_0     &lt;------------+
+   16:  iconst_2
+   17:  if_icmpne     23  -------+
+   20:  bipush  99   // 'c'      |
+   22:  ireturn                  |
+                                 |
+   23:  iload_0     &lt;------------+
+   24:  iconst_3
+   25:  if_icmpne     31  -------+
+   28:  bipush  100  // 'd'      |
+   30:  ireturn                  |
+                                 |
+   31:  bipush  32  &lt;------------+
+   33:  ireturn
+}
+</pre>
+
+<p>Z&nbsp;obou výše vypsaných disassemblovaných bajtkódů je patrné, že se
+v&nbsp;obou případech neustále provádí porovnání hodnoty jediného parametru
+metody s&nbsp;konstantami 1, 2 a 3 (porovnání s&nbsp;nulou je
+&bdquo;optimalizováno&ldquo;, protože je proveden pouze test na nulovost
+operandu, nikoli porovnání) a na základě výsledku tohoto porovnání se buď
+podmíněným skokem <strong>ifne/if_icmpne</strong> přejde k&nbsp;testu další
+větve, nebo se naopak řízení přenese dovnitř aktuální větve, což vede až
+k&nbsp;příkazu <strong>ireturn</strong>. Předností tohoto přístupu je naprostá
+univerzálnost, protože je v&nbsp;příkazu <strong>if ()</strong> možné zapsat
+libovolný typ podmínky; na druhou stranu je však tělo metody poměrně dlouhé
+&ndash; celých 34 bajtů &ndash; a navíc je kvůli jednotlivým testům běh metody
+docela pomalý, a to i při překladu do bajtkódu JIT překladačem. Je tedy zřejmé,
+že by bylo vhodnější použít poněkud odlišný přístup k&nbsp;celé
+problematice.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Programová konstrukce <strong>switch</strong> v&nbsp;Javě</h2>
+
+<p>Každého Javistu samozřejmě hned napadne, jakým způsobem lze předchozí dva
+demonstrační programy vylepšit: buď by se jednalo o použití tabulky či
+asociativního pole, nebo o zápis rozvětvení s&nbsp;využitím programové
+konstrukce <strong>switch</strong>. Tato řídicí struktura je
+v&nbsp;programovacím jazyku Java dostupná již od samého počátku, tj.&nbsp;od
+<i>JDK 1.0</i>, což je ale vlastně samozřejmé, neboť byla po mírných úpravách
+převzata z&nbsp;jazyků <i>C</i> a <i>C++</i>, které jsou ideovými předchůdci
+Javy. Ovšem původně se jednalo o řídicí strukturu, v&nbsp;níž bylo možné za
+klíčovým slovem <strong>switch</strong> použít pouze celočíselný výraz
+vyhodnocovaný na <i>int</i> a jednotlivé větve specifikované klíčovým slovem
+<strong>case</strong> mohly obsahovat pouze celočíselnou konstantu typu
+<i>byte</i>, <i>short</i> či <i>int</i>, nikoli však <i>long</i>, což je
+omezení dané strukturou bajtkódu! (viz další text). Kromě těchto tří datových
+typů bylo možné použít i znakový literál, který je v&nbsp;Javě taktéž považován
+za jinak zapsanou celočíselnou šestnáctibitovou konstantu typu <i>char</i>
+&ndash; i tento typ je v&nbsp;bajtkódu zpracováván jako celé číslo typu
+<i>int</i>.</p>
+
+<p>Jen pro zajímavost si připomeňme, že i když je datový typ <i>boolean</i>
+taktéž interně zpracováván podobně, jako proměnné typu <i>int</i>, není výraz
+typu <i>boolean</i> v&nbsp;příkazu <strong>switch</strong> možné použít, což je
+ostatně jen dobře, protože by tato konstrukce byla naprosto monstrózní, o čemž
+se můžete sami přesvědčit:</p>
+
+<pre>
+class JavaMonstrosity {
+&nbsp;
+    static char badSwitch(boolean b) {
+        switch (b) {
+            case true:  /* neco */ break;
+            case false: /* neco */break;
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Při překladu zdrojového kódu je programová konstrukce vytvořená
+s&nbsp;využitím klíčových slov <strong>switch</strong>, <strong>case</strong>,
+<strong>break</strong> a <strong>default</strong> přeložena do bajtkódu,
+v&nbsp;němž jsou použity instrukce <i>tableswitch</i>,
+popř.&nbsp;<i>lookupswitch</i>, s&nbsp;nimiž se setkáme i v&nbsp;následujících
+kapitolách.</p></p>
+
+<p>Konkrétní výběr jedné z&nbsp;těchto instrukcí, jež se ve vygenerovaném
+bajtkódu skutečně použije, je proveden v&nbsp;závislosti na tom, která
+instrukce je pro daný příkaz <strong>switch</strong> vykonána efektivněji nebo
+která je reprezentována kratším bajtkódem (to záleží především na tom, jaké
+konstanty jsou uvedeny u jednotlivých větví <strong>case</strong>, jak si to
+ostatně ukážeme na demonstračních příkladech). V&nbsp;<i>J2SE 5.0</i> byly
+možnosti řídicí konstrukce <strong>switch</strong> ve dvou směrech rozšířeny.
+Kromě primitivních datových typů <i>byte</i>, <i>short</i>, <i>int</i> a
+<i>char</i> byla přidána i podpora pro instance obalových tříd těchto typů,
+tj.&nbsp;pro instance tříd <i>Character</i>, <i>Byte</i>, <i>Short</i> a
+<i>Integer </i>. Tato podpora samozřejmě souvisí s&nbsp;autoboxingem a
+unboxingem, což jsou taktéž nové vlastnosti <i>J2SE 5.0</i>. Ovšem mnohem
+užitečnější bylo rozšíření příkazu <strong>switch</strong> o výčtový typ
+(<i>enumeration &ndash; enum</i>), díky čemuž bylo možné mnoho algoritmů zapsat
+čitelnějším a taktéž bezpečnějším způsobem, protože se z&nbsp;programů mohly
+odstranit typově nezabezpečené &bdquo;magické konstanty&ldquo;.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Struktura instrukce <strong>tableswitch</strong></h2>
+
+<p>První instrukcí, která slouží k&nbsp;implementaci příkazu
+<strong>switch</strong>, je instrukce nazvaná <strong>tableswitch</strong>. Na
+rozdíl od všech instrukcí, které jsme si v&nbsp;tomto seriálu až doposud
+popsali, je instrukce <strong>tableswitch</strong> poměrně složitá a
+variabilní, už jen z&nbsp;toho důvodu, že je její délka proměnná. Operační kód
+instrukce <strong>tableswitch</strong> má hodnotu <strong>0xAA</strong>. Za
+operačním kódem mohou následovat až tři &bdquo;výplňové bajty mající nulovou
+hodnotu (teoreticky je sice jejich hodnota libovolná, ale JVM provádí kontrolu,
+zda se skutečně jedná o nuly). Tyto bajty slouží k&nbsp;tomu, aby byly další
+údaje zarovnané na adresách dělitelných čtyřmi (tj.&nbsp;provádí se zarovnání
+na 32 bitů, a to vždy v&nbsp;rámci těla metody, nikoli v&nbsp;rámci celého
+bajtkódu!). Jde o první ukázku výjimečnosti instrukcí
+<strong>tableswitch</strong> a <strong>lookupswitch</strong>, protože žádné
+další instrukce virtuálního stroje Javy zarovnání nevyužívají ani
+nepožadují.</p>
+
+<p>Za nula až třemi výplňovými bajty se nachází 32bitová hodnota představující
+<i>offset</i> skoku pro větev <strong>default</strong>, popř.&nbsp;offset první
+instrukce umístěné ZA příkazem <strong>switch</strong> v&nbsp;případě, že větev
+<strong>default</strong> není uvedena. Pozor: jedná se skutečně o offset,
+tj.&nbsp;o relativní adresu počítanou od pozice operačního kódu instrukce
+<strong>tableswitch</strong>. Offset musí být vždy větší než nula a navíc je
+z&nbsp;praktických důvodů délka metod omezena na 65536 bajtů, což znamená i
+omezení velikosti offsetu v&nbsp;reálných bajtkódech na šestnáctibitové kladné
+hodnoty. Dalšími údaji uvedenými u instrukce <strong>tableswitch</strong> jsou
+32bitové hodnoty <i>low</i> a <i>high</i> představující nejmenší a největší
+hodnoty použité ve větvích <strong>case</strong>. Následuje sekvence 32bitových
+offsetů adres pro jednotlivé větve <strong>case</strong>; těchto offsetů je
+celkem <i>high-low+1</i>. Pokud se například v&nbsp;příkazu
+<strong>switch</strong> použijí větve s&nbsp;konstantami 10, 11 a 12, je
+hodnota <i>low</i> nastavena na 10, hodnota <i>high</i> nastavena na 12 a
+offsety jsou v&nbsp;tabulce uloženy celkem tři, protože 12-10+1=3:</p>
+
+<pre>
+1. operační kód
+2. výplňové bajty
+3. offset pro větev default
+4. hodnota low (nejmenší použitá konstanta ve větvích case)
+5. hodnota high (největší použitá konstanta ve větvích case)
+6. offset pro větev #1
+7. offset pro větev #2
+8. offset pro větev #3
+...
+...
+...
+</pre>
+
+<p>Instrukce <strong>tableswitch</strong> je použitelná pouze v&nbsp;těch
+případech, kdy se ve větvích <strong>case</strong> používají celočíselné
+konstanty tvořící nepřerušenou sekvenci. V&nbsp;tomto případě virtuální stroj
+Javy nejprve získá ze zásobníku operandů číselný operand, odečte od něj hodnotu
+<i>low</i> a získá tak <i>index</i>, který následně použije při přístupu do
+tabulky offsetů uloženou za operačním kódem instrukce
+<strong>tableswitch</strong>. Pokud je hodnota získaná ze zásobníku operandů
+menší než <i>low</i> nebo naopak větší než <i>high</i>, provede se skok na
+větev <strong>default</strong>. Důležitá je efektivita výpočtu adresy skoku,
+která je v&nbsp;tomto případě obecně větší, než při použití podmíněných skoků
+použitých v&nbsp;předchozích dvou příkladech a dokonce i větší, než je tomu u
+instrukce <strong>lookupswitch</strong>. Programátoři mohou tuto znalost využít
+ve svůj prospěch pro dosažení vyššího výkonu aplikací, protože v&nbsp;některých
+případech je výhodné doplnit do zdrojového textu &bdquo;prázdné&ldquo; větve a
+docílit tak toho, že se využije instrukce <strong>tableswitch</strong> namísto
+delší a pomalejší instrukce <strong>lookupswitch</strong>.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Příklad využití instrukce <strong>tableswitch</strong></h2>
+
+<p>Jak je <a href="#k04">z&nbsp;předchozího popisu</a> zřejmé, je formát
+instrukce <strong>tableswitch</strong> skutečně poměrně složitý. Proto si teď
+ukážeme nejenom to, jakým způsobem je tato instrukce vygenerována
+v&nbsp;bajtkódu, ale taktéž její obsah získaný z&nbsp;hexa editoru, popřípadě
+nástrojem typu <i>xxd</i>:</p>
+
+<pre>
+class Test3 {
+&nbsp;
+    static char simpleSwitch(int x) {
+        switch (x) {
+            case 10: return 'a';
+            case 11: return 'b';
+            case 12: return 'c';
+            case 13: return 'd';
+            case 14: return 'e';
+            default: return ' ';
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Bajtkód vygenerovaný překladačem <strong>javac</strong> obsahuje na začátku
+instrukci <strong>iload_0</strong> zajišťující uložení hodnoty parametru metody
+na zásobník operandů. Druhou instrukcí je již popisovaná instrukce
+<strong>tableswitch</strong> se šesti skoky &ndash; pěti větvemi
+<strong>case</strong> a jednou větví <strong>default</strong>:</p>
+
+<pre>
+static char simpleSwitch(int);
+  Code:
+   0:   iload_0
+   1:   tableswitch{ //10 to 14
+                10: 36;
+                11: 39;
+                12: 42;
+                13: 45;
+                14: 48;
+                default: 51 }
+&nbsp;
+   36:  bipush  97
+   38:  ireturn
+&nbsp;
+   39:  bipush  98
+   41:  ireturn
+&nbsp;
+   42:  bipush  99
+   44:  ireturn
+&nbsp;
+   45:  bipush  100
+   47:  ireturn
+&nbsp;
+   48:  bipush  101
+   50:  ireturn
+&nbsp;
+   51:  bipush  32
+   53:  ireturn
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Bajtkód instrukce <strong>tableswitch</strong> pod lupou hexa editoru</h2>
+
+<p>Nyní se podívejme na způsob zakódování binární podoby instrukce
+<strong>tableswitch</strong> v&nbsp;bajtkódu. Při průzkumu bajtkódu v&nbsp;hexa
+editoru lze snadno zjistit, že bajty tvořící tělo metody
+<strong>simpleSwitch</strong> začínají následující sekvencí hodnot:</p>
+
+<pre>
+1a aa 00 00 00 00 00 32 00 00 00 0a 00 00 00 0e
+00 00 00 23 00 00 00 26 00 00 00 29 00 00 00 2c
+00 00 00 2f .. .. .. .. .. .. .. .. .. .. .. ..
+</pre>
+
+<p><ins>Poznámka: hexadecimální výpis obsahu bajtkódu zajistí příkaz
+<strong>xxd -g 1 test.class</strong> s&nbsp;případným přesměrováním výstupu do
+souboru. Popřípadě je možné soubor test.class otevřít v&nbsp;interním
+prohlížeči Midnight Commanderu a stlačit klávesu F4.</ins></p>
+
+<p>Na základě informací uvedených v&nbsp;předchozí kapitole je možné tuto
+sekvenci hodnot s&nbsp;trochou úsilí dekódovat. První bajt je operačním kódem
+instrukce <strong>iload_0</strong>, takže je pro nás v&nbsp;tuto chvíli
+nezajímavý. Ihned po něm následuje operační kód instrukce
+<strong>tableswitch</strong>, tj.&nbsp;hodnota 0xaa, za níž jsou uloženy dva
+výplňové bajty, které zarovnávají další hodnoty na 32 bitů. Poté můžeme
+v&nbsp;bajtkódu nalézt offset pro větev <strong>default</strong>, hodnoty
+<i>low</i> a <i>high</i> a konečně tabulku pěti hodnot, v&nbsp;nichž jsou
+uloženy offsety adres jednotlivých větví příkazu <strong>switch</strong>:</p>
+
+<pre>
+1a             // operační kód instrukce iload_0 - není součástí tableswitche!
+&nbsp;         
+aa             // operační kód instrukce tableswitch
+00 00          // dvojice výplňových bajtů
+00 00 00 32    // offset pro větev default je 0x32=50, reálná adresa je 51
+00 00 00 0a    // hodnota low je nastavena na 0x0a = 10 desítkově
+00 00 00 0e    // hodnota high je nastavena na 0x0e = 14 desítkově
+00 00 00 23    // offset první větve je 0x23 = 35, reálná adresa je 36
+00 00 00 26    // offset druhé větve je 0x26 = 38, reálná adresa je 39
+00 00 00 29    // offset třetí větve je 0x29 = 41, reálná adresa je 42
+00 00 00 2c    // offset čtvrté větve je 0x2c = 44, reálná adresa je 45
+00 00 00 2f    // offset páté větve je 0x2f = 47, reálná adresa je 48
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Struktura instrukce <strong>lookupswitch</strong></h2>
+
+<p>Druhá instrukce používaná v&nbsp;bajtkódu pro implementaci příkazu
+<strong>switch</strong> je instrukce nazvaná <strong>lookupswitch</strong>.
+Struktura této instrukce se částečně podobá již popsané instrukci
+<strong>tableswitch</strong>, ovšem s&nbsp;tím rozdílem, že se namísto pole
+jednotlivých offsetů používá vyhledávací tabulka obsahující dvojici
+<i>hodnota_větve_case:offset</i>, takže je délka instrukce obecně větší, ovšem
+zato obecnější. Pojďme si tedy strukturu instrukce
+<strong>lookupswitch</strong> popsat podrobněji. Operační kód této instrukce je
+roven hodnotě 0xAB. Za operačním kódem může následovat nula až tři výplňové
+bajty (což již známe z&nbsp;předchozích kapitol). Po případných výplňových
+bajtech je uložen 32bitový offset pro větev <strong>default</strong>. Až
+doposud se tedy struktura instrukce <strong>lookupswitch</strong> podobala
+struktuře instrukce <strong>tableswitch</strong> (samozřejmě až na rozdílný
+operační kód).</p>
+
+<p>Ovšem nyní již nastává změna, protože dalším údajem je 32bitová hodnota
+<i>npairs</i>, která obsahuje počet větví <strong>case</strong> (tento údaj
+nemusel být u instrukce <strong>tableswitch</strong> uveden, neboť ho bylo
+možné vypočítat z&nbsp;hodnot <i>low</i> a <i>high</i>, které však
+v&nbsp;<strong>lookupswitch</strong> nejsou použity). Dostáváme se již ke konci
+&ndash; za celočíselným údajem o počtu větví následuje <i>npairs</i> párů
+<i>hodnota_větve_case:offset</i>, přičemž oba prvky tohoto páru jsou
+reprezentovány 32bitovými hodnotami. Vzhledem k&nbsp;tomu, že údaj
+<i>hodnota_větve_case</i> může být libovolná konstanta typu <i>int</i>, znamená
+to, že se pomocí instrukce <strong>lookupswitch</strong> mohou realizovat
+prakticky libovolně konstruované příkazy <strong>switch</strong>:</p>
+
+<pre>
+1. operační kód
+2. výplňové bajty
+3. offset pro větev default
+4. hodnota npairs
+5. hodnota case + offset pro větev #1
+6. hodnota case + offset pro větev #2
+7. hodnota case + offset pro větev #3
+8. hodnota case + offset pro větev #4
+...
+...
+x. hodnota case + offset pro větev #npairs
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Příklad využití instrukce <strong>lookupswitch</strong></h2>
+
+<p>Při tvorbě demonstračního příkladu pro instrukci
+<strong>lookupswitch</strong> je nutné zajistit, aby konstanty použité ve
+větvích <strong>case</strong> netvořily souvislou řadu celých čísel, protože by
+překladač v&nbsp;tomto případě použil &bdquo;optimalizovanou&ldquo; instrukci
+<strong>tableswitch</strong>:</p>
+
+<pre>
+class Test5 {
+&nbsp;
+    static char simpleSwitch(int x) {
+        switch (x) {
+            case 0:    return 'a';
+            case 10:   return 'b';
+            case 64:   return 'c';
+            case 99:   return 'd';
+            case 6502: return 'e';
+            default:   return ' ';
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Bajtkód vygenerovaný překladačem <strong>javac</strong> obsahuje na začátku
+opět instrukci <strong>iload_0</strong> zajišťující uložení hodnoty parametru
+metody na zásobník operandů. Druhou instrukcí je <strong>lookupswitch</strong>
+se šesti skoky &ndash; pěti větvemi <strong>case</strong> a jednou větví
+<strong>default</strong>:</p>
+
+<pre>
+static char simpleSwitch(int);
+  Code:
+   0:   iload_0
+   1:   lookupswitch{ //5
+        0:    52;
+        10:   55;
+        64:   58;
+        99:   61;
+        6502: 64;
+        default: 67 }
+   52:  bipush  97
+   54:  ireturn
+   55:  bipush  98
+   57:  ireturn
+   58:  bipush  99
+   60:  ireturn
+   61:  bipush  100
+   63:  ireturn
+   64:  bipush  101
+   66:  ireturn
+   67:  bipush  32
+   69:  ireturn
+</pre>
+
+<p>Asi již tušíte, co bude následovat: podíváme se na způsob uložení binárního
+tvaru instrukce <strong>lookupswitch</strong> v&nbsp;bajtkódu. Ten vypadá
+následovně:</p>
+
+<pre>
+ab 00 00 00 00 00 42 00 00 00 05 00 00 00 00 00
+00 00 33 00 00 00 0a 00 00 00 36 00 00 00 40 00
+00 00 39 00 00 00 63 00 00 00 3c 00 00 19 66 00
+00 00 3f
+</pre>
+
+<p>Tuto sekvenci bajtů lze již relativně snadno analyzovat:</p>
+
+<pre>
+aa                         // operační kód instrukce tableswitch
+00 00                      // dvojice výplňových bajtů
+00 00 00 42                // offset pro větvi default je 0x42 = 66, reálná adresa = 67
+00 00 00 05                // hodnota npairs: počet párů hodnota_case:offset
+00 00 00 00   00 00 00 33  // case 0:    - offset 0x33=51, reálná adresa = 52
+00 00 00 0a   00 00 00 36  // case 10:   - offset 0x36=54, reálná adresa = 55
+00 00 00 40   00 00 00 39  // case 64:   - offset 0x39=57, reálná adresa = 58
+00 00 00 63   00 00 00 3c  // case 99:   - offset 0x3c=60, reálná adresa = 61
+00 00 19 66   00 00 00 3f  // case 6502: - offset 0x3f=63, reálná adresa = 64
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Root.cz: Využití komprimovaných ukazatelů na objekty v&nbsp;JVM<br />
+<a href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/</a></a>
+</li>
+
+<li>Root.cz: JamVM aneb alternativa k HotSpotu nejenom pro embedded zařízení a chytré telefony<br />
+<a href="http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/">http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>FindBugs<br />
+<a href="http://findbugs.sourceforge.net/">http://findbugs.sourceforge.net/</a>
+</li>
+
+<li>GNU Classpath<br />
+<a href="www.gnu.org/s/classpath/">www.gnu.org/s/classpath/</a></li>
+
+<li>Java VMs Compared<br />
+<a href="http://bugblogger.com/java-vms-compared-160/">http://bugblogger.com/java-vms-compared-160/</a>
+</li>
+
+<li>JSRs: Java Specification Requests &ndash; JSR 223: Scripting for the Java Platform<br />
+<a href="http://www.jcp.org/en/jsr/detail?id=223">http://www.jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>Scripting for the Java Platform<br />
+<a href="http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/">http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/</a>
+</li>
+
+<li>Scripting for the Java Platform (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform">http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform</a>
+</li>
+
+<li>Java Community Process<br />
+<a href="http://en.wikipedia.org/wiki/Java_Specification_Request">http://en.wikipedia.org/wiki/Java_Specification_Request</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>CloseableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html">http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
