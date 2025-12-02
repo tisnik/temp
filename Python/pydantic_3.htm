@@ -1219,20 +1219,367 @@ with open("schema_14.json", "w") as fout:
 <p><a name="k11"></a></p>
 <h2 id="k11">11. </h2>
 
+$ openapi-to-markdown --input_file schema_14_formatted.json
+filter_paths ()
+Converting /home/ptisnovs/xy/xxx/schema_14_formatted.json to output.md...
+Conversion complete.
+
+<pre>
+# Weyland-Yutani Information System
+
+
+
+## 🌍 Base URL
+
+
+| URL | Description |
+|-----|-------------|
+
+
+# 🛠️ APIs
+
+---
+
+# 📋 Components
+
+
+
+## Configuration
+
+
+Global configuration.
+
+
+| Field | Type | Description |
+|-------|------|-------------|
+| name | string |  |
+| service |  |  |
+
+
+## DatabaseConfiguration
+
+
+Database configuration.
+
+
+| Field | Type | Description |
+|-------|------|-------------|
+| host | string |  |
+| port | integer |  |
+| db | string |  |
+| user | string |  |
+| password | string |  |
+| ssl_mode | string |  |
+| gss_encmode | string |  |
+| ca_cert_path | string |  |
+
+
+## ServiceConfiguration
+
+
+Service configuration.
+
+
+| Field | Type | Description |
+|-------|------|-------------|
+| host | string |  |
+| port | integer |  |
+| auth_enabled | boolean |  |
+| workers | integer |  |
+| database |  |  |
+</pre>
+
 
 
 <p><a name="k12"></a></p>
 <h2 id="k12">12. </h2>
+
+<pre>
+# Knihovna Pydantic
+#
+# - model s konfigurací obsahující čtyři atributy
+# - jeden z atributů je tvořen dalším modelem
+# - kontrola obsahu atributů po inicializaci modelu
+# - zákaz inicializace modelu s neznámými atributy
+# - úprava schématu do podoby OpenAPI
+# - řešení atributu exclusiveMinimum
+# - řešení volitelné hodnoty
+# - export schématu modelu
+
+import json
+from typing_extensions import Optional, Self
+
+from pydantic import (
+    BaseModel,
+    Field,
+    ConfigDict,
+    FilePath,
+    PositiveInt,
+    model_validator,
+)
+from pydantic.json_schema import models_json_schema
+
+
+# PostgreSQL connection constants
+# See: https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNECT-SSLMODE
+POSTGRES_DEFAULT_SSL_MODE = "prefer"
+# See: https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNECT-GSSENCMODE
+POSTGRES_DEFAULT_GSS_ENCMODE = "prefer"
+
+
+class ConfigurationBase(BaseModel):
+    """Base class for all configuration models that rejects unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DatabaseConfiguration(ConfigurationBase):
+    """Database configuration."""
+
+    host: str = Field(
+        "localhost",
+        title="Hostname",
+        description="Database server host or socket directory",
+    )
+
+    port: PositiveInt = Field(
+        5432,
+        title="Port",
+        description="Database server port",
+    )
+
+    db: str = Field(
+        ...,
+        title="Database name",
+        description="Database name to connect to",
+    )
+
+    user: str = Field(
+        ...,
+        title="User name",
+        description="Database user name used to authenticate",
+    )
+
+    password: str = Field(
+        ...,
+        title="Password",
+        description="Password used to authenticate",
+    )
+
+    ssl_mode: str = Field(
+        POSTGRES_DEFAULT_SSL_MODE,
+        title="SSL mode",
+        description="SSL mode",
+    )
+
+    gss_encmode: str = Field(
+        POSTGRES_DEFAULT_GSS_ENCMODE,
+        title="GSS encmode",
+        description="This option determines whether or with what priority a secure GSS "
+        "TCP/IP connection will be negotiated with the server.",
+    )
+
+    ca_cert_path: Optional[FilePath] = Field(
+        None,
+        title="CA certificate path",
+        description="Path to CA certificate",
+    )
+
+    @model_validator(mode="after")
+    def check_postgres_configuration(self) -> Self:
+        """Check PostgreSQL configuration."""
+        if self.port > 65535:
+            raise ValueError("Port value should be less than 65536")
+        return self
+
+
+class ServiceConfiguration(ConfigurationBase):
+    """Service configuration."""
+
+    host: str = Field(
+        "localhost",
+        title="Host",
+        description="Service hostname",
+    )
+
+    port: PositiveInt = 8080
+    port: PositiveInt = Field(
+        8080,
+        title="Port",
+        description="Service port",
+    )
+
+    auth_enabled: bool = Field(
+        False,
+        title="Authentication enabled",
+        description="Enables authentication subsystem",
+    )
+
+    workers: PositiveInt = Field(
+        1,
+        title="Number of workers",
+        description="Number of workers to be started",
+    )
+
+    database: DatabaseConfiguration = Field(
+        ...,
+        title="Database configuration",
+        description="Database configuration",
+    )
+
+    @model_validator(mode="after")
+    def check_service_configuration(self) -> Self:
+        """Check service configuration."""
+        if self.port > 65535:
+            raise ValueError("Port value should be less than 65536")
+        return self
+
+
+class Configuration(ConfigurationBase):
+    """Global configuration."""
+
+    name: str = Field(
+        ...,
+        title="Service name",
+        description="Service name",
+    )
+
+    service: ServiceConfiguration = Field(
+        ...,
+        title="Service configuration",
+        description="Service configuration",
+    )
+
+    def dump(self, filename: str = "configuration.json") -> None:
+        """Dump actual configuration into JSON file."""
+        with open(filename, "w", encoding="utf-8") as fout:
+            fout.write(self.model_dump_json(indent=4))
+
+
+def recursive_update(original: dict) -> dict:
+    new = {}
+    for key, value in original.items():
+        # rekurzivní průchod podslovníky
+        if isinstance(value, dict):
+            new[key] = recursive_update(original[key])
+        # řešení volitelných typů
+        elif key == "anyOf" and isinstance(value, list) and value[1]["type"] == "null":
+            # jen první typ je konktrétní, ingorovat druhý
+            val = value[0]["type"]
+            new["type"] = val
+            # nový atribut
+            new["nullable"] = True
+        # řešení atributu exclusiveMinimum
+        elif key == "exclusiveMinimum":
+            new["minimum"] = value
+        else:
+            new[key] = value
+    return new
+
+
+with open("schema_15.json", "w") as fout:
+    _, schemas = models_json_schema(
+        [(model, "validation") for model in [Configuration]],
+        ref_template="#/components/schemas/{model}",
+    )
+    schemas = recursive_update(schemas)
+    openapi_schema = {
+        "openapi": "3.0.0",
+        "info": {
+            "title": "Weyland-Yutani Information System",
+            "version": "0.3.0",
+        },
+        "components": {
+            "schemas": schemas.get("$defs"),
+        },
+        "paths": {},
+    }
+    json.dump(openapi_schema, fout)
+</pre>
 
 
 
 <p><a name="k13"></a></p>
 <h2 id="k13">13. </h2>
 
+<pre>
+{"openapi": "3.0.0", "info": {"title": "Weyland-Yutani Information System", "version": "0.3.0"}, "components": {"schemas": {"Configuration": {"additionalProperties": false, "description": "Global configuration.", "properties": {"name": {"description": "Service name", "title": "Service name", "type": "string"}, "service": {"$ref": "#/components/schemas/ServiceConfiguration", "description": "Service configuration", "title": "Service configuration"}}, "required": ["name", "service"], "title": "Configuration", "type": "object"}, "DatabaseConfiguration": {"additionalProperties": false, "description": "Database configuration.", "properties": {"host": {"default": "localhost", "description": "Database server host or socket directory", "title": "Hostname", "type": "string"}, "port": {"default": 5432, "description": "Database server port", "minimum": 0, "title": "Port", "type": "integer"}, "db": {"description": "Database name to connect to", "title": "Database name", "type": "string"}, "user": {"description": "Database user name used to authenticate", "title": "User name", "type": "string"}, "password": {"description": "Password used to authenticate", "title": "Password", "type": "string"}, "ssl_mode": {"default": "prefer", "description": "SSL mode", "title": "SSL mode", "type": "string"}, "gss_encmode": {"default": "prefer", "description": "This option determines whether or with what priority a secure GSS TCP/IP connection will be negotiated with the server.", "title": "GSS encmode", "type": "string"}, "ca_cert_path": {"type": "string", "nullable": true, "default": null, "description": "Path to CA certificate", "title": "CA certificate path"}}, "required": ["db", "user", "password"], "title": "DatabaseConfiguration", "type": "object"}, "ServiceConfiguration": {"additionalProperties": false, "description": "Service configuration.", "properties": {"host": {"default": "localhost", "description": "Service hostname", "title": "Host", "type": "string"}, "port": {"default": 8080, "description": "Service port", "minimum": 0, "title": "Port", "type": "integer"}, "auth_enabled": {"default": false, "description": "Enables authentication subsystem", "title": "Authentication enabled", "type": "boolean"}, "workers": {"default": 1, "description": "Number of workers to be started", "minimum": 0, "title": "Number of workers", "type": "integer"}, "database": {"$ref": "#/components/schemas/DatabaseConfiguration", "description": "Database configuration", "title": "Database configuration"}}, "required": ["database"], "title": "ServiceConfiguration", "type": "object"}}}, "paths": {}}
+</pre>
+
+<p></p>
+
+<pre>
+</pre>
+
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. </h2>
+
+<pre>
+# Weyland-Yutani Information System
+
+
+
+## 🌍 Base URL
+
+
+| URL | Description |
+|-----|-------------|
+
+
+# 🛠️ APIs
+
+---
+
+# 📋 Components
+
+
+
+## Configuration
+
+
+Global configuration.
+
+
+| Field | Type | Description |
+|-------|------|-------------|
+| name | string | Service name |
+| service |  | Service configuration |
+
+
+## DatabaseConfiguration
+
+
+Database configuration.
+
+
+| Field | Type | Description |
+|-------|------|-------------|
+| host | string | Database server host or socket directory |
+| port | integer | Database server port |
+| db | string | Database name to connect to |
+| user | string | Database user name used to authenticate |
+| password | string | Password used to authenticate |
+| ssl_mode | string | SSL mode |
+| gss_encmode | string | This option determines whether or with what priority a secure GSS TCP/IP connection will be negotiated with the server. |
+| ca_cert_path | string | Path to CA certificate |
+
+
+## ServiceConfiguration
+
+
+Service configuration.
+
+
+| Field | Type | Description |
+|-------|------|-------------|
+| host | string | Service hostname |
+| port | integer | Service port |
+| auth_enabled | boolean | Enables authentication subsystem |
+| workers | integer | Number of workers to be started |
+| database |  | Database configuration |
+</pre>
 
 
 
@@ -1318,13 +1665,13 @@ Následují odkazy na jednotlivé příklady:</p>
 <tr><td>39</td><td>config_09_wrong.yaml</td><td>konfigurační soubor ve formátu YAML s&nbsp;nekorektním obsahem</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_09_wrong.yaml">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_09_wrong.yaml</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
 <tr><td>40</td><td>config_10.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_10.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_10.py</a></td></tr>
+<tr><td>41</td><td>config_11.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_11.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_11.py</a></td></tr>
+<tr><td>42</td><td>config_12.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_12.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_12.py</a></td></tr>
+<tr><td>43</td><td>config_13.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_13.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_13.py</a></td></tr>
+<tr><td>44</td><td>config_14.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_14.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_14.py</a></td></tr>
+<tr><td>45</td><td>config_15.py</td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_15.py">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/config_15.py</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>41</td><td></td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/</a></td></tr>
-<tr><td>42</td><td></td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/</a></td></tr>
-<tr><td>43</td><td></td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/</a></td></tr>
-<tr><td>44</td><td></td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/</a></td></tr>
-<tr><td>45</td><td></td><td></td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/</a></td></tr>
-<tr><td>xx</td><td>pyproject.toml</td><td>soubor s&nbsp;definicí projektu i s&nbsp;jeho závislostmi</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/pyproject.toml">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/pyproject.toml</a></td></tr>
+<tr><td>46</td><td>pyproject.toml</td><td>soubor s&nbsp;definicí projektu i s&nbsp;jeho závislostmi</td><td><a href="https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/pyproject.toml">https://github.com/tisnik/most-popular-python-libs/blob/master/pydantic/pyproject.toml</a></td></tr>
 </table>
 
 
