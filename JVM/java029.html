@@ -1,0 +1,913 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM (12.část - volání metod rozhraní, synchronizované bloky a kontrola typů za běhu)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM (12.část - volání metod rozhraní, synchronizované bloky a kontrola typů za běhu)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM dokončíme popis instrukčního souboru virtuálního stroje Javy. Nejprve budou uvedeny informace o dnes již nepoužívaných instrukcích jsr a ret. Následně se budeme zabývat poměrně vysokoúrovňovými instrukcemi určenými pro volání metod rozhraní, vyhození výjimky, synchronizaci a kontrolu typů za běhu (runtime check).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM (12.část - volání metod rozhraní, synchronizované bloky a kontrola typů za běhu)</a></p>
+<p><a href="#k02">2. Instrukce <strong>jsr</strong>, <strong>jsr_w</strong> a <strong>ret</strong></a></p>
+<p><a href="#k03">3. Problémy s&nbsp;instrukcemi <strong>jsr</strong>, <strong>jsr_w</strong> a <strong>ret</strong></a></p>
+<p><a href="#k04">4. Instrukce <strong>invokeinterface</strong></a></p>
+<p><a href="#k05">5. Demonstrační příklad: rozdíl mezi voláním metody rozhraní a běžné virtuální metody</a></p>
+<p><a href="#k06">6. Vyhození výjimky s&nbsp;využitím instrukce <strong>athrow</strong></a></p>
+<p><a href="#k07">7. Synchronizace s&nbsp;využitím instrukcí <strong>monitorenter</strong> a <strong>monitorexit</strong></a></p>
+<p><a href="#k08">8. Kontrola typů za běhu: instrukce <strong>instanceof</strong> a <strong>checkcast</strong></a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM (12.část - volání metod rozhraní, synchronizované bloky a kontrola typů za běhu)</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje tohoto jazyka</a>
+si popíšeme všechny zbývající instrukce, které lze najít ve standardním
+bajtkódu získaného překladem javovských tříd, výčtových typů či rozhraní.
+Prozatím tedy vynecháme ty instrukce, které se používají v&nbsp;souvislosti
+s&nbsp;dynamicky typovanými (skriptovacími) jazyky. V&nbsp;předchozích šesti
+částech tohoto seriálu [<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-6-cast-instrukcni-soubor-virtualniho-stroje-javy/">1</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-7-cast-dalsi-instrukce-zpracovavane-virtualnim-strojem-javy/">2</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-8-cast-instrukce-urcene-pro-rizeni-behu-programu/">3</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-9-cast-tajemstvi-instrukci-lookupswitch-a-tableswitch/">4</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-10-cast-instrukce-pro-praci-s-tridami-a-objekty/">5</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-11-cast-instrukce-pro-tvorbu-poli-a-pristup-k-prvkum-poli/">6</a>]
+jsme si již většinu instrukcí JVM popsali, ovšem ještě nám zbývá se zmínit o
+deseti instrukcích sloužících pro různé účely, například pro vyhození výjimky,
+vstup a výstup ze synchronizovaného bloku, kontrolu typu (objektu) v&nbsp;době
+běhu programu (<i>runtime check</i>) atd.</p>
+
+<p>Taktéž jsme si prozatím nepopsali instrukce, které se v&nbsp;bajtkódu
+většinou nevyskytují, a to především z&nbsp;toho důvodu, že jejich použití je
+z&nbsp;různých důvodů problematické &ndash; to je případ instrukcí
+<strong>jsr</strong>, <strong>jsr_w</strong> a <strong>ret</strong> popsaných
+<a href="#k02">ve druhé kapitole</a>, s&nbsp;nimiž se již v&nbsp;bajtkódu
+vytvářeném moderními implementacemi Javy (JDK6, JDK7) nesetkáme, i když
+virtuální stroj Javy s&nbsp;těmito instrukcemi umí pracovat.</p>
+
+<p>Začněme však popisem nejjednodušší instrukce virtuálního stroje Javy. Jedná
+se o instrukci pojmenovanou <strong>nop</strong>, kterou můžeme najít i
+v&nbsp;instrukčních sadách reálných mikroprocesorů. Název instrukce
+<strong>nop</strong> je vlastně zkratkou vzniklou ze sousloví &bdquo;no
+operation&ldquo;, protože tato instrukce skutečně nic nedělá, pouze
+v&nbsp;bajtkódu &bdquo;zabírá&ldquo; jeden bajt. V&nbsp;bajtkódu generovaném
+pomocí překladače <strong>javac</strong> se s&nbsp;touto instrukcí většinou
+nesetkáme, ale v&nbsp;případě manipulace s&nbsp;bajtkódem, například
+s&nbsp;využitím knihovny <i>ASM</i> může být instrukce <strong>nop</strong>
+užitečná.</p>
+
+<p>Operační kód instrukce <strong>nop</strong> je snadno zapamatovatelný,
+protože se jedná o instrukci ležící na samotném začátku tabulky všech
+instrukcí, tj.&nbsp;její operační kód je roven 0x00:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>0</td><td>nop</td><td>0x00</td><td>&times;</td><td>neprovede žádnou operaci</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Instrukce <strong>jsr</strong>, <strong>jsr_w</strong> a <strong>ret</strong></h2>
+
+<p>Instrukční soubor virtuálního stroje Javy obsahuje i instrukce nazvané
+<strong>jsr</strong> a <strong>ret</strong>. Instrukce <strong>jsr</strong>,
+neboli volání subrutiny, existuje ve dvou variantách.
+V&nbsp;&bdquo;krátké&ldquo; variantě <strong>jsr</strong> je za instrukčním
+kódem uvedena relativní adresa (platná v&nbsp;rámci těla metody) reprezentovaná
+šestnáctibitovým číslem, zatímco &bdquo;dlouhá&ldquo; varianta
+<strong>jsr_w</strong> používá relativní 32bitovou adresu (opět jde o adresu
+relativní v&nbsp;rámci dané metody). Použití 32bitové adresy je však ve
+skutečnosti zbytečné, neboť délka metod přeložených do bajtkódu je stejně
+dalšími okolnostmi omezena na 65535 bajtů. Zajímavé je, že instrukce
+<strong>ret</strong> taktéž obsahuje parametr. Jedná se o index lokální
+proměnné, která obsahuje adresu, na níž se má řízení programu vrátit. Můžeme
+zde tedy nalézt určitou asymetrii (instrukce <strong>jsr</strong> totiž ukládá
+návratovou adresu na zásobník operandů a nikoli do lokální proměnné), která
+však byla do instrukční sady zavedena naschvál, a to kvůli tomu, jakým způsobem
+se měly instrukce <strong>jsr</strong> a <strong>ret</strong> využívat.
+Operační kódy obou variant instrukce <strong>jsr</strong> i jediné varianty
+instrukce <strong>ret</strong> jsou vypsány v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>jsr</td><td>0xA8</td><td>highbyte, lowbyte</td><td>skok na relativní 16bitovou adresu uloženou v&nbsp;highbyte a lowbyte</td></tr>
+<tr><td>2</td><td>jsr_w</td><td>0xC9</td><td>byte1, byte2, byte3, byte4</td><td>skok na relativní 32bitovou adresu</td></tr>
+<tr><td>3</td><td>ret</td><td>0xA9</td><td>index</td><td>skok na adresu zapsanou v&nbsp;lokální proměnné</td></tr>
+</table>
+
+<p>Plný název těchto instrukcí &ndash; <i>jump to subroutine</i> a
+<i>return</i> &ndash; sice může navozovat dojem, že se jedná o instrukce
+použitelné pro volání funkcí či metod (funkce = zjednodušeně řečeno veřejná
+statická metoda), ve skutečnosti tomu ale tak není, protože instrukce
+<strong>jsr</strong> a <strong>ret</strong> slouží, či lépe řečeno
+v&nbsp;minulosti sloužily, pro skoky v&nbsp;rámci těla jedné metody. Tyto
+instrukce byly do JVM přidány z&nbsp;toho důvodu, aby bylo možné opakující se
+části kódu do bajtkódu zapsat pouze jednou. Ovšem vzhledem k&nbsp;tomu, že
+překladač prakticky neprovádí žádnou optimalizaci bajtkódu (to by znemožnilo
+pohodlné ladění), využívaly se tyto instrukce pouze pro zápis těla bloku
+<strong>finally</strong>. Důvod je prostý &ndash; příkazy zapsané v&nbsp;bloku
+<strong>finally</strong> se provedou vždy, tedy nezávisle na tom, zda dojde či
+nedojde k&nbsp;přerušení běhu metody kvůli vzniklé výjimce, což znamená, že při
+překladu do bajtkódu se vlastně blok <strong>finally</strong>
+(resp.&nbsp;příkazy v&nbsp;něm uvedené) volá z&nbsp;více míst; jak po úspěšném
+dokončení všech příkazů uvedených v&nbsp;bloku <strong>try</strong>, tak i po
+vzniku výjimky a jejím zpracování v&nbsp;bloku <strong>catch</strong> (těchto
+bloků samozřejmě může existovat libovolné množství).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Problémy s&nbsp;instrukcemi <strong>jsr</strong>, <strong>jsr_w</strong> a <strong>ret</strong></h2>
+
+<p>Podívejme se na jednoduchý demonstrační příklad, v&nbsp;němž je
+v&nbsp;metodě pojmenované <strong>tryFinally()</strong> použit blok
+<strong>try</strong> následovaný blokem <strong>finally</strong>. Touto
+konstrukcí programátor naznačuje, že se metoda <strong>wrapItUp()</strong> má
+zavolat vždy, nezávisle na tom, zda došlo ke vzniku výjimky či nikoli:</p>
+
+<pre>
+class Test1 {
+&nbsp;
+    void tryFinally() {
+        try {
+            tryItOut();
+        } finally {
+            wrapItUp();
+        }
+    }
+&nbsp;
+    void tryItOut() {}
+&nbsp;
+    void wrapItUp() {}
+&nbsp;
+}
+</pre>
+
+<p>Starší verze JDK metodu <strong>tryFinally()</strong> přeložily následujícím
+způsobem:</p>
+
+<pre>
+Method void tryFinally()
+                            // začátek bloku try
+   0    aload_0             // uložit this (implicitní parametr) na zásobník operandů
+                            // this tedy bude předán metodě tryItOut()
+   1    invokevirtual #6    // zavolání metody tryItOut() uvnitř bloku try
+   4    jsr 14              // zavolání bloku finally
+   7    return              // konec bloku try a současně i konec metody
+&nbsp;
+&nbsp;                           // blok zavolaný v případě výskytu výjimky
+   8    astore_1            // uložit referenci na objekt reprezentující výjimku
+   9    jsr 14              // zavolání bloku finally
+  12    aload_1             // načíst referenci na objekt reprezentující výjimku
+  13    athrow              // skutečné vyhození výjimky z metody
+&nbsp;
+&nbsp;                           // začátek bloku finally
+  14    astore_2            // návratová adresa umístěná na TOS instrukcí jsr se uloží do lokální proměnné
+  15    aload_0             // uložit this (implicitní parametr) na zásobník operandů
+                            // this tedy bude předán metodě wrapItUp()
+  16    invokevirtual #5    // zavolání metody wrapItUp() uvnitř bloku finally
+  19    ret 2               // návrat z bloku finally (návratová adresa je načtena z proměnné #2)
+&nbsp;
+&nbsp;                           // tabulka používaná při práci s výjimkami bude popsána v dalších kapitolách
+Exception table:
+    From    To  Target      Type
+    0       4       8           any
+</pre>
+
+<p>Později se však přišlo na to, že větvení běhu programu s&nbsp;využitím skoku
+do subrutin zvětšuje &ndash; a to mnohdy velmi podstatně &ndash; stavový
+prostor metody, který je kontrolován verifikátorem při načítání bajtkódu. Tento
+nedostatek mohl být zneužit k&nbsp;DOS útokům, protože virtuálnímu stroji mohl
+být předán bajtkód se speciálně upravenou metodou obsahující mnoho volání
+subrutin. Z&nbsp;tohoto důvodu se dnes již s&nbsp;instrukcemi
+<strong>jsr</strong>, <strong>jsr_w</strong> a <strong>ret</strong> nesetkáme,
+protože moderní překladače vytvoří následující batjkód:</p>
+
+<pre>
+void tryFinally();
+  Code:
+                            // začátek bloku try
+   0    aload_0             // uložit this (implicitní parametr) na zásobník operandů
+                            // this tedy bude předán metodě tryItOut()
+   1:   invokevirtual   #2; // zavolání metody tryItOut() uvnitř bloku try
+&nbsp;                           // zde začíná první sekvence instrukcí odpovídající bloku finally
+   4:   aload_0             // uložit this (implicitní parametr) na zásobník operandů
+                            // this tedy bude předán metodě wrapItUp()
+   5:   invokevirtual   #3; // zavolání metody wrapItUp()
+   8:   goto    18          // konec bloku try
+&nbsp;
+   11:  astore_1            // blok zavolaný v případě výskytu výjimky
+&nbsp;                           // zde začíná druhá sekvence instrukcí odpovídající bloku finally
+   12:  aload_0             // uložit this (implicitní parametr) na zásobník operandů
+                            // this tedy bude předán metodě wrapItUp()
+   13:  invokevirtual   #3; // zavolat metodu wrapItUp() - opakujeme se!
+   16:  aload_1
+   17:  athrow              // skutečné vyhození výjimky z metody
+&nbsp;
+   18:  return              // konec metody
+&nbsp;                           // tabulka používaná při práci s výjimkami bude popsána v dalších kapitolách
+  Exception table:
+   from   to  target type
+     0     4    11   any
+    11    12    11   any
+</pre>
+
+<p>Blok <strong>finally</strong> se tedy v&nbsp;bajtkódu může opakovat, ovšem
+stavový prostor metody je jednodušší a lépe verifikovatelný.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Instrukce <strong>invokeinterface</strong></h2>
+
+<p>Další prozatím nepopsanou instrukcí je instrukce nazvaná
+<strong>invokeinterface</strong>. Tato instrukce slouží k&nbsp;zavolání metody
+rozhraní, což sice může vypadat poněkud nesmyslně (v&nbsp;rozhraní mohou být
+pouze hlavičky metod, ale ne jejich implementace), ale v&nbsp;řeči tvůrců
+bajtkódu se tím myslí stav, kdy se volá metoda, jejíž konkrétní implementaci je
+možné rozeznat až v&nbsp;čase běhu programu (<i>runtime</i>). Instrukce
+<strong>invokeinterface</strong> se částečně podobá již popsaným instrukcím
+<strong>invokestatic</strong>, <strong>invokevirtual</strong> a
+<strong>invokespecial</strong>, ovšem s&nbsp;tím rozdílem, že se za operačním
+kódem nachází jak dvojice bajtů obsahujících index do <i>constant poolu</i>,
+tak i počet argumentů volané metody. Ve skutečnosti se však jedná o údaj, který
+se zde nachází z&nbsp;historických důvodů a čistě teoreticky by nemusel být
+uváděn, protože počet argumentů metody lze získat i z&nbsp;její signatury
+uložené na <i>constant poolu</i>. V&nbsp;následující tabulce jsou pro
+přehlednost uvedeny všechny čtyři instrukce sloužící pro zavolání různých typů
+metod.</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>invokestatic   </td><td>0xB8</td><td>highbyte, lowbyte</td><td>zavolání statické metody s&nbsp;předáním parametrů této metodě</td></tr>
+<tr><td>2</td><td>invokevirtual  </td><td>0xB6</td><td>highbyte, lowbyte</td><td>zavolání nestatické metody s&nbsp;předáním hodnoty <strong>this</strong> a všech dalších parametrů</td></tr>
+<tr><td>3</td><td>invokespecial  </td><td>0xB7</td><td>highbyte, lowbyte</td><td>zavolání speciální metody, většinou konstruktoru</td></tr>
+<tr><td>4</td><td>invokeinterface</td><td>0xB9</td><td>highbyte, lowbyte, count</td><td>zavolání metody deklarované v&nbsp;rozhraní, samozřejmě s&nbsp;předáním parametrů</td></tr>
+</table>
+
+<p>Operandy <i>highbyte</i> a <i>lowbyte</i> tvoří šestnáctibitový index do
+<i>constant poolu</i>. Záznam na daném indexu musí být typu
+<i>FieldReference</i>, což je pro připomenutí záznam obsahující odkaz na další
+záznam typu <i>Class</i> (jméno třídy či rozhraní) a taktéž na záznam typu
+<i>Name and Type</i> (signatura metody či atributu).</p>
+
+<p>Podívejme se na případ, v&nbsp;němž překladač musí použít metodu
+<strong>invokeinterface</strong>, protože v&nbsp;čase překladu nemůže
+rozhodnout o tom, metoda jaké třídy se bude ve skutečnosti volat &ndash; může
+se jednat o metodu <strong>compareTo()</strong> jakékoli třídy implementující
+rozhraní <strong>Comparable</strong>:</p>
+
+<pre>
+class Test2 {
+&nbsp;
+    public int compare(Comparable a, Comparable b) {
+        return a.compareTo(b);
+    }
+&nbsp;
+}
+</pre>
+
+<p>Vygenerovaný bajtkód vypadá následovně:</p>
+
+<pre>
+public int compare(java.lang.Comparable, java.lang.Comparable);
+  Code:
+   0:   aload_1                 // uložit na zásobník první (viditelný) parametr metody - objekt a
+   1:   aload_2                 // uložit na zásobník druhý (viditelný) parametr metody - objekt b
+   2:   invokeinterface #2,  2; // InterfaceMethod java/lang/Comparable.compareTo:(Ljava/lang/Object;)I
+                                // první dvojka je index do constant poolu
+                                // první dvojka je počet parametrů metody (this, b)
+   7:   ireturn                 // návrat z metody compare() s návratovou hodnotou
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklad: rozdíl mezi voláním metody rozhraní a běžné virtuální metody</h2>
+
+<p>Z&nbsp;předchozího popisu nemusí být možná zcela zřejmé, ve kterých
+případech použije překladač instrukci <strong>invokevirtual</strong> a kdy se
+naopak musí uchýlit k&nbsp;instrukci <strong>invokeinterface</strong>. Ukažme
+si proto ještě jeden demonstrační příklad, v&nbsp;němž budou použity obě
+instrukce. Ve zdrojovém kódu tohoto příkladu je trojice metod, z&nbsp;nichž
+první přidává prvek do obecné kolekce, tedy do v&nbsp;čase překladu neznámé
+třídy, o níž je známo jen to, že implementuje rozhraní
+<strong>Collection</strong>. Ve druhé metodě se přidává prvek do kolekce typu
+seznam, tj.&nbsp;do v&nbsp;čase překladu neznámé třídy implementující rozhraní
+<strong>List</strong> a teprve v&nbsp;metodě třetí se prvek přidává do kolekce
+reprezentované známou implementací &ndash; třídou <strong>ArrayList</strong>.
+Všechny tři metody v&nbsp;demonstračním příkladu vypadají podobně, ale jejich
+bajtkód se bude lišit:</p>
+
+<pre>
+import java.util.Collection;
+import java.util.List;
+import java.util.ArrayList;
+&nbsp;
+class Test3 {
+&nbsp;
+    public void addToCollection(Collection c, Object o) {
+        c.add(o);
+    }
+&nbsp;
+    public void addToList(List l, Object o) {
+        l.add(o);
+    }
+&nbsp;
+    public void addToArrayList(ArrayList l, Object o) {
+        l.add(o);
+    }
+&nbsp;
+}
+</pre>
+
+<p>V&nbsp;bajtkódu metody <strong>addCollection()</strong> se musí volat metoda
+rozhraní, protože překladač nemůže v&nbsp;době překladu vědět, která konkrétní
+třída (resp.&nbsp;instance které třídy) bude této metodě v&nbsp;čase běhu
+programu předána:</p>
+
+<pre>
+public void addToCollection(java.util.Collection, java.lang.Object);
+  Code:
+   0:   aload_1                 // uložit první (viditelný) parametr metody na zásobník (obecná kolekce)
+   1:   aload_2                 // uložit druhý (viditelný) parametr metody na zásobník (prvek)
+   2:   invokeinterface #2,  2; // metoda rozhraní java/util/Collection.add:(Ljava/lang/Object;)Z
+                                // Z v signatuře značí návratovou hodnotu typu boolean
+   7:   pop                     // odstranit návratovou hodnotu vrácenou metodou Collection.add()
+   8:   return                  // návrat z metody
+</pre>
+
+<p>Podobné je tomu i v&nbsp;bajtkódu metody <strong>addToList()</strong>:</p>
+
+<pre>
+public void addToList(java.util.List, java.lang.Object);
+  Code:
+   0:   aload_1                 // uložit první (viditelný) parametr metody na zásobník (seznam)
+   1:   aload_2                 // uložit druhý (viditelný) parametr metody na zásobník (prvek)
+   2:   invokeinterface #3,  2; // metoda rozhraní java/util/List.add:(Ljava/lang/Object;)Z
+                                // Z v signatuře značí návratovou hodnotu typu boolean
+   7:   pop                     // odstranit návratovou hodnotu vrácenou metodou List.add()
+   8:   return                  // návrat z metody
+</pre>
+
+<p>Teprve v&nbsp;metodě <strong>addToArrayList()</strong> již překladač ví, že
+se bude volat metoda třídy <strong>ArrayList</strong>, popř.&nbsp;metoda
+potomka této třídy. Proto může použít instrukci <strong>invokevirtual</strong>
+a nikoli <strong>invokeinterface</strong>:</p>
+
+<pre>
+public void addToArrayList(java.util.ArrayList, java.lang.Object);
+  Code:
+   0:   aload_1                 // uložit první (viditelný) parametr metody na zásobník (seznam)
+   1:   aload_2                 // uložit druhý (viditelný) parametr metody na zásobník (prvek)
+   2:   invokevirtual   #4;     // metoda java/util/ArrayList.add:(Ljava/lang/Object;)Z
+                                // Z v signatuře značí návratovou hodnotu typu boolean
+   5:   pop                     // odstranit návratovou hodnotu vrácenou metodou ArrayList.add()
+   6:   return                  // návrat z metody
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Vyhození výjimky s&nbsp;využitím instrukce <strong>athrow</strong></h2>
+
+<p>Další důležitou instrukcí, kterou můžeme v&nbsp;bajtkódu často nalézt, je
+instrukce nazvaná <strong>athrow</strong>. Tato instrukce slouží
+k&nbsp;vyhození výjimky, přičemž při zavolání této instrukce musí být reference
+na objekt reprezentující výjimku uložena na vrcholu (<i>TOS</i>) zásobníku
+operandů. Tato instrukce nemá žádné operandy:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>athrow</td><td>0xBF</td><td>&times;</td><td>vyhození výjimky</td></tr>
+</table>
+
+<p>Bajtkód každé metody navíc může obsahovat tabulku obsahující seznam výjimek,
+které mohou nastat a adresy instrukcí, na něž se provede skok ve chvíli, kdy
+k&nbsp;dané výjimce skutečně dojde. Pokud však tato tabulka není přítomna,
+popř.&nbsp;neobsahuje záznam s&nbsp;daným typem výjimky, je výjimka vyhozena
+(<i>throw</i>) z&nbsp;metody a může být zachycena v&nbsp;nadřazených metodách,
+opět s&nbsp;využitím zmíněné tabulky.</p>
+
+<p>Opět se podívejme na jednoduchý demonstrační příklad. Ten obsahuje dvě
+metody, z&nbsp;nichž jedna vyvolá obecnou výjimku typu
+<strong>RuntimeException()</strong>, jejíž objekt je zkonstruován
+bezparametrickým konstruktorem, zatímco druhá metoda vyvolá tutéž výjimku,
+ovšem sestrojenou konstruktorem s&nbsp;parametrem typu
+<strong>String</strong>:</p>
+
+<pre>
+class Test4 {
+&nbsp;
+    public static void throwRuntimeException1() {
+        throw new RuntimeException();
+    }
+&nbsp;
+    public static void throwRuntimeException2() {
+        throw new RuntimeException("Hello world!");
+    }
+&nbsp;
+}
+</pre>
+
+<p>Bajtkód první metody je velmi jednoduchý, protože se v&nbsp;něm nejdříve
+zavolá instrukce <strong>new</strong> pro vytvoření instance třídy
+<strong>RuntimeException</strong> a následně je zavolán její konstruktor.
+Poslední instrukce výjimku skutečně vyvolá:</p>
+
+<pre>
+public static void throwRuntimeException1();
+  Code:
+   0:   new     #2;         // vytvoření instance třídy java/lang/RuntimeException
+   3:   dup                 // zachovat referenci pro instrukci athrow
+   4:   invokespecial   #3; // konstruktor: metoda java/lang/RuntimeException."&lt;init&gt;":()V
+   7:   athrow              // vyhození výjimky
+</pre>
+
+<p>Druhou metodu lze považovat za poněkud kuriózně pojatou variantu na program
+vypisující řetězec &bdquo;Hello world!&ldquo;:</p>
+
+<pre>
+public static void throwRuntimeException2();
+  Code:
+   0:   new     #2;         // vytvoření instance třídy java/lang/RuntimeException
+   3:   dup                 // zachovat referenci pro instrukci athrow
+   4:   ldc     #4;         // konstantní řetězec "Hello world!"
+   6:   invokespecial   #5; // konstruktor: metoda java/lang/RuntimeException."&lt;init&gt;":(Ljava/lang/String;)V
+   9:   athrow              // vyhození výjimky
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Synchronizace s&nbsp;využitím instrukcí <strong>monitorenter</strong> a <strong>monitorexit</strong></h2>
+
+<p>Zajímavou dvojici instrukcí, kterou jsme si až doposud nepopsali, tvoří
+instrukce nazvané <strong>monitorenter</strong> a <strong>monitorexit</strong>.
+Jedná se o instrukce, které jsou využívány zejména pro implementaci
+synchronizovaných bloků, tj.&nbsp;bloků příkazů prováděných v&nbsp;daném
+okamžiku maximálně jedním vláknem. Princip práce obou instrukcí je založen na
+tom, že každému objektu je již v&nbsp;době jeho konstrukce přiřazen monitor
+(tj.&nbsp;jeden z&nbsp;typů synchronizačního primitiva), který může vlastnit
+pouze (lepé řečeno maximálně) jedno vlákno. Instrukce
+<strong>monitorenter</strong> slouží k&nbsp;získání tohoto monitoru s&nbsp;tím,
+že v&nbsp;případě, že je již monitor daného objektu vlastněn jiným vláknem,
+bude současné vlákno čekat na uvolnění tohoto monitoru, popř.&nbsp;při špatném
+naprogramování dojde k&nbsp;oblíbenému deadlocku :-). Opačný význam má
+instrukce <strong>monitorexit</strong>, která naopak monitor uvolní a
+zpřístupní tak dalším případně čekajícím vláknům. Obě popisované instrukce při
+svém spuštění očekávají, že se na vrcholu zásobníku operandů bude nacházet
+reference na objekt, jehož monitor se má při vstupu do synchronizovaného bloku
+použít:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>monitorenter</td><td>0xC2</td><td>&times;</td><td>vstup do synchronizovaného bloku (získání monitoru)</td></tr>
+<tr><td>2</td><td>monitorexit</td><td>0xC3</td><td>&times;</td><td>výstup ze synchronizovaného bloky (uvolnění monitoru)</td></tr>
+</table>
+
+<p>Opět si ukážeme jednoduchý demonstrační příklad, který bude ilustrovat,
+jakým způsobem se instrukce <strong>monitorenter</strong> a
+<strong>monitorexit</strong> používají. Zdrojový kód tohoto příkladu je
+následující:</p>
+
+<pre>
+class Test5 {
+&nbsp;
+    Object zamek;
+&nbsp;
+    public int syncAdd(int x, int y) {
+        synchronized(zamek) {
+            return x + y;
+        }
+    }
+&nbsp;
+    public void syncHelloWorld() {
+        synchronized(zamek) {
+            System.out.println("Hello world!");
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Bajtkód metody <strong>syncAdd()</strong> obsahuje jak synchronizovaný blok,
+tak i &ndash; což je velmi důležité &ndash; sekvenci instrukcí, která zajistí
+uvolnění monitoru a to i při výskytu jakéhokoli typu výjimky:</p>
+
+<pre>
+public int syncAdd(int, int);
+  Code:
+   0:   aload_0             // uložení this na TOS
+   1:   getfield        #2; // Field zamek:Ljava/lang/Object;
+   4:   dup                 // duplikace reference na zámek
+   5:   astore_3            // uložení zámku do lokální pomocné proměnné
+&nbsp;
+   6:   monitorenter        // vstup do synchronizovaného bloku
+   7:   iload_1             // uložení prvního viditelného parametru metody na zásobník
+   8:   iload_2             // uložení druhého viditelného parametru metody na zásobník
+   9:   iadd                // součet
+   10:  aload_3             // načtení reference na zámek do TOS
+   11:  monitorexit         // výstup ze synchronizovaného bloku
+&nbsp;
+   12:  ireturn             // návratová hodnota metody je nyní na TOS
+&nbsp;
+&nbsp;                           // blok instrukcí zavolaný v případě výskytu výjimky
+   13:  astore  4           // meziuložení objektu reprezentujícího výjimku
+   15:  aload_3             // načíst zámek (referenci na zámek)
+   16:  monitorexit         // výstup ze synchronizovaného bloku
+   17:  aload   4           // reference na výjimku
+   19:  athrow              // skutečné vyhození výjimky
+&nbsp;                           // blok instrukcí zavolaný v případě výskytu výjimky
+  Exception table:
+   from   to  target type
+     7    12    13   any
+    13    17    13   any
+</pre>
+
+<p>I v&nbsp;případě bajtkódu metody <strong>syncHelloWorld()</strong> je
+použita sekvence instrukcí pro uvolnění monitoru při výskytu výjimky:</p>
+
+<pre>
+public void syncHelloWorld();
+  Code:
+   0:   aload_0             // uložení this na TOS
+   1:   getfield        #2; // Field zamek:Ljava/lang/Object;
+   4:   dup                 // duplikace reference na zámek
+   5:   astore_1            // uložení zámku do lokální pomocné proměnné
+&nbsp;
+   6:   monitorenter        // vstup do synchronizovaného bloku
+   7:   getstatic       #3; // atribut java/lang/System.out:Ljava/io/PrintStream;
+   10:  ldc     #4;         // konstantní řetězec "Hello world!"
+   12:  invokevirtual   #5; // metoda java/io/PrintStream.println:(Ljava/lang/String;)V
+   15:  aload_1             // načtení reference na zámek do TOS
+   16:  monitorexit         // výstup ze synchronizovaného bloku
+&nbsp;
+   17:  goto    25          // skok na příkaz return
+&nbsp;
+   20:  astore_2            // meziuložení objektu reprezentujícího výjimku
+   21:  aload_1             // načíst zámek (referenci na zámek)
+   22:  monitorexit         // výstup ze synchronizovaného bloku
+   23:  aload_2             // reference na výjimku
+   24:  athrow              // skutečné vyhození výjimky
+&nbsp;
+   25:  return              // návrat z metody
+&nbsp;
+  Exception table:
+   from   to  target type
+     7    17    20   any
+    20    23    20   any
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Kontrola typů za běhu: instrukce <strong>instanceof</strong> a <strong>checkcast</strong></h2>
+
+<p>Posledními dvěma instrukcemi, s&nbsp;nimiž se v&nbsp;dnešním článku
+seznámíme, jsou instrukce nazvané <strong>instanceof</strong> a
+<strong>checkcast</strong>. Instrukce <strong>instanceof</strong> je přímým
+protějškem stejnojmenného operátoru nabízeného programovacím jazykem Java.
+Tento operátor a tím pádem i tato instrukce slouží ke zjištění, zda je objekt
+instancí dané třídy, přičemž se tento test většinou provádí až v&nbsp;čase běhu
+aplikace (JVM samozřejmě podporuje plnohodnotné RTTI &ndash; runtime type
+identification). Výsledkem testu je pravdivostní hodnota <i>true</i>
+popř.&nbsp;<i>false</i>. Druhá instrukce <strong>checkcast</strong> provádí
+velmi podobný test, ovšem s&nbsp;tím rozdílem, že se namísto pravdivostní
+hodnoty <i>false</i> v&nbsp;případě neshody typu objektu vyvolá výjimka
+<strong>ClassCastException</strong>. Překladač tuto instrukci vkládá do
+bajtkódu zejména tehdy, pokud programátor zapíše do zdrojového kódu
+přetypování, které nemusí být vždy typově bezpečné.</p>
+
+<p>Operační kódy instrukcí <strong>instanceof</strong> a
+<strong>checkcast</strong> jsou vypsány v&nbsp;tabulce umístěné pod tímto
+odstavcem:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>instanceof</td><td>0xC1</td><td>highbyte, lowbyte</td><td>test, zda je objekt zadaného typu</td></tr>
+<tr><td>2</td><td>checkcast</td><td>0xC0</td><td>highbyte, lowbyte</td><td>kontrola, zda je objekt zadaného typu</td></tr>
+</table>
+
+<p>Podívejme se na demonstrační příklad obsahující dvě metody. V&nbsp;první
+metodě je použit operátor <strong>instanceof</strong>, který se přímo přeloží
+do stejně pojmenované instrukce. Ve druhé metodě je parametr typu
+<strong>Object</strong> přetypován na objekt typu <strong>String</strong>, což
+vede k&nbsp;tomu, že překladač vloží do kódu nezbytné kontroly, zda lze toto
+přetypování skutečně v&nbsp;čase běhu programu provést:</p>
+
+<pre>
+class Test6 {
+&nbsp;
+    public boolean isString(Object o) {
+        return o instanceof String;
+    }
+&nbsp;
+    public String returnString(Object o) {
+        return (String)o;
+    }
+&nbsp;
+}
+</pre>
+
+<p>Bajtkód metody <strong>isString()</strong> vypadá následovně:</p>
+
+<pre>
+public boolean isString(java.lang.Object);
+  Code:
+   0:   aload_1             // načtení prvního viditelného parametru metody
+   1:   instanceof      #2; // test, zda se jedná o instanci java/lang/String
+   4:   ireturn             // hodnota true/false je současně i návratovou hodnotou metody
+</pre>
+
+<p>V&nbsp;bajtkódu metody <strong>returnString</strong> můžeme vidět vloženou
+instrukci <strong>checkcast</strong>, jejíž zavolání může vyvolat výjimku typu
+<strong>ClassCastException</strong> v&nbsp;případě, že metodě nebyl předán
+objekt typu <strong>String</strong>:</p>
+
+<pre>
+public java.lang.String returnString(java.lang.Object);
+  Code:
+   0:   aload_1             // načtení prvního viditelného parametru metody
+   1:   checkcast       #2; // kontrola, zda se jedná o instanci java/lang/String
+   4:   areturn             // pokud nedošlo k výjimce, vrátí se reference na objekt uložený na TOS
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Java 6 try/finally compilation without jsr/ret<br />
+<a href="http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html">http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Root.cz: Využití komprimovaných ukazatelů na objekty v&nbsp;JVM<br />
+<a href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/</a></a>
+</li>
+
+<li>Root.cz: JamVM aneb alternativa k HotSpotu nejenom pro embedded zařízení a chytré telefony<br />
+<a href="http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/">http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>FindBugs<br />
+<a href="http://findbugs.sourceforge.net/">http://findbugs.sourceforge.net/</a>
+</li>
+
+<li>GNU Classpath<br />
+<a href="www.gnu.org/s/classpath/">www.gnu.org/s/classpath/</a></li>
+
+<li>Java VMs Compared<br />
+<a href="http://bugblogger.com/java-vms-compared-160/">http://bugblogger.com/java-vms-compared-160/</a>
+</li>
+
+<li>JSRs: Java Specification Requests &ndash; JSR 223: Scripting for the Java Platform<br />
+<a href="http://www.jcp.org/en/jsr/detail?id=223">http://www.jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>Scripting for the Java Platform<br />
+<a href="http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/">http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/</a>
+</li>
+
+<li>Scripting for the Java Platform (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform">http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform</a>
+</li>
+
+<li>Java Community Process<br />
+<a href="http://en.wikipedia.org/wiki/Java_Specification_Request">http://en.wikipedia.org/wiki/Java_Specification_Request</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>CloseableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html">http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
