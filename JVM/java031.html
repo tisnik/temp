@@ -1,0 +1,881 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - instrukce invokedynamic</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - instrukce invokedynamic</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;dnešní části seriálu o programovacím jazyku Java i o vlastnostech virtuálního stroje tohoto jazyka se zaměříme na popis nové instrukce nazvané příhodně invokedynamic, která byla do JVM přidána v&nbsp;rámci JDK 7 především z&nbsp;důvodu lepší podpory překladačů dynamicky typovaných programovacích jazyků.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Čtyři &bdquo;klasické&ldquo; instrukce bajtkódu JVM určené pro volání metod</a></p>
+<p><a href="#k02">2. Virtuální stroj Javy a překladače staticky typovaných programovacích jazyků</a></p>
+<p><a href="#k03">3. Použití signatur metod při jejich volání</a></p>
+<p><a href="#k04">4. Důvody vedoucí k&nbsp;zavedení instrukce <strong>invokedynamic</strong></a></p>
+<p><a href="#k05">5. Možná řešení problému volání metod v&nbsp;dynamicky typovaných programovacích jazycích</a></p>
+<p><a href="#k06">6. Instrukce <strong>invokedynamic</strong></a></p>
+<p><a href="#k07">7. Dynamic call site (DCS)</a></p>
+<p><a href="#k08">8. Novinky v&nbsp;bajtkódu Javy &ndash; nové typy záznamů v&nbsp;constant poolu</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Čtyři &bdquo;klasické&ldquo; instrukce bajtkódu JVM určené pro volání metod</h2>
+
+<p>V&nbsp;závěru <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-vliv-zmen-v-syntaxi-a-semantice-javy-na-strukturu-bajtkodu/">předchozí části</a> <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o vlastnostech virtuálního stroje tohoto jazyka</a>
+jsme se zmínili o tom, že v&nbsp;rámci <i>JDK 7</i> byl instrukční soubor JVM
+rozšířen o novou instrukci nazvanou příhodně <strong>invokedynamic</strong>.
+Zajímavé je, že se tato nová instrukce nevyužívá v&nbsp;samotné Javě, což
+znamená, že v&nbsp;bajtkódu získaném překladem zdrojových kódů naprogramovaných
+(čistě) v&nbsp;Javě tuto instrukci nenajdeme. Důvod je jednoduchý &ndash;
+programovací jazyk Java byl a stále zůstává staticky typovaným programovacím
+jazykem, u nějž překladač při volání jakékoli metody musí vědět, jakého typu
+jsou parametry této metody a jaký je její návratový typ. Nemusí sice již přesně
+vědět, metoda jaké třídy se má volat (to kvůli <i>polymorfismu</i>), protože
+tuto informaci je v&nbsp;mnoha případech možné zjistit až v&nbsp;čase běhu
+aplikace (v&nbsp;Javě se této vlastnosti poněkud nepřesně říká <i>pozdní vazba
+&ndash; late binding</i>).</p>
+
+<p>Z&nbsp;důvodu podpory polymorfismu, volání statických metod, konstruktorů
+atd. se všechny metody v&nbsp;Javě volají s&nbsp;využitím jedné
+z&nbsp;následujících čtyř instrukcí:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce JVM</th><th>Opkód</th><th>Operandy instrukce</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>invokestatic </td><td>0xB8</td><td>highbyte, lowbyte</td><td>zavolání statické metody s&nbsp;předáním parametrů této metodě</td></tr>
+<tr><td>2</td><td>invokevirtual</td><td>0xB6</td><td>highbyte, lowbyte</td><td>zavolání nestatické (neprivátní) metody s&nbsp;předáním hodnoty <strong>this</strong> (první implicitní parametr) a všech dalších explicitně uvedených parametrů</td></tr>
+<tr><td>3</td><td>invokespecial</td><td>0xB7</td><td>highbyte, lowbyte</td><td>zavolání konstruktoru, privátní nestatické metody či překryté metody</td></tr>
+<tr><td>4</td><td>invokeinterface</td><td>0xB9</td><td>highbyte, lowbyte, count</td><td>zavolání metody deklarované v&nbsp;rozhraní, samozřejmě s&nbsp;předáním parametrů</td></tr>
+</table>
+
+<p>Operandy <i>highbyte</i> a <i>lowbyte</i>, které jsou použité u všech čtyř
+výše uvedených instrukcí, tvoří šestnáctibitový index do <i>constant poolu</i>.
+Záznam uložený na daném indexu musí být typu <i>Method Reference
+(MethodRef)</i>, což je pro připomenutí záznam obsahující odkaz (index) na
+další záznam typu <i>Class</i> (jméno třídy či rozhraní, jejíž metoda se má
+zavolat, odkazuje se na řetězec s&nbsp;názvem třídy) a taktéž na záznam typu
+<i>Name and Type</i> obsahující signaturu metody. Pro připomenutí je pod tímto
+odstavcem vypsán obsah <i>constant poolu</i> pro třídu, v&nbsp;níž se
+s&nbsp;využitím instrukce <strong>invokespecial #2</strong> volá metoda
+<strong>void OtherClass.testMethod()</strong>:</p>
+
+<pre>
+Velikost const. poolu: 18 prvku
+  1   10  MethodRef         4     12             java/lang/Object.&lt;init&gt;()V
+* 2 * 10  MethodRef        13--.  14----.        OtherClass.testMethod()V
+  3    7  Class            15  |        |        Test
+  4    7  Class            16  |        |        java/lang/Object
+  5    1  String               |        |        "&lt;init&gt;"
+  6    1  String         ,-&gt;   |        |        "()V"
+  7    1  String         |     |        |        "Code"
+  8    1  String         |     |        |        "LineNumberTable"
+  9    1  String         |     |        |        "callTestMethod"
+ 10    1  String         |     |        |        "SourceFile"
+ 11    1  String         |     |        |        "Test.java"
+ 12   12  Name and type  |  6  |   5    |        ()V  &lt;init&gt;
+ 13    7  Class          | 17  `---------------&gt; OtherClass
+ 14   12  Name and type  `--6     18--. `------&gt; ()V  testMethod
+ 15    1  String                      |          "Test"
+ 16    1  String                      |          "java/lang/Object"
+ 17    1  String                      |          "OtherClass"
+ 18    1  String                      `--------&gt; "testMethod"
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Virtuální stroj Javy a překladače staticky typovaných programovacích jazyků</h2>
+
+<p>Všechny čtyři výše uvedené instrukce zpracovávané virtuálním strojem Javy
+plně dostačují potřebám tohoto programovacího jazyka, i když se u instrukce
+<strong>invokeinterface</strong> používá její poslední parametr <i>count</i>
+již spíše z&nbsp;historických důvodů. Ovšem v&nbsp;posledních několika letech
+můžeme sledovat zvýšený zájem tvůrců dalších programovacích jazyků o vytvoření
+překladačů těchto jazyků do bajtkódu JVM (kromě překladačů vzniklo ještě větší
+množství různých interpretrů, těmi se však v&nbsp;tomto článku nebudeme
+prozatím zabývat). Pokud se jedná o staticky typovaný jazyk, neměly by při
+tvorbě jeho překladače nastat závažnější problémy (pokud tedy daný jazyk přímo
+nemanipuluje s&nbsp;ukazateli či neprovádí skutečně nízkoúrovňové operace,
+které nemají přímou podporu v&nbsp;instrukcích JVM) a programátoři-uživatelé
+tohoto překladače tak mohou s&nbsp;minimálním úsilím získat kvalitní platformu
+pro vývoj aplikací &ndash; bajtkód vytvořený překladačem totiž může být
+optimalizován a následně přeložen <i>just-in-time</i> překladačem přímo do
+nativního kódu, virtuální stroj Javy je vybaven několika správci paměti
+(<i>garbage collector</i>), podporuje běh programu ve více vláknech a hlavní
+devizou JVM je v&nbsp;neposlední řadě i rozsáhlá standardní knihovna
+s&nbsp;přesně definovaným rozhraním dodržovaným na všech podporovaných
+platformách.</p>
+
+<div class="rs-box"><p>Zajímavé je, že virtuální stroj Javy byl navržen takovým
+způsobem, že vlastně ani nepočítá s&nbsp;tím, že bajtkód prováděný JVM byl
+skutečně vytvořen překladačem programovacího jazyka Java. Ve skutečnosti je
+přímo ve specifikaci JVM na několika místech řečeno, že bajtkód může vzniknout
+v&nbsp;podstatě jakýmkoli způsobem (například může být syntetizován či upraven
+pomocí nástrojů <i>BCEL</i> či <i>ASM</i>), pouze musí splňovat všechny
+požadavky na něj kladené (kupodivu je bajtkód v&nbsp;některých ohledech více
+dynamický než samotná Java :-).</p></div>
+
+<p>Dobrým příkladem dnes poměrně úspěšného programovacího jazyka těžícího
+z&nbsp;předností infrastruktury představované virtuálním strojem Javy je
+programovací jazyk <i>Scala</i>. Aplikace napsané ve <i>Scale</i> jsou
+překládány přímo do standardního bajtkódu JVM a mohou se tak velmi snadno
+zaintegrovat do větší javovské aplikace. Ovšem je nutné říci, že <i>Scala</i>
+je z&nbsp;jazyků dostupných pro JVM spíše výjimkou, protože převažují
+programovací jazyky dynamicky typované. Tvůrci překladačů těchto programovacích
+jazyků až donedávna (konkrétně až do poloviny roku 2011) stáli před problémem
+<i>jak</i> do bajtkódu vytvářeného překladačem vložit instrukce pro volání
+funkcí či metod. Problém s&nbsp;voláním metod či funkcí u těchto jazyků spočívá
+v&nbsp;tom, že instrukce <strong>invokestatic</strong>,
+<strong>invokevirtual</strong>, <strong>invokespecial</strong> ani
+<strong>invokeinterface</strong> nelze přímo použít, protože u dynamicky
+typovaného jazyka není obecně možné v&nbsp;čase překladu určit, která konkrétní
+metoda se má použít: JVM totiž při volání vyžaduje plnou signaturu metody,
+tj.&nbsp;její jméno, přesné typy všech parametrů i typ návratové hodnoty.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Použití signatur metod při jejich volání</h2>
+
+<p>Při použití instrukcí <strong>invokestatic</strong>,
+<strong>invokevirtual</strong>, <strong>invokespecial</strong> a
+<strong>invokeinterface</strong> je navíc nutné mít typy parametrů určené zcela
+přesně. Nestačí tedy například uvést, že první parametr má být typu
+<strong>float</strong> a ve skutečnosti předávat hodnotu typu
+<strong>int</strong> &ndash; prakticky všechny konverze musí být provedeny
+explicitně, což JVM testuje při načítání bajtkódu i při jeho vykonávání
+(některé konverze jsou však za určitých okolností implicitní, například převod
+<strong>byte</strong> či <strong>short</strong> na <strong>int</strong>,
+protože datové typy <strong>byte</strong> a <strong>short</strong> nejsou
+&bdquo;uzavřeny&ldquo; vůči většině prováděných operací v&nbsp;JVM). Konverzní
+instrukce generuje samozřejmě samotný překladač, protože ten již při překladu
+zná (a musí znát) signatury všech volaných metod. Viz též následující
+příklad:</p>
+
+<pre>
+public class Test {
+&nbsp;
+    static int add(int x, int y) {
+        return x+y;
+    }
+&nbsp;
+    static float add(float x, float y) {
+        return x+y;
+    }
+&nbsp;
+    static String add(String x, String y) {
+        return x+y;
+    }
+&nbsp;
+    void test() {
+        int   integerValue = 10;
+        float floatValue = 10.0f;
+&nbsp;
+        // volání metody int add(int, int)
+        // bez konverzí parametrů
+        add(integerValue, integerValue);
+&nbsp;
+        // volání metody float add(float, float)
+        // bez konverzí parametrů
+        add(floatValue, floatValue);
+&nbsp;
+        // volání metody float add(float, float)
+        // s konverzí prvního parametru
+        add(integerValue, floatValue);
+&nbsp;
+        // volání metody float add(float, float)
+        // s konverzí druhého parametru
+        add(floatValue, integerValue);
+&nbsp;
+        // volání metody String add(String, String)
+        // bez konverzí parametrů
+        add("hello ", "world");
+    }
+&nbsp;
+}
+</pre>
+
+<p>Překladač vždy musí zajistit volání správné <i>konkrétní</i> metody a
+současně musí zajistit, že jsou této metodě předány parametry mající korektní
+typ. Proto se metoda <strong>test()</strong> přeloží následovně:</p>
+
+<pre>
+void test();
+  Code:
+   0:   bipush  10
+   2:   istore_1
+   3:   ldc     #2;         //float 10.0f
+   5:   fstore_2
+   6:   iload_1
+   7:   iload_1
+&nbsp;
+   // JVM musí znát přesnou signaturu volané metody
+   // (II)I = metoda s dvojicí parametrů int vracející int
+   8:   invokestatic    #3; //Method add:(II)I
+   11:  pop
+   12:  fload_2
+   13:  fload_2
+&nbsp;
+   // JVM musí znát přesnou signaturu volané metody
+   // (FF)F = metoda s dvojicí parametrů float vracející float
+   14:  invokestatic    #4; //Method add:(FF)F
+   17:  pop
+   18:  iload_1
+   19:  i2f                 // explicitní konverze
+   20:  fload_2
+&nbsp;
+   // JVM musí znát přesnou signaturu volané metody
+   // (FF)F = metoda s dvojicí parametrů float vracející float
+   21:  invokestatic    #4; //Method add:(FF)F
+   24:  pop
+   25:  fload_2
+   26:  iload_1
+   27:  i2f                 // explicitní konverze
+&nbsp;
+   // JVM musí znát přesnou signaturu volané metody
+   // (FF)F = metoda s dvojicí parametrů float vracející float
+   28:  invokestatic    #4; //Method add:(FF)F
+   31:  pop
+   32:  ldc     #9;         //String "hello "
+   34:  ldc     #10;        //String "world"
+&nbsp;
+   // JVM musí znát přesnou signaturu volané metody
+   36:  invokestatic    #11; //Method add:(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+   39:  pop
+   40:  return
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Důvody vedoucí k&nbsp;zavedení instrukce <strong>invokedynamic</strong></h2>
+
+<p>Pojďme si nyní ukázat, proč je vlastně zavedení nové instrukce
+<strong>invokedynamic</strong> tak důležité &ndash; dokonce tak důležité, že
+tuto instrukci považují někteří programátoři za největší novinku přidanou do
+<i>JDK 7</i> (osobně si však myslím, že většina programátorů používajících Javu
+více ocení některá další rozšíření tohoto jazyka, která byla do <i>JDK 7</i>
+přidána). Dejme tomu, že vývojář používající některý dynamicky typovaný
+programovací jazyk napíše následující funkci (konkrétní syntaxe nyní nehraje
+prakticky žádnou roli):</p>
+
+<pre>
+define max(x, y)
+    if x.lessThan(y) then
+        return y
+    else
+        return x
+end
+</pre>
+
+<p>Zápis této funkce ve skutečnosti znamená, že se v&nbsp;jejím těle zavolá
+nějaká metoda v&nbsp;čase kompilace ještě většinou neznámé třídy
+<strong>x</strong>, která je nazvaná <strong>lessThan</strong>. Této metodě je
+předán parametr <strong>y</strong>, jehož datový typ opět není v&nbsp;čase
+kompilace (<i>compile time</i>) většinou překladači známý. To znamená, že až
+v&nbsp;čase běhu aplikace (<i>runtime</i>) je možné na základě typů konkrétních
+parametrů předávaných do funkce <strong>max</strong> rozhodnout, jaká konkrétní
+metoda <strong>lessThan</strong> se bude ve skutečnosti volat. První problém
+spočívá v&nbsp;tom, že příkaz typu &bdquo;najdi a zavolej vhodnou metodu
+lessThan&ldquo; není možné přímo implementovat ani jednou ze čtyř výše
+zmíněných instrukcí typu <strong>invoke*</strong> (neznáme totiž přesnou
+signaturu metody, tedy informaci o typech jejích parametrů i o její návratové
+hodnotě), takže se vývojáři překladačů museli poohlédnout po alternativních
+způsobech, jak příkaz pro nalezení a zavolání &bdquo;vhodné&ldquo; metody
+odpovídající předávaným typům implementovat.</p>
+
+<p>Naproti tomu některé další virtuální stroje (<i>VM</i>) již od svého začátku
+podporují instrukce sloužící pro nalezení vhodné metody a pro její zavolání.
+Pro ilustraci se podívejme, jak by byl celý problém s&nbsp;metodou
+<strong>add</strong> z&nbsp;předchozí kapitoly vyřešený v&nbsp;bajtkódu
+virtuálního stroje programovacího jazyka <i>Python</i>. Funkce
+<strong>add()</strong> by vypadala velmi jednoduše, protože typy obou parametrů
+<strong>x</strong> a <strong>y</strong> i návratový typ se vyhodnocuje až
+v&nbsp;době běhu programu:</p>
+
+<pre>
+def add(x,y):
+    return x+y
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že bajtkód jazyka <i>Python</i> (resp.&nbsp;jeho
+virtuálního stroje) obsahuje &ndash; na rozdíl od JVM &ndash; vysokoúrovňové
+instrukce, vypadá přeložená funkce <strong>add()</strong> následovně:</p>
+
+<pre>
+import dis
+dis.dis(add)
+&nbsp;
+    2    0 LOAD_FAST     0 (x)
+         3 LOAD_FAST     1 (y)
+         6 BINARY_ADD
+         7 RETURN_VALUE
+</pre>
+
+<p>Všechny čtyři instrukce VM Pythonu jsou vlastně polymorfní a manipulují
+s&nbsp;hodnotami libovolného typu. Může se skutečně jednat o jakékoli objekty,
+pouze je za běhu kontrolováno, zda je na ně možné aplikovat operátor +, který
+ve skutečnosti odpovídá volání metody <strong>__add__</strong>, kterou je možné
+kdykoli předefinovat. Naopak v&nbsp;případě Javy by se naproti tomu existence
+vhodné metody <strong>__add__</strong> musela kontrolovat již při překladu: to
+samozřejmě v&nbsp;případě, kdy by jazyk byl rozšířen o možnosti přetížení
+operátorů (což v&nbsp;podstatě neznamená až tak velký zásah do překladače, jak
+by se mohlo zdát; prozatím však tato možnost budí poměrně velké rozpaky).</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Možná řešení problému volání metod v&nbsp;dynamicky typovaných programovacích jazycích</h2>
+
+<p>Jednou z&nbsp;možností řešení problému volání metody bez předem známé
+signatury spočívá v&nbsp;tom, že překladač vytvoří a použije novou třídu, která
+bude reprezentovat libovolný datový typ, což u mnoha dynamických jazyků kromě
+pravdivostních hodnot, čísel a řetězců většinou zahrnuje i takové datové typy,
+jakými jsou pole, seznamy, asociativní pole, n-tice atd.). Metoda
+<strong>lessThan()</strong> by v&nbsp;tomto případě jako svůj parametr
+akceptovala právě instanci této třídy (a sama by byla metodou této třídy),
+takže by se celý problém mohl alespoň zdánlivě vyřešit, i když by metoda
+<strong>lessThan()</strong> ve svém těle musela obsahovat mnoho větví řešících
+různé kombinace skutečně předaných parametrů (<strong>lessThan()</strong>
+aplikovaná na dvojici čísel se bude určitě chovat jinak, než
+<strong>lessThan()</strong> aplikovaná na dva řetězce, pole atd.) &ndash;
+obecně se vlastně jedná o obcházení možností, které nám automaticky nabízí OOP
+a polymorfismus v&nbsp;Javě. Ve skutečnosti se však o zcela obecné řešení
+nejedná, protože nové metody či funkce definované později uživatelem by nebylo
+možné volat přímo, ale musela by se použít nějaká &bdquo;univerzální&ldquo;
+metoda pojmenovaná většinou <strong>Invoke</strong> či
+<strong>Apply</strong>.</p>
+
+<p>Druhé řešení, ke kterému se mohou tvůrci překladačů uchýlit, spočívá ve
+využití <i>reflection API</i>, konkrétně v&nbsp;použití velmi užitečné třídy <a
+href="http://docs.oracle.com/javase/7/docs/api/java/lang/reflect/Method.html">java.lang.reflect.Method</a>.
+V&nbsp;této třídě se kromě dalších metod nachází i metoda nazvaná příhodně
+<strong>invoke</strong>. Tuto metodu pravděpodobně nebudou mít skalní zastánci
+striktně typovaných jazyků příliš v&nbsp;lásce :-) nicméně jde o metodu
+používanou například v&nbsp;testovacích nástrojích atd. Hlavička metody
+<strong>invoke</strong> je následující:</p>
+
+<pre>
+public Object invoke(Object obj, Object... args)
+    throws IllegalAccessException,
+           IllegalArgumentException,
+           InvocationTargetException
+</pre>
+
+<p>Prvním parametrem metody <strong>invoke()</strong> je instance třídy, jejíž
+metoda se volá, další parametry pak musí svým typem odpovídat skutečným
+parametrům metody. Návratovou hodnotou <strong>invoke()</strong> je samozřejmě
+návratová hodnota volané metody &ndash; tuto hodnotu je nutné většinou
+explicitně přetypovat.</p>
+
+<p>Následuje velmi jednoduchá ukázka použití <strong>invoke()</strong>:</p>
+
+<pre>
+import java.lang.reflect.*;
+&nbsp;
+public class Test {
+&nbsp;
+    // tato metoda se bude volat přes Method.invoke()
+    public int computeAnswer(Integer x, Integer y) {
+        return x * y;
+    }
+&nbsp;
+    public static void main(String[] args) {
+        // základem pro práci s reflection API je třída Class
+        Class c = Test.class;
+        try {
+            // pokusíme se nalézt metodu s daným jménem a současně
+            // s daným počtem a typem parametrů - zde lze tyto informace
+            // vyhodnotit až v runtime, nikoli nutně v compile time
+            Method m = c.getMethod("computeAnswer", Integer.class, Integer.class);
+&nbsp;
+            // zavolání metody pomocí Method.invoke()
+            Object answer = m.invoke(new Test(), Integer.valueOf(6), Integer.valueOf(7));
+&nbsp;
+            // převod z Object na Integer nemusíme provádět, je nám totiž jedno,
+            // jak se zavolá answer.toString()
+            System.out.println("Answer is " + answer);
+        }
+        catch (NoSuchMethodException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalAccessException e) {
+            e.printStackTrace();
+        }
+        catch (InvocationTargetException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Použití <strong>Method.invoke()</strong> je skutečně pro tvůrce překladače
+rozumným řešením, ovšem stále zde zůstává jeden problém: v&nbsp;runtime je
+nutné získat nejenom informace o konkrétním typu objektu (jehož metoda se má
+volat) i typu parametrů volané metody, ale navíc se ještě musí všechny tyto
+typy převést na typy (čti objekty) &bdquo;kompatibilní&ldquo; s&nbsp;Javou.
+Jinými slovy musí být všechny datové typy nabízené daným programovacím jazykem
+převoditelné na objekty reprezentovatelné v&nbsp;Javě
+(<strong>Integer</strong>, <strong>String</strong>, <strong>List</strong>
+atd.). Nejedná se sice o neřešitelnou překážku, nicméně někdy to vede
+k&nbsp;nutnosti vytváření &bdquo;paralelní&ldquo; hierarchie tříd nahrazujících
+javovské datové typy, což není optimální z&nbsp;hlediska výpočetního
+výkonu.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Instrukce <strong>invokedynamic</strong></h2>
+
+<p>Nová instrukce <strong>invokedynamic</strong> má poměrně složité chování,
+které se dosti zásadním způsobem odlišuje od zbylých čtyř instrukcí
+<strong>invokestatic</strong>, <strong>invokevirtual</strong>,
+<strong>invokespecial</strong> a <strong>invokeinterface</strong>. Je tomu tak
+z&nbsp;toho důvodu, že instrukce <strong>invokedynamic</strong> má
+programátorům překladače zajistit možnost volby konkrétní metody, která se má
+spustit v&nbsp;čase běhu aplikace, ovšem na druhou stranu se musí jednat o
+řešení, které je dostatečně výkonné, aby se při každém volání nemusel stále
+volat složitý kód pro nalezení volané metody (není bez zajímavosti, že tato
+&bdquo;optimalizace&ldquo; nebyla do původního návrhu pro
+<strong>invokedynamic</strong> zahrnuta, což by však mělo velmi negativní
+dopad na výkonnost přeloženého kódu).</p>
+
+<p>Z&nbsp;tohoto důvodu pracuje instrukce <strong>invokedynamic</strong> tak,
+že se při jejím prvním zavolání z&nbsp;daného místa bajtkódu nejprve vytvoří
+vazba (<i>link</i>) mezí tímto místem a volanou metodou a při každém dalším
+volání <strong>invokedynamic</strong> se již přímo použije slinkovaná metoda
+(tj.&nbsp;metoda svázaná s&nbsp;tímto výskytem instrukce
+<strong>invokedynamic</strong>). Přednosti tohoto řešení jsou zřejmé, když si
+uvědomíme, že by se například instrukce <strong>invokedynamic</strong> použila
+v&nbsp;programové smyčce.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Dynamic call site (DCS)</h2>
+
+<p>Každá instance instrukce <strong>invokedynamic</strong> v&nbsp;bajtkódu se
+nazývá <i>dynamic call site</i> neboli zkráceně <i>DCS</i> (volně lze tento
+termín pravděpodobně přeložit jako &bdquo;místo dynamického volání&ldquo;). Ke
+každému <i>DCS</i> je přiřazen určitý stav, přičemž ve výchozím stavu není
+<i>DCS</i> slinkováno s&nbsp;žádnou konkrétní volanou metodou &ndash;
+slinkování se totiž vždy provádí až v&nbsp;čase běhu programu (<i>runtime</i>).
+Překladač namísto konkrétní metody, která se bude z&nbsp;<i>DCS</i> volat (tuto
+metodu, jak již víme, obecně nemůže v&nbsp;čase překladu znát) musí pro každé
+<i>DCS</i> (instanci <strong>invokedynamic</strong> v&nbsp;bajtkódu)
+specifikovat takzvanou <i>bootstrap metodu</i>, a to podobným způsobem, jakým
+se specifikují volané metody u instrukcí <strong>invokestatic</strong>,
+<strong>invokevirtual</strong>, <strong>invokespecial</strong> a
+<strong>invokeinterface</strong>. Kvůli <i>bootstrap metodám</i> se navíc
+musely specifikovat <a href="#k08">další typy záznamů ukládaných do constant
+poolu</a>.</p>
+
+<p><i>Bootstrap metoda</i> je zavolána ve chvíli, kdy není <i>DCS</i> ještě
+s&nbsp;ničím slinkována, tj.&nbsp;v&nbsp;okamžiku, kdy virtuální stroj Javy
+ještě neví, kterou konkrétní metodu má skutečně zavolat. Namísto toho tedy
+zavolá <i>bootstrap metodu</i> (tu zná &ndash; je přímo parametrem instrukce
+<strong>invokedynamic</strong>), která zajistí vytvoření kýžené vazby mezi
+<i>DCS</i> a nějakou vhodnou metodou. Návratovým typem <i>bootstrap metody</i>
+je totiž objekt, který reprezentuje vazbu (<i>link</i>). Při každém dalším
+průchodu přes <i>DCS</i> nyní již virtuální stroj Javy nebude volat
+<i>bootstrap metodu</i>, ale metodu, na níž vede vytvořený <i>link</i> (jakým
+způsobem jsou tyto linky uloženy v&nbsp;paměti je již věcí vývojářů JVM,
+konkrétní implementace <i>bootstrap metody</i> naopak trápí vývojáře
+překladačů).</p>
+
+<p>Následuje (neúplný) příklad toho, jak by mohla <i>bootstrap metoda</i>
+vypadat. Tento příklad navazuje na příklad s&nbsp;třídou <strong>Test</strong>
+a její metodou <strong>computeAnswer()</strong>:</p>
+
+<pre>
+public class InvokeDynamicTest {
+&nbsp;
+    public static int bootstrapMethod(CallSite site, Object... args) {
+&nbsp;
+        // MethodHandles.lookup() vrati objekt typu MethodHandles.Lookup
+        // ten nabizi vyhledavaci mechanismus pro metody pres:
+        //     MethodHandles.Lookup.findVirtual()
+        //     MethodHandles.Lookup.findStatic()
+        //     MethodHandles.Lookup.findSpecial()
+        //     MethodHandles.Lookup.findConstrutor()
+        // atd.
+&nbsp;
+        // vyhledavana metoda Test.computeAnswer() je NEstaticka, tudiz virtualni
+        MethodHandle target = MethodHandles.lookup().findVirtual(
+                // trida, ve ktere se provadi hledani metody
+                Test.class,
+                "computeAnswer",
+                // ukazka zpusobu specifikace typu parametru i typu navratove hodnoty:
+                // prvni parametr: typ navratove hodnoty
+                // dalsi parametry: typy parametru metody
+                MethodType.methodType(Integer.class, Integer.class, Integer.class));
+                // (jedna se o pretizenou metodu, existuje ve vice variantach)
+&nbsp;
+        // vytvoreni linku
+        site.setTarget(target);
+&nbsp;
+        // zde se již může zavolat metoda Test.computeAnswer()
+        return MethodHandle.invoke(target, site, args);
+        // pokud by metoda vyhazovala nejake vyjimky, mely by se samozrejme
+        // odchytit - MethodHandle.invoke() obecne vyhazuje Throwable, tedy "vse"
+    }
+}
+</pre>
+
+<p>Registrace <i>bootstrap metody</i> je možné jednoduše provést ve static
+bloku:</p>
+
+<pre>
+static {
+    Linkage.registerBootstrapMethod("bootstrapMethod");
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Novinky v&nbsp;bajtkódu Javy &ndash; nové typy záznamů v&nbsp;constant poolu</h2>
+
+<p>V&nbsp;předchozí kapitole jsme si řekli, že v&nbsp;rámci zavádění podpory
+pro dynamicky typované programovací jazyky došlo i k&nbsp;rozšíření typů
+záznamů ukládaných do <i>constant poolu</i>. Připomeňme si, že až doposud jsme
+se seznámili s&nbsp;následujícími typy záznamů používanými od JDK 1.0 až do JDK
+6:</p>
+
+<table>
+<tr><th>Tag</th><th>Název tagu</th><th>Parametr 1</th><th>Parametr 2</th></tr>
+<tr><td> 1</td><td>Utf8</td><td>délka řetězce v&nbsp;bajtech</td><td>sekvence bajtů (počet znaků je obecně menší než počet bajtů)</td></tr>
+<tr><td> 3</td><td>Integer</td><td>čtyřbajtová celočíselná konstanta</td><td>&times;</td></tr>
+<tr><td> 4</td><td>Float</td><td>čtyřbajtová FP konstanta</td><td>&times;</td></tr>
+<tr><td> 5</td><td>Long</td><td>osmibajtová celočíselná konstanta</td><td>&times;</td></tr>
+<tr><td> 6</td><td>Double</td><td>osmibajtová FP konstanta</td><td>&times;</td></tr>
+<tr><td> 8</td><td>String</td><td>2 bajty: odkaz na vlastní řetězec (záznam typu <strong>Utf8</strong>)</td><td>&times;</td></tr>
+<tr><td> 7</td><td>Class</td><td>2 bajty: odkaz na jméno třídy (záznam typu <strong>Utf8</strong>)</td><td>&times;</td></tr>
+<tr><td> 9</td><td>Fieldref</td><td>2 bajty: odkaz na jméno třídy (záznam typu <strong>Utf8</strong>)</td><td>2 bajty: odkaz na záznam typu <strong>NameAndType</strong></td></tr>
+<tr><td>10</td><td>Methodref</td><td>2 bajty: odkaz na jméno třídy (záznam typu <strong>Utf8</strong>)</td><td>2 bajty: odkaz na záznam typu <strong>NameAndType</strong></td></tr>
+<tr><td>11</td><td>InterfaceMethodref</td><td>2 bajty: odkaz na jméno třídy (záznam typu <strong>Utf8</strong>)</td><td>2 bajty: odkaz na záznam typu <strong>NameAndType</strong></td></tr>
+<tr><td>12</td><td>NameAndType</td><td>2 bajty: odkaz na záznam typu <strong>Utf8</strong></td><td>2 bajty: odkaz na záznam typu <strong>Utf8</strong></td></tr>
+</table>
+
+<p>Nově se mohou v&nbsp;bajtkódu objevit ještě další tři typy záznamů, které
+jsou vypsány v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>Tag</th><th>Název tagu</th><th>Parametr 1</th><th>Parametr 2</th></tr>
+<tr><td>15</td><td>MethodHandle </td><td>typ reference (1-9)</td><td>index na <strong>Fieldref</strong>, <strong>Methodref</strong> či <strong>InterfaceMethodref</strong></td></tr>
+<tr><td>16</td><td>MethodType   </td><td>odkaz na záznam typu <strong>Utf8</strong> obsahující deskriptor metody</td><td>&times;</td></tr>
+<tr><td>18</td><td>InvokeDynamic</td><td>index ukazující na bootstrap metodu</td><td>index na záznam typu <strong>NameAndType</strong></td></tr>
+</table>
+
+<p>U záznamu typu <strong>InvokeDynamic</strong> obsahuje první parametr index
+do pole vytvořeného pomocí atributu <strong>BootstrapMethods_attribute</strong>
+(jedná se o doplňkové informace přidané k&nbsp;bajtkódu). Bližší informace o
+všech třech nových typech záznamů i způsobu jejich použití si řekneme
+v&nbsp;některém z&nbsp;následujících částí tohoto seriálu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Java Virtual Machine Support for Non-Java Languages<br />
+<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html">http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/">http://java.sun.com/developer/technicalArticles/DynTypeLang/</a>
+</li>
+
+<li>JSR 223: Scripting for the JavaTM Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=223">http://jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>JSR 292: Supporting Dynamically Typed Languages on the JavaTM Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=292">http://jcp.org/en/jsr/detail?id=292</a>
+</li>
+
+<li>Java 7: A complete invokedynamic example<br />
+<a href="http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html">http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html</a>
+</li>
+
+<li>InvokeDynamic: Actually Useful?<br />
+<a href="http://blog.headius.com/2007/01/invokedynamic-actually-useful.html">http://blog.headius.com/2007/01/invokedynamic-actually-useful.html</a>
+</li>
+
+<li>A First Taste of InvokeDynamic<br />
+<a href="http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html">http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html</a>
+</li>
+
+<li>Java 6 try/finally compilation without jsr/ret<br />
+<a href="http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html">http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Root.cz: Využití komprimovaných ukazatelů na objekty v&nbsp;JVM<br />
+<a href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/</a></a>
+</li>
+
+<li>Root.cz: JamVM aneb alternativa k HotSpotu nejenom pro embedded zařízení a chytré telefony<br />
+<a href="http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/">http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>FindBugs<br />
+<a href="http://findbugs.sourceforge.net/">http://findbugs.sourceforge.net/</a>
+</li>
+
+<li>GNU Classpath<br />
+<a href="www.gnu.org/s/classpath/">www.gnu.org/s/classpath/</a></li>
+
+<li>Java VMs Compared<br />
+<a href="http://bugblogger.com/java-vms-compared-160/">http://bugblogger.com/java-vms-compared-160/</a>
+</li>
+
+<li>JSRs: Java Specification Requests &ndash; JSR 223: Scripting for the Java Platform<br />
+<a href="http://www.jcp.org/en/jsr/detail?id=223">http://www.jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>Scripting for the Java Platform<br />
+<a href="http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/">http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/</a>
+</li>
+
+<li>Scripting for the Java Platform (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform">http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform</a>
+</li>
+
+<li>Java Community Process<br />
+<a href="http://en.wikipedia.org/wiki/Java_Specification_Request">http://en.wikipedia.org/wiki/Java_Specification_Request</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>CloseableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html">http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
