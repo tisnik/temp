@@ -1,0 +1,2101 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI (4.část: práce s výjimkami)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI (4.část: práce s výjimkami)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si řekneme, jakým způsobem je možné přes rozhraní JVM TI detekovat vznik libovolné výjimky a současně i zjistit další podrobnější informace o tom, na jakém místě programu bude výjimka zachycena a o jakou výjimku se vlastně jedná. Při tvorbě nových demonstračních příkladů si popíšeme i mnohé další možnosti JVM TI.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Detekce zachycení výjimky v&nbsp;javovském programu</a></p>
+<p><a href="#k02">2. Jedenáctý demonstrační agent &ndash; detekce zachycení výjimky</a></p>
+<p><a href="#k03">3. Získání jména a signatury metody, v&nbsp;níž k&nbsp;výjimce došlo</a></p>
+<p><a href="#k04">4. Získání jména třídy, v&nbsp;jejíž metodě k&nbsp;výjimce došlo</a></p>
+<p><a href="#k05">5. Úprava výpisu, přečtení a vypsání typu výjimky</a></p>
+<p><a href="#k06">6. Zjištění čísla řádku, kde se výjimka zachytí</a></p>
+<p><a href="#k07">7. Dvanáctý demonstrační agent &ndash; výpis podrobnějších informací o zachycované výjimce</a></p>
+<p><a href="#k08">8. Krátké shrnutí všech doposud popsaných a použitých callback funkcí</a></p>
+<p><a href="#k09">9. Archiv se zdrojovými kódy i skripty pro překlad</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Detekce zachycení výjimky v&nbsp;javovském programu</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech JVM</a> se již počtvrté budeme
+zabývat popisem využití rozhraní <i>JVM TI (JVM Tool Interface)</i> pro tvorbu
+agentů určených pro monitorování a taktéž pro řízení jak samotného virtuálního
+stroje Javy, tak i aplikací, které jsou v&nbsp;tomto virtuálním stroji
+provozovány. Dnes si řekneme, jakým způsobem lze v&nbsp;agentovi zjistit, že
+byla zachycena výjimka, přesněji řečeno okamžik těsně před zachycením výjimky.
+Tato funkcionalita může být velmi užitečná v&nbsp;těch případech, kdy nějaký
+programátor ve své aplikaci určitou výjimku zachytává do prázdného bloku catch
+(<strong>catch (Exception e) {}</strong>), což sice může být
+v&nbsp;odůvodněných případech správné, většinou se však jedná o pouhý pokus o
+zakrytí problémů před administrátory či uživateli (což se může dříve či později
+vymstít). S&nbsp;využitím agentů lze relativně snadno zjistit, kde všude byly
+výjimky zachyceny, a to dokonce bez znalosti zdrojových kódů aplikace i bez
+zásahu do zdrojových kódů a/nebo bajtkódu (což může být zakázáno
+v&nbsp;licenci).</p>
+
+<p>Virtuální stroj Javy může před zachycením výjimky zavolat callback funkci
+zaregistrovanou v&nbsp;JVM TI agentovi. Tato callback funkce musí být
+zaregistrována pomocí <strong>SetEventCallbacks()</strong> následujícím
+způsobem:</p>
+
+<pre>
+jvmtiEventCallbacks callbacks;
+memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+<i>/* JVMTI_EVENT_EXCEPTION_CATCH */</i>
+callbacks.ExceptionCatch = &amp;callback_on_exception_catch;
+&nbsp;
+error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+</pre>
+
+<p>Navíc se musí vhodným způsobem nastavit režim notifikace s&nbsp;využitím
+<strong>SetEventNotificationMode()</strong>:</p>
+
+<pre>
+(*jvmti)-&gt;SetEventNotificationMode(jvmti, JVMTI_ENABLE, JVMTI_EVENT_EXCEPTION_CATCH (jthread)NULL);
+</pre>
+
+<p>A samozřejmě je nutné taktéž nastavit a ověřit, zda virtuální stroj vůbec
+touto vlastností vůbec oplývá:</p>
+
+<pre>
+jvmtiCapabilities capabilities;
+&nbsp;
+memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+<i>/* vyuzivame pouze jednu specialni schopnost agenta */</i>
+capabilities.can_generate_exception_events = 1;
+&nbsp;
+(*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+</pre>
+
+<p>V&nbsp;případě, že virtuální stroj podporuje posílání informací o výjimkách
+agentovi, dojde k&nbsp;zaregistrování callback funkce nazvané
+<strong>callback_on_exception_catch()</strong> (toto jméno jsme použili při
+registraci s&nbsp;využitím <strong>SetEventCallbacks()</strong>. Zatímco
+většina doposud popisovaných callback funkcí měla velmi jednoduchou hlavičku
+s&nbsp;maximálně čtyřmi parametry, je tomu v&nbsp;případě funkce
+<strong>callback_on_exception_catch()</strong> jinak, protože do této funkce se
+předává hned šest parametrů nesoucích informace o typu výjimky, vlákně,
+v&nbsp;němž je výjimka zachycována, metodě, kde bude výjimka zachycena a taktéž
+informace o tom, kde přesně je výjimka ve funkci zachycena (na jaké instrukci).
+Hlavička callback funkce <strong>callback_on_exception_catch()</strong> vypadá
+následovně:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná ve chvíli zachycení výjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception)
+</pre>
+
+<p>Význam jednotlivých parametrů je stručně popsán v&nbsp;následující
+tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Parametr</th><th>Typ</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmti_env</td><td>jvmtiEnv*</td><td>JVM TI prostředí agenta (je předáváno do většiny callback funkcí)</td></tr>
+<tr><td>2</td><td>jni_env  </td><td>JNIEnv*  </td><td>JNI prostředí platné pro dané vlákno (je předáváno do některých callback funkcí)</td></tr>
+<tr><td>3</td><td>thr      </td><td>jthread  </td><td>vlákno, v&nbsp;němž dojde k&nbsp;zachycení výjimky</td></tr>
+<tr><td>4</td><td>method   </td><td>jmethodID</td><td>metoda, ve které se výjimka zachycuje</td></tr>
+<tr><td>5</td><td>location </td><td>jlocation</td><td>umístění kódu, který výjimku zachycuje (odpovídá indexu instrukce)</td></tr>
+<tr><td>6</td><td>exception</td><td>jobject  </td><td>identifikátor objektu, který nese informaci o výjimce</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Jedenáctý demonstrační agent &ndash; detekce zachycení výjimky</h2>
+
+<p>Funkci agenta, jehož zdrojový kód bude postupně vznikat v&nbsp;následujících
+kapitolách, budeme ověřovat na jednoduché javovské třídě nazvané
+<strong>Test11</strong>. V&nbsp;této třídě, přesněji řečeno z&nbsp;metody
+<strong>main()</strong>, se postupně volá čtveřice statických metod, přičemž
+v&nbsp;každé metodě je vyvolána jedna z&nbsp;nejčastěji vyhazovaných výjimek a
+následně je tato výjimka přímo v&nbsp;dané metodě odchycena v&nbsp;bloku
+<strong>catch</strong>. Mezi testované výjimky patří
+<strong>ArrayIndexOutOfBoundsException</strong> (je použit špatný index pole),
+<strong>ArithmeticException</strong> (některá aritmetická výjimka, zde se
+konkrétně jedná o pokus o dělení nulou),
+<strong>ClassNotFoundException</strong> (nelze nalézt třídu v&nbsp;čase běhu
+aplikace) a konečně nechvalně známá <strong>NullPointerException</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test jedenacteho</i>
+<i>  * demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class <strong>Test11</strong> {
+&nbsp;
+<i>    /**</i>
+<i>      * Test zachyceni vyjimky typu ArrayIndexOutOfBoundsException.</i>
+<i>      */</i>
+    public static void <strong>method1</strong>() {
+        int[] a = {1,2,3};
+        try {
+            a[-1] = 10;
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Test zachyceni vyjimky typu ArithmeticException.</i>
+<i>      */</i>
+    public static int <strong>method2</strong>(int a, int b) {
+        try {
+            return a/b;
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+        return -1;
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Test zachyceni vyjimky typu ClassNotFoundException.</i>
+<i>      */</i>
+    public static Class <strong>method3</strong>(String className) {
+        try {
+            return Class.forName(className);
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Test zachyceni vyjimky typu NullPointerException.</i>
+<i>      */</i>
+    public static String <strong>method4</strong>(Object object) {
+        try {
+            return object.toString();
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void <strong>main</strong>(String[] args) {
+        method1();
+        method2(1, 0);
+        method3("xyzzy");
+        method4(null);
+    }
+}
+</pre>
+
+<p>Následuje výpis zdrojového kódu první verze agenta, který dokáže detekovat zachycení výjimky. Jedná se prozatím o pouhou kostru plnohodnotného agenta, protože se pouze vypíše informace o zachycení výjimky, ovšem bez dalších důležitých informací:</p>
+
+<pre>
+<i>/*</i>
+<i> * Demonstracni agent, ktery dokaze zaregistrovat zachyceni vyjimky.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu k tomuto souboru</i>
+<i> * pres volbu -Icesta_k_jvm</i>
+<i> */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+<i>/*</i>
+<i> * Jmeno agenta pouzite ve zpravach vypisovanych</i>
+<i> * na standardni vystup.</i>
+<i> */</i>
+#define AGENT_NAME "Agent11:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy na standardni vystup.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem,</i>
+<i> * vypise se chybove hlaseni na standardni vystup.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+    <i>/* vyuzivame pouze jednu specialni schopnost agenta */</i>
+    capabilities.can_generate_exception_events = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    printf(AGENT_NAME " An exception is caught\n");
+}
+&nbsp;
+<i>/*</i>
+<i> * Registrace callback funkce zavolane pri zachyceni vyjimky.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+    <i>/* JVMTI_EVENT_EXCEPTION_CATCH */</i>
+    callbacks.ExceptionCatch = &amp;callback_on_exception_catch;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni jedne udalosti, pro nez se ma zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_mode</strong>(jvmtiEnv *jvmti, int event)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventNotificationMode(jvmti, JVMTI_ENABLE, event, (jthread)NULL);
+    check_jvmti_error(jvmti, error_code, "Cannot set event notification");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni udalosti, pro nez se maji zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_modes</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+    <i>/* zachytavat pouze udalost zachyceni vyjimky */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_EXCEPTION_CATCH)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+    jvmtiError error_code;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+    <i>/* nastaveni pozadovanych schopnosti agenta */</i>
+    if ((error_code = set_capabilities(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* registrace vsech callback funkci */</i>
+    if ((error_code = register_all_callback_functions(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* nastaveni udalosti, pro nez se maji zavolat callback funkce */</i>
+    if ((error_code = set_event_notification_modes(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+&nbsp;
+<i>/*</i>
+<i> * finito</i>
+<i> */</i>
+</pre>
+
+<p>Po překladu a spuštění agenta by se na konzoli měl vypsat přibližně tento
+text:</p>
+
+<pre>
+Agent11: Agent_OnLoad
+Agent11: JVM TI version is correct
+Agent11: An exception is caught
+Agent11: An exception is caught
+Agent11: An exception is caught
+Agent11: An exception is caught
+Agent11: An exception is caught
+Agent11: An exception is caught
+Agent11: An exception is caught
+Agent11: An exception is caught
+java.lang.ArrayIndexOutOfBoundsException: -1
+        at Test11.method1(Test11.java:13)
+        at Test11.main(Test11.java:63)
+Agent11: An exception is caught
+java.lang.ArithmeticException: / by zero
+        at Test11.method2(Test11.java:25)
+        at Test11.main(Test11.java:64)
+Agent11: An exception is caught
+java.lang.ClassNotFoundException: xyzzy
+        at java.net.URLClassLoader$1.run(URLClassLoader.java:217)
+        at java.security.AccessController.doPrivileged(Native Method)
+        at java.net.URLClassLoader.findClass(URLClassLoader.java:205)
+        at java.lang.ClassLoader.loadClass(ClassLoader.java:321)
+        at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:294)
+        at java.lang.ClassLoader.loadClass(ClassLoader.java:266)
+        at java.lang.Class.forName0(Native Method)
+        at java.lang.Class.forName(Class.java:186)
+        at Test11.method3(Test11.java:38)
+        at Test11.main(Test11.java:65)
+Agent11: An exception is caught
+java.lang.NullPointerException
+        at Test11.method4(Test11.java:51)
+        at Test11.main(Test11.java:66)
+Agent11: Agent_OnUnload
+</pre>
+
+<p>Jedná se o hlášení agenta (standardní výstup) kombinované s&nbsp;hlášeními
+testovacího programu (chybový výstup). V&nbsp;navazujících kapitolách si
+ukážeme, jak je možné zařídit, aby agent vypisoval i další smysluplnější
+informace.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Získání jména a signatury metody, v&nbsp;níž k&nbsp;výjimce došlo</h2>
+
+<p>Jednou ze základních informací, které by se měly vypisovat, je jméno metody,
+v&nbsp;níž bude výjimka zachycena. Informaci o metodě dostaneme ve čtvrtém
+parametru funkce <strong>callback_on_exception_catch()</strong> &ndash; jedná
+se o parametr <strong>jmethodID method</strong>. My vlastně již víme, jak lze
+tento parametr využít, protože jsme si v&nbsp;předchozích částech tohoto
+seriálu popsali metodu <strong>GetMethodName()</strong>, která po předání
+identifikátoru metody dokáže vrátit jak jméno metody, tak i její signaturu,
+v&nbsp;níž jsou obsaženy jak typy parametrů, tak i návratový typ:</p>
+
+<pre>
+jvmtiError
+<strong>GetMethodName</strong>(
+            jvmtiEnv* env,
+            jmethodID method,
+            char** name_ptr,
+            char** signature_ptr,
+            char** generic_ptr);
+</pre>
+
+<p>Připomeňme si, že prvním parametrem této funkce je odkaz na strukturu
+<strong>jvmtiEnv</strong>, který je použit ve většině funkcí rozhraní <i>JVM
+TI</i>, takže se pro nás nejedná o žádnou novinku. Druhým parametrem funkce je
+identifikátor metody, který je typu <strong>jmethodID</strong>. Tento typ je
+většinou v&nbsp;hlavičkovém souboru <strong>jvmti.h</strong> deklarován jako
+<strong>long int</strong> či <strong>long long int</strong> v&nbsp;závislosti
+na architektuře počítače a použitém systému. Ve třetím parametru je vrácen
+řetězec se jménem metody, v&nbsp;parametru čtvrtém řetězec s&nbsp;plnou
+signaturou metody a konečně v&nbsp;parametru pátém je vrácen řetězec
+s&nbsp;generickou signaturou metody. Do třetího, čtvrtého či pátého parametru
+lze namísto ukazatele předat hodnotu <strong>NULL</strong>, čímž se rozhraní
+<i>JVM TI</i> naznačí, že tento údaj nemá naplňovat. Nesmíme zapomenout na to,
+že všechny řetězce vrácené funkcí <strong>GetMethodName()</strong> je nutné
+(ideálně co nejdříve) dealokovat s&nbsp;využitím funkce
+<strong>Deallocate()</strong>, kterou již taktéž známe.</p>
+
+<p>Se znalostí <strong>GetMethodName()</strong> můžeme naši callback funkci
+upravit následujícím způsobem:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    char *method_name_ptr;
+    char *method_signature_ptr;
+&nbsp;
+    <i>/* veskere operace se budou provadet v kriticke sekci */</i>
+    <strong>enter_critical_section</strong>(jvmti_env);
+&nbsp;
+    <i>/* ziskat jmeno a signaturu metody */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+&nbsp;
+    <i>/* tisk informace o zachycene vyjimce */</i>
+    printf(AGENT_NAME " An exception is caught in %s%s\n",
+            method_name_ptr,
+            method_signature_ptr);
+&nbsp;
+    <i>/* dealokace vsech ziskanych pametovych struktur */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+&nbsp;
+    <i>/* a vystup z kriticke sekce */</i>
+    <strong>exit_critical_section</strong>(jvmti_env);
+}
+</pre>
+
+<p>Výstup agenta již bude poněkud čitelnější a dodá nám více informací:</p>
+
+<pre>
+Agent12: Agent_OnLoad
+Agent12: JVM TI version is correct
+Agent12: An exception is caught in loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in method1()V
+Agent12: An exception is caught in method2(II)I
+Agent12: An exception is caught in loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in method3(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in method4(Ljava/lang/Object;)Ljava/lang/String;
+Agent12: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Získání jména třídy, v&nbsp;jejíž metodě k&nbsp;výjimce došlo</h2>
+
+<p>Jméno a signaturu metody je vhodné doplnit o jméno třídy, v&nbsp;níž je daná
+metoda deklarována. Žádnou informaci o třídě sice při zavolání callback funkce
+<strong>callback_on_exception_catch()</strong> nedostaneme, to však není velký
+problém, protože pro každou metodu lze příslušnou třídu zjistit s&nbsp;využitím
+funkce <strong>GetMethodDeclaringClass()</strong>, jejíž hlavička vypadá
+následovně:</p>
+
+<pre>
+jvmtiError
+<strong>GetMethodDeclaringClass</strong>(
+            jvmtiEnv* env,
+            jmethodID method,
+            jclass* declaring_class_ptr);
+</pre>
+
+<p>Z&nbsp;této hlavičky je patrné, že do prvního parametru jednoduše předáme
+hodnotu <strong>jvmti_env</strong>, do parametru druhého pak identifikátor
+metody a v&nbsp;parametru třetím se nám v&nbsp;případě úspěchu vrátí
+identifikátor třídy, do níž daná metoda náleží (datové typy
+<strong>jmethodID</strong> a <strong>jclass</strong> jsou definovány rozhraním
+<i>JNI</i>, s&nbsp;nímž <i>JVM TI</i> dosti úzce souvisí). Jakmile máme
+naplněnou proměnnou typu <strong>jclass</strong>, můžeme již zcela jednoduše
+získat jméno této třídy s&nbsp;využitím funkce
+<strong>GetClassSignature()</strong>, které se hodnota proměnné typu
+<strong>jclass</strong> předá ve druhém parametru a v&nbsp;parametru třetím se
+vrátí řetězec s&nbsp;kýženou signaturou třídy:</p>
+
+<pre>
+jvmtiError
+<strong>GetClassSignature</strong>(
+            jvmtiEnv* env,
+            jclass klass,
+            char** signature_ptr,
+            char** generic_ptr);
+</pre>
+
+<p>Pro řetězec či dvojici řetězců vrácených funkcí
+<strong>GetClassSignature()</strong> platí stejná pravidla, jako pro řetězce
+vrácené funkcí <strong>GetMethodName()</strong>, zejména pak nutnost provést
+jejich dealokaci s&nbsp;využitím funkce <strong>Deallocate()</strong>. Vše si
+ukážeme na třetí variantě naší callback funkce
+<strong>callback_on_exception_catch()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    char *method_name_ptr;
+    char *method_signature_ptr;
+    char *class_name_ptr;
+    jclass method_class;
+&nbsp;
+    <i>/* veskere operace se budou provadet v kriticke sekci */</i>
+    <strong>enter_critical_section</strong>(jvmti_env);
+&nbsp;
+    <i>/* ziskat jmeno a signaturu metody a signaturu tridy */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetMethodDeclaringClass</strong>(jvmti_env, method, &amp;method_class);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, method_class, &amp;class_name_ptr, NULL);
+&nbsp;
+    <i>/* tisk informace o zachycene vyjimce */</i>
+    printf(AGENT_NAME " An exception is caught in %s%s%s\n",
+            class_name_ptr,
+            method_name_ptr,
+            method_signature_ptr);
+&nbsp;
+    <i>/* dealokace vsech ziskanych pametovych struktur */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+&nbsp;
+    <i>/* a vystup z kriticke sekce */</i>
+    <strong>exit_critical_section</strong>(jvmti_env);
+}
+</pre>
+
+<p>Agent nyní po svém spuštění vypíše opět o něco více informací, než jeho předchozí verze:</p>
+
+<pre>
+Agent12: Agent_OnLoad
+Agent12: JVM TI version is correct
+Agent12: An exception is caught in Ljava/lang/ClassLoader;loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in Ljava/net/URLClassLoader;findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in Ljava/lang/ClassLoader;loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in LTest12;method1()V
+Agent12: An exception is caught in LTest12;method2(II)I
+Agent12: An exception is caught in Ljava/lang/ClassLoader;loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in Ljava/net/URLClassLoader;findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in Ljava/lang/ClassLoader;loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in Ljava/net/URLClassLoader;findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in LTest12;method3(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in LTest12;method4(Ljava/lang/Object;)Ljava/lang/String;
+Agent12: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Úprava výpisu, přečtení a vypsání typu výjimky</h2>
+
+<p>Z&nbsp;předchozího výpisu je patrné, že se jméno třídy vypisuje se znakem
+'L' na začátku a na konci je umístěn středník. To sice odpovídá způsobu zápisu
+signatur, ale bude čitelnější, když se prvního 'L' zbavíme a namísto středníku
+budeme vypisovat tečku, která čitelně oddělí jméno třídy od jména metody.
+Úprava programu ve skutečnosti není příliš složitá, pouze přidáme jednu
+pomocnou funkci, které předáme původní signaturu (řetězec) a taktéž znak, který
+má nahradit původní středník:</p>
+
+<pre>
+<i>/*</i>
+<i> * Uprava jmena tridy pro tisk.</i>
+<i> */</i>
+char* <strong>update_class_name</strong>(char *class_name_ptr, char replace_to)
+{
+    char *class_name_ptr_;
+    if (class_name_ptr != NULL)
+    {
+        <i>/* odstraneni pocatecniho L na zacatku jmena tridy */</i>
+        class_name_ptr_ = class_name_ptr;
+        if (class_name_ptr_[0] == 'L')
+        {
+            class_name_ptr_++;
+        }
+        <i>/* nahrada znaku ; za tecku */</i>
+        char *last_char = class_name_ptr_ + strlen(class_name_ptr_) - 1;
+        if (*last_char == ';')
+        {
+            *last_char = replace_to;
+        }
+    }
+    return class_name_ptr_;
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    char *method_name_ptr;
+    char *method_signature_ptr;
+    char *class_name_ptr;
+    char *class_name_ptr_;
+    jclass method_class;
+&nbsp;
+    <i>/* veskere operace se budou provadet v kriticke sekci */</i>
+    <strong>enter_critical_section</strong>(jvmti_env);
+&nbsp;
+    <i>/* ziskat jmeno a signaturu metody a signaturu tridy */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetMethodDeclaringClass</strong>(jvmti_env, method, &amp;method_class);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, method_class, &amp;class_name_ptr, NULL);
+&nbsp;
+    <i>/* upravit jmeno tridy */</i>
+    class_name_ptr_ = update_class_name(class_name_ptr, '.');
+&nbsp;
+    <i>/* tisk informace o zachycene vyjimce */</i>
+    printf(AGENT_NAME " An exception is caught in %s%s%s\n",
+            class_name_ptr_,
+            method_name_ptr,
+            method_signature_ptr);
+&nbsp;
+    <i>/* dealokace vsech ziskanych pametovych struktur */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+&nbsp;
+    <i>/* a vystup z kriticke sekce */</i>
+    <strong>exit_critical_section</strong>(jvmti_env);
+}
+</pre>
+
+<p>O tom, že je výpis čitelnější, se lze snadno přesvědčit:</p>
+
+<pre>
+Agent12: Agent_OnLoad
+Agent12: JVM TI version is correct
+Agent12: An exception is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in Test12.method1()V
+Agent12: An exception is caught in Test12.method2(II)I
+Agent12: An exception is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in Test12.method3(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception is caught in Test12.method4(Ljava/lang/Object;)Ljava/lang/String;
+Agent12: Agent_OnUnload
+</pre>
+
+<p>Další vylepšení spočívá ve zjištění a následném výpisu typu výjimky. To je
+poměrně jednoduchá záležitost, protože posledním parametrem předávaným do
+callback funkce <strong>callback_on_exception_catch()</strong> je objekt
+představující výjimku a pro tento objekt lze získat příslušnou třídu
+s&nbsp;využitím funkce <strong>GetObjectClass()</strong>, která je ovšem
+dostupná přes rozhraní <i>JNI</i> a nikoli <i>JVM TI</i>. Jakmile známe třídu
+výjimky, můžeme pro získání jejího jména využít nám již známou a dnes již
+použitou funkci <strong>GetClassSignature</strong>:</p>
+
+<pre>
+jvmtiError
+<strong>GetClassSignature</strong>(
+            jvmtiEnv* env,
+            jclass klass,
+            char** signature_ptr,
+            char** generic_ptr);
+</pre>
+
+<p>Úprava našeho agenta takovým způsobem, aby vypisoval i jméno výjimky je tedy
+relativně jednoduchá, jen nesmíme zapomenout na převod signatury třídy na
+&bdquo;čitelné&ldquo; jméno:</p>
+
+<pre>
+<i>/*</i>
+<i> * Uprava jmena tridy pro tisk.</i>
+<i> */</i>
+char* <strong>update_class_name</strong>(char *class_name_ptr, char replace_to)
+{
+    char *class_name_ptr_;
+    if (class_name_ptr != NULL)
+    {
+        <i>/* odstraneni pocatecniho L na zacatku jmena tridy */</i>
+        class_name_ptr_ = class_name_ptr;
+        if (class_name_ptr_[0] == 'L')
+        {
+            class_name_ptr_++;
+        }
+        <i>/* nahrada znaku ; za tecku */</i>
+        char *last_char = class_name_ptr_ + strlen(class_name_ptr_) - 1;
+        if (*last_char == ';')
+        {
+            *last_char = replace_to;
+        }
+    }
+    return class_name_ptr_;
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    char *method_name_ptr;
+    char *method_signature_ptr;
+    char *class_name_ptr;
+    char *class_name_ptr_;
+    char *exception_name_ptr;
+    char *exception_name_ptr_;
+    jclass method_class;
+    jclass exception_class;
+&nbsp;
+    <i>/* veskere operace se budou provadet v kriticke sekci */</i>
+    <strong>enter_critical_section</strong>(jvmti_env);
+    exception_class = (*jni_env)-&gt;<strong>GetObjectClass</strong>(jni_env, exception_object);
+&nbsp;
+    <i>/* ziskat jmeno a signaturu metody, signaturu tridy i signaturu vyjimky */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetMethodDeclaringClass</strong>(jvmti_env, method, &amp;method_class);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, method_class, &amp;class_name_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, exception_class, &amp;exception_name_ptr, NULL);
+&nbsp;
+    <i>/* upravit jmeno tridy i jmeno vyjimky */</i>
+    class_name_ptr_ = update_class_name(class_name_ptr, '.');
+    exception_name_ptr_ = update_class_name(exception_name_ptr, ' ');
+&nbsp;
+    <i>/* tisk informace o zachycene vyjimce */</i>
+    printf(AGENT_NAME " An exception %sis caught in %s%s%s\n",
+            exception_name_ptr_,
+            class_name_ptr_,
+            method_name_ptr,
+            method_signature_ptr);
+&nbsp;
+    <i>/* dealokace vsech ziskanych pametovych struktur */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)exception_name_ptr);
+&nbsp;
+    <i>/* a vystup z kriticke sekce */</i>
+    <strong>exit_critical_section</strong>(jvmti_env);
+}
+</pre>
+
+<p>Opět se podívejme na to, jak vypadá další verze výpisu provedeného
+agentem:</p>
+
+<pre>
+Agent12: Agent_OnLoad
+Agent12: JVM TI version is correct
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception java/security/PrivilegedActionException is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception java/lang/ArrayIndexOutOfBoundsException is caught in Test12.method1()V
+Agent12: An exception java/lang/ArithmeticException is caught in Test12.method2(II)I
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception java/security/PrivilegedActionException is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class;
+Agent12: An exception java/security/PrivilegedActionException is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception java/lang/ClassNotFoundException is caught in Test12.method3(Ljava/lang/String;)Ljava/lang/Class;
+Agent12: An exception java/lang/NullPointerException is caught in Test12.method4(Ljava/lang/Object;)Ljava/lang/String;
+Agent12: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zjištění čísla řádku, kde se výjimka zachytí</h2>
+
+<p>Nyní nám ještě zbývá do našeho demonstračního agenta přidat implementačně
+nejsložitější část &ndash; zobrazení čísla řádku, na němž je výjimka zachycena.
+Pro získání této informace lze využít pátý parametr předávaný do callback
+funkce <strong>callback_on_exception_catch()</strong>, který je typu
+<strong>jlocation</strong>. Je ovšem nutné pamatovat na to, že tato hodnota
+přímo neodpovídá číslu řádku, ale pozici instrukce v&nbsp;bajtkódu &ndash;
+konkrétní způsob reprezentace je již závislý na implementovaném virtuálním
+stroji Javy a není dobré předpokládat, že se všechny JVM budou chovat zcela
+stejně, tj.&nbsp;že budou pro stejnou zachycenou výjimku vždy vracet stejnou
+hodnotu typu <strong>jlocation</strong>. Musíme být tedy schopni převést
+hodnotu <strong>jlocation</strong> na číslo řádku odpovídající původnímu
+zdrojovému kódu. Taková funkce sice přímo v&nbsp;<i>JNI</i> ani v&nbsp;<i>JVM
+TI</i> neexistuje, ale my si můžeme takovou funkci sami napsat, a to
+s&nbsp;využitím obecnější funkce <strong>GetLineNumberTable()</strong>, která
+má hlavičku:</p>
+
+<pre>
+jvmtiError (JNICALL *<strong>GetLineNumberTable</strong>) (
+            jvmtiEnv* env,
+            jmethodID method,
+            jint* entry_count_ptr,
+            jvmtiLineNumberEntry** table_ptr);
+</pre>
+
+<p>S&nbsp;prvními dvěma parametry jsme se již několikrát setkali. Ve třetím
+parametru tato funkce vrací počet záznamů v&nbsp;tabulce, která je souběžně
+vrácena v&nbsp;parametru posledním (i zde se používá ukazatel naplněný přímo
+funkci <strong>GetLineNumberTable()</strong>). Obsah zmíněné tabulky je velmi
+jednoduchý &ndash; nachází se zde záznamy typu
+<strong>jvmtiLineNumberEntry</strong>, z&nbsp;nichž každý má tuto
+strukturu:</p>
+
+<pre>
+struct <strong>jvmtiLineNumberEntry</strong> {
+            jlocation start_location;
+            jint line_number;
+};
+</pre>
+
+<p>Údaje by v&nbsp;tabulce měly být vzestupně seřazeny podle hodnoty
+<strong>jlocation</strong> a navíc by se zde neměly nacházet shodné hodnoty
+<strong>jlocation</strong>. Naproti tomu se hodnoty <strong>jint
+line_number</strong> mohou opakovat, protože je běžné, že se příkaz původně
+zapsaný na jediné řádce zdrojového kódu přeloží i do relativně dlouhé sekvence
+instrukcí. Nás však zajímá především mapování od <strong>jlocation</strong>
+k&nbsp;<strong>line_number</strong>, které je vždy jednoznačné a pro získání
+čísla konkrétního řádku ve zdrojovém kódu lze využít programovou smyčku,
+například takovou, jaká je implementována v&nbsp;naší funkci
+<strong>get_line_number()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Uprava jmena tridy pro tisk.</i>
+<i> */</i>
+char* <strong>update_class_name</strong>(char *class_name_ptr, char replace_to)
+{
+    char *class_name_ptr_;
+    if (class_name_ptr != NULL)
+    {
+        <i>/* odstraneni pocatecniho L na zacatku jmena tridy */</i>
+        class_name_ptr_ = class_name_ptr;
+        if (class_name_ptr_[0] == 'L')
+        {
+            class_name_ptr_++;
+        }
+        <i>/* nahrada znaku ; za tecku */</i>
+        char *last_char = class_name_ptr_ + strlen(class_name_ptr_) - 1;
+        if (*last_char == ';')
+        {
+            *last_char = replace_to;
+        }
+    }
+    return class_name_ptr_;
+}
+&nbsp;
+<i>/*</i>
+<i> * Ziskani cisla radku pro zadanou metodu a index instrukce.</i>
+<i> */</i>
+int <strong>get_line_number</strong>(jvmtiEnv *jvmti_env, jmethodID method, jlocation location)
+{
+    int count;
+    int line_number = 0;
+    int i;
+    jvmtiLineNumberEntry *location_table;
+&nbsp;
+    <i>/* nacteni tabulky s cisly radku a indexy instrukci */</i>
+    (*jvmti_env)-&gt;<strong>GetLineNumberTable</strong>(jvmti_env, method, &amp;count, &amp;location_table);
+    <i>/* projit celou tabulkou */</i>
+    for (i = 0; i &lt; count - 1; i++)
+    {
+        jvmtiLineNumberEntry entry1 = location_table[i];
+        jvmtiLineNumberEntry entry2 = location_table[i+1];
+        <i>/* pokud se lokace nachazi mezi entry1 (vcetne) a entry2 (krome) */</i>
+        <i>/* nasli jsme spravny radek */</i>
+        if (location &gt;= entry1.start_location &amp;&amp; location &lt; entry2.start_location)
+        {
+            line_number = entry1.line_number;
+            break;
+        }
+    }
+    <i>/* take se muze jednat o uplne posledni instrukci v metode */</i>
+    if (location &gt;= location_table[count-1].start_location)
+    {
+        line_number = location_table[count-1].line_number;
+    }
+&nbsp;
+    <i>/* dealokace tabulky */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)location_table);
+    return line_number;
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    char *method_name_ptr;
+    char *method_signature_ptr;
+    char *class_name_ptr;
+    char *class_name_ptr_;
+    char *exception_name_ptr;
+    char *exception_name_ptr_;
+    jclass method_class;
+    jclass exception_class;
+    int line_number;
+&nbsp;
+    <i>/* veskere operace se budou provadet v kriticke sekci */</i>
+    <strong>enter_critical_section</strong>(jvmti_env);
+    exception_class = (*jni_env)-&gt;<strong>GetObjectClass</strong>(jni_env, exception_object);
+&nbsp;
+    <i>/* ziskat jmeno a signaturu metody, signaturu tridy i signaturu vyjimky */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetMethodDeclaringClass</strong>(jvmti_env, method, &amp;method_class);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, method_class, &amp;class_name_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, exception_class, &amp;exception_name_ptr, NULL);
+&nbsp;
+    <i>/* upravit jmeno tridy i jmeno vyjimky */</i>
+    class_name_ptr_ = update_class_name(class_name_ptr, '.');
+    exception_name_ptr_ = update_class_name(exception_name_ptr, ' ');
+&nbsp;
+    <i>/* ziskat cislo radku */</i>
+    line_number = get_line_number(jvmti_env, method, location);
+&nbsp;
+    <i>/* tisk informace o zachycene vyjimce */</i>
+    printf(AGENT_NAME " An exception %sis caught in %s%s%s at line %d\n",
+            exception_name_ptr_,
+            class_name_ptr_,
+            method_name_ptr,
+            method_signature_ptr,
+            line_number);
+&nbsp;
+    <i>/* dealokace vsech ziskanych pametovych struktur */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)exception_name_ptr);
+&nbsp;
+    <i>/* a vystup z kriticke sekce */</i>
+    <strong>exit_critical_section</strong>(jvmti_env);
+}
+</pre>
+
+<pre>
+Agent12: Agent_OnLoad
+Agent12: JVM TI version is correct
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class; at line 318
+Agent12: An exception java/security/PrivilegedActionException is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class; at line 221
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class; at line 318
+Agent12: An exception java/lang/ArrayIndexOutOfBoundsException is caught in Test12.method1()V at line 15
+Agent12: An exception java/lang/ArithmeticException is caught in Test12.method2(II)I at line 27
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class; at line 318
+Agent12: An exception java/security/PrivilegedActionException is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class; at line 221
+Agent12: An exception java/lang/ClassNotFoundException is caught in java/lang/ClassLoader.loadClass(Ljava/lang/String;Z)Ljava/lang/Class; at line 318
+Agent12: An exception java/security/PrivilegedActionException is caught in java/net/URLClassLoader.findClass(Ljava/lang/String;)Ljava/lang/Class; at line 221
+Agent12: An exception java/lang/ClassNotFoundException is caught in Test12.method3(Ljava/lang/String;)Ljava/lang/Class; at line 40
+Agent12: An exception java/lang/NullPointerException is caught in Test12.method4(Ljava/lang/Object;)Ljava/lang/String; at line 53
+Agent12: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Dvanáctý demonstrační agent &ndash; výpis podrobnějších informací o zachycované výjimce</h2>
+
+<p>Pokud jste se v&nbsp;předchozích kapitolách trošku ztratili a není vám úplně
+jasné, jak má vlastně přesně vypadat finální verze <i>JVM TI</i> agenta, je na
+konci této kapitoly zobrazen celý jeho zdrojový kód. Překlad agenta i testovací
+javovské třídy se provede pomocí příkazu, u nějž je pouze zapotřebí upravit
+cestu ke konkrétní nainstalované JVM:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent12.so agent12.c
+javac -g Test12.java
+</pre>
+
+<p>Spuštění nového virtuálního stroje i se zaregistrovaným agentem se provádí
+příkazem:</p>
+
+<pre>
+java -agentpath:./libagent12.so Test12 2&gt; /dev/null
+</pre>
+
+<p>Nyní již následuje slíbený zdrojový kód demonstračního agenta číslo 12:</p>
+
+<pre>
+<i>/*</i>
+<i> * Demonstracni agent, ktery dokaze zaregistrovat zachyceni vyjimky</i>
+<i> * a soucasne vypsat i podrobnejsi informace o vyjimce.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu k tomuto souboru</i>
+<i> * pres volbu -Icesta_k_jvm</i>
+<i> */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+<i>/*</i>
+<i> * Jmeno agenta pouzite ve zpravach vypisovanych</i>
+<i> * na standardni vystup.</i>
+<i> */</i>
+#define AGENT_NAME "Agent12:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/* Zamek pouzivany agentem */</i>
+jrawMonitorID  global_lock;
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy na standardni vystup.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem,</i>
+<i> * vypise se chybove hlaseni na standardni vystup.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Vytvoreni zamku.</i>
+<i> */</i>
+jvmtiError <strong>create_raw_monitor</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;CreateRawMonitor(jvmti, "agent data", &amp;global_lock);
+    check_jvmti_error(jvmti, error_code, "Cannot create raw monitor");
+&nbsp;
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Vstup do kriticke sekce.</i>
+<i> */</i>
+static void <strong>enter_critical_section</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;RawMonitorEnter(jvmti, global_lock);
+    check_jvmti_error(jvmti, error_code, "Cannot enter with raw monitor");
+}
+&nbsp;
+<i>/*</i>
+<i> * Vystup z kriticke sekce</i>
+<i> */</i>
+static void <strong>exit_critical_section</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;RawMonitorExit(jvmti, global_lock);
+    check_jvmti_error(jvmti, error_code, "Cannot exit with raw monitor");
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+    <i>/* vyuzivame dve specialni schopnosti agenta */</i>
+    capabilities.can_generate_exception_events = 1;
+    capabilities.can_get_line_numbers = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Uprava jmena tridy pro tisk.</i>
+<i> */</i>
+char* <strong>update_class_name</strong>(char *class_name_ptr, char replace_to)
+{
+    char *class_name_ptr_;
+    if (class_name_ptr != NULL)
+    {
+        <i>/* odstraneni pocatecniho L na zacatku jmena tridy */</i>
+        class_name_ptr_ = class_name_ptr;
+        if (class_name_ptr_[0] == 'L')
+        {
+            class_name_ptr_++;
+        }
+        <i>/* nahrada znaku ; za tecku */</i>
+        char *last_char = class_name_ptr_ + strlen(class_name_ptr_) - 1;
+        if (*last_char == ';')
+        {
+            *last_char = replace_to;
+        }
+    }
+    return class_name_ptr_;
+}
+&nbsp;
+<i>/*</i>
+<i> * Ziskani cisla radku pro zadanou metodu a index instrukce.</i>
+<i> */</i>
+int <strong>get_line_number</strong>(jvmtiEnv *jvmti_env, jmethodID method, jlocation location)
+{
+    int count;
+    int line_number = 0;
+    int i;
+    jvmtiLineNumberEntry *location_table;
+&nbsp;
+    <i>/* nacteni tabulky s cisly radku a indexy instrukci */</i>
+    (*jvmti_env)-&gt;<strong>GetLineNumberTable</strong>(jvmti_env, method, &amp;count, &amp;location_table);
+    <i>/* projit celou tabulkou */</i>
+    for (i = 0; i &lt; count - 1; i++)
+    {
+        jvmtiLineNumberEntry entry1 = location_table[i];
+        jvmtiLineNumberEntry entry2 = location_table[i+1];
+        <i>/* pokud se lokace nachazi mezi entry1 (vcetne) a entry2 (krome) */</i>
+        <i>/* nasli jsme spravny radek */</i>
+        if (location &gt;= entry1.start_location &amp;&amp; location &lt; entry2.start_location)
+        {
+            line_number = entry1.line_number;
+            break;
+        }
+    }
+    <i>/* take se muze jednat o uplne posledni instrukci v metode */</i>
+    if (location &gt;= location_table[count-1].start_location)
+    {
+        line_number = location_table[count-1].line_number;
+    }
+&nbsp;
+    <i>/* dealokace tabulky */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)location_table);
+    return line_number;
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri zachyceni vyjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv *jni_env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception_object)
+{
+    char *method_name_ptr;
+    char *method_signature_ptr;
+    char *class_name_ptr;
+    char *class_name_ptr_;
+    char *exception_name_ptr;
+    char *exception_name_ptr_;
+    jclass method_class;
+    jclass exception_class;
+    int line_number;
+&nbsp;
+    <i>/* veskere operace se budou provadet v kriticke sekci */</i>
+    <strong>enter_critical_section</strong>(jvmti_env);
+    exception_class = (*jni_env)-&gt;<strong>GetObjectClass</strong>(jni_env, exception_object);
+&nbsp;
+    <i>/* ziskat jmeno a signaturu metody, signaturu tridy i signaturu vyjimky */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetMethodDeclaringClass</strong>(jvmti_env, method, &amp;method_class);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, method_class, &amp;class_name_ptr, NULL);
+    (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, exception_class, &amp;exception_name_ptr, NULL);
+&nbsp;
+    <i>/* upravit jmeno tridy i jmeno vyjimky */</i>
+    class_name_ptr_ = update_class_name(class_name_ptr, '.');
+    exception_name_ptr_ = update_class_name(exception_name_ptr, ' ');
+&nbsp;
+    <i>/* ziskat cislo radku */</i>
+    line_number = get_line_number(jvmti_env, method, location);
+&nbsp;
+    <i>/* tisk informace o zachycene vyjimce */</i>
+    printf(AGENT_NAME " An exception %sis caught in %s%s%s at line %d\n",
+            exception_name_ptr_,
+            class_name_ptr_,
+            method_name_ptr,
+            method_signature_ptr,
+            line_number);
+&nbsp;
+    <i>/* dealokace vsech ziskanych pametovych struktur */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)exception_name_ptr);
+&nbsp;
+    <i>/* a vystup z kriticke sekce */</i>
+    <strong>exit_critical_section</strong>(jvmti_env);
+}
+&nbsp;
+<i>/*</i>
+<i> * Registrace callback funkce zavolane pri zachyceni vyjimky.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+    <i>/* JVMTI_EVENT_EXCEPTION_CATCH */</i>
+    callbacks.ExceptionCatch = &amp;callback_on_exception_catch;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni jedne udalosti, pro nez se ma zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_mode</strong>(jvmtiEnv *jvmti, int event)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventNotificationMode(jvmti, JVMTI_ENABLE, event, (jthread)NULL);
+    check_jvmti_error(jvmti, error_code, "Cannot set event notification");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni udalosti, pro nez se maji zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_modes</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+    <i>/* zachytavat pouze udalost zachyceni vyjimky */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_EXCEPTION_CATCH)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+    jvmtiError error_code;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+    <i>/* nastaveni pozadovanych schopnosti agenta */</i>
+    if ((error_code = set_capabilities(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* registrace vsech callback funkci */</i>
+    if ((error_code = register_all_callback_functions(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* nastaveni udalosti, pro nez se maji zavolat callback funkce */</i>
+    if ((error_code = set_event_notification_modes(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* vytvoreni zamku */</i>
+    if ((error_code = create_raw_monitor(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+&nbsp;
+<i>/*</i>
+<i> * finito</i>
+<i> */</i>
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Krátké shrnutí všech doposud popsaných a použitých callback funkcí</h2>
+
+<p>V&nbsp;této kapitole jsou pro přehlednost uvedeny hlavičky všech callback
+funkcí, které jsme si popsali a současně i použili dnes a v&nbsp;předchozích
+třech částech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a>. Některým callback funkcím se předávají pouze základní informace,
+což je případ funkcí používaných například pro sledování činnosti správce
+paměti. Na druhou stranu zde však máme callback funkce volané ve chvíli, kdy
+vznikne výjimka, popř.&nbsp;ve chvíli, kdy je nějaká výjimka zachycena &ndash;
+tyto callback funkce mají již poměrně složitou hlavičku se šesti
+resp.&nbsp;dokonce&nbsp;s&nbsp;osmi předávanými parametry:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná při inicializaci virtuálního stroje Javy.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_init</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv* env,
+            jthread thread);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná při ukončení činnosti virtuálního stroje Javy.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_death</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv* env);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná při zavolání javovské metody v libovolném vláknu.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_method_entry</strong>(
+            jvmtiEnv *jvmti,
+            JNIEnv* env,
+            jthread thread,
+            jmethodID method);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná při začátku běhu správce paměti (GC).</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_gc_start</strong>(
+            jvmtiEnv *jvmti_env);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná při ukončení běhu správce paměti (GC).</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_gc_finish</strong>(
+            jvmtiEnv *jvmti_env);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná ve chvíli zachycení výjimky.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception_catch</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv* env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception);
+</pre>
+
+<p>Pro úplnost ještě doplníme hlavičku callback funkce, která může být zavolána
+ve chvíli, kdy v&nbsp;aplikaci vznikne výjimka, a to nezávisle na tom, zda se
+jedná o výjimku zachycovanou nebo nezachycovanou. Touto callback funkcí se
+budeme podrobněji zabývat v&nbsp;následující části tohoto seriálu:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolaná ve chvíli vzniku výjimky, resp. detekce výjimky virtuálním strojem.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_exception</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv* env,
+            jthread thr,
+            jmethodID method,
+            jlocation location,
+            jobject exception,
+            jmethodID catch_method,
+            jlocation catch_location);
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k09">9. Archiv se zdrojovými kódy i skripty pro překlad</h2>
+
+<p>Obě varianty demonstračních agentů jsou společně se skripty použitými pro
+jejich překlad a následné spuštění uloženy <a
+href="http://i.iinfo.cz/files/root/404/examples-tar-gz.gz">v&nbsp;tomto
+archivu</a>.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>ClojureScript One: Index<br />
+<a href="http://clojurescriptone.com/index.html">http://clojurescriptone.com/index.html</a>
+</li>
+
+<li>ClojureScript One: Documentation<br />
+<a href="http://clojurescriptone.com/documentation.html">http://clojurescriptone.com/documentation.html</a>
+</li>
+
+<li>ClojureScript One: Wiki<br />
+<a href="https://github.com/brentonashworth/one/wiki">https://github.com/brentonashworth/one/wiki</a>
+</li>
+
+<li>ClojureScript: Quick Start<br />
+<a href="https://github.com/clojure/clojurescript/wiki/Quick-Start">https://github.com/clojure/clojurescript/wiki/Quick-Start</a>
+</li>
+
+<li>Getting Started with ClojureScript (and FW/1)<br />
+<a href="http://corfield.org/entry/getting-started-with-clojurescript-and-fw-1">http://corfield.org/entry/getting-started-with-clojurescript-and-fw-1</a>
+</li>
+
+<li>First ClojureScript experiences: using Raphaël<br />
+<a href="http://maurits.wordpress.com/2012/02/13/first-clojurescript-experiences-using-raphael/">http://maurits.wordpress.com/2012/02/13/first-clojurescript-experiences-using-raphael/</a>
+</li>
+
+<li>Raphaël-JavaScript Library<br />
+<a href="http://raphaeljs.com/">http://raphaeljs.com/</a>
+</li>
+
+<li>A detailed installation Guide for VimClojure 2.2<br />
+<a href="http://www.duenas.at/new_homepage/vimclojure">http://www.duenas.at/new_homepage/vimclojure</a>
+</li>
+
+<li>VimClojure : A filetype, syntax and indent plugin for Clojure<br />
+<a href="http://www.vim.org/scripts/script.php?script_id=2501">http://www.vim.org/scripts/script.php?script_id=2501</a>
+</li>
+
+<li>Nailgun server<br />
+<a href="http://www.martiansoftware.com/nailgun/background.html">http://www.martiansoftware.com/nailgun/background.html</a>
+</li>
+
+<li>SLIME (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/SLIME">http://en.wikipedia.org/wiki/SLIME</a>
+</li>
+
+<li>slime.vim<br />
+<a href="http://s3.amazonaws.com/mps/slime.vim">http://s3.amazonaws.com/mps/slime.vim</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 1. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 2. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-2-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-2-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 3. část (omni completion)<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-3-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-3-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 4. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-4-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-4-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 5. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-5-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-5-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 6. část &ndash; Vim Script<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-6-cast-vim-script/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-6-cast-vim-script/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 7. část &ndash; Vim Script<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-7-cast-vim-script/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-7-cast-vim-script/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 8. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-8-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-8-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 9. část &ndash; pluginy Netrw a snipMate<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-9-cast-pluginy-netrw-a-snipmate/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-9-cast-pluginy-netrw-a-snipmate/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 10. část &ndash; různé tipy a triky<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-10-cast-ruzne-tipy-a-triky/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-10-cast-ruzne-tipy-a-triky/</a>
+</li>
+
+<li>Přenos textů mezi Vimem a dalšími aplikacemi<br />
+<a href="http://www.root.cz/clanky/prenos-textu-mezi-vimem-a-dalsimi-aplikacemi/">http://www.root.cz/clanky/prenos-textu-mezi-vimem-a-dalsimi-aplikacemi/</a>
+</li>
+
+<li>Textový editor Vim: konfigurace pravítka a stavového řádku<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-12-cast-konfigurace-pravitka-a-stavoveho-radku/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-12-cast-konfigurace-pravitka-a-stavoveho-radku/</a>
+</li>
+
+<li>Textový editor Vim: automatické formátování textů<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-14-cast-automaticke-formatovani-textu/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-14-cast-automaticke-formatovani-textu/</a>
+</li>
+
+<li>Textový editor Vim: automatické formátování textů<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-automaticke-formatovani-textu-dokonceni/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-automaticke-formatovani-textu-dokonceni/</a>
+</li>
+
+<li>Textový editor Vim: editace XML a HTML<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-15-cast-editace-xml-a-html/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-15-cast-editace-xml-a-html/</a>
+</li>
+
+<li>Textový editor Vim: kooperace mezi Vimem a skripty<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-16-cast-kooperace-mezi-vimem-a-skriptovacimi-jazyky/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-16-cast-kooperace-mezi-vimem-a-skriptovacimi-jazyky/</a>
+</li>
+
+<li>Textový editor Vim: kooperace mezi Vimem a jazykem Perl<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-17-cast-kooperace-mezi-vimem-a-jazykem-perl/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-17-cast-kooperace-mezi-vimem-a-jazykem-perl/</a>
+</li>
+
+<li>Textový editor Vim: konfigurace a překlad Vimu<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-18-cast-konfigurace-a-preklad-vimu/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-18-cast-konfigurace-a-preklad-vimu/</a>
+</li>
+
+<li>Counterclockwise<br />
+<a href="http://code.google.com/p/counterclockwise/">http://code.google.com/p/counterclockwise/</a>
+</li>
+
+<li>Clojure IDEs - The Grand Tour<br />
+<a href="http://www.bestinclass.dk/index.clj/2010/03/clojure-ides-the-grand-tour-getting-started.html">http://www.bestinclass.dk/index.clj/2010/03/clojure-ides-the-grand-tour-getting-started.html</a>
+</li>
+
+<li>Light Table - a new IDE concept<br />
+<a href="http://www.chris-granger.com/2012/04/12/light-table---a-new-ide-concept/">http://www.chris-granger.com/2012/04/12/light-table---a-new-ide-concept/</a>
+</li>
+
+<li>SICP (The Structure and Interpretation of Computer Programs)<br />
+<a href="http://mitpress.mit.edu/sicp/">http://mitpress.mit.edu/sicp/</a>
+</li>
+
+<li>Pure function<br />
+<a href="http://en.wikipedia.org/wiki/Pure_function">http://en.wikipedia.org/wiki/Pure_function</a>
+</li>
+
+<li>Funkcionální programování<br />
+<a href="http://cs.wikipedia.org/wiki/Funkcionální_programování">http://cs.wikipedia.org/wiki/Funkcionální_programování</a>
+</li>
+
+<li>Čistě funkcionální (datové struktury, jazyky, programování)<br />
+<a href="http://cs.wikipedia.org/wiki/Čistě_funkcionální">http://cs.wikipedia.org/wiki/Čistě_funkcionální</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part I, Getting the Compiler to Write Your Code For You)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part II: The Compiler Strikes Back)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part III: Syntax Quote)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html</a>
+</li>
+
+<li>Tech behind Tech: Clojure Macros Simplified<br />
+<a href="http://techbehindtech.com/2010/09/28/clojure-macros-simplified/">http://techbehindtech.com/2010/09/28/clojure-macros-simplified/</a>
+</li>
+
+<li>Fatvat - Exploring functional programming: Clojure Macros<br />
+<a href="http://www.fatvat.co.uk/2009/02/clojure-macros.html">http://www.fatvat.co.uk/2009/02/clojure-macros.html</a>
+</li>
+
+<li>Eulerovo číslo<br />
+<a href="http://cs.wikipedia.org/wiki/Eulerovo_číslo">http://cs.wikipedia.org/wiki/Eulerovo_číslo</a>
+</li>
+
+<li>List comprehension<br />
+<a href="http://en.wikipedia.org/wiki/List_comprehension">http://en.wikipedia.org/wiki/List_comprehension</a>
+</li>
+
+<li>List Comprehensions in Clojure<br />
+<a href="http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html">http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html</a>
+</li>
+
+<li>Clojure Programming Concepts: List Comprehension<br />
+<a href="http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension">http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension</a>
+</li>
+
+<li>Clojure core API: for macro<br />
+<a href="http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for">http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for</a>
+</li>
+
+<li>cirrus machina - The Clojure for macro<br />
+<a href="http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/">http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/</a>
+</li>
+
+<li>Clojure.org: Clojure home page<br />
+<a href="http://clojure.org/downloads">http://clojure.org/downloads</a>
+</li>
+
+<li>Clojure.org: Vars and the Global Environment<br />
+<a href="http://clojure.org/Vars">http://clojure.org/Vars</a>
+</li>
+
+<li>Clojure.org: Refs and Transactions<br />
+<a href="http://clojure.org/Refs">http://clojure.org/Refs</a>
+</li>
+
+<li>Clojure.org: Atoms<br />
+<a href="http://clojure.org/Atoms">http://clojure.org/Atoms</a>
+</li>
+
+<li>Clojure.org: Agents as Asynchronous Actions<br />
+<a href="http://clojure.org/agents">http://clojure.org/agents</a>
+</li>
+
+<li>A Couple of Clojure Agent Examples<br />
+<a href="http://lethain.com/a-couple-of-clojure-agent-examples/">http://lethain.com/a-couple-of-clojure-agent-examples/</a>
+</li>
+
+<li>Clojure - Functional Programming for the JVM<br />
+<a href="http://java.ociweb.com/mark/clojure/article.html">http://java.ociweb.com/mark/clojure/article.html</a>
+</li>
+
+<li>Clojure quick reference<br />
+<a href="http://faustus.webatu.com/clj-quick-ref.html">http://faustus.webatu.com/clj-quick-ref.html</a>
+</li>
+
+<li>4Clojure<br />
+<a href="http://www.4clojure.com/">http://www.4clojure.com/</a>
+</li>
+
+<li>ClojureDoc<br />
+<a href="http://clojuredocs.org/">http://clojuredocs.org/</a>
+</li>
+
+<li>Clojure (Wikipedia EN)<br />
+<a href="http://en.wikipedia.org/wiki/Clojure">http://en.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Clojure (Wikipedia CS)<br />
+<a href="http://cs.wikipedia.org/wiki/Clojure">http://cs.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Riastradh's Lisp Style Rules<br />
+<a href="http://mumble.net/~campbell/scheme/style.txt">http://mumble.net/~campbell/scheme/style.txt</a>
+</li>
+
+<li>Dynamic Languages Strike Back<br />
+<a href="http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html">http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html</a>
+</li>
+
+<li>Scripting: Higher Level Programming for the 21st Century<br />
+<a href="http://www.tcl.tk/doc/scripting.html">http://www.tcl.tk/doc/scripting.html</a>
+</li>
+
+<li>Java Virtual Machine Support for Non-Java Languages<br />
+<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html">http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/">http://java.sun.com/developer/technicalArticles/DynTypeLang/</a>
+</li>
+
+<li>JSR 223: Scripting for the Java<sup>TM</sup> Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=223">http://jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>JSR 292: Supporting Dynamically Typed Languages on the Java<sup>TM</sup> Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=292">http://jcp.org/en/jsr/detail?id=292</a>
+</li>
+
+<li>Java 7: A complete invokedynamic example<br />
+<a href="http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html">http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html</a>
+</li>
+
+<li>InvokeDynamic: Actually Useful?<br />
+<a href="http://blog.headius.com/2007/01/invokedynamic-actually-useful.html">http://blog.headius.com/2007/01/invokedynamic-actually-useful.html</a>
+</li>
+
+<li>A First Taste of InvokeDynamic<br />
+<a href="http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html">http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html</a>
+</li>
+
+<li>Java 6 try/finally compilation without jsr/ret<br />
+<a href="http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html">http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Root.cz: Využití komprimovaných ukazatelů na objekty v&nbsp;JVM<br />
+<a href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/</a></a>
+</li>
+
+<li>Root.cz: JamVM aneb alternativa k HotSpotu nejenom pro embedded zařízení a chytré telefony<br />
+<a href="http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/">http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>FindBugs<br />
+<a href="http://findbugs.sourceforge.net/">http://findbugs.sourceforge.net/</a>
+</li>
+
+<li>GNU Classpath<br />
+<a href="www.gnu.org/s/classpath/">www.gnu.org/s/classpath/</a>
+</li>
+
+<li>Java VMs Compared<br />
+<a href="http://bugblogger.com/java-vms-compared-160/">http://bugblogger.com/java-vms-compared-160/</a>
+</li>
+
+<li>JSRs: Java Specification Requests &ndash; JSR 223: Scripting for the Java Platform<br />
+<a href="http://www.jcp.org/en/jsr/detail?id=223">http://www.jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>Scripting for the Java Platform<br />
+<a href="http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/">http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/</a>
+</li>
+
+<li>Scripting for the Java Platform (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform">http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform</a>
+</li>
+
+<li>Java Community Process<br />
+<a href="http://en.wikipedia.org/wiki/Java_Specification_Request">http://en.wikipedia.org/wiki/Java_Specification_Request</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Scala Programming Language<br />
+<a href="http://www.scala-lang.org/">http://www.scala-lang.org/</a>
+</li>
+
+<li>Run Scala in Apache Tomcat in 10 minutes<br />
+<a href="http://www.softwaresecretweapons.com/jspwiki/run-scala-in-apache-tomcat-in-10-minutes">http://www.softwaresecretweapons.com/jspwiki/run-scala-in-apache-tomcat-in-10-minutes</a>
+</li>
+
+<li>Fast Web Development With Scala<br />
+<a href="http://chasethedevil.blogspot.cz/2007/09/fast-web-development-with-scala.html">http://chasethedevil.blogspot.cz/2007/09/fast-web-development-with-scala.html</a>
+</li>
+
+<li>Top five scripting languages on the JVM<br />
+<a href="http://www.infoworld.com/d/developer-world/top-five-scripting-languages-the-jvm-855">http://www.infoworld.com/d/developer-world/top-five-scripting-languages-the-jvm-855</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>CloseableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html">http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
