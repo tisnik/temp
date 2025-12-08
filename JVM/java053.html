@@ -1,0 +1,1361 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V&nbsp;dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si popíšeme základní vlastnosti rozhraní JVM TI, pomocí něhož je možné sledovat a taktéž řídit činnost tohoto virtuálního stroje. S využitím JVM TI je například možné přečíst obsah celého heapu, detekovat volání metod, detekovat vzniklé výjimky atd.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI (Java Virtual Machine Tools Interface)</a></p>
+<p><a href="#k02">2. První demonstrační příklad &ndash; kostra jednoduchého JVM TI agenta</a></p>
+<p><a href="#k03">3. Překlad agenta</a></p>
+<p><a href="#k04">4. Registrace agenta ve spouštěném virtuálním stroji</a></p>
+<p><a href="#k05">5. Druhý demonstrační příklad &ndash; kontrola, zda je verze rozhraní JVM TI korektní</a></p>
+<p><a href="#k06">6. Registrace callback funkcí v&nbsp;JVM TI</a></p>
+<p><a href="#k07">7. Nastavení režimů notifikace</a></p>
+<p><a href="#k08">8. Třetí demonstrační příklad: agent s&nbsp;dvojicí zaregistrovaných callback funkcí</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI (Java Virtual Machine Tools Interface)</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o jeho virtuálním stroji</a> si řekneme základní
+informace o rozhraní <i>JVM TI</i>, neboli celým názvem <i>Java Virtual Machine
+Tools Interface</i>, které lze využít pro sledování činnosti virtuálního stroje
+Javy i pro jeho částečné řízení. Toto rozhraní, které bylo poprvé
+implementováno v&nbsp;<i>J2SE 5.0</i> může být využito k&nbsp;provádění mnoha
+různých operací. Například je možné sledovat práci správce paměti (<i>GC
+&ndash; garbage collector</i>), přistupovat k&nbsp;objektům uloženým na heapu,
+zjišťovat volané metody, detekovat a sledovat překlad bajtkódu JVM do nativního
+strojového kódu dané platformy, nastavovat a posléze i využívat breakpointy,
+detekovat výjimky v&nbsp;javovských aplikacích (a to i ty výjimky, které jsou
+zachycené v&nbsp;bloku <strong>catch</strong>) atd. <i>JVM TI</i> je využíváno
+debuggery a profilery, které potřebují přistupovat k&nbsp;běžící JVM, ovšem
+vlastnosti tohoto rozhraní lze využít i v&nbsp;dalších typech nástrojů,
+například pro zjišťování pokrytí kódu testy, detekci přístupu k&nbsp;určitým
+souborům apod.</p>
+
+<p>Rozhraní <i>JVM TI</i> může být využíváno takzvanými <i>agenty</i>, což jsou
+nativní knihovny, které jsou v&nbsp;tom nejjednodušším případě načteny při
+startu <i>JVM</i> a běží ve stejném procesu, jako samotná <i>JVM</i> (jak se
+agent integruje do JVM si řekneme v&nbsp;navazujících kapitolách). Agenti mohou
+přes rozhraní <i>JVM TI</i> oboustranně komunikovat s&nbsp;virtuálním strojem
+Javy. Komunikace směrem agent&rarr;JVM probíhá jednoduše voláním funkcí
+nabízených rozhraním, zpětná komunikace JVM&rarr;agent je zabezpečena pomocí
+takzvaných <i>callback</i> funkcí, které musí být nejdříve zaregistrovány pro
+různé typy událostí, které mohou ve virtuálním stroji nastat (mezi událost může
+například patřit spuštění správce paměti, vznik výjimky atd.). Vzhledem
+k&nbsp;tomu, že <i>agenti</i> musí být překládáni do nativní knihovny, používá
+se pro jejich implementaci většinou programovací jazyk C či C++
+(popř.&nbsp;jakýkoli jiný jazyk podporující céčkovskou konvenci volání funkcí),
+ovšem samotný agent je většinou poměrně kompaktní knihovna nabízející své
+vlastní rozhraní externím procesům &ndash; takto lze například realizovat
+debugger nebo jednoduchý monitorovací nástroj.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. První demonstrační příklad &ndash; kostra jednoduchého JVM TI agenta</h2>
+
+<p>V&nbsp;této kapitole si ukážeme zdrojový kód kostry jednoduchého <i>JVM
+TI</i> agenta. Samotný zdrojový kód je psaný v&nbsp;céčku a obsahuje pouze dvě
+funkce nazvané <strong>Agent_OnLoad</strong> a <strong>Agent_OnUnload</strong>.
+První z&nbsp;těchto funkcí je zavolána ve chvíli, kdy je agent načten do JVM a
+obvykle se zde provádí inicializace agenta, popř.&nbsp;test, zda je rozhraní
+nabízené virtuálním strojem Javy s&nbsp;agentem kompatibilní (může se totiž
+stát, že JVM nenabízí plnohodnotné rozhraní <i>JVM TI</i>, ovšem při použití
+Oracle JDK 6/7 či OpenJDK 6/7 k&nbsp;problémům nedochází). Funkce
+<strong>Agent_OnLoad</strong> by měla vrátit hodnotu <strong>JNI_OK</strong>
+v&nbsp;případě korektní inicializace. Naproti tomu funkce nazvaná
+<strong>Agent_OnUnload</strong> je zavolána ve chvíli odpojování agenta od
+virtuálního stroje Javy, což typicky nastává při ukončování samotné JVM.
+V&nbsp;této funkci se například může nacházet kód pro uzavření logovacích
+souborů, uzavření socketů (pokud agent nabízí své vlastní rozhraní přes
+sockety, což je velmi časté) atd.</p>
+
+<p>Při pohledu na zdrojový kód kostry agenta je patrné, že se zde používá mnoho
+symbolů, které nepatří do standardního céčka: JNIEXPORT, jint, JNICALL, JavaVM
+apod. Tyto symboly jsou deklarovány v&nbsp;hlavičkovém souboru
+<strong>jvmti.h</strong>, popř.&nbsp;v&nbsp;hlavičkových souborech vkládaných
+do <strong>jvmti.h</strong>. Hlavičkový soubor <strong>jvmti.h</strong> by měl
+být součástí instalace JDK a nachází se (v&nbsp;případě Linuxových distribucí)
+v&nbsp;adresáři <strong>/usr/lib/jvm/{jméno_JDK}/include</strong>, kde se za
+<strong>{jméno_JDK}</strong> doplňuje konkrétní název adresáře, v&nbsp;němž je
+daná JDK nainstalována. Ve skutečnosti totiž může být v&nbsp;jednom systému
+nainstalováno více JDK a v&nbsp;současnosti, kdy se postupně přechází
+z&nbsp;JDK 6 na JDK 7, je to poměrně obvyklá situace. Následuje výpis
+zdrojového kódu prvního demonstračního příkladu:</p>
+
+<pre>
+<i>/*</i>
+<i> * Kostra jednoducheho JVM TI agenta.</i>
+<i> */</i>
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define AGENT_NAME "Agent1:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    MSG("Agent_OnLoad");
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+&nbsp;
+<i>/*</i>
+<i> * finito</i>
+<i> */</i>
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Překlad agenta</h2>
+
+<p>V&nbsp;této kapitole si řekneme, jakým způsobem se zdrojový kód jednoduchého
+agenta přeloží a jak se posléze agent zaregistruje do virtuálního stroje Javy.
+Pro překlad (na Linuxu) je nutné mít nainstalován GNU toolchain, především
+překladač céčka, linker a standardní céčkové knihovny i s&nbsp;jejich
+hlavičkovými soubory. Při překladu/linkování je nutné přepínačem
+<strong>-shared</strong> specifikovat, že se má vytvořit sdílená knihovna,
+nikoli spustitelný nativní kód (to by ve skutečnosti ani nebylo možné, protože
+kód agenta neobsahuje funkci <strong>main</strong>). Dále je nutné přes volbu
+<strong>-I</strong> specifikovat cestu ke hlavičkovému souboru
+<strong>jvmti.h</strong>, o němž jsme se zmiňovali <a
+href="#k02">v&nbsp;předchozí kapitole</a>. Poslední důležitým přepínačem je
+<strong>-o libagent1.so</strong>, protože přeložená sdílená knihovna by měla
+mít název odpovídající schématu <strong>lib{název}.so</strong>:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent1.so agent1.c
+</pre>
+
+<p>V&nbsp;závislosti na konfiguraci systému se někdy musí použít i přepínač
+<strong>-fPIC</strong>:</p>
+
+<pre>
+gcc -Wall -ansi -fPIC -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent1.so agent1.c
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Registrace agenta ve spouštěném virtuálním stroji</h2>
+
+<p>Pokud překlad proběhne v&nbsp;pořádku, měl by se v&nbsp;aktivním adresáři
+vytvořit soubor s&nbsp;názvem <strong>libagent1.so</strong>, který by měl
+obsahovat minimálně dva externí symboly s&nbsp;názvy odpovídajícími oběma
+deklarovaným funkcím: <strong>Agent_OnLoad</strong> a
+<strong>Agent_OnUnload</strong>. O tom se ostatně můžeme snadno přesvědčit:</p>
+
+<pre>
+nm -g --defined-only libagent1.so 
+&nbsp;
+0000046c T Agent_OnLoad
+00000485 T Agent_OnUnload
+0000200c A __bss_start
+0000200c A _edata
+00002014 A _end
+000004d8 T _fini
+00000348 T _init
+</pre>
+
+<p>Nyní si již můžeme vyzkoušet agenta nahrát do virtuálního stroje Javy při
+startu JVM. Nejprve vytvoříme a přeložíme nějakou velmi jednoduchou javovskou
+aplikaci, například variaci na klasický &bdquo;Hello world&ldquo;:</p>
+
+<pre>
+public class Test {
+&nbsp;
+    public static void main(String[] args) {
+        System.out.println("Test.main() called");
+    }
+&nbsp;
+}
+</pre>
+
+<p>Pokud jsou oba přeložené soubory, tj.&nbsp;jak
+<strong>libagent1.so</strong>, tak i <strong>Test.class</strong>, uloženy
+v&nbsp;jednom adresáři, máme dvě možnosti, jak agenta spustit v&nbsp;rámci
+procesu virtuálního stroje Javy. První způsob využívá přepínač
+<strong>-agentpath</strong>, kterému se předá cesta k&nbsp;nativní
+knihovně:</p>
+
+<pre>
+java -agentpath:./libagent1.so Test
+</pre>
+
+<p>Druhý způsob využívá přepínač <strong>-agentlib</strong>, za nějž se
+zapisuje jméno knihovny bez prefixu &bdquo;lib&ldquo; a koncovky
+&bdquo;.so&ldquo;. Knihovna je hledána na cestách uložených v&nbsp;proměnné
+prostředí <strong>LD_LIBRARY_PATH</strong>, tj.&nbsp;buď musíme naši knihovnu
+<strong>libagent1.so</strong> nakopírovat do správného adresáře (/usr/lib atd.)
+nebo musíme proměnnou prostředí předefinovat:</p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java -agentlib:agent1 Test
+</pre>
+
+<p>Nezávisle na tom, jak byla JVM a agent spuštěny, měl by být text zapsaný na
+standardní výstup v&nbsp;obou případech shodný:</p>
+
+<pre>
+Agent1: Agent_OnLoad
+Test.main() called
+Agent1: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Druhý demonstrační příklad &ndash; kontrola, zda je verze rozhraní JVM TI korektní</h2>
+
+<p>V&nbsp;předchozím textu jsme si řekli, že ve funkci
+<strong>Agent_OnLoad</strong> se většinou provádí inicializace agenta a že se
+zde většinou taktéž nachází kontrola, zda virtuální stroj Javy plně podporuje
+rozhraní <i>JVM TI</i> požadované verze. Pro zjištění, zda implementace <i>JVM
+TI</i> nabízená běžícím virtuálním strojem Javy skutečně odpovídá požadované
+verzi, se používá funkce nazvaná <strong>GetEnv</strong> s&nbsp;následující
+hlavičkou:</p>
+
+<pre>
+jint GetEnv(JavaVM *vm, void **env, jint version);
+</pre>
+
+<p>Této funkci se předává trojice parametrů &ndash; ukazatel na strukturu
+<strong>JavaVM</strong>, v&nbsp;níž jsou uloženy, jak uvidíme dále, ukazatele
+na funkce nabízené JVM TI. Druhým parametrem je ukazatel na strukturu
+<strong>jvmtiEnv</strong>: tato struktura má být funkcí <strong>GetEnv</strong>
+naplněna. Do třetího parametru se předává požadovaná verze rozhraní <i>JVM
+TI</i>, což je v&nbsp;současnosti verze 1 představovaná konstantou
+<strong>JVMTI_VERSION_1_0</strong>. Tato funkce může vrátit tři hodnoty:
+<strong>JNI_EDETACHED</strong> (chyba: vlákno není připojeno k&nbsp;virtuálnímu
+stroji), <strong>JNI_EVERSION</strong> (chyba: nepodporovaná verze JVM TI) a
+<strong>JNI_OK</strong> (ok: korektní verze JVM TI).</p>
+
+<p>Aby to však nebylo tak jednoduché, nelze funkci <strong>GetEnv</strong>
+zavolat přímo, protože (pojmenovaný) ukazatel na ni je uložen pouze ve
+struktuře nazvané <strong>struct JNINativeInterface</strong>. Ve skutečnosti je
+totiž, alespoň při použití programovacího jazyka C, první parametr předávaný
+funkci <strong>Agent_OnLoad</strong> ukazatelem na strukturu nazvanou
+<strong>JNINativeInterface_</strong>, která obsahuje množství ukazatelů na
+různé důležité funkce:</p>
+
+<pre>
+struct JNINativeInterface_ {
+    void *reserved0;
+    void *reserved1;
+    void *reserved2;
+    void *reserved3;
+    jint (JNICALL *GetVersion)(JNIEnv *env);
+    jclass (JNICALL *DefineClass) (JNIEnv *env, const char *name, jobject loader, const jbyte *buf, jsize len);
+    jclass (JNICALL *FindClass) (JNIEnv *env, const char *name);
+&nbsp;
+...
+&nbsp;
+}
+</pre>
+
+<p>V&nbsp;podstatě se tedy jedná o implementaci tabulky virtuálních metod přímo
+v&nbsp;céčku :-) Vraťme se nyní ke zjištění verze <i>JVM TI</i>. Jakmile máme
+ukazatel na strukturu <strong>JNINativeInterface_</strong>, můžeme přes
+operátor -&gt; zavolat jakoukoli funkci, jejíž ukazatel je v&nbsp;této
+struktuře použit:</p>
+
+<pre>
+jint = result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+</pre>
+
+<p>Výsledkem volání musí být hodnota <strong>JNI_OK</strong> a ukazatel vrácený
+ve druhém parametru nesmí být roven NULL. Pokud alespoň jedna z&nbsp;těchto
+podmínek není splněna, nemá agent k&nbsp;dispozici správné rozhraní JVM TI a
+jeho další činnost tudíž nemusí být korektní &ndash; je tedy vhodné práci
+agenta ukončit tak, že funkce <strong>Agent_OnLoad</strong> vrátí chybovou
+hodnotu namísto <strong>JNI_OK</strong>. To jsou již všechny informace potřebné
+pro naprogramování druhého demonstračního příkladu:</p>
+
+<pre>
+<i>/*</i>
+<i> * Kostra jednoducheho JVM TI agenta.</i>
+<i> * s kontrolou verze rozhrani JVM TI. </i>
+<i> */</i>
+&nbsp;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define AGENT_NAME "Agent2:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+&nbsp;
+<i>/*</i>
+<i> * finito</i>
+<i> */</i>
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Registrace callback funkcí v&nbsp;JVM TI</h2>
+
+<p>Aby náš testovací agent prováděl nějakou rozumnou činnost, musíme při jeho
+startu a inicializaci zaregistrovat callback funkce, tj.&nbsp;funkce, které
+budou zavolány přímo virtuálním strojem Javy při výskytu nějaké události, pro
+něž je daná funkce zaregistrována. Prozatím známe velmi málo informací o
+rozhraní <i>JVM TI</i>, proto si dnes ukážeme použití pouze tří callback
+funkcí. Bude se jednat o funkci vyvolanou ihned po inicializaci virtuálního
+stroje, funkci zavolanou při ukončování práce virtuálního stroje a konečně
+funkci, která bude zavolána při vstupu do jakékoli javovské metody (to je asi
+nejužitečnější část agenta, i když prozatím nebudeme moci zjistit
+jméno/signaturu metody ani jméno její třídy). Registrace callback funkcí je
+relativně snadná &ndash; postačuje pouze zavolat funkci
+<strong>SetEventCallbacks</strong>, které se předá ukazatel na strukturu
+obsahující ukazatele na všechny callback funkce. Pokud se v&nbsp;dané struktuře
+použije namísto korektního ukazatele hodnota NULL, povede pokus o volání
+takovéto funkce k&nbsp;detekovatelné chybě. Hlavička funkce
+<strong>SetEventCallbacks</strong> vypadá takto:</p>
+
+<pre>
+SetEventCallbacks(jvmti, callbacks, sizeof(callbacks));
+</pre>
+
+<p>Tuto funkci opět není možné volat přímo, ale musí se použít nepřímé volání
+přes ukazatel uložený ve struktuře <strong>jvmtiEnv</strong>. Ukazatel na tuto
+strukturu již dovedeme získat &ndash; použije se funkce
+<strong>GetEnv</strong>, která tuto strukturu vrátí ve svém druhém parametru
+(musí se samozřejmě předávat opět formou ukazatele). U funkce
+<strong>SetEventCallbacks</strong> je nejdůležitější obsah struktury předané ve
+druhém parametru. Ideální je nejprve tuto strukturu vynulovat, tj.&nbsp;naplnit
+všechny ukazatele na hodnotu NULL (to by mělo být přenositelné na různé
+platformy, nezávisle na velikosti ukazatelů). Posléze se nastaví POUZE potřebné
+ukazatele, které musí ukazovat na funkce s&nbsp;předepsanými typy parametrů (to
+je kontrolováno při překladu):</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace vsech callback funkci.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+    /* JVMTI_EVENT_VM_INIT */
+    callbacks.VMInit = &amp;callback_on_vm_init;
+&nbsp;
+    /* JVMTI_EVENT_VM_DEATH */
+    callbacks.VMDeath = &amp;callback_on_vm_death;
+&nbsp;
+    /* JVMTI_EVENT_METHOD_ENTRY */
+    callbacks.MethodEntry = &amp;callback_on_method_entry;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+</pre>
+
+<p>Hlavičky všech tří registrovaných callback funkcí musejí vypadat
+následovně:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri inicializaci virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_init</strong>(jvmtiEnv *jvmti_env, JNIEnv* env, jthread thread);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri ukonceni cinnosti virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_death</strong>(jvmtiEnv *jvmti_env, JNIEnv* env);
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zavolani metody.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_method_entry</strong>(jvmtiEnv *jvmti, JNIEnv* env,
+        jthread thread, jmethodID method);
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Nastavení režimů notifikace</h2>
+
+<p>Ovšem samotná registrace callback funkcí nestačí k&nbsp;tomu, aby je
+virtuální stroj Javy skutečně zavolal v&nbsp;případě výskytu nějaké události.
+Aby vše fungovalo k&nbsp;naší spokojenosti, musíme provést ještě dva kroky.
+Prvním krokem je nastavení požadovaných schopností agenta, kde budeme
+vyžadovat, aby agent mohl dostávat informace o volání javovských metod. Pokud
+by daný virtuální stroj Javy tuto funkcionalitu neposkytoval (to se teoreticky
+může stát), dojde při nastavování požadovaných schopností agenta přes funkci
+<strong>AddCapabilities</strong> k&nbsp;chybě, kterou lze detekovat:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+<i>    /* jedna specialni schopnost agenta */</i>
+    capabilities.can_generate_method_entry_events = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+</pre>
+
+<p>Ve druhém kroku je nutné zachytávání událostí povolit. Tvůrci rozhraní
+<i>JVM TI</i> totiž počítali s&nbsp;tím, že agent bude zakazovat či naopak
+povolovat zachytávání událostí v&nbsp;závislosti na nějaké externí konfiguraci
+(dejme tomu přechod debuggeru z&nbsp;krokování do režimu normálního běhu).
+Povolení či zákaz zachytávání událostí se provádí přes metodu
+<strong>SetEventNotificationMode</strong>, které se předává číselná hodnota
+události:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni jedne udalosti, pro nez se ma zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_mode</strong>(jvmtiEnv *jvmti, int event)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventNotificationMode(jvmti, JVMTI_ENABLE, event, (jthread)NULL);
+    check_jvmti_error(jvmti, error_code, "Cannot set event notification");
+    return error_code;
+}
+</pre>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni udalosti, pro nez se maji zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_modes</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost inicializace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_INIT)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost ukonceni prace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_DEATH)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost pri vstupu do metody. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_METHOD_ENTRY)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return error_code;
+}
+</pre>
+
+<p>A to je v&nbsp;podstatě vše &ndash; postačuje jen doplnit několik pomocných
+funkcí pro kontrolu chyb a můžeme vytvořit třetí demonstrační příklad, který
+zaregistruje tři callback funkce vyvolávané při třech typech událostí.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Třetí demonstrační příklad: agent s&nbsp;dvojicí zaregistrovaných callback funkcí</h2>
+
+<p>Zdrojový kód třetího demonstračního příkladu je již sice poměrně dlouhý, ale
+v&nbsp;následující části tohoto seriálu na něm budeme moci postavit další
+funkcionalitu:</p>
+
+<pre>
+<i>/*</i>
+<i> * JVM TI agent s trojici registrovanych callback funkci,</i>
+<i> * ktery dokaze registrovat vstup do metod.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define AGENT_NAME "Agent3:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem, vypise se hlaseni.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+<i>    /* jedna specialni schopnost agenta */</i>
+    capabilities.can_generate_method_entry_events = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri inicializaci virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_init</strong>(jvmtiEnv *jvmti_env, JNIEnv* env, jthread thread)
+{
+    MSG("Got VM init event");
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri ukonceni cinnosti virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_death</strong>(jvmtiEnv *jvmti_env, JNIEnv* env)
+{
+    MSG("Got VM Death event");
+}
+&nbsp;
+<i>/*</i>
+<i> * Callback funkce zavolana pri zavolani metody.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_method_entry</strong>(jvmtiEnv *jvmti, JNIEnv* env,
+        jthread thread, jmethodID method)
+{
+    MSG("Got Method Entry event");
+}
+&nbsp;
+<i>/*</i>
+<i> * Registrace vsech callback funkci.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+    /* JVMTI_EVENT_VM_INIT */
+    callbacks.VMInit = &amp;callback_on_vm_init;
+&nbsp;
+    /* JVMTI_EVENT_VM_DEATH */
+    callbacks.VMDeath = &amp;callback_on_vm_death;
+&nbsp;
+    /* JVMTI_EVENT_METHOD_ENTRY */
+    callbacks.MethodEntry = &amp;callback_on_method_entry;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni jedne udalosti, pro nez se ma zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_mode</strong>(jvmtiEnv *jvmti, int event)
+{
+    jvmtiError error_code;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventNotificationMode(jvmti, JVMTI_ENABLE, event, (jthread)NULL);
+    check_jvmti_error(jvmti, error_code, "Cannot set event notification");
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Nastaveni udalosti, pro nez se maji zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_modes</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost inicializace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_INIT)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost ukonceni prace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_DEATH)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost pri vstupu do metody. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_METHOD_ENTRY)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return error_code;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+    jvmtiError error_code;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+<i>    /* nastaveni pozadovanych schopnosti agenta */</i>
+    if ((error_code = set_capabilities(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* registrace vsech (dvou) callback funkci */</i>
+    if ((error_code = register_all_callback_functions(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* nastaveni udalosti, pro nez se maji zavolat callback funkce */</i>
+    if ((error_code = set_event_notification_modes(jvmti)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+&nbsp;
+<i>/*</i>
+<i> * finito</i>
+<i> */</i>
+</pre>
+
+<p>Pokud agenta vyzkoušíme, měl by se na standardním výstupu objevit přibližně
+následující text:</p>
+
+<pre>
+java -agentpath:./libagent3.so Test
+&nbsp;
+Agent3: Agent_OnLoad
+Agent3: JVM TI version is correct
+Agent3: Got VM init event
+Agent3: Got Method Entry event
+Agent3: Got Method Entry event
+Agent3: Got Method Entry event
+&nbsp;
+... několik set! stejných typů událostí
+&nbsp;
+Agent3: Got Method Entry event
+Agent3: Got Method Entry event
+Agent3: Got Method Entry event
+Agent3: Got VM Death event
+Agent3: Agent_OnUnload
+</pre>
+
+<p>V&nbsp;další části seriálu bude příklad vylepšen, například o výpis
+signatury a třídy volaných metod. Taktéž si ukážeme, jak lze registrovat
+callback funkce pro další typy událostí, takže se agent stane mnohem
+praktičtější.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>ClojureScript One: Index<br />
+<a href="http://clojurescriptone.com/index.html">http://clojurescriptone.com/index.html</a>
+</li>
+
+<li>ClojureScript One: Documentation<br />
+<a href="http://clojurescriptone.com/documentation.html">http://clojurescriptone.com/documentation.html</a>
+</li>
+
+<li>ClojureScript One: Wiki<br />
+<a href="https://github.com/brentonashworth/one/wiki">https://github.com/brentonashworth/one/wiki</a>
+</li>
+
+<li>ClojureScript: Quick Start<br />
+<a href="https://github.com/clojure/clojurescript/wiki/Quick-Start">https://github.com/clojure/clojurescript/wiki/Quick-Start</a>
+</li>
+
+<li>Getting Started with ClojureScript (and FW/1)<br />
+<a href="http://corfield.org/entry/getting-started-with-clojurescript-and-fw-1">http://corfield.org/entry/getting-started-with-clojurescript-and-fw-1</a>
+</li>
+
+<li>First ClojureScript experiences: using Raphaël<br />
+<a href="http://maurits.wordpress.com/2012/02/13/first-clojurescript-experiences-using-raphael/">http://maurits.wordpress.com/2012/02/13/first-clojurescript-experiences-using-raphael/</a>
+</li>
+
+<li>Raphaël-JavaScript Library<br />
+<a href="http://raphaeljs.com/">http://raphaeljs.com/</a>
+</li>
+
+<li>A detailed installation Guide for VimClojure 2.2<br />
+<a href="http://www.duenas.at/new_homepage/vimclojure">http://www.duenas.at/new_homepage/vimclojure</a>
+</li>
+
+<li>VimClojure : A filetype, syntax and indent plugin for Clojure<br />
+<a href="http://www.vim.org/scripts/script.php?script_id=2501">http://www.vim.org/scripts/script.php?script_id=2501</a>
+</li>
+
+<li>Nailgun server<br />
+<a href="http://www.martiansoftware.com/nailgun/background.html">http://www.martiansoftware.com/nailgun/background.html</a>
+</li>
+
+<li>SLIME (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/SLIME">http://en.wikipedia.org/wiki/SLIME</a>
+</li>
+
+<li>slime.vim<br />
+<a href="http://s3.amazonaws.com/mps/slime.vim">http://s3.amazonaws.com/mps/slime.vim</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 1. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 2. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-2-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-2-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 3. část (omni completion)<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-3-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-3-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 4. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-4-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-4-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 5. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-5-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-5-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 6. část &ndash; Vim Script<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-6-cast-vim-script/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-6-cast-vim-script/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 7. část &ndash; Vim Script<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-7-cast-vim-script/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-7-cast-vim-script/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 8. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-8-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-8-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 9. část &ndash; pluginy Netrw a snipMate<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-9-cast-pluginy-netrw-a-snipmate/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-9-cast-pluginy-netrw-a-snipmate/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 10. část &ndash; různé tipy a triky<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-10-cast-ruzne-tipy-a-triky/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-10-cast-ruzne-tipy-a-triky/</a>
+</li>
+
+<li>Přenos textů mezi Vimem a dalšími aplikacemi<br />
+<a href="http://www.root.cz/clanky/prenos-textu-mezi-vimem-a-dalsimi-aplikacemi/">http://www.root.cz/clanky/prenos-textu-mezi-vimem-a-dalsimi-aplikacemi/</a>
+</li>
+
+<li>Textový editor Vim: konfigurace pravítka a stavového řádku<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-12-cast-konfigurace-pravitka-a-stavoveho-radku/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-12-cast-konfigurace-pravitka-a-stavoveho-radku/</a>
+</li>
+
+<li>Textový editor Vim: automatické formátování textů<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-14-cast-automaticke-formatovani-textu/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-14-cast-automaticke-formatovani-textu/</a>
+</li>
+
+<li>Textový editor Vim: automatické formátování textů<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-automaticke-formatovani-textu-dokonceni/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-automaticke-formatovani-textu-dokonceni/</a>
+</li>
+
+<li>Textový editor Vim: editace XML a HTML<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-15-cast-editace-xml-a-html/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-15-cast-editace-xml-a-html/</a>
+</li>
+
+<li>Textový editor Vim: kooperace mezi Vimem a skripty<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-16-cast-kooperace-mezi-vimem-a-skriptovacimi-jazyky/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-16-cast-kooperace-mezi-vimem-a-skriptovacimi-jazyky/</a>
+</li>
+
+<li>Textový editor Vim: kooperace mezi Vimem a jazykem Perl<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-17-cast-kooperace-mezi-vimem-a-jazykem-perl/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-17-cast-kooperace-mezi-vimem-a-jazykem-perl/</a>
+</li>
+
+<li>Textový editor Vim: konfigurace a překlad Vimu<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-18-cast-konfigurace-a-preklad-vimu/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-18-cast-konfigurace-a-preklad-vimu/</a>
+</li>
+
+<li>Counterclockwise<br />
+<a href="http://code.google.com/p/counterclockwise/">http://code.google.com/p/counterclockwise/</a>
+</li>
+
+<li>Clojure IDEs - The Grand Tour<br />
+<a href="http://www.bestinclass.dk/index.clj/2010/03/clojure-ides-the-grand-tour-getting-started.html">http://www.bestinclass.dk/index.clj/2010/03/clojure-ides-the-grand-tour-getting-started.html</a>
+</li>
+
+<li>Light Table - a new IDE concept<br />
+<a href="http://www.chris-granger.com/2012/04/12/light-table---a-new-ide-concept/">http://www.chris-granger.com/2012/04/12/light-table---a-new-ide-concept/</a>
+</li>
+
+<li>SICP (The Structure and Interpretation of Computer Programs)<br />
+<a href="http://mitpress.mit.edu/sicp/">http://mitpress.mit.edu/sicp/</a>
+</li>
+
+<li>Pure function<br />
+<a href="http://en.wikipedia.org/wiki/Pure_function">http://en.wikipedia.org/wiki/Pure_function</a>
+</li>
+
+<li>Funkcionální programování<br />
+<a href="http://cs.wikipedia.org/wiki/Funkcionální_programování">http://cs.wikipedia.org/wiki/Funkcionální_programování</a>
+</li>
+
+<li>Čistě funkcionální (datové struktury, jazyky, programování)<br />
+<a href="http://cs.wikipedia.org/wiki/Čistě_funkcionální">http://cs.wikipedia.org/wiki/Čistě_funkcionální</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part I, Getting the Compiler to Write Your Code For You)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part II: The Compiler Strikes Back)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part III: Syntax Quote)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html</a>
+</li>
+
+<li>Tech behind Tech: Clojure Macros Simplified<br />
+<a href="http://techbehindtech.com/2010/09/28/clojure-macros-simplified/">http://techbehindtech.com/2010/09/28/clojure-macros-simplified/</a>
+</li>
+
+<li>Fatvat - Exploring functional programming: Clojure Macros<br />
+<a href="http://www.fatvat.co.uk/2009/02/clojure-macros.html">http://www.fatvat.co.uk/2009/02/clojure-macros.html</a>
+</li>
+
+<li>Eulerovo číslo<br />
+<a href="http://cs.wikipedia.org/wiki/Eulerovo_číslo">http://cs.wikipedia.org/wiki/Eulerovo_číslo</a>
+</li>
+
+<li>List comprehension<br />
+<a href="http://en.wikipedia.org/wiki/List_comprehension">http://en.wikipedia.org/wiki/List_comprehension</a>
+</li>
+
+<li>List Comprehensions in Clojure<br />
+<a href="http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html">http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html</a>
+</li>
+
+<li>Clojure Programming Concepts: List Comprehension<br />
+<a href="http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension">http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension</a>
+</li>
+
+<li>Clojure core API: for macro<br />
+<a href="http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for">http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for</a>
+</li>
+
+<li>cirrus machina - The Clojure for macro<br />
+<a href="http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/">http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/</a>
+</li>
+
+<li>Clojure.org: Clojure home page<br />
+<a href="http://clojure.org/downloads">http://clojure.org/downloads</a>
+</li>
+
+<li>Clojure.org: Vars and the Global Environment<br />
+<a href="http://clojure.org/Vars">http://clojure.org/Vars</a>
+</li>
+
+<li>Clojure.org: Refs and Transactions<br />
+<a href="http://clojure.org/Refs">http://clojure.org/Refs</a>
+</li>
+
+<li>Clojure.org: Atoms<br />
+<a href="http://clojure.org/Atoms">http://clojure.org/Atoms</a>
+</li>
+
+<li>Clojure.org: Agents as Asynchronous Actions<br />
+<a href="http://clojure.org/agents">http://clojure.org/agents</a>
+</li>
+
+<li>A Couple of Clojure Agent Examples<br />
+<a href="http://lethain.com/a-couple-of-clojure-agent-examples/">http://lethain.com/a-couple-of-clojure-agent-examples/</a>
+</li>
+
+<li>Clojure - Functional Programming for the JVM<br />
+<a href="http://java.ociweb.com/mark/clojure/article.html">http://java.ociweb.com/mark/clojure/article.html</a>
+</li>
+
+<li>Clojure quick reference<br />
+<a href="http://faustus.webatu.com/clj-quick-ref.html">http://faustus.webatu.com/clj-quick-ref.html</a>
+</li>
+
+<li>4Clojure<br />
+<a href="http://www.4clojure.com/">http://www.4clojure.com/</a>
+</li>
+
+<li>ClojureDoc<br />
+<a href="http://clojuredocs.org/">http://clojuredocs.org/</a>
+</li>
+
+<li>Clojure (Wikipedia EN)<br />
+<a href="http://en.wikipedia.org/wiki/Clojure">http://en.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Clojure (Wikipedia CS)<br />
+<a href="http://cs.wikipedia.org/wiki/Clojure">http://cs.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Riastradh's Lisp Style Rules<br />
+<a href="http://mumble.net/~campbell/scheme/style.txt">http://mumble.net/~campbell/scheme/style.txt</a>
+</li>
+
+<li>Dynamic Languages Strike Back<br />
+<a href="http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html">http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html</a>
+</li>
+
+<li>Scripting: Higher Level Programming for the 21st Century<br />
+<a href="http://www.tcl.tk/doc/scripting.html">http://www.tcl.tk/doc/scripting.html</a>
+</li>
+
+<li>Java Virtual Machine Support for Non-Java Languages<br />
+<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html">http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/">http://java.sun.com/developer/technicalArticles/DynTypeLang/</a>
+</li>
+
+<li>JSR 223: Scripting for the Java<sup>TM</sup> Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=223">http://jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>JSR 292: Supporting Dynamically Typed Languages on the Java<sup>TM</sup> Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=292">http://jcp.org/en/jsr/detail?id=292</a>
+</li>
+
+<li>Java 7: A complete invokedynamic example<br />
+<a href="http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html">http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html</a>
+</li>
+
+<li>InvokeDynamic: Actually Useful?<br />
+<a href="http://blog.headius.com/2007/01/invokedynamic-actually-useful.html">http://blog.headius.com/2007/01/invokedynamic-actually-useful.html</a>
+</li>
+
+<li>A First Taste of InvokeDynamic<br />
+<a href="http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html">http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html</a>
+</li>
+
+<li>Java 6 try/finally compilation without jsr/ret<br />
+<a href="http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html">http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Root.cz: Využití komprimovaných ukazatelů na objekty v&nbsp;JVM<br />
+<a href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/</a></a>
+</li>
+
+<li>Root.cz: JamVM aneb alternativa k HotSpotu nejenom pro embedded zařízení a chytré telefony<br />
+<a href="http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/">http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>FindBugs<br />
+<a href="http://findbugs.sourceforge.net/">http://findbugs.sourceforge.net/</a>
+</li>
+
+<li>GNU Classpath<br />
+<a href="www.gnu.org/s/classpath/">www.gnu.org/s/classpath/</a></li>
+
+<li>Java VMs Compared<br />
+<a href="http://bugblogger.com/java-vms-compared-160/">http://bugblogger.com/java-vms-compared-160/</a>
+</li>
+
+<li>JSRs: Java Specification Requests &ndash; JSR 223: Scripting for the Java Platform<br />
+<a href="http://www.jcp.org/en/jsr/detail?id=223">http://www.jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>Scripting for the Java Platform<br />
+<a href="http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/">http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/</a>
+</li>
+
+<li>Scripting for the Java Platform (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform">http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform</a>
+</li>
+
+<li>Java Community Process<br />
+<a href="http://en.wikipedia.org/wiki/Java_Specification_Request">http://en.wikipedia.org/wiki/Java_Specification_Request</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Scala Programming Language<br />
+<a href="http://www.scala-lang.org/">http://www.scala-lang.org/</a>
+</li>
+
+<li>Run Scala in Apache Tomcat in 10 minutes<br />
+<a href="http://www.softwaresecretweapons.com/jspwiki/run-scala-in-apache-tomcat-in-10-minutes">http://www.softwaresecretweapons.com/jspwiki/run-scala-in-apache-tomcat-in-10-minutes</a>
+</li>
+
+<li>Fast Web Development With Scala<br />
+<a href="http://chasethedevil.blogspot.cz/2007/09/fast-web-development-with-scala.html">http://chasethedevil.blogspot.cz/2007/09/fast-web-development-with-scala.html</a>
+</li>
+
+<li>Top five scripting languages on the JVM<br />
+<a href="http://www.infoworld.com/d/developer-world/top-five-scripting-languages-the-jvm-855">http://www.infoworld.com/d/developer-world/top-five-scripting-languages-the-jvm-855</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>CloseableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html">http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
