@@ -1,0 +1,1735 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI (3.část)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - sledování činnosti virtuálního stroje Javy přes rozhraní JVM TI (3.část)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy se již potřetí budeme zabývat popisem rozhraní JVM TI, které je možné využít pro tvorbu takzvaných agentů monitorujících popř. ovlivňujících chování aplikace v JVM. Příklady uvedené v dnešní části budou velmi jednoduché, protože si ukážeme použití funkcí pro čtení a změnu obsahu systémových proměnných.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Systémové proměnné dostupné agentům: funkce <strong>GetSystemProperty()</strong></a></p>
+<p><a href="#k02">2. Příklad použití funkce <strong>GetSystemProperty()</strong></a></p>
+<p><a href="#k03">3. Sedmý demonstrační příklad: agent, který přečte hodnoty vybraných systémových proměnných</a></p>
+<p><a href="#k04">4. Změna hodnot systémových proměnných: funkce <strong>SetSystemProperty()</strong></a></p>
+<p><a href="#k05">5. Osmý demonstrační příklad: změna nastavení <strong>CLASSPATH</strong> v&nbsp;době spuštění agenta</a></p>
+<p><a href="#k06">6. Devátý demonstrační příklad: pokus o změnu nemodifikovatelné proměnné</a></p>
+<p><a href="#k07">7. Funkce <strong>GetSystemProperties()</strong> určená pro čtení názvů všech systémových proměnných</a></p>
+<p><a href="#k08">8. Desátý demonstrační příklad: výpis všech systémových proměnných nastavených virtuálním strojem</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Systémové proměnné dostupné agentům: funkce <strong>GetSystemProperty()</strong></h2>
+
+<p>V&nbsp;předchozích dvou částech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> jsme si popsali způsob využití rozhraní <i>JVM TI (JVM Tool
+Interface)</i>, které se využívá k&nbsp;různým činnostem, zejména pro sledování
+a taktéž pro ovlivňování činnosti běhu virtuálního stroje Javy. Minule jste si
+taktéž ukázali způsob registrace callback funkcí v&nbsp;JVM TI agentech. Tyto
+funkce, pokud jsou ovšem korektně zaregistrovány a je provedena náležitá
+konfigurace agenta, jsou zavolány například při zahájení či ukončení běhu
+správce paměti (<i>GC &ndash; garbage collector</i>), ve chvíli, kdy je
+zavolána nějaká javovská metoda, popř.&nbsp;při vzniku zachycené či nezachycené
+výjimky (typů callback funkcí však existuje mnohem více, některé typy si
+popíšeme příště). Dnešní část seriálu o JVM bude poněkud jednodušší, protože si
+&bdquo;pouze&ldquo; ukážeme, jakým způsobem může agent číst popř.&nbsp;měnit
+hodnotu některých systémových proměnných (<i>system properties</i>), které jsou
+využívané virtuálním strojem Javy a v&nbsp;některých případech i samotnou
+javovskou aplikací &ndash; příkladem je aplikace načítající nějakou proměnnou
+přes metodu <strong>System.getProperty()</strong>,
+popř.&nbsp;<strong>System.getProperties()</strong>.</p>
+
+<p>JVM TI agent může načíst hodnotu libovolné systémové proměnné
+s&nbsp;využitím funkce nazvané jednoduše <strong>GetSystemProperty()</strong>,
+jejíž hlavička je následující:</p>
+
+<pre>
+jvmtiError GetSystemProperty(
+        jvmtiEnv* env,
+        const char* property,
+        char** value_ptr)
+</pre>
+
+<p>Jak je z&nbsp;této hlavičky patrné, předávají se funkci
+<strong>GetSystemProperty()</strong> tři parametry. První parametr je nám již
+dobře známý &ndash; jedná se o ukazatel na strukturu obsahující stav
+&bdquo;prostředí&ldquo; agenta. Tato struktura je předávána do většiny callback
+funkcí a v&nbsp;našem případě je důležité to, že ji můžeme získat ve funkci
+<strong>Agent_OnLoad()</strong> po zavolání <strong>GetEnv()</strong>. Druhým
+parametrem je název systémové proměnné (konstantní řetězec) a třetím parametrem
+je ukazatel na céčkový řetězec, který je automaticky alokovaný a naplněný přímo
+funkcí <strong>GetSystemProperty()</strong> hodnotou zvolené systémové
+proměnné. To znamená, že nemusíme dopředu alokovat místo pro tento řetězec a
+současně je nutné (nejlépe co nejdříve) tento řetězec uvolnit s&nbsp;využitím
+funkce <strong>Deallocate()</strong> popsané podrobněji v&nbsp;předchozí části
+tohoto seriálu. Každý virtuální stroj Javy by měl nastavovat přinejmenším
+následujících šest systémových proměnných:</p>
+
+<table>
+<tr><td>java.vm.vendor   </td></tr>
+<tr><td>java.vm.version  </td></tr>
+<tr><td>java.vm.name     </td></tr>
+<tr><td>java.vm.info     </td></tr>
+<tr><td>java.library.path</td></tr>
+<tr><td>java.class.path  </td></tr>
+</table>
+
+<p>Ve skutečnosti je těchto proměnných nastaveno více, minimálně v&nbsp;případě
+OpenJDK a Oracle JDK.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Příklad použití funkce <strong>GetSystemProperty()</strong></h2>
+
+<p>Ukažme si nyní, jakým způsobem lze načíst a vypsat vybrané systémové
+proměnné. To se přímo v&nbsp;agentovi provede poměrně snadno, musíme ovšem mít
+na mysli, že funkci <strong>GetSystemProperty()</strong> je možné zavolat pouze
+ve fázi načítání a inicializace agenta, tj.&nbsp;buď přímo ve fázi inicializace
+virtuálního stroje Javy, popř.&nbsp;ve chvíli, kdy je agent připojován
+k&nbsp;již běžícímu virtuálnímu stroji (to jsme si ovšem ještě neukazovali).
+Pro nás to znamená, že budeme funkci <strong>GetSystemProperty()</strong> volat
+z&nbsp;funkce <strong>Agent_OnLoad()</strong>, což je funkce, která je
+automaticky zavolaná ve chvíli inicializace samotného agenta. V&nbsp;této
+chvíli má agent možnost si systémové proměnné přečíst a popřípadě některé
+z&nbsp;nich i modifikovat. Funkce (zavolaná
+z&nbsp;<strong>Agent_OnLoad()</strong>, která vypíše obsah dvanácti základních
+systémových proměnných nabízených OpenJDK i Oracle JDK, může ve své
+nejjednodušší podobě vypadat následovně. Povšimněte si, že ihned po vypsání
+hodnoty systémové proměnné provedeme dealokaci řetězce s&nbsp;využitím funkce
+<strong>Deallocate()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Tisk nekterych vybranych systemovych promennych.</i>
+<i> */</i>
+static void <strong>print_selected_system_properties</strong>(jvmtiEnv *jvmti_env)
+{
+    <i>/* pole se jmeny promennych - nutno ukoncit NULLem! */</i>
+    static char* property_names[] =
+    {
+        "sun.java.command",
+        "java.home",
+        "java.class.path",
+        "java.library.path",
+        "sun.boot.class.path",
+        "sun.boot.library.path",
+        "java.ext.dirs",
+        "java.endorsed.dirs",
+        "java.vm.version",
+        "java.vm.name",
+        "java.vm.info",
+        "java.vm.vendor",
+        NULL
+    };
+&nbsp;
+    MSG("---  System properties  ---");
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vybranych systemovych promennych */</i>
+    char **property_name = property_names;
+    for (; *property_name != NULL; property_name++)
+    {
+        char *property_value = NULL;
+        (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, *property_name, &amp;property_value);
+        printf("%-30s\t%s\n", *property_name, property_value);
+        (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+    }
+    MSG("--- --- --- --- --- --- ---");
+}
+</pre>
+
+<p>V&nbsp;případě, že nějaká systémová proměnná neexistuje nebo ji nelze
+z&nbsp;nějakého důvodu přečíst, vrátí funkce
+<strong>GetSystemProperty()</strong> chybový kód (JVMTI_ERROR_NOT_AVAILABLE,
+JVMTI_ERROR_NULL_POINTER), který je vhodné korektně testovat, což znamená, že
+by naše funkce pro čtení systémových proměnných mohla vypadat spíše následovně
+&ndash; kontrolujeme zde jak návratový kód funkce
+<strong>GetSystemProperty()</strong>, tak pro úplnou jistotu i návratový kód
+funkce <strong>Deallocate()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Tisk nekterych vybranych systemovych promennych.</i>
+<i> */</i>
+static void <strong>print_selected_system_properties</strong>(jvmtiEnv *jvmti_env)
+{
+    <i>/* pole se jmeny promennych - nutno ukoncit NULLem! */</i>
+    static char* property_names[] =
+    {
+        "sun.java.command",
+        "java.home",
+        "java.class.path",
+        "java.library.path",
+        "sun.boot.class.path",
+        "sun.boot.library.path",
+        "java.ext.dirs",
+        "java.endorsed.dirs",
+        "java.vm.version",
+        "java.vm.name",
+        "java.vm.info",
+        "java.vm.vendor",
+        NULL
+    };
+&nbsp;
+    jvmtiError error_code;
+&nbsp;
+    MSG("---  System properties  ---");
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vybranych systemovych promennych */</i>
+    char **property_name = property_names;
+    for (; *property_name != NULL; property_name++)
+    {
+        char *property_value = NULL;
+        error_code = (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, *property_name, &amp;property_value);
+        check_jvmti_error(jvmti_env, error_code, "GetSystemProperty");
+        printf("%-30s\t%s\n", *property_name, property_value);
+        error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+        check_jvmti_error(jvmti_env, error_code, "Deallocate");
+    }
+    MSG("--- --- --- --- --- --- ---");
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Sedmý demonstrační příklad: agent, který přečte hodnoty vybraných systémových proměnných</h2>
+
+<p>S&nbsp;využitím informací, které jsme získali <a
+href="#k01">v&nbsp;první</a> i <a href="#k02">ve druhé kapitole</a> již můžeme
+napsat zdrojový kód celého agenta. V&nbsp;porovnání se zdrojovými kódy
+z&nbsp;předchozí části tohoto seriálu je agent velmi jednoduchý, protože
+nemusíme nastavovat žádné jeho požadované vlastnosti ani není zapotřebí
+registrovat callback funkce:</p>
+
+<pre>
+<i>/*</i>
+<i> * JVM TI agent, ktery na standardni vystup vypise hodnoty</i>
+<i> * nekterych vybranych systemovych promennych.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define AGENT_NAME "Agent7:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem, vypise se hlaseni.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Tisk nekterych vybranych systemovych promennych.</i>
+<i> */</i>
+static void <strong>print_selected_system_properties</strong>(jvmtiEnv *jvmti_env)
+{
+    <i>/* pole se jmeny promennych - nutno ukoncit NULLem! */</i>
+    static char* property_names[] =
+    {
+        "sun.java.command",
+        "java.home",
+        "java.class.path",
+        "java.library.path",
+        "sun.boot.class.path",
+        "sun.boot.library.path",
+        "java.ext.dirs",
+        "java.endorsed.dirs",
+        "java.vm.version",
+        "java.vm.name",
+        "java.vm.info",
+        "java.vm.vendor",
+        NULL
+    };
+&nbsp;
+    jvmtiError error_code;
+&nbsp;
+    MSG("---  System properties  ---");
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vybranych systemovych promennych */</i>
+    char **property_name = property_names;
+    for (; *property_name != NULL; property_name++)
+    {
+        char *property_value = NULL;
+        error_code = (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, *property_name, &amp;property_value);
+        check_jvmti_error(jvmti_env, error_code, "GetSystemProperty");
+        printf("%-30s\t%s\n", *property_name, property_value);
+        error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+        check_jvmti_error(jvmti_env, error_code, "Deallocate");
+    }
+    MSG("--- --- --- --- --- --- ---");
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+    <i>/* Vytiskneme vybrane systemove promenne. */</i>
+    print_selected_system_properties(jvmti);
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+</pre>
+
+<p>Funkci tohoto agenta je možné si otestovat na tomto jednoduchém javovském
+programu:</p>
+
+<pre>
+<i>/**</i>
+<i> * Vypise na standardni vystup hodnotu systemove promenne "java.vm.vendor"</i>
+<i> */</i>
+public class <strong>Test7</strong> {
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("--- Java side ---");
+        System.out.format("%-30s\t%s\n", "java.vm.vendor", System.getProperty("java.vm.vendor"));
+        System.out.println("--- Java side ---");
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po překladu obou programů:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent7.so agent7.c
+javac Test7.java
+</pre>
+
+<p>již můžeme spustit JVM i s&nbsp;agentem, a to příkazem:</p>
+
+<pre>
+java -agentpath:./libagent7.so Test7
+</pre>
+
+<p>Následuje příklad výpisu, v&nbsp;němž můžeme vidět jak obsah všech zvolených
+systémových proměnných přečtených agentem, tak i výstup testovacího javovského
+programu. Konkrétní hodnoty v&nbsp;tomto případě samozřejmě budou na různých
+systémech odlišné, protože záleží na konkrétní konfiguraci Javy, její verzi,
+nastavení &bdquo;alternatives&ldquo; atd. (zvýrazněním je naznačeno, že jak
+agent, tak i javovský program dostane shodné hodnoty):</p>
+
+<pre>
+Agent7: Agent_OnLoad
+Agent7: JVM TI version is correct
+Agent7: ---  System properties  ---
+sun.java.command                Test7
+java.home                       /usr/lib/jvm/java-6-openjdk/jre
+java.class.path                 .
+java.library.path               /usr/lib/jvm/java-6-openjdk/jre/lib/i386/client:/usr/lib/jvm/java-6-openjdk/jre/lib/i386:/usr/lib/jvm/java-6-openjdk/jre/../lib/i386:/usr/java/packages/lib/i386:/usr/lib/jni:/lib:/usr/lib
+sun.boot.class.path             /usr/lib/jvm/java-6-openjdk/jre/lib/resources.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rt.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/sunrsasign.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jsse.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jce.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/charsets.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/netx.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/plugin.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rhino.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/modules/jdk.boot.jar:/usr/lib/jvm/java-6-openjdk/jre/classes
+sun.boot.library.path           /usr/lib/jvm/java-6-openjdk/jre/lib/i386
+java.ext.dirs                   /usr/lib/jvm/java-6-openjdk/jre/lib/ext:/usr/java/packages/lib/ext
+java.endorsed.dirs              /usr/lib/jvm/java-6-openjdk/jre/lib/endorsed
+java.vm.version                 20.0-b12
+java.vm.name                    OpenJDK Client VM
+java.vm.info                    mixed mode, sharing
+<strong>java.vm.vendor                  Sun Microsystems Inc.</strong>
+Agent7: --- --- --- --- --- --- ---
+--- Java side ---
+<strong>java.vm.vendor                  Sun Microsystems Inc.</strong>
+--- Java side ---
+Agent7: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Změna hodnot systémových proměnných: funkce <strong>SetSystemProperty()</strong></h2>
+
+<p>Přečtení obsahu vybrané systémové proměnné může být pro agenta velmi
+důležité, protože z&nbsp;obsahu některých proměnných například může získat
+informaci o tom, kde hledat nějakou knihovnu atd. (na straně javovských
+programů se to děje poloautomaticky přes CLASSPATH, v&nbsp;případě agenta
+psaného většinou v&nbsp;céčku či C++ to je však poněkud složitější). Ovšem může
+nastat situace, kdy bude nutné nějakou proměnnou změnit. I to je samozřejmě
+možné, ovšem (opět) pouze ve fázi inicializace samotného virtuálního stroje
+Javy &ndash; není tedy žádoucí (a mnoho implementací JVM TI to hlídá), aby
+agent měnil systémové proměnné prakticky kdykoli javovské aplikaci &bdquo;pod
+rukama&ldquo;. Pro změnu hodnoty některé systémové proměnné lze v&nbsp;agentovi
+využít funkci nazvanou, jak již zajisté očekáváte,
+<strong>SetSystemProperty()</strong>, jejíž hlavička vypadá následovně:</p>
+
+<pre>
+jvmtiError SetSystemProperty(
+        jvmtiEnv* env,
+        const char* property,
+        const char* value)
+</pre>
+
+<p>Této funkci se opět předávají tři parametry. Prvním parametrem je ukazatel
+na strukturu obsahující stav &bdquo;prostředí&ldquo; agenta, ve druhém
+parametru musí být předán řetězec s&nbsp;názvem nějaké systémové proměnné a
+v&nbsp;parametru třetím se opět předává řetězec, tentokrát s&nbsp;novou
+hodnotou systémové proměnné. Jak si ukážeme dále, je možné měnit pouze některé
+systémové proměnné a pokud se agent pokusí modifikovat některou proměnnou
+určenou pouze pro čtení, vrátí funkce <strong>SetSystemProperty()</strong>
+chybový kód <strong>JVMTI_ERROR_NOT_AVAILABLE</strong>, který znamená, že daná
+systémová proměnná buď vůbec neexistuje nebo je možné její obsah pouze přečíst,
+ale nikoli přepsat. Jednou z&nbsp;proměnných &ndash; a to velmi důležitých
+proměnných &ndash; je i proměnná <strong>java.class.path</strong>, která
+obsahuje cestu, na nichž JVM hledá třídy aplikace. Tuto proměnnou lze změnit a
+pokud ji změníme například tak, že zde nebude obsažena tečka (aktuální
+adresář), dojde při inicializaci aplikace k&nbsp;chybě, což si můžete vyzkoušet
+v&nbsp;demonstračním příkladu uvedeném <a href="#k05">v&nbsp;navazující
+kapitole</a>.</p>
+
+<p>Funkce pro změnu systémové proměnné nazvané <strong>java.class.path</strong>
+může být velmi jednoduchá, jak je to ostatně patrné při pohledu na následující
+funkci, kterou využijeme i v&nbsp;osmém demonstračním příkladu popsaném <a
+href="#k05">v&nbsp;páté kapitole</a>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Zmena jedne vybrane promenne.</i>
+<i> */</i>
+static void <strong>change_selected_property</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error_code;
+    error_code = (*jvmti_env)-&gt;SetSystemProperty(jvmti_env, "java.class.path", ".:new_path");
+    check_jvmti_error(jvmti_env, error_code, "SetSystemProperty");
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Osmý demonstrační příklad: změna nastavení <strong>CLASSPATH</strong> v&nbsp;době spuštění agenta</h2>
+
+<p>Naši funkci <strong>change_selected_property()</strong> <a
+href="#k04">z&nbsp;předchozí kapitoly</a> využijeme prakticky, tentokrát
+v&nbsp;osmém demonstračním agentovi, jehož zdrojový kód je vypsán pod tímto
+odstavcem. Agent nejdříve načte a vypíše hodnoty všech vybraných systémových
+proměnných, potom jednu zvolenou proměnnou (<strong>java.class.path</strong>)
+změní a posléze opět vypíše hodnoty vybraných systémových proměnných &ndash;
+zde se již ovšem promítne změna v&nbsp;jedné proměnné:</p>
+
+<pre>
+<i>/*</i>
+<i> * JVM TI agent, ktery na standardni vystup vypise hodnoty</i>
+<i> * nekterych vybranych systemovych promennych, posleze</i>
+<i> * zmeni jednu promennou, ktera je nasledne prectena z programu</i>
+<i> * beziciho v JVM.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define AGENT_NAME "Agent8:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem, vypise se hlaseni.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Tisk nekterych vybranych systemovych promennych.</i>
+<i> */</i>
+static void <strong>print_selected_system_properties</strong>(jvmtiEnv *jvmti_env)
+{
+    <i>/* pole se jmeny promennych - nutno ukoncit NULLem! */</i>
+    static char* property_names[] =
+    {
+        "sun.java.command",
+        "java.home",
+        "java.class.path",
+        "java.library.path",
+        "sun.boot.class.path",
+        "sun.boot.library.path",
+        "java.ext.dirs",
+        "java.endorsed.dirs",
+        "java.vm.version",
+        "java.vm.name",
+        "java.vm.info",
+        "java.vm.vendor",
+        NULL
+    };
+&nbsp;
+    jvmtiError error_code;
+&nbsp;
+    MSG("---  System properties  ---");
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vybranych systemovych promennych */</i>
+    char **property_name = property_names;
+    for (; *property_name != NULL; property_name++)
+    {
+        char *property_value = NULL;
+        error_code = (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, *property_name, &amp;property_value);
+        check_jvmti_error(jvmti_env, error_code, "GetSystemProperty");
+        printf("%-30s\t%s\n", *property_name, property_value);
+        error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+        check_jvmti_error(jvmti_env, error_code, "Deallocate");
+    }
+    MSG("--- --- --- --- --- --- ---");
+}
+&nbsp;
+<i>/*</i>
+<i> * Zmena jedne vybrane promenne.</i>
+<i> */</i>
+static void <strong>change_selected_property</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error_code;
+    error_code = (*jvmti_env)-&gt;SetSystemProperty(jvmti_env, "java.class.path", ".:new_path");
+    check_jvmti_error(jvmti_env, error_code, "SetSystemProperty");
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+    <i>/* Vytiskneme vybrane systemove promenne. */</i>
+    <i>/* potom jednu zmenime a provede se novy tisk. */</i>
+    print_selected_system_properties(jvmti);
+    change_selected_property(jvmti);
+    print_selected_system_properties(jvmti);
+&nbsp;
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+</pre>
+
+<p>Opět můžeme provést test s&nbsp;využitím následujícího javovského
+programu:</p>
+
+<pre>
+<i>/**</i>
+<i> * Vypise na standardni vystup hodnotu systemove promenne "java.class.path"</i>
+<i> */</i>
+public class <strong>Test8</strong> {
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("--- Java side ---");
+        System.out.format("%-30s\t%s\n", "java.class.path", System.getProperty("java.class.path"));
+        System.out.println("--- Java side ---");
+    }
+&nbsp;
+}
+</pre>
+
+<p>Překlad:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent8.so agent8.c
+javac Test8.java
+</pre>
+
+<p>Spuštění:</p>
+
+<pre>
+java -agentpath:./libagent8.so Test8
+</pre>
+
+<p>Ve výpise (tj.&nbsp;v&nbsp;zachyceném standardním výstupu) můžeme vidět, že
+javovský program skutečně získal modifikovanou hodnotu systémové proměnné
+<strong>java.class.path</strong>. Povšimněte si především zvýrazněných
+řádků:</p>
+
+<pre>
+Agent8: Agent_OnLoad
+Agent8: JVM TI version is correct
+Agent8: ---  System properties  ---
+sun.java.command                Test8
+java.home                       /usr/lib/jvm/java-6-openjdk/jre
+<strong>java.class.path                 .</strong>
+java.library.path               /usr/lib/jvm/java-6-openjdk/jre/lib/i386/client:/usr/lib/jvm/java-6-openjdk/jre/lib/i386:/usr/lib/jvm/java-6-openjdk/jre/../lib/i386:/usr/java/packages/lib/i386:/usr/lib/jni:/lib:/usr/lib
+sun.boot.class.path             /usr/lib/jvm/java-6-openjdk/jre/lib/resources.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rt.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/sunrsasign.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jsse.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jce.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/charsets.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/netx.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/plugin.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rhino.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/modules/jdk.boot.jar:/usr/lib/jvm/java-6-openjdk/jre/classes
+sun.boot.library.path           /usr/lib/jvm/java-6-openjdk/jre/lib/i386
+java.ext.dirs                   /usr/lib/jvm/java-6-openjdk/jre/lib/ext:/usr/java/packages/lib/ext
+java.endorsed.dirs              /usr/lib/jvm/java-6-openjdk/jre/lib/endorsed
+java.vm.version                 20.0-b12
+java.vm.name                    OpenJDK Client VM
+java.vm.info                    mixed mode, sharing
+java.vm.vendor                  Sun Microsystems Inc.
+Agent8: --- --- --- --- --- --- ---
+Agent8: ---  System properties  ---
+sun.java.command                Test8
+java.home                       /usr/lib/jvm/java-6-openjdk/jre
+<strong>java.class.path                 .:new_path</strong>
+java.library.path               /usr/lib/jvm/java-6-openjdk/jre/lib/i386/client:/usr/lib/jvm/java-6-openjdk/jre/lib/i386:/usr/lib/jvm/java-6-openjdk/jre/../lib/i386:/usr/java/packages/lib/i386:/usr/lib/jni:/lib:/usr/lib
+sun.boot.class.path             /usr/lib/jvm/java-6-openjdk/jre/lib/resources.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rt.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/sunrsasign.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jsse.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jce.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/charsets.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/netx.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/plugin.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rhino.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/modules/jdk.boot.jar:/usr/lib/jvm/java-6-openjdk/jre/classes
+sun.boot.library.path           /usr/lib/jvm/java-6-openjdk/jre/lib/i386
+java.ext.dirs                   /usr/lib/jvm/java-6-openjdk/jre/lib/ext:/usr/java/packages/lib/ext
+java.endorsed.dirs              /usr/lib/jvm/java-6-openjdk/jre/lib/endorsed
+java.vm.version                 20.0-b12
+java.vm.name                    OpenJDK Client VM
+java.vm.info                    mixed mode, sharing
+java.vm.vendor                  Sun Microsystems Inc.
+--- Java side ---
+<strong>java.class.path                 .:new_path</strong>
+--- Java side ---
+Agent8: --- --- --- --- --- --- ---
+Agent8: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Devátý demonstrační příklad: pokus o změnu nemodifikovatelné proměnné</h2>
+
+<p>Ve <a href="#k04">čtvrté kapitole</a> jsme si řekli, že zdaleka ne všechny
+systémové proměnné je možné měnit. U některých implementací JVM například není
+možné modifikovat proměnnou <strong>java.vm.vendor</strong>, v&nbsp;níž je
+&bdquo;podepsán&ldquo; dodavatel virtuálního stroje. Pokud se o změnu této
+proměnné pokusíme, dojde k&nbsp;chybě, což konkrétně znamená, že funkce
+<strong>SetSystemProperty()</strong> vrátí hodnotu
+<strong>JVMTI_ERROR_NOT_AVAILABLE</strong> a systémová proměnná se podle
+očekávání nezmění:</p>
+
+<pre>
+<i>/*</i>
+<i> * Pokus o zmenu jedne vybrane promenne.</i>
+<i> */</i>
+static void <strong>change_selected_property</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error_code;
+    error_code = (*jvmti_env)-&gt;SetSystemProperty(jvmti_env, "java.vm.vendor", "Planet Express, Universe A");
+    check_jvmti_error(jvmti_env, error_code, "SetSystemProperty");
+}
+</pre>
+
+<p>Zdrojový kód celého demonstračního příkladu vypadá takto:</p>
+
+<pre>
+<i>/*</i>
+<i> * JVM TI agent, ktery na standardni vystup vypise hodnoty</i>
+<i> * nekterych vybranych systemovych promennych, posleze</i>
+<i> * se pokusi zmenit jednu promennou.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define AGENT_NAME "Agent9:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem, vypise se hlaseni.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Tisk nekterych vybranych systemovych promennych.</i>
+<i> */</i>
+static void <strong>print_selected_system_properties</strong>(jvmtiEnv *jvmti_env)
+{
+    <i>/* pole se jmeny promennych - nutno ukoncit NULLem! */</i>
+    static char* property_names[] =
+    {
+        "sun.java.command",
+        "java.home",
+        "java.class.path",
+        "java.library.path",
+        "sun.boot.class.path",
+        "sun.boot.library.path",
+        "java.ext.dirs",
+        "java.endorsed.dirs",
+        "java.vm.version",
+        "java.vm.name",
+        "java.vm.info",
+        "java.vm.vendor",
+        NULL
+    };
+&nbsp;
+    jvmtiError error_code;
+&nbsp;
+    MSG("---  System properties  ---");
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vybranych systemovych promennych */</i>
+    char **property_name = property_names;
+    for (; *property_name != NULL; property_name++)
+    {
+        char *property_value = NULL;
+        error_code = (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, *property_name, &amp;property_value);
+        check_jvmti_error(jvmti_env, error_code, "GetSystemProperty");
+        printf("%-30s\t%s\n", *property_name, property_value);
+        error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+        check_jvmti_error(jvmti_env, error_code, "Deallocate");
+    }
+    MSG("--- --- --- --- --- --- ---");
+}
+&nbsp;
+<i>/*</i>
+<i> * Zmena jedne vybrane promenne.</i>
+<i> */</i>
+static void <strong>change_selected_property</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error_code;
+    error_code = (*jvmti_env)-&gt;SetSystemProperty(jvmti_env, "java.vm.vendor", "Planet Express, Universe A");
+    check_jvmti_error(jvmti_env, error_code, "SetSystemProperty");
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+    <i>/* Vytiskneme vybrane systemove promenne. */</i>
+    <i>/* potom jednu zmenime a provede se novy tisk. */</i>
+    print_selected_system_properties(jvmti);
+    change_selected_property(jvmti);
+    print_selected_system_properties(jvmti);
+&nbsp;
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+</pre>
+
+<p>Překlad:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent9.so agent9.c
+javac Test9.java
+</pre>
+
+<p>Spuštění:</p>
+
+<pre>
+java -agentpath:./libagent9.so Test9
+</pre>
+
+<p>Na standardním a chybovém výstupu je vypsána i chyba funkce
+<strong>SetSystemProperty()</strong>:</p>
+
+<pre>
+Agent9: Agent_OnLoad
+Agent9: JVM TI version is correct
+Agent9: ---  System properties  ---
+sun.java.command                Test9
+java.home                       /usr/lib/jvm/java-6-openjdk/jre
+java.class.path                 .
+java.library.path               /usr/lib/jvm/java-6-openjdk/jre/lib/i386/client:/usr/lib/jvm/java-6-openjdk/jre/lib/i386:/usr/lib/jvm/java-6-openjdk/jre/../lib/i386:/usr/java/packages/lib/i386:/usr/lib/jni:/lib:/usr/lib
+sun.boot.class.path             /usr/lib/jvm/java-6-openjdk/jre/lib/resources.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rt.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/sunrsasign.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jsse.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jce.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/charsets.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/netx.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/plugin.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rhino.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/modules/jdk.boot.jar:/usr/lib/jvm/java-6-openjdk/jre/classes
+sun.boot.library.path           /usr/lib/jvm/java-6-openjdk/jre/lib/i386
+java.ext.dirs                   /usr/lib/jvm/java-6-openjdk/jre/lib/ext:/usr/java/packages/lib/ext
+java.endorsed.dirs              /usr/lib/jvm/java-6-openjdk/jre/lib/endorsed
+java.vm.version                 20.0-b12
+java.vm.name                    OpenJDK Client VM
+java.vm.info                    mixed mode, sharing
+<strong>java.vm.vendor                  Sun Microsystems Inc.</strong>
+Agent9: --- --- --- --- --- --- ---
+<strong>Agent9: ERROR: JVMTI: 98(JVMTI_ERROR_NOT_AVAILABLE): SetSystemProperty</strong>
+Agent9: ---  System properties  ---
+sun.java.command                Test9
+java.home                       /usr/lib/jvm/java-6-openjdk/jre
+java.class.path                 .
+java.library.path               /usr/lib/jvm/java-6-openjdk/jre/lib/i386/client:/usr/lib/jvm/java-6-openjdk/jre/lib/i386:/usr/lib/jvm/java-6-openjdk/jre/../lib/i386:/usr/java/packages/lib/i386:/usr/lib/jni:/lib:/usr/lib
+sun.boot.class.path             /usr/lib/jvm/java-6-openjdk/jre/lib/resources.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rt.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/sunrsasign.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jsse.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jce.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/charsets.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/netx.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/plugin.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rhino.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/modules/jdk.boot.jar:/usr/lib/jvm/java-6-openjdk/jre/classes
+sun.boot.library.path           /usr/lib/jvm/java-6-openjdk/jre/lib/i386
+java.ext.dirs                   /usr/lib/jvm/java-6-openjdk/jre/lib/ext:/usr/java/packages/lib/ext
+java.endorsed.dirs              /usr/lib/jvm/java-6-openjdk/jre/lib/endorsed
+java.vm.version                 20.0-b12
+java.vm.name                    OpenJDK Client VM
+java.vm.info                    mixed mode, sharing
+<strong>java.vm.vendor                  Sun Microsystems Inc.</strong>
+--- Java side ---
+<strong>java.vm.vendor                  Sun Microsystems Inc.</strong>
+--- Java side ---
+Agent9: --- --- --- --- --- --- ---
+Agent9: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Funkce <strong>GetSystemProperties()</strong> určená pro čtení názvů všech systémových proměnných</h2>
+
+<p>Všechny demonstrační příklady ukázané v&nbsp;předchozích kapitolách byly
+založeny na znalosti správného názvu systémových proměnných. Ovšem rozhraní
+<i>JVM TI</i> obsahuje i funkci nazvanou
+<strong>GetSystemProperties()</strong>, kterou je možné použít pro získání jmen
+(nikoli hodnot!) všech systémových proměnných.  Podobná funkce (metoda)
+existuje i v&nbsp;Javě, ovšem v&nbsp;případě rozhraní <i>JVM TI</i> je vše
+komplikováno tím, že se programátor musí postarat o dealokaci paměti obsahující
+vrácená jména systémových proměnných:</p>
+
+<pre>
+jvmtiError GetSystemProperties(
+        jvmtiEnv* env,
+        jint* count_ptr,
+        char*** property_ptr)
+</pre>
+
+<p>Tato funkce ve svém druhém parametru vrátí počet všech systémových
+proměnných a ve svém třetím parametru pak pole řetězců s&nbsp;názvy těchto
+proměnných. Pole se musí interně vytvořit, proto se předává <i>ukazatel</i> na
+toto pole, tj.&nbsp;<strong>char***</strong>, protože <strong>char**</strong>
+značí pole řetězců a <strong>char*</strong> jeden řetězec. S&nbsp;těmito názvy
+již umíme pracovat &ndash; použijeme je pro získání hodnoty proměnné
+s&nbsp;využitím funkce <strong>GetSystemProperty()</strong>:</p>
+
+<pre>
+    char **property_names;
+    jint count;
+    int i;
+&nbsp;
+    error_code = (*jvmti_env)-&gt;<strong>GetSystemProperties</strong>(jvmti_env, &amp;count, &amp;property_names);
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vsech systemovych promennych */</i>
+    for (i = 0; i &lt; count; i++)
+    {
+        char *prop_name = property_names[i];
+        char *property_value = NULL;
+        (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, prop_name, &amp;property_value);
+        printf("%-30s\t%s\n", prop_name, property_value);
+        (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+    }
+</pre>
+
+<p>Velmi důležité je však uvolnit paměť alokovanou uvnitř funkce
+<strong>GetSystemProperties()</strong>. Jak již víme, jedná se o pole řetězců,
+takže dealokace probíhá ve dvou fázích. Ve fázi první se uvolní jednotlivé
+řetězce a teprve ve fázi druhé se uvolní celé pole (to obsahuje pouze
+ukazatele):</p>
+
+<pre>
+    <i>/* faze dealokace pameti */</i>
+    for (i = 0; i &lt; count; i++)
+    {
+        char *prop_name = property_names[i];
+        printf("Deallocation of string '%-30s' with length %3d stored at %p\n",
+                prop_name, strlen(prop_name), prop_name);
+        (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)prop_name);
+    }
+    printf("Deallocation of an array stored at %p\n", property_names);
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)property_names);
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Desátý demonstrační příklad: výpis všech systémových proměnných nastavených virtuálním strojem</h2>
+
+<p>Výše uvedené dva fragmenty kódu můžeme snadno přidat do našeho testovacího
+agenta, v&nbsp;němž se nově objevuje funkce nazvaná
+<strong>print_all_system_properties()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * JVM TI agent, ktery na standardni vystup vypise hodnoty</i>
+<i> * vsech systemovych promennych.</i>
+<i> */</i>
+&nbsp;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+&nbsp;
+<i>/* Nutno nastavit cestu pres volbu -Icesta_k_jvm */</i>
+#include &lt;jvmti.h&gt;
+&nbsp;
+#define <strong>AGENT_NAME</strong> "Agent10:"
+&nbsp;
+<i>/*</i>
+<i> * Vypis zpravy na standardni vystup.</i>
+<i> */</i>
+#define MSG(message) puts(AGENT_NAME " " message)
+&nbsp;
+<i>/*</i>
+<i> * Vypis kodu chyby a chybove zpravy.</i>
+<i> */</i>
+static void <strong>print_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    char *error_code_str = NULL;
+    const char *msg_str = str == NULL ? "" : str;
+    char *msg_err = NULL;
+&nbsp;
+    (*jvmti)-&gt;GetErrorName(jvmti, error_code, &amp;error_code_str);
+    msg_err = error_code_str == NULL ? "Unknown" : error_code_str;
+    printf(AGENT_NAME " ERROR: JVMTI: %d(%s): %s\n", error_code, msg_err, msg_str);
+}
+&nbsp;
+<i>/*</i>
+<i> * Pokud je predany navratovy kod chybovym kodem, vypise se hlaseni.</i>
+<i> */</i>
+static void <strong>check_jvmti_error</strong>(jvmtiEnv *jvmti, jvmtiError error_code, const char *str)
+{
+    if ( error_code != JVMTI_ERROR_NONE )
+    {
+        print_jvmti_error(jvmti, error_code, str);
+    }
+}
+&nbsp;
+<i>/*</i>
+<i> * Tisk vsech systemovych promennych.</i>
+<i> */</i>
+static void <strong>print_all_system_properties</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error_code;
+    jint count;
+    char **property_names;
+    int i;
+&nbsp;
+    MSG("---  All system properties  ---");
+&nbsp;
+    error_code = (*jvmti_env)-&gt;<strong>GetSystemProperties</strong>(jvmti_env, &amp;count, &amp;property_names);
+&nbsp;
+    <i>/* ziskame a vypiseme hodnoty vsech systemovych promennych */</i>
+    for (i = 0; i &lt; count; i++)
+    {
+        char *prop_name = property_names[i];
+        char *property_value = NULL;
+        error_code = (*jvmti_env)-&gt;<strong>GetSystemProperty</strong>(jvmti_env, prop_name, &amp;property_value);
+        check_jvmti_error(jvmti_env, error_code, "GetSystemProperty");
+        printf("%-30s\t%s\n", prop_name, property_value);
+        error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*) property_value);
+        check_jvmti_error(jvmti_env, error_code, "Deallocate");
+    }
+    MSG("--- --- --- --- --- --- --- ---");
+&nbsp;
+    <i>/* faze dealokace pameti */</i>
+    for (i = 0; i &lt; count; i++)
+    {
+        char *prop_name = property_names[i];
+        printf("Deallocation of string '%-30s' with length %3d stored at %p\n",
+                prop_name, strlen(prop_name), prop_name);
+        error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)prop_name);
+        check_jvmti_error(jvmti_env, error_code, "Deallocate");
+    }
+    printf("Deallocation of an array stored at %p\n", property_names);
+    error_code = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)property_names);
+    check_jvmti_error(jvmti_env, error_code, "Deallocate");
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili nacitani agenta do JVM.</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Agent_OnLoad</strong>(JavaVM *jvm, char *options, void *reserved)
+{
+    jvmtiEnv *jvmti = NULL;
+    jint result;
+&nbsp;
+    MSG("Agent_OnLoad");
+    result = (*jvm)-&gt;GetEnv(jvm, (void **) &amp;jvmti, JVMTI_VERSION_1_0);
+    if (result != JNI_OK || jvmti == NULL)
+    {
+        printf("ERROR: Unable to access JVMTI Version 1 (0x%x),"
+                " is your J2SE a 1.5 or newer version? JNIEnv's GetEnv() returned %d\n",
+                JVMTI_VERSION_1, (int)result);
+        return result;
+    }
+    MSG("JVM TI version is correct");
+&nbsp;
+    <i>/* Vytiskneme vsechny systemove promenne. */</i>
+    print_all_system_properties(jvmti);
+    return JNI_OK;
+}
+&nbsp;
+<i>/*</i>
+<i> * Funkce zavolana ve chvili odstranovani agenta z JVM.</i>
+<i> */</i>
+JNIEXPORT void JNICALL <strong>Agent_OnUnload</strong>(JavaVM *vm)
+{
+    MSG("Agent_OnUnload");
+}
+</pre>
+
+<p>Javovská část testu je velmi jednoduchá:</p>
+
+<pre>
+public class Test10 {
+&nbsp;
+    public static void main(String[] args) {
+    }
+&nbsp;
+}
+</pre>
+
+<p>Překlad:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent10.so agent10.c
+javac Test10.java
+</pre>
+
+<p>Spuštění:</p>
+
+<pre>
+java -agentpath:./libagent10.so Test10
+</pre>
+
+<p>Po spuštění se na standardní výstup skutečně vypíše obsah všech dostupných
+systémových proměnných:</p>
+
+<pre>
+Agent10: Agent_OnLoad
+Agent10: JVM TI version is correct
+Agent10: ---  All system properties  ---
+java.vm.specification.name      Java Virtual Machine Specification
+java.vm.version                 20.0-b12
+java.vm.name                    OpenJDK Client VM
+java.vm.info                    mixed mode, sharing
+java.ext.dirs                   /usr/lib/jvm/java-6-openjdk/jre/lib/ext:/usr/java/packages/lib/ext
+java.endorsed.dirs              /usr/lib/jvm/java-6-openjdk/jre/lib/endorsed
+sun.boot.library.path           /usr/lib/jvm/java-6-openjdk/jre/lib/i386
+java.library.path               /usr/lib/jvm/java-6-openjdk/jre/lib/i386/client:/usr/lib/jvm/java-6-openjdk/jre/lib/i386:/usr/lib/jvm/java-6-openjdk/jre/../lib/i386:/usr/java/packages/lib/i386:/usr/lib/jni:/lib:/usr/lib
+java.home                       /usr/lib/jvm/java-6-openjdk/jre
+java.class.path                 .
+sun.boot.class.path             /usr/lib/jvm/java-6-openjdk/jre/lib/resources.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rt.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/sunrsasign.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jsse.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/jce.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/charsets.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/netx.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/plugin.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/rhino.jar:/usr/lib/jvm/java-6-openjdk/jre/lib/modules/jdk.boot.jar:/usr/lib/jvm/java-6-openjdk/jre/classes
+java.vm.specification.vendor    Sun Microsystems Inc.
+java.vm.specification.version   1.0
+java.vm.vendor                  Sun Microsystems Inc.
+sun.java.command                Test10
+sun.java.launcher               SUN_STANDARD
+Agent10: --- --- --- --- --- --- --- ---
+</pre>
+
+<p>Následně se vypíše zpráva o dealokaci paměti, přesněji řečeno pole řetězců
+s&nbsp;názvy systémových proměnných:</p>
+
+<pre>
+Deallocation of string 'java.vm.specification.name    ' with length  26 stored at 0x8cb7d40
+Deallocation of string 'java.vm.version               ' with length  15 stored at 0x8cb7d60
+Deallocation of string 'java.vm.name                  ' with length  12 stored at 0x8cb7d78
+Deallocation of string 'java.vm.info                  ' with length  12 stored at 0x8cb7d90
+Deallocation of string 'java.ext.dirs                 ' with length  13 stored at 0x8cb7da8
+Deallocation of string 'java.endorsed.dirs            ' with length  18 stored at 0x8cb7dc0
+Deallocation of string 'sun.boot.library.path         ' with length  21 stored at 0x8cb7dd8
+Deallocation of string 'java.library.path             ' with length  17 stored at 0x8cb7df8
+Deallocation of string 'java.home                     ' with length   9 stored at 0x8cb7e10
+Deallocation of string 'java.class.path               ' with length  15 stored at 0x8cb7e20
+Deallocation of string 'sun.boot.class.path           ' with length  19 stored at 0x8cb7e38
+Deallocation of string 'java.vm.specification.vendor  ' with length  28 stored at 0x8cb7e50
+Deallocation of string 'java.vm.specification.version ' with length  29 stored at 0x8cb7e78
+Deallocation of string 'java.vm.vendor                ' with length  14 stored at 0x8cb7ea0
+Deallocation of string 'sun.java.command              ' with length  16 stored at 0x8cb7eb8
+Deallocation of string 'sun.java.launcher             ' with length  17 stored at 0x8cb7ed0
+Deallocation of an array stored at 0x8cb7cf8
+Agent10: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>ClojureScript One: Index<br />
+<a href="http://clojurescriptone.com/index.html">http://clojurescriptone.com/index.html</a>
+</li>
+
+<li>ClojureScript One: Documentation<br />
+<a href="http://clojurescriptone.com/documentation.html">http://clojurescriptone.com/documentation.html</a>
+</li>
+
+<li>ClojureScript One: Wiki<br />
+<a href="https://github.com/brentonashworth/one/wiki">https://github.com/brentonashworth/one/wiki</a>
+</li>
+
+<li>ClojureScript: Quick Start<br />
+<a href="https://github.com/clojure/clojurescript/wiki/Quick-Start">https://github.com/clojure/clojurescript/wiki/Quick-Start</a>
+</li>
+
+<li>Getting Started with ClojureScript (and FW/1)<br />
+<a href="http://corfield.org/entry/getting-started-with-clojurescript-and-fw-1">http://corfield.org/entry/getting-started-with-clojurescript-and-fw-1</a>
+</li>
+
+<li>First ClojureScript experiences: using Raphaël<br />
+<a href="http://maurits.wordpress.com/2012/02/13/first-clojurescript-experiences-using-raphael/">http://maurits.wordpress.com/2012/02/13/first-clojurescript-experiences-using-raphael/</a>
+</li>
+
+<li>Raphaël-JavaScript Library<br />
+<a href="http://raphaeljs.com/">http://raphaeljs.com/</a>
+</li>
+
+<li>A detailed installation Guide for VimClojure 2.2<br />
+<a href="http://www.duenas.at/new_homepage/vimclojure">http://www.duenas.at/new_homepage/vimclojure</a>
+</li>
+
+<li>VimClojure : A filetype, syntax and indent plugin for Clojure<br />
+<a href="http://www.vim.org/scripts/script.php?script_id=2501">http://www.vim.org/scripts/script.php?script_id=2501</a>
+</li>
+
+<li>Nailgun server<br />
+<a href="http://www.martiansoftware.com/nailgun/background.html">http://www.martiansoftware.com/nailgun/background.html</a>
+</li>
+
+<li>SLIME (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/SLIME">http://en.wikipedia.org/wiki/SLIME</a>
+</li>
+
+<li>slime.vim<br />
+<a href="http://s3.amazonaws.com/mps/slime.vim">http://s3.amazonaws.com/mps/slime.vim</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 1. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 2. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-2-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-2-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 3. část (omni completion)<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-3-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-3-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 4. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-4-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-4-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 5. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-5-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-5-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 6. část &ndash; Vim Script<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-6-cast-vim-script/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-6-cast-vim-script/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 7. část &ndash; Vim Script<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-7-cast-vim-script/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-7-cast-vim-script/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 8. část<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-8-cast/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-8-cast/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 9. část &ndash; pluginy Netrw a snipMate<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-9-cast-pluginy-netrw-a-snipmate/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-9-cast-pluginy-netrw-a-snipmate/</a>
+</li>
+
+<li>Textový editor Vim jako IDE: 10. část &ndash; různé tipy a triky<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-10-cast-ruzne-tipy-a-triky/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-10-cast-ruzne-tipy-a-triky/</a>
+</li>
+
+<li>Přenos textů mezi Vimem a dalšími aplikacemi<br />
+<a href="http://www.root.cz/clanky/prenos-textu-mezi-vimem-a-dalsimi-aplikacemi/">http://www.root.cz/clanky/prenos-textu-mezi-vimem-a-dalsimi-aplikacemi/</a>
+</li>
+
+<li>Textový editor Vim: konfigurace pravítka a stavového řádku<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-12-cast-konfigurace-pravitka-a-stavoveho-radku/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-12-cast-konfigurace-pravitka-a-stavoveho-radku/</a>
+</li>
+
+<li>Textový editor Vim: automatické formátování textů<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-14-cast-automaticke-formatovani-textu/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-14-cast-automaticke-formatovani-textu/</a>
+</li>
+
+<li>Textový editor Vim: automatické formátování textů<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-automaticke-formatovani-textu-dokonceni/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-automaticke-formatovani-textu-dokonceni/</a>
+</li>
+
+<li>Textový editor Vim: editace XML a HTML<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-15-cast-editace-xml-a-html/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-15-cast-editace-xml-a-html/</a>
+</li>
+
+<li>Textový editor Vim: kooperace mezi Vimem a skripty<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-16-cast-kooperace-mezi-vimem-a-skriptovacimi-jazyky/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-16-cast-kooperace-mezi-vimem-a-skriptovacimi-jazyky/</a>
+</li>
+
+<li>Textový editor Vim: kooperace mezi Vimem a jazykem Perl<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-17-cast-kooperace-mezi-vimem-a-jazykem-perl/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-17-cast-kooperace-mezi-vimem-a-jazykem-perl/</a>
+</li>
+
+<li>Textový editor Vim: konfigurace a překlad Vimu<br />
+<a href="http://www.root.cz/clanky/textovy-editor-vim-jako-ide-18-cast-konfigurace-a-preklad-vimu/">http://www.root.cz/clanky/textovy-editor-vim-jako-ide-18-cast-konfigurace-a-preklad-vimu/</a>
+</li>
+
+<li>Counterclockwise<br />
+<a href="http://code.google.com/p/counterclockwise/">http://code.google.com/p/counterclockwise/</a>
+</li>
+
+<li>Clojure IDEs - The Grand Tour<br />
+<a href="http://www.bestinclass.dk/index.clj/2010/03/clojure-ides-the-grand-tour-getting-started.html">http://www.bestinclass.dk/index.clj/2010/03/clojure-ides-the-grand-tour-getting-started.html</a>
+</li>
+
+<li>Light Table - a new IDE concept<br />
+<a href="http://www.chris-granger.com/2012/04/12/light-table---a-new-ide-concept/">http://www.chris-granger.com/2012/04/12/light-table---a-new-ide-concept/</a>
+</li>
+
+<li>SICP (The Structure and Interpretation of Computer Programs)<br />
+<a href="http://mitpress.mit.edu/sicp/">http://mitpress.mit.edu/sicp/</a>
+</li>
+
+<li>Pure function<br />
+<a href="http://en.wikipedia.org/wiki/Pure_function">http://en.wikipedia.org/wiki/Pure_function</a>
+</li>
+
+<li>Funkcionální programování<br />
+<a href="http://cs.wikipedia.org/wiki/Funkcionální_programování">http://cs.wikipedia.org/wiki/Funkcionální_programování</a>
+</li>
+
+<li>Čistě funkcionální (datové struktury, jazyky, programování)<br />
+<a href="http://cs.wikipedia.org/wiki/Čistě_funkcionální">http://cs.wikipedia.org/wiki/Čistě_funkcionální</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part I, Getting the Compiler to Write Your Code For You)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-i-getting.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part II: The Compiler Strikes Back)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-compiler.html</a>
+</li>
+
+<li>Clojure Macro Tutorial (Part III: Syntax Quote)<br />
+<a href="http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html">http://www.learningclojure.com/2010/09/clojure-macro-tutorial-part-ii-syntax.html</a>
+</li>
+
+<li>Tech behind Tech: Clojure Macros Simplified<br />
+<a href="http://techbehindtech.com/2010/09/28/clojure-macros-simplified/">http://techbehindtech.com/2010/09/28/clojure-macros-simplified/</a>
+</li>
+
+<li>Fatvat - Exploring functional programming: Clojure Macros<br />
+<a href="http://www.fatvat.co.uk/2009/02/clojure-macros.html">http://www.fatvat.co.uk/2009/02/clojure-macros.html</a>
+</li>
+
+<li>Eulerovo číslo<br />
+<a href="http://cs.wikipedia.org/wiki/Eulerovo_číslo">http://cs.wikipedia.org/wiki/Eulerovo_číslo</a>
+</li>
+
+<li>List comprehension<br />
+<a href="http://en.wikipedia.org/wiki/List_comprehension">http://en.wikipedia.org/wiki/List_comprehension</a>
+</li>
+
+<li>List Comprehensions in Clojure<br />
+<a href="http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html">http://asymmetrical-view.com/2008/11/18/list-comprehensions-in-clojure.html</a>
+</li>
+
+<li>Clojure Programming Concepts: List Comprehension<br />
+<a href="http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension">http://en.wikibooks.org/wiki/Clojure_Programming/Concepts#List_Comprehension</a>
+</li>
+
+<li>Clojure core API: for macro<br />
+<a href="http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for">http://clojure.github.com/clojure/clojure.core-api.html#clojure.core/for</a>
+</li>
+
+<li>cirrus machina - The Clojure for macro<br />
+<a href="http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/">http://www.cirrusmachina.com/blog/comment/the-clojure-for-macro/</a>
+</li>
+
+<li>Clojure.org: Clojure home page<br />
+<a href="http://clojure.org/downloads">http://clojure.org/downloads</a>
+</li>
+
+<li>Clojure.org: Vars and the Global Environment<br />
+<a href="http://clojure.org/Vars">http://clojure.org/Vars</a>
+</li>
+
+<li>Clojure.org: Refs and Transactions<br />
+<a href="http://clojure.org/Refs">http://clojure.org/Refs</a>
+</li>
+
+<li>Clojure.org: Atoms<br />
+<a href="http://clojure.org/Atoms">http://clojure.org/Atoms</a>
+</li>
+
+<li>Clojure.org: Agents as Asynchronous Actions<br />
+<a href="http://clojure.org/agents">http://clojure.org/agents</a>
+</li>
+
+<li>A Couple of Clojure Agent Examples<br />
+<a href="http://lethain.com/a-couple-of-clojure-agent-examples/">http://lethain.com/a-couple-of-clojure-agent-examples/</a>
+</li>
+
+<li>Clojure - Functional Programming for the JVM<br />
+<a href="http://java.ociweb.com/mark/clojure/article.html">http://java.ociweb.com/mark/clojure/article.html</a>
+</li>
+
+<li>Clojure quick reference<br />
+<a href="http://faustus.webatu.com/clj-quick-ref.html">http://faustus.webatu.com/clj-quick-ref.html</a>
+</li>
+
+<li>4Clojure<br />
+<a href="http://www.4clojure.com/">http://www.4clojure.com/</a>
+</li>
+
+<li>ClojureDoc<br />
+<a href="http://clojuredocs.org/">http://clojuredocs.org/</a>
+</li>
+
+<li>Clojure (Wikipedia EN)<br />
+<a href="http://en.wikipedia.org/wiki/Clojure">http://en.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Clojure (Wikipedia CS)<br />
+<a href="http://cs.wikipedia.org/wiki/Clojure">http://cs.wikipedia.org/wiki/Clojure</a>
+</li>
+
+<li>Riastradh's Lisp Style Rules<br />
+<a href="http://mumble.net/~campbell/scheme/style.txt">http://mumble.net/~campbell/scheme/style.txt</a>
+</li>
+
+<li>Dynamic Languages Strike Back<br />
+<a href="http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html">http://steve-yegge.blogspot.cz/2008/05/dynamic-languages-strike-back.html</a>
+</li>
+
+<li>Scripting: Higher Level Programming for the 21st Century<br />
+<a href="http://www.tcl.tk/doc/scripting.html">http://www.tcl.tk/doc/scripting.html</a>
+</li>
+
+<li>Java Virtual Machine Support for Non-Java Languages<br />
+<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html">http://docs.oracle.com/javase/7/docs/technotes/guides/vm/multiple-language-support.html</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/">http://java.sun.com/developer/technicalArticles/DynTypeLang/</a>
+</li>
+
+<li>JSR 223: Scripting for the Java<sup>TM</sup> Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=223">http://jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>JSR 292: Supporting Dynamically Typed Languages on the Java<sup>TM</sup> Platform<br />
+<a href="http://jcp.org/en/jsr/detail?id=292">http://jcp.org/en/jsr/detail?id=292</a>
+</li>
+
+<li>Java 7: A complete invokedynamic example<br />
+<a href="http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html">http://niklasschlimm.blogspot.com/2012/02/java-7-complete-invokedynamic-example.html</a>
+</li>
+
+<li>InvokeDynamic: Actually Useful?<br />
+<a href="http://blog.headius.com/2007/01/invokedynamic-actually-useful.html">http://blog.headius.com/2007/01/invokedynamic-actually-useful.html</a>
+</li>
+
+<li>A First Taste of InvokeDynamic<br />
+<a href="http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html">http://blog.headius.com/2008/09/first-taste-of-invokedynamic.html</a>
+</li>
+
+<li>Java 6 try/finally compilation without jsr/ret<br />
+<a href="http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html">http://cliffhacks.blogspot.com/2008/02/java-6-tryfinally-compilation-without.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Root.cz: Využití komprimovaných ukazatelů na objekty v&nbsp;JVM<br />
+<a href="http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/">http://www.root.cz/clanky/vyuziti-komprimovanych-ukazatelu-na-objekty-v-nbsp-jvm/</a></a>
+</li>
+
+<li>Root.cz: JamVM aneb alternativa k HotSpotu nejenom pro embedded zařízení a chytré telefony<br />
+<a href="http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/">http://www.root.cz/clanky/jamvm-aneb-alternativa-k-hotspotu-nejenom-pro-embedded-zarizeni-tablety-a-chytre-telefony/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>FindBugs<br />
+<a href="http://findbugs.sourceforge.net/">http://findbugs.sourceforge.net/</a>
+</li>
+
+<li>GNU Classpath<br />
+<a href="www.gnu.org/s/classpath/">www.gnu.org/s/classpath/</a></li>
+
+<li>Java VMs Compared<br />
+<a href="http://bugblogger.com/java-vms-compared-160/">http://bugblogger.com/java-vms-compared-160/</a>
+</li>
+
+<li>JSRs: Java Specification Requests &ndash; JSR 223: Scripting for the Java Platform<br />
+<a href="http://www.jcp.org/en/jsr/detail?id=223">http://www.jcp.org/en/jsr/detail?id=223</a>
+</li>
+
+<li>Scripting for the Java Platform<br />
+<a href="http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/">http://java.sun.com/developer/technicalArticles/J2SE/Desktop/scripting/</a>
+</li>
+
+<li>Scripting for the Java Platform (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform">http://en.wikipedia.org/wiki/Scripting_for_the_Java_Platform</a>
+</li>
+
+<li>Java Community Process<br />
+<a href="http://en.wikipedia.org/wiki/Java_Specification_Request">http://en.wikipedia.org/wiki/Java_Specification_Request</a>
+</li>
+
+<li>Java HotSpot VM Options<br />
+<a href="http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html">http://www.oracle.com/technetwork/java/javase/tech/vmoptions-jsp-140102.html</a>
+</li>
+
+<li>Great Computer Language Shootout<br />
+<a href="http://c2.com/cgi/wiki?GreatComputerLanguageShootout">http://c2.com/cgi/wiki?GreatComputerLanguageShootout</a>
+</li>
+
+<li>Java performance<br />
+<a href="http://en.wikipedia.org/wiki/Java_performance">http://en.wikipedia.org/wiki/Java_performance</a>
+</li>
+
+<li>Trying the prototype<br />
+<a href="http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html">http://mail.openjdk.java.net/pipermail/lambda-dev/2010-August/002179.html</a>
+</li>
+
+<li>Better closures (for Java)<br />
+<a href="http://blogs.sun.com/jrose/entry/better_closures">http://blogs.sun.com/jrose/entry/better_closures</a>
+</li>
+
+<li>Lambdas in Java: An In-Depth Analysis<br />
+<a href="http://www.infoq.com/articles/lambdas-java-analysis">http://www.infoq.com/articles/lambdas-java-analysis</a>
+</li>
+
+<li>Class ReflectiveOperationException<br />
+<a href="http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html">http://download.java.net/jdk7/docs/api/java/lang/ReflectiveOperationException.html</a>
+</li>
+
+<li>Scala Programming Language<br />
+<a href="http://www.scala-lang.org/">http://www.scala-lang.org/</a>
+</li>
+
+<li>Run Scala in Apache Tomcat in 10 minutes<br />
+<a href="http://www.softwaresecretweapons.com/jspwiki/run-scala-in-apache-tomcat-in-10-minutes">http://www.softwaresecretweapons.com/jspwiki/run-scala-in-apache-tomcat-in-10-minutes</a>
+</li>
+
+<li>Fast Web Development With Scala<br />
+<a href="http://chasethedevil.blogspot.cz/2007/09/fast-web-development-with-scala.html">http://chasethedevil.blogspot.cz/2007/09/fast-web-development-with-scala.html</a>
+</li>
+
+<li>Top five scripting languages on the JVM<br />
+<a href="http://www.infoworld.com/d/developer-world/top-five-scripting-languages-the-jvm-855">http://www.infoworld.com/d/developer-world/top-five-scripting-languages-the-jvm-855</a>
+</li>
+
+<li>Proposal: Indexing access syntax for Lists and Maps<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/001108.html</a>
+</li>
+
+<li>Proposal: Elvis and Other Null-Safe Operators<br />
+<a href="http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html">http://mail.openjdk.java.net/pipermail/coin-dev/2009-March/000047.html</a>
+</li>
+
+<li>Java 7 : Oracle pushes a first version of closures<br />
+<a href="http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/">http://www.baptiste-wicht.com/2010/05/oracle-pushes-a-first-version-of-closures/</a>
+</li>
+
+<li>Groovy: An agile dynamic language for the Java Platform<br />
+<a href="http://groovy.codehaus.org/Operators">http://groovy.codehaus.org/Operators</a>
+</li>
+
+<li>Better Strategies for Null Handling in Java<br />
+<a href="http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java">http://www.slideshare.net/Stephan.Schmidt/better-strategies-for-null-handling-in-java</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>Java Virtual Machine<br />
+<a href="http://en.wikipedia.org/wiki/Java_virtual_machine">http://en.wikipedia.org/wiki/Java_virtual_machine</a>
+</li>
+
+<li>==, .equals(), compareTo(), and compare()<br />
+<a href="http://leepoint.net/notes-java/data/expressions/22compareobjects.html">http://leepoint.net/notes-java/data/expressions/22compareobjects.html</a>
+</li>
+
+<li>New JDK7 features<br />
+<a href="http://openjdk.java.net/projects/jdk7/features/">http://openjdk.java.net/projects/jdk7/features/</a>
+</li>
+
+<li>Project Coin: Bringing it to a Close(able)<br />
+<a href="http://blogs.sun.com/darcy/entry/project_coin_bring_close">http://blogs.sun.com/darcy/entry/project_coin_bring_close</a>
+</li>
+
+<li>CloseableFinder source code<br />
+<a href="http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java">http://blogs.sun.com/darcy/resource/ProjectCoin/CloseableFinder.java</a>
+</li>
+
+<li>Joe Darcy blog about JDK<br />
+<a href="http://blogs.sun.com/darcy">http://blogs.sun.com/darcy</a>
+</li>
+
+<li>Java 7 - more dynamics<br />
+<a href="http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/">http://www.baptiste-wicht.com/2010/04/java-7-more-dynamics/</a>
+</li>
+
+<li>New JDK 7 Feature: Support for Dynamically Typed Languages in the Java Virtual Machine<br />
+<a href="http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html">http://java.sun.com/developer/technicalArticles/DynTypeLang/index.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
