@@ -1,0 +1,1094 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - jak efektivně jsou uložena pole a řetězce na haldě?</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - jak efektivně jsou uložena pole a řetězce na haldě?</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o jazyce Java i o vlastnostech JVM si řekneme, jak lze získat informace o polích (primitivních typů) uložených na haldě a následně se budeme zabývat způsobem uložení řetězců. Jedná se o poměrně důležité téma, jelikož způsob práce JVM s řetězci může mnohdy významným způsobem ovlivnit jak výkonnost javovských aplikací, tak i jejich paměťovou náročnost.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Dokončení předchozí části seriálu &ndash; zjištění pořadí atributu v&nbsp;rámci třídy</a></p>
+<p><a href="#k02">2. Přečtení pořadí atributu ve třídě z&nbsp;unie <strong>jvmtiHeapReferenceInfo</strong></a></p>
+<p><a href="#k03">3. Demonstrační agent číslo 23 &ndash; výpis pořadí všech atributů nalezených na haldě</a></p>
+<p><a href="#k04">4. Přečtení informací o polích primitivních datových typů uložených na haldě</a></p>
+<p><a href="#k05">5. Demonstrační agent číslo 24 &ndash; výpis informací o polích primitivních datových typů</a></p>
+<p><a href="#k06">6. Proč velikost paměti obsazené polem neodpovídá objemu paměti vyhrazené pro prvky pole?</a></p>
+<p><a href="#k07">7. Řetězce na haldě &ndash; aneb specifický typ objektů</a></p>
+<p><a href="#k08">8. Struktura objektu představujícího řetězec</a></p>
+<p><a href="#k09">9. Efektivita uložení řetězců na haldě</a></p>
+<p><a href="#k10">10. Výpočet efektivity uložení řetězců na haldě</a></p>
+<p><a href="#k11">11. Zdrojové kódy všech tří agentů a k&nbsp;nim příslušných testovacích příkladů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Dokončení předchozí části seriálu &ndash; zjištění pořadí atributu v&nbsp;rámci třídy</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> nejprve
+dokončíme téma, kterému jsme se již začali věnovat minule. Jedná se o výpis
+typů a hodnot atributů uložených na haldě. Posléze si řekneme, jakým způsobem
+je možné získat informace o polích (primitivních typů) uložených na haldě a
+následně se budeme zabývat způsobem uložení řetězců, protože se jedná o poměrně
+důležité téma, jelikož způsob práce s&nbsp;řetězci může mnohdy velmi významným
+způsobem ovlivnit jak výkonnost javovských aplikací, tak i jejich paměťovou
+náročnost. Vraťme se nejdříve ke dvěma demonstračním <i>JVM TI</i> agentům
+popsaným minule. V&nbsp;těchto agentech se používala callback funkce nazvaná
+<strong>callback_for_primitive_values()</strong>, která se volala pro všechny
+atributy objektů uložených na haldě. Přitom se jednalo o atributy, jejichž typ
+patřil mezi primitivní typy Javy &ndash; <strong>boolean</strong>,
+<strong>byte</strong>, <strong>short</strong>, <strong>int</strong>,
+<strong>long</strong>, <strong>char</strong>, <strong>float</strong> či
+<strong>double</strong>. Hlavička zmíněné callback funkce vypadá
+následovně:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdou hodnotu primitivniho datoveho typu</i>
+<i> * ulozenou na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_primitive_values</strong>(
+        jvmtiHeapReferenceKind        kind,
+        const jvmtiHeapReferenceInfo* info,
+        jlong                         object_class_tag,
+        jlong *                       object_tag_ptr,
+        jvalue                        value,
+        jvmtiPrimitiveType            value_type,
+        void *                        user_data)
+</pre>
+
+<p>Již víme, jak je možné z&nbsp;údajů předaných této callback funkci získat
+jméno příslušné třídy (jejíž instance jsou zkoumány), typ atributu i hodnotu,
+která je v&nbsp;tomto atributu uložena. Prozatím však ještě nevíme, jakým
+způsobem je možné zjistit pořadí atributu v&nbsp;rámci třídy (či její
+instance). To je další a v&nbsp;podstatě již poslední informace, kterou můžeme
+relativně snadno získat, tentokrát s&nbsp;využitím prvního parametru
+<strong>kind</strong> a především pak parametru druhého <strong>info</strong>.
+Podrobnosti si řekneme <a href="#k02">v&nbsp;navazující kapitole</a>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Přečtení pořadí atributu ve třídě z&nbsp;unie <strong>jvmtiHeapReferenceInfo</strong></h2>
+
+<p>Při volání callback funkce <strong>callback_for_primitive_values()</strong>
+je v&nbsp;prvním parametru nazvaném <strong>kind</strong> předána informace o
+tom, jaký prvek uložený na haldě je právě prozkoumáván. Datový typ parametru
+<strong>kind</strong> je <strong>jvmtiHeapReferenceKind</strong> a pohledem do
+hlavičkového souboru <strong>jvmti.h</strong> (či do dokumentace, ale zdrojový
+kód bývá často tou nejlepší dokumentací :-) lze velmi snadno zjistit, že se
+jedná o výčet s&nbsp;celkem sedmnácti deklarovanými hodnotami:</p>
+
+<pre>
+typedef enum {
+    JVMTI_HEAP_REFERENCE_CLASS = 1,
+    JVMTI_HEAP_REFERENCE_FIELD = 2,
+    JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT = 3,
+    JVMTI_HEAP_REFERENCE_CLASS_LOADER = 4,
+    JVMTI_HEAP_REFERENCE_SIGNERS = 5,
+    JVMTI_HEAP_REFERENCE_PROTECTION_DOMAIN = 6,
+    JVMTI_HEAP_REFERENCE_INTERFACE = 7,
+    JVMTI_HEAP_REFERENCE_STATIC_FIELD = 8,
+    JVMTI_HEAP_REFERENCE_CONSTANT_POOL = 9,
+    JVMTI_HEAP_REFERENCE_SUPERCLASS = 10,
+    JVMTI_HEAP_REFERENCE_JNI_GLOBAL = 21,
+    JVMTI_HEAP_REFERENCE_SYSTEM_CLASS = 22,
+    JVMTI_HEAP_REFERENCE_MONITOR = 23,
+    JVMTI_HEAP_REFERENCE_STACK_LOCAL = 24,
+    JVMTI_HEAP_REFERENCE_JNI_LOCAL = 25,
+    JVMTI_HEAP_REFERENCE_THREAD = 26,
+    JVMTI_HEAP_REFERENCE_OTHER = 27
+} jvmtiHeapReferenceKind;
+</pre>
+
+<p>Nás však v&nbsp;tento okamžik zajímají pouze hodnoty primitivních datových
+typů uložených na haldě, pro něž se při volání callback funkce v&nbsp;parametru
+<strong>kind</strong> vždy předává hodnota
+<strong>JVMTI_HEAP_REFERENCE_FIELD</strong>, čemuž ostatně odpovídá i podmínka
+zapsaná uvnitř těla callback funkce:</p>
+
+<pre>
+<i>    /* zajimaji nas pouze nestaticke atributy objektu */</i>
+    if (kind != <strong>JVMTI_HEAP_REFERENCE_FIELD</strong>) return <strong>JVMTI_VISIT_OBJECTS</strong>;
+&nbsp;
+</pre>
+
+<p>Důležitější, zajímavější a současně i poněkud komplikovanější je však druhý
+parametr naší callback funkce nazvaný <strong>info</strong>, jehož typ je
+<strong>jvmtiHeapReferenceInfo</strong>. Pro zjištění, o jaký datový typ se ve
+skutečnosti jedná, budeme muset opět prozkoumat hlavičkový soubor
+<strong>jvmti.h</strong>, z&nbsp;něhož lze vyčíst, že jde o unii, která může
+v&nbsp;daný okamžik obsahovat jednu ze šesti (ve skutečnosti však jen pěti)
+datových struktur:</p>
+
+<pre>
+union <strong>jvmtiHeapReferenceInfo</strong> {
+    jvmtiHeapReferenceInfoField field;
+    jvmtiHeapReferenceInfoArray array;
+    jvmtiHeapReferenceInfoConstantPool constant_pool;
+    jvmtiHeapReferenceInfoStackLocal stack_local;
+    jvmtiHeapReferenceInfoJniLocal jni_local;
+    jvmtiHeapReferenceInfoReserved other;
+};
+</pre>
+
+<p>Pro úplnost si uveďme deklarace všech šesti datových struktur ukládaných do
+unie, i když nás ve skutečnosti bude zajímat pouze struktura jediná &ndash;
+<strong>jvmtiHeapReferenceInfoField</strong>:</p>
+
+<pre>
+struct <strong>jvmtiHeapReferenceInfoField</strong> {
+    jint index;  <i>/* zde je uloženo pořadí atributu v rámci třídy/objektu */</i>
+};
+</pre>
+
+<pre>
+struct <strong>jvmtiHeapReferenceInfoArray</strong> {
+    jint index;
+};
+</pre>
+
+<pre>
+struct <strong>jvmtiHeapReferenceInfoConstantPool</strong> {
+    jint index;
+};
+</pre>
+
+<pre>
+struct <strong>jvmtiHeapReferenceInfoStackLocal</strong> {
+    jlong thread_tag;
+    jlong thread_id;
+    jint depth;
+    jmethodID method;
+    jlocation location;
+    jint slot;
+};
+</pre>
+
+<pre>
+struct <strong>jvmtiHeapReferenceInfoJniLocal</strong> {
+    jlong thread_tag;
+    jlong thread_id;
+    jint depth;
+    jmethodID method;
+};
+</pre>
+
+<pre>
+struct <strong>jvmtiHeapReferenceInfoReserved</strong> {
+    jlong reserved1;
+    jlong reserved2;
+    jlong reserved3;
+    jlong reserved4;
+    jlong reserved5;
+    jlong reserved6;
+    jlong reserved7;
+    jlong reserved8;
+};
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační agent číslo 23 &ndash; výpis pořadí všech atributů nalezených na haldě</h2>
+
+<p>Další postup při vylepšování demonstračního <i>JVM TI</i> agenta je již
+poměrně snadný; stačí jen vědět, že v&nbsp;případě, že je v&nbsp;prvním
+parametru callback funkce <strong>callback_for_primitive_values()</strong>
+předána hodnota <strong>JVMTI_HEAP_REFERENCE_FIELD</strong>, pak je v&nbsp;unii
+<strong>info</strong> vždy uložena datová struktura
+<strong>jvmtiHeapReferenceInfoField</strong>, v&nbsp;níž je umístěn jediný
+prvek &ndash; kýžený index atributu v&nbsp;rámci třídy či objektu (instance
+třídy). Odkaz na celý zdrojový kód nové verze demonstračního <i>JVM TI</i>
+agenta je uveden <a href="#k11">v&nbsp;jedenácté kapitole</a>, zde si pouze
+ukážeme upravenou formu callback funkce volané pro všechny hodnoty primitivních
+datových typů uložených na haldě:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdou hodnotu primitivniho datoveho typu</i>
+<i> * ulozenou na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_primitive_values</strong>(
+        jvmtiHeapReferenceKind kind,
+        const                  jvmtiHeapReferenceInfo* info,
+        jlong                  object_class_tag,
+        jlong *                object_tag_ptr,
+        jvalue                 value,
+        jvmtiPrimitiveType     value_type,
+        void *                 user_data)
+{
+    int index;
+    int size;
+    int field_no;
+    char *primitive_type_str;
+    char *class_name;
+&nbsp;
+<i>    /* struktura obsahujici podrobnejsi informace o atributu */</i>
+    jvmtiHeapReferenceInfoField *reference_info_field;
+&nbsp;
+<i>    /* zajimaji nas pouze nestaticke atributy objektu */</i>
+    if (kind != <strong>JVMTI_HEAP_REFERENCE_FIELD</strong>) return <strong>JVMTI_VISIT_OBJECTS</strong>;
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat jmeno typu jako retezec */</i>
+    primitive_type_str = get_primitive_type_str(value_type);
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat velikost v bajtech */</i>
+    size = get_primitive_type_size(value_type);
+&nbsp;
+<i>    /* ziskat poradi atributu v tride */</i>
+<i>    /* nutno pretypovat, protoze jvmtiHeapReferenceInfo je ve skutecnosti unie */</i>
+    reference_info_field = (jvmtiHeapReferenceInfoField*)info;
+    field_no = reference_info_field-&gt;index;
+&nbsp;
+<i>    /* jmeno tridy lze ziskat na zaklade tagu z globalniho pole */</i>
+    index = object_class_tag - 1;
+    class_name = class_names[index];
+&nbsp;
+<i>    /* vypiseme informace pouze pro dve testovaci tridy "Foo" a "Bar" */</i>
+    if (strcmp("Foo ", class_name)==0 || strcmp("Bar ", class_name)==0)
+    {
+        printf("Field #%2d of type %-7s in instance of class %shas size %1d byte%c and value ",
+                field_no, primitive_type_str, class_name, size, size &gt; 1 ? 's' : ' ');
+        print_value(value_type, value);
+    }
+&nbsp;
+<i>    /* spocitani statistickych informaci o obsazeni haldy */</i>
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+    heap_stat-&gt;primitive_count++;
+    heap_stat-&gt;total_size += size;
+&nbsp;
+<i>    /* pokracovat dal v prochazeni haldy */</i>
+    return <strong>JVMTI_VISIT_OBJECTS</strong>;
+}
+</pre>
+
+<p>Po překladu a spuštění tohoto demonstračního příkladu skripty uvedenými opět
+<a href="#k11">v&nbsp;jedenácté kapitole</a> získáme následující výstup:</p>
+
+<pre>
+Agent23: Agent_OnLoad
+Agent23: JVM TI version is correct
+Agent23: Got VM init event
+Agent23: Got VM Death event
+Agent23: Got data dump request
+class java.io.BufferedOutputStream  has tag 1
+class java.lang.Class$3  has tag 2
+class java.util.Enumeration  has tag 3
+class sun.misc.Version  has tag 4
+class java.util.Collections$EmptyList  has tag 5
+class sun.misc.ExtensionDependency  has tag 6
+class java.nio.HeapByteBuffer  has tag 7
+...
+...
+...
+class [Z has tag 373
+class [B has tag 374
+class [C has tag 375
+class [I has tag 376
+class [S has tag 377
+class [J has tag 378
+class [F has tag 379
+class [D has tag 380
+Field # 2 of type float   in instance of class Foo has size 4 bytes and value 3.141500
+Field # 1 of type int     in instance of class Foo has size 4 bytes and value 42
+Field # 0 of type boolean in instance of class Foo has size 1 byte  and value false
+Field # 2 of type float   in instance of class Foo has size 4 bytes and value 2.717200
+Field # 1 of type int     in instance of class Foo has size 4 bytes and value 6502
+Field # 0 of type boolean in instance of class Foo has size 1 byte  and value true
+Field # 3 of type long    in instance of class Bar has size 8 bytes and value 4
+Field # 2 of type int     in instance of class Bar has size 4 bytes and value 3
+Field # 1 of type short   in instance of class Bar has size 2 bytes and value 2
+Field # 0 of type byte    in instance of class Bar has size 1 byte  and value 1
+Field # 3 of type long    in instance of class Bar has size 8 bytes and value 4
+Field # 2 of type int     in instance of class Bar has size 4 bytes and value 3
+Field # 1 of type short   in instance of class Bar has size 2 bytes and value 2
+Field # 0 of type byte    in instance of class Bar has size 1 byte  and value 1
+Primitive values count: 5522 (fields only)
+Total size:   21422 bytes
+Agent23: Agent_OnUnload
+</pre>
+
+<p>Nyní si můžete porovnat zdrojový kód testovacích tříd <strong>Foo</strong> a
+<strong>Bar</strong> s&nbsp;informacemi vypsanými výše...</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Přečtení informací o polích primitivních datových typů uložených na haldě</h2>
+
+<p>Nyní již víme, jakým způsobem je možné vypsat všechny objekty uložené na
+haldě i všechny &bdquo;jednoduché&ldquo; atributy objektů &ndash; ať již se
+jedná o atributy objektového typu (=reference) či o atributy primitivního
+datového typu. Ovšem ještě nám zbývá si říci, jak lze získat informace o polích
+uložených na haldě a to včetně polí znaků, protože právě s&nbsp;využitím polí
+znaků (pevné délky) jsou implementovány řetězce, které hrají v&nbsp;mnoha
+typech javovských aplikací téměř klíčovou roli. Nejdříve si popíšeme způsob
+čtení informací o polích, jejichž prvky jsou primitivního datového typu,
+tj.&nbsp;polí vytvořených například takto:</p>
+
+<pre>
+byte[]    b = new byte[length];
+short[]   s = new short[length];
+int[]     i = new int[length];
+long[]    l = new long[length];
+char[]    c = new char[length];
+float[]   f = new float[length];
+double[]  d = new double[length];
+boolean[] z = new boolean[length];
+</pre>
+
+<p>Poznámka: vícerozměrná pole se v&nbsp;Javě zpracovávají jako pole polí,
+podobně jako je tomu například v&nbsp;céčku a mnoha dalších programovacích
+jazycích.</p>
+
+<p>Při průchodu poli uloženými na haldě se používá speciální forma callback
+funkce, která je ve struktuře <strong>jvmtiHeapCallbacks</strong> představována
+ukazatelem <strong>array_primitive_value_callback</strong>:</p>
+
+<pre>
+<strong>typedef struct</strong> {
+    jvmtiHeapIterationCallback        heap_iteration_callback;
+    jvmtiHeapReferenceCallback        heap_reference_callback;
+    jvmtiPrimitiveFieldCallback       primitive_field_callback;
+    jvmtiArrayPrimitiveValueCallback  array_primitive_value_callback;
+    jvmtiStringPrimitiveValueCallback string_primitive_value_callback;
+    jvmtiReservedCallback             reserved5;
+    jvmtiReservedCallback             reserved6;
+    jvmtiReservedCallback             reserved7;
+    jvmtiReservedCallback             reserved8;
+    jvmtiReservedCallback             reserved9;
+    jvmtiReservedCallback             reserved10;
+    jvmtiReservedCallback             reserved11;
+    jvmtiReservedCallback             reserved12;
+    jvmtiReservedCallback             reserved13;
+    jvmtiReservedCallback             reserved14;
+    jvmtiReservedCallback             reserved15;
+} <strong>jvmtiHeapCallbacks</strong>;
+</pre>
+
+<p>Registrace této callback funkce se provádí naprosto stejným způsobem, jako
+registrace callback funkcí volaných pro objekty i pro atributy primitivních
+datových typů; bude se však lišit počet i typ parametrů předávaných této
+callback funkci (tu si ukážeme <a href="#k05">v&nbsp;navazující kapitole</a>).
+V&nbsp;kódu níže je ukázán způsob registrace této callback funkce
+s&nbsp;následným zahájením průchodu haldou:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace callback funkce pro prochazeni heapem a zacatek prochazeni.</i>
+<i> */</i>
+static void <strong>register_heap_callback_and_run_dump</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jvmtiHeapCallbacks heap_callbacks;
+    t_heap_stat heap_stat = {0, 0, 0};
+&nbsp;
+<i>    /* naplnit strukturu heap_callbacks jednou callback funkci */</i>
+    (void)memset(&amp;heap_callbacks, 0, sizeof(heap_callbacks));
+    <strong>heap_callbacks.array_primitive_value_callback = &amp;callback_for_array_values</strong>;
+&nbsp;
+<i>    /* zahajit prochazeni haldou */</i>
+    error = (*jvmti_env)-&gt;IterateThroughHeap(jvmti_env, 0, NULL,
+            &amp;heap_callbacks, (const void *)&amp;heap_stat);
+    check_jvmti_error(jvmti_env, error, "read heap content");
+&nbsp;
+<i>    /* vypis statistiky */</i>
+    printf("Arrays count: %d\n", heap_stat.arrays_count);
+    printf("Data size:    %ld bytes\n", heap_stat.data_size);
+    printf("Total size:   %ld bytes\n", heap_stat.total_size);
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační agent číslo 24 &ndash; výpis informací o polích primitivních datových typů</h2>
+
+<p>Callback funkci zavolané při nalezení pole s&nbsp;prvky primitivního
+datového typu se předává celkem sedm parametrů, z&nbsp;nichž některé již známe
+z&nbsp;jiných typů callback funkcí, ovšem další parametry budou zcela nové:
+</p>
+
+<table>
+<tr><th>#</th><th>Typ parametru</th><th>Jméno parametru</th><th>Význam</th></tr>
+<tr><td>1</td><td>jlong </td><td>class_tag</td><td>tag přiřazený ke třídě, které je objekt instancí</td></tr>
+<tr><td>2</td><td>jlong </td><td>size</td><td>celková velikost alokovaná pro pole na haldě</td></tr>
+<tr><td>3</td><td>jlong*</td><td>tag_ptr</td><td>ukazatel na tag přiřazený k&nbsp;objektu</td></tr>
+<tr><td>4</td><td>jint  </td><td>element_count</td><td>počet prvků pole</td></tr>
+<tr><td>5</td><td>jvmtiPrimitiveType</td><td>element_type</td><td>typ hodnoty (byte, int, float...) prvků pole</td></tr>
+<tr><td>6</td><td>void*</td><td>element</td><td>obsah pole (hodnoty prvků pole)</td></tr>
+<tr><td>7</td><td>void*</td><td>user_data</td><td>ukazatel na uživatelská data (má stejný význam, jaký již známe z minula)</td></tr>
+</table>
+
+<p>Při průchodu haldou nás bude zajímat především počet prvků pole, typ prvků
+pole a velikost paměti alokované pro pole (proč je tato paměť větší, než by
+odpovídalo počtu prvků pole si řekneme v&nbsp;dalším textu):</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazde pole primitivnich</i>
+<i> * datovych typu ulozene na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_array_values</strong>(
+        jlong              class_tag, 
+        jlong              size, 
+        jlong*             tag_ptr, 
+        jint               element_count, 
+        jvmtiPrimitiveType element_type, 
+        const void*        elements, 
+        void*              user_data)
+{
+    char *primitive_type_str;
+    char *class_name;
+    int   index;
+    long  data_size;
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat jmeno typu jako retezec */</i>
+    primitive_type_str = get_primitive_type_str(element_type);
+&nbsp;
+<i>    /* jmeno tridy lze ziskat na zaklade tagu z globalniho pole */</i>
+    index = class_tag - 1;
+    class_name = class_names[index];
+&nbsp;
+<i>    /* ziskat objem zabrany jen daty, nikoli vyplni */</i>
+    data_size = element_count * get_primitive_type_size(element_type);
+&nbsp;
+<i>    /* "magicke" delky pouzite v testovaci tride */</i>
+    if (element_count == 1 || element_count == 1234 || element_count == 10000) {
+        printf("%s  %s[%d] with size %ld(%ld) bytes\n",
+            class_name, primitive_type_str, element_count, data_size, (long int)size);
+    }
+&nbsp;
+<i>    /* spocitani statistickych informaci o obsazeni haldy */</i>
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+    heap_stat-&gt;arrays_count++;
+    heap_stat-&gt;total_size += size;
+    heap_stat-&gt;data_size += data_size;
+&nbsp;
+<i>    /* pokracovat dal v prochazeni haldy */</i>
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+<p>Kompletní zdrojový kód demonstračního <i>JVM TI</i> agenta je opět uveden <a
+href="#k11">v&nbsp;kapitole číslo 11</a>.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Proč velikost paměti obsazené polem neodpovídá objemu paměti vyhrazené pro prvky pole?</h2>
+
+<p>Po spuštění demonstračního agenta číslo 24 získáme následující (poněkud
+zkrácený) výpis:</p>
+
+<pre>
+Agent24: Agent_OnLoad
+Agent24: JVM TI version is correct
+Agent24: Got VM init event
+Agent24: Got VM Death event
+Agent24: Got data dump request
+class java.io.BufferedOutputStream  has tag 1
+class java.lang.Class$3  has tag 2
+class java.util.Enumeration  has tag 3
+class sun.misc.Version  has tag 4
+class java.util.Collections$EmptyMap  has tag 5
+class sun.misc.ExtensionDependency  has tag 6
+class java.nio.HeapByteBuffer  has tag 7
+class java.util.Arrays  has tag 8
+class sun.misc.JavaIOAccess  has tag 9
+class java.util.IdentityHashMap  has tag 10
+class java.net.URLStreamHandlerFactory  has tag 11
+class Foo  has tag 12
+...
+...
+...
+class [Z has tag 372
+class [B has tag 373
+class [C has tag 374
+class [I has tag 375
+class [S has tag 376
+class [J has tag 377
+class [F has tag 378
+class [D has tag 379
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[B  byte[1] with size 1(16) bytes
+[C  char[1] with size 2(16) bytes
+[B  byte[1] with size 1(16) bytes
+[B  byte[1] with size 1(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[B  byte[1] with size 1(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[B  byte[1] with size 1(16) bytes
+[S  short[1] with size 2(16) bytes
+[I  int[1] with size 4(16) bytes
+[J  long[1] with size 8(24) bytes
+[C  char[1] with size 2(16) bytes
+[F  float[1] with size 4(16) bytes
+[D  double[1] with size 8(24) bytes
+[Z  boolean[1] with size 1(16) bytes
+[B  byte[1234] with size 1234(1248) bytes
+[S  short[1234] with size 2468(2480) bytes
+[I  int[1234] with size 4936(4952) bytes
+[J  long[1234] with size 9872(9888) bytes
+[C  char[1234] with size 2468(2480) bytes
+[F  float[1234] with size 4936(4952) bytes
+[Z  boolean[1234] with size 1234(1248) bytes
+[D  double[1234] with size 9872(9888) bytes
+[B  byte[10000] with size 10000(10016) bytes
+[S  short[10000] with size 20000(20016) bytes
+[I  int[10000] with size 40000(40016) bytes
+[J  long[10000] with size 80000(80016) bytes
+[C  char[10000] with size 20000(20016) bytes
+[F  float[10000] with size 40000(40016) bytes
+[D  double[10000] with size 80000(80016) bytes
+[Z  boolean[10000] with size 10000(10016) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+[C  char[1] with size 2(16) bytes
+Arrays count: 2494
+Data size:    610459 bytes
+Total size:   648752 bytes
+Agent24: Agent_OnUnload
+</pre>
+
+<p>Zajímavé je, že paměť alokovaná pro pole je vždy větší, než délka zjištěná
+prostým vynásobením počtu prvků pole s&nbsp;počtem bajtů pro jeden prvek.
+V&nbsp;céčku totiž skutečně platí:</p>
+
+<pre>
+alokovaná_paměť = délka_pole * sizeof(typ)
+</pre>
+
+<p>V&nbsp;Javě je však situace poněkud komplikovanější, protože pole jsou
+chápána jako objekty a tudíž se při jejich ukládání na haldu kromě vlastních
+prvků ukládají i další informace. Především se jedná o hlavičku, jejíž délka je
+většinou rovna osmi bajtům. Hlavička je používána pro identifikaci objektu,
+využívá ji správce paměti atd. atd. U 64bitových virtuálních strojů a velkých
+kapacit haldy může být hlavička i větší, setkat se lze i s&nbsp;délkou 16
+bajtů! Taktéž je nutné uložit délku pole, což je (prozatím) čtyřbajtová hodnota
+(délka pole je jeho nedílnou součástí, na rozdíl od céčka). Navíc se podle
+architektury, na níž JVM běží, na konci pole nachází výplň (<i>padding</i>) tak
+velká, aby celková velikost objektu byla dělitelná 8 či 16 bajty. To je i
+důvod, proč například jednoprvkové pole <strong>boolean[1]</strong> ve
+skutečnosti na haldě obsadí šestnáct bajtů.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Řetězce na haldě &ndash; aneb specifický typ objektů</h2>
+
+<p>Dnes se ještě budeme zabývat popisem způsobu uložení řetězců na haldě,
+získáním těchto řetězců a jejich (i když poněkud omezeným) výpisem. Připomeňme
+si, co se vlastně v&nbsp;Javě pod pojmem &bdquo;řetězec&ldquo; (string) skrývá.
+Na jednu stranu se jedná o pouhou třídu, jejíž instance lze vytvářet
+s&nbsp;využitím operátoru <strong>new</strong>, na stranu druhou však pro práci
+s&nbsp;řetězci existuje podpora v&nbsp;samotné syntaxi a sémantice tohoto
+programovacího jazyka, protože do programů je možné zapisovat řetězcové
+literály (konstantní řetězce) a navíc pro řetězce existují přetížené verze
+operátorů + a += (nikoli však již operátoru ==, což stále vede ke vzniku mnohdy
+těžko objevitelných sémantických chyb). To však není vše, protože řetězcové
+literály jsou ukládány v&nbsp;<i>constant poolu</i> (<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-2-cast-podrobnejsi-analyza-obsahu-constant-poolu">http://www.root.cz/clanky/pohled-pod-kapotu-jvm-2-cast-podrobnejsi-analyza-obsahu-constant-poolu</a>),
+takže řetězce jsou skutečně na platformě Java zpracovávány jiným způsobem, než
+další třídy a jejich instance (navíc s&nbsp;JDK7 existuje pro řetězce speciální
+forma rozeskoku <strong>switch</strong> &ndash; viz též úvodní článek tohoto
+seriálu <a
+href="http://www.root.cz/clanky/novinky-v-nbsp-jdk-7-aneb-mirny-pokrok-v-nbsp-mezich-zakona-1/">http://www.root.cz/clanky/novinky-v-nbsp-jdk-7-aneb-mirny-pokrok-v-nbsp-mezich-zakona-1/</a>).</p>
+
+<p>Z&nbsp;hlediska vývojáře je důležitý taktéž fakt, že řetězce jsou
+neměnitelné (<i>immutable</i>), což s&nbsp;sebou přináší jak některé výhody,
+tak i komplikace, především ve chvíli, kdy se mají s&nbsp;řetězci provádět
+složitější operace. Interně řetězce vypadají poměrně jednoduše, alespoň při
+prvním pohledu, protože jsou tvořeny polem <strong>char[]</strong>, což
+znamená, že každý prvek tohoto pole má velikost šestnáct bitů. Pro většinu
+abeced platí, že každý znak uložený v&nbsp;tomto poli skutečně odpovídá jednomu
+znaku dané abecedy (latinky, azbuky, alfabety ...), ovšem ve skutečnosti není
+možné v&nbsp;rozsahu 0..2<sup>16</sup> reprezentovat libovolný znak definovaný
+v&nbsp;normě Unicode. To platí pouze pro znaky s&nbsp;kódem 0x0000 až 0xFFFF,
+které se někdy označují názvem <i>Basic Multilingual Plane (BMP)</i>, které
+jsou v&nbsp;řetězci uloženy stylem jeden_znak_abecedy == 1 char. Pro znaky
+s&nbsp;vyšším kódem (až 0x10FFFF) je nutné v&nbsp;řetězci vyhradit pár hodnot
+typu <strong>char</strong>, tento pár se jmenuje <i>surrogate pair</i>.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Struktura objektu představujícího řetězec</h2>
+
+<p>V&nbsp;předchozích kapitolách jsme si řekli, že pole jsou na haldě uloženy
+takovým způsobem, že je pro ně nutné alokovat větší objem paměti, než by to
+odpovídalo počtu prvků pole vynásobeného velikostí jednoho prvku.
+V&nbsp;případě řetězců je poněkud paradoxně situace ještě horší, protože
+řetězec je na haldě představován dvěma objekty &ndash; instancí třídy
+<strong>String</strong> a instancí pole <strong>char[]</strong> &ndash; toto
+pole je sice atributem třídy <strong>String</strong>, ovšem pole jsou, jak již
+víme, chápána jako objekty, tudíž se namísto pole ukládá pouze jeho reference.
+To s&nbsp;sebou nese určitou (osobně bych řekl, že velmi velkou) režii, která
+vede k&nbsp;tomu, že řetězce používané v&nbsp;typických Javovských aplikacích
+spotřebují daleko větší množství operační paměti, než je na první pohled
+patrné.</p>
+
+<p>Nejprve se podívejme na to, jak je uložena každá instance třídy
+<strong>String</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Velikost (B)</th><th>Struktura</th><th>Popis</th></tr>
+<tr><td>1</td><td>8</td><td>HEADER</td><td>hlavička objektu (přiřazena každému objektu na haldě)</td></tr>
+<tr><td>2</td><td>4</td><td>int offset</td><td>atribut <strong>offset</strong> instance třídy String</td></tr>
+<tr><td>3</td><td>4</td><td>int count </td><td>atribut <strong>count</strong> instance třídy String</td></tr>
+<tr><td>4</td><td>4</td><td>int hash  </td><td>atribut <strong>hash</strong> instance třídy String</td></tr>
+<tr><td>5</td><td>4</td><td>char[]    </td><td>reference na pole znaků</td></tr>
+</table>
+
+<p>Celková velikost paměti pro uložení instance třídy <strong>String</strong>
+je tedy minimálně 24 bajtů, a to pouze v&nbsp;případě, že reference na objekty
+má šířku 32 bitů a nikoli 64 bitů (i to je možné v&nbsp;případě větších kapacit
+hald). Oněch 24 bajtů se označuje <i>shallow size</i> (&bdquo;mělká
+velikost&ldquo; značící, že nebereme v&nbsp;úvahu velikosti objektových
+atributů) a je stejná pro všechny instance třídy String.</p>
+
+<p>To však samozřejmě není vše, protože instance třídy <strong>String</strong>
+se pouze odkazuje na pole <strong>char[]</strong>, které je na haldě uloženo
+následovně:</p>
+
+<table>
+<tr><th>#</th><th>Velikost (B)</th><th>Struktura</th><th>Popis</th></tr>
+<tr><td>1</td><td>8</td><td>HEADER</td><td>hlavička objektu (přiřazena každému objektu na haldě)</td></tr>
+<tr><td>2</td><td>4</td><td>int length</td><td>délka pole = délka řetězce ve znacích</td></tr>
+<tr><td>3</td><td>x</td><td>length*2  </td><td>vlastní obsah řetězce</td></tr>
+<tr><td>4</td><td>0 nebo 2</td><td>PADDING</td><td>výplň, aby celková délka objektu byla dělitelná čtyřmi (někdy osmi)</td></tr>
+</table>
+
+<p>I pro pole <strong>char[]</strong>, které bude obsahovat pouze jeden znak,
+tedy bude na haldě alokována paměť o velikosti šestnácti bajtů!</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Efektivita uložení řetězců na haldě</h2>
+
+<p>Z&nbsp;textu uvedeného <a href="#k08">v&nbsp;předchozí kapitole</a> plyne,
+že uložení především kratších řetězců nemusí být vůbec efektivní
+z&nbsp;hlediska využití operační paměti. Pro úplnost si řekněme, že celková
+kapacita paměti alokovaná na haldě pro určitý objekt se nazývá <i>retained
+size</i> a v&nbsp;případě řetězců se jedná o součet <i>shallow size</i>
+s&nbsp;velikostí paměti alokované pro pole <strong>char[]</strong>, tedy:</p>
+
+<pre>
+Retained size = Shallow size + char[].HEADER + char[].length + (chars * 2 + padding)
+</pre>
+
+<p>Když si uvědomíme, že poměr mezi pamětí vyhrazenou POUZE pro vlastní obsah
+řetězce (znaky zde uložené) a hodnotou <i>retained size</i> nelineárně roste se
+zvětšující se délkou řetězce, vyjde nám, že zejména při práci s&nbsp;krátkými
+řetězci je halda využívána dosti neefektivním způsobem (jak neefektivním, si
+ukážeme <a href="#10">níže</a>). Krátké řetězce se však v&nbsp;Javovských
+aplikacích vyskytují velmi často; používají se jako klíče do hešovacích map,
+jména souborů bývají krátká, jména a příjmení lidí taktéž, nehledě na jména
+tříd a balíčků (řetězce využívané interně samotnou JVM)... Navíc se k&nbsp;tomu
+přidává fakt, že například při používání aplikací v&nbsp;anglicky mluvících
+prostředích (ale i v&nbsp;dalších zemích se základní či rozšířenou latinkou) se
+prakticky vždy využije pouze 8 bitů z&nbsp;16 bitů alokovaných na každou
+hodnotu typu <strong>char</strong>, takže je využití ve skutečnosti ještě
+poloviční oproti prostému poměru <i>chars*2/retained_size</i>.</p>
+
+<p>Mimochodem &ndash; i při spuštění toho nejjednoduššího javovského programu
+typu Hello world se na haldě vytvoří přes 900 převážně krátkých řetězců.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Výpočet efektivity uložení řetězců na haldě</h2>
+
+<p>Abychom si ukázali, že uložení krátkých řetězců na haldě je skutečně
+v&nbsp;mnoha případech dosti neefektivní, můžeme si vyzkoušet vygenerovat
+tabulku a z&nbsp;ní odvozený graf, na němž bude vykreslen poměr
+<i>chars*2/retained_size</i>, tj.&nbsp;poměr mezi počtem znaků uložených
+v&nbsp;řetězci (dvojka je zde z&nbsp;toho důvodu, že šířka datového typu
+<strong>char</strong> je v&nbsp;Javě 16 bitů). Tabulka bude vygenerována pro
+všechny délky řetězce, pro něž je efektivita uložení menší než 90% (znovu je
+důležité zopakovat, že v&nbsp;případě programů pracujících pouze s&nbsp;ASCII
+sadou je toto číslo ve skutečnosti vlastně poloviční). Program pro výpočet této
+tabulky je jednoduchý (zdrojový kód si můžete stáhnout z&nbsp;adresy
+<a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/tools/string_storage.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/tools/string_storage.c</a>):</p>
+
+<pre>
+<i>/* Vypocet efektivity ulozeni retezcu na halde. */</i>
+<i>/* Autor: Pavel Tisnovsky */</i>
+&nbsp;
+#include &lt;stdio.h&gt;
+&nbsp;
+<i>/* Hlavicka objektu ulozenych na halde */</i>
+const int <strong>HEADER_SIZE</strong> = 8;
+&nbsp;
+<i>/* Atributy kazde instance tridy String */</i>
+const int <strong>STRING_CLASS_OFFSET_FIELD</strong> = 4;
+const int <strong>STRING_CLASS_COUNT_FIELD</strong>  = 4;
+const int <strong>STRING_CLASS_HASH_FIELD</strong>   = 4;
+const int <strong>STRING_CLASS_ARRAY_REF</strong>    = 4;
+&nbsp;
+<i>/* Atribut ulozeny spolecne s kazdym polem. */</i>
+const int <strong>ARRAY_LENGTH</strong> = 4;
+&nbsp;
+int <strong>main</strong>(int argc, char **argv)
+{
+    int str_length = 0;
+    float effectivity;
+&nbsp;
+<i>    /* Hlavicka tabulky */</i>
+    printf("j_chars\tBytes\tPadding\tBytes+Padding\tShallow size\tRetained size\tEffectivity\n");
+&nbsp;
+<i>    /* Vypocet a zobrazeni efektivity ulozeni retezcu pro ruzne delky */</i>
+    <strong>do</strong> {
+<i>        /* char v Jave ma delku 2 bajty */</i>
+        int bytes = str_length &lt;&lt; 1;
+&nbsp;
+<i>        /* dorovnani delky na velikost delitelnou ctyrmi */</i>
+        int padding = (str_length % 2) &lt;&lt; 1;
+&nbsp;
+<i>        /* na zacatku je vetsinou 24 bajtu "rozsirene hlavicky" */</i>
+        int shallow_size = HEADER_SIZE
+                         + STRING_CLASS_OFFSET_FIELD
+                         + STRING_CLASS_COUNT_FIELD
+                         + STRING_CLASS_HASH_FIELD
+                         + STRING_CLASS_ARRAY_REF;
+        int retained_size = shallow_size + HEADER_SIZE + ARRAY_LENGTH + bytes + padding;
+<i>        /* 0..100 % */</i>
+        effectivity = 100.0 * bytes / retained_size;
+&nbsp;
+<i>        /* tisk jednoho radku tabulky */</i>
+        printf("%d\t%d\t%d\t%d\t%d\t%d\t%5.1f%%\n",
+                str_length, bytes, padding, bytes + padding, shallow_size, retained_size,
+                effectivity);
+        str_length++;
+    } <strong>while</strong> (effectivity &lt; 90.0);
+&nbsp;
+    <strong>return</strong> 0;
+}
+</pre>
+
+<p>Nejprve bude ukázán numerický výpis:</p>
+
+<table>
+<tr><th>j_chars</th><th>Bytes</th><th>Padding</th><th>Bytes+Padding</th><th>Shallow size</th><th>Retained size</th><th>Effectivity</th></tr>
+<tr><td>0</td><td>0</td><td>0</td><td>0</td><td>24</td><td>36</td><td> 0.0%</td></tr>
+<tr><td>1</td><td>2</td><td>2</td><td>4</td><td>24</td><td>40</td><td> 5.0%</td></tr>
+<tr><td>2</td><td>4</td><td>0</td><td>4</td><td>24</td><td>40</td><td>10.0%</td></tr>
+<tr><td>3</td><td>6</td><td>2</td><td>8</td><td>24</td><td>44</td><td>13.6%</td></tr>
+<tr><td>4</td><td>8</td><td>0</td><td>8</td><td>24</td><td>44</td><td>18.2%</td></tr>
+<tr><td>5</td><td>10</td><td>2</td><td>12</td><td>24</td><td>48</td><td>20.8%</td></tr>
+<tr><td>6</td><td>12</td><td>0</td><td>12</td><td>24</td><td>48</td><td>25.0%</td></tr>
+<tr><td>7</td><td>14</td><td>2</td><td>16</td><td>24</td><td>52</td><td>26.9%</td></tr>
+<tr><td>8</td><td>16</td><td>0</td><td>16</td><td>24</td><td>52</td><td>30.8%</td></tr>
+<tr><td>9</td><td>18</td><td>2</td><td>20</td><td>24</td><td>56</td><td>32.1%</td></tr>
+<tr><td>10</td><td>20</td><td>0</td><td>20</td><td>24</td><td>56</td><td>35.7%</td></tr>
+<tr><td>11</td><td>22</td><td>2</td><td>24</td><td>24</td><td>60</td><td>36.7%</td></tr>
+<tr><td>12</td><td>24</td><td>0</td><td>24</td><td>24</td><td>60</td><td>40.0%</td></tr>
+<tr><td>13</td><td>26</td><td>2</td><td>28</td><td>24</td><td>64</td><td>40.6%</td></tr>
+<tr><td>14</td><td>28</td><td>0</td><td>28</td><td>24</td><td>64</td><td>43.8%</td></tr>
+<tr><td>15</td><td>30</td><td>2</td><td>32</td><td>24</td><td>68</td><td>44.1%</td></tr>
+<tr><td>16</td><td>32</td><td>0</td><td>32</td><td>24</td><td>68</td><td>47.1%</td></tr>
+<tr><td>17</td><td>34</td><td>2</td><td>36</td><td>24</td><td>72</td><td>47.2%</td></tr>
+<tr><td>18</td><td>36</td><td>0</td><td>36</td><td>24</td><td>72</td><td>50.0%</td></tr>
+<tr><td>19</td><td>38</td><td>2</td><td>40</td><td>24</td><td>76</td><td>50.0%</td></tr>
+<tr><td>20</td><td>40</td><td>0</td><td>40</td><td>24</td><td>76</td><td>52.6%</td></tr>
+<tr><td>21</td><td>42</td><td>2</td><td>44</td><td>24</td><td>80</td><td>52.5%</td></tr>
+<tr><td>22</td><td>44</td><td>0</td><td>44</td><td>24</td><td>80</td><td>55.0%</td></tr>
+<tr><td>23</td><td>46</td><td>2</td><td>48</td><td>24</td><td>84</td><td>54.8%</td></tr>
+<tr><td>24</td><td>48</td><td>0</td><td>48</td><td>24</td><td>84</td><td>57.1%</td></tr>
+<tr><td>25</td><td>50</td><td>2</td><td>52</td><td>24</td><td>88</td><td>56.8%</td></tr>
+<tr><td>26</td><td>52</td><td>0</td><td>52</td><td>24</td><td>88</td><td>59.1%</td></tr>
+<tr><td>27</td><td>54</td><td>2</td><td>56</td><td>24</td><td>92</td><td>58.7%</td></tr>
+<tr><td>28</td><td>56</td><td>0</td><td>56</td><td>24</td><td>92</td><td>60.9%</td></tr>
+<tr><td>29</td><td>58</td><td>2</td><td>60</td><td>24</td><td>96</td><td>60.4%</td></tr>
+<tr><td>30</td><td>60</td><td>0</td><td>60</td><td>24</td><td>96</td><td>62.5%</td></tr>
+<tr><td>31</td><td>62</td><td>2</td><td>64</td><td>24</td><td>100</td><td>62.0%</td></tr>
+<tr><td>32</td><td>64</td><td>0</td><td>64</td><td>24</td><td>100</td><td>64.0%</td></tr>
+<tr><td>33</td><td>66</td><td>2</td><td>68</td><td>24</td><td>104</td><td>63.5%</td></tr>
+<tr><td>34</td><td>68</td><td>0</td><td>68</td><td>24</td><td>104</td><td>65.4%</td></tr>
+<tr><td>35</td><td>70</td><td>2</td><td>72</td><td>24</td><td>108</td><td>64.8%</td></tr>
+<tr><td>36</td><td>72</td><td>0</td><td>72</td><td>24</td><td>108</td><td>66.7%</td></tr>
+<tr><td>37</td><td>74</td><td>2</td><td>76</td><td>24</td><td>112</td><td>66.1%</td></tr>
+<tr><td>38</td><td>76</td><td>0</td><td>76</td><td>24</td><td>112</td><td>67.9%</td></tr>
+<tr><td>39</td><td>78</td><td>2</td><td>80</td><td>24</td><td>116</td><td>67.2%</td></tr>
+<tr><td>40</td><td>80</td><td>0</td><td>80</td><td>24</td><td>116</td><td>69.0%</td></tr>
+<tr><td>41</td><td>82</td><td>2</td><td>84</td><td>24</td><td>120</td><td>68.3%</td></tr>
+<tr><td>42</td><td>84</td><td>0</td><td>84</td><td>24</td><td>120</td><td>70.0%</td></tr>
+<tr><td>43</td><td>86</td><td>2</td><td>88</td><td>24</td><td>124</td><td>69.4%</td></tr>
+<tr><td>44</td><td>88</td><td>0</td><td>88</td><td>24</td><td>124</td><td>71.0%</td></tr>
+<tr><td>45</td><td>90</td><td>2</td><td>92</td><td>24</td><td>128</td><td>70.3%</td></tr>
+<tr><td>46</td><td>92</td><td>0</td><td>92</td><td>24</td><td>128</td><td>71.9%</td></tr>
+<tr><td>47</td><td>94</td><td>2</td><td>96</td><td>24</td><td>132</td><td>71.2%</td></tr>
+<tr><td>48</td><td>96</td><td>0</td><td>96</td><td>24</td><td>132</td><td>72.7%</td></tr>
+<tr><td>49</td><td>98</td><td>2</td><td>100</td><td>24</td><td>136</td><td>72.1%</td></tr>
+<tr><td>50</td><td>100</td><td>0</td><td>100</td><td>24</td><td>136</td><td>73.5%</td></tr>
+<tr><td>51</td><td>102</td><td>2</td><td>104</td><td>24</td><td>140</td><td>72.9%</td></tr>
+<tr><td>52</td><td>104</td><td>0</td><td>104</td><td>24</td><td>140</td><td>74.3%</td></tr>
+<tr><td>53</td><td>106</td><td>2</td><td>108</td><td>24</td><td>144</td><td>73.6%</td></tr>
+<tr><td>54</td><td>108</td><td>0</td><td>108</td><td>24</td><td>144</td><td>75.0%</td></tr>
+<tr><td>55</td><td>110</td><td>2</td><td>112</td><td>24</td><td>148</td><td>74.3%</td></tr>
+<tr><td>56</td><td>112</td><td>0</td><td>112</td><td>24</td><td>148</td><td>75.7%</td></tr>
+<tr><td>57</td><td>114</td><td>2</td><td>116</td><td>24</td><td>152</td><td>75.0%</td></tr>
+<tr><td>58</td><td>116</td><td>0</td><td>116</td><td>24</td><td>152</td><td>76.3%</td></tr>
+<tr><td>59</td><td>118</td><td>2</td><td>120</td><td>24</td><td>156</td><td>75.6%</td></tr>
+<tr><td>60</td><td>120</td><td>0</td><td>120</td><td>24</td><td>156</td><td>76.9%</td></tr>
+<tr><td>61</td><td>122</td><td>2</td><td>124</td><td>24</td><td>160</td><td>76.3%</td></tr>
+<tr><td>62</td><td>124</td><td>0</td><td>124</td><td>24</td><td>160</td><td>77.5%</td></tr>
+<tr><td>63</td><td>126</td><td>2</td><td>128</td><td>24</td><td>164</td><td>76.8%</td></tr>
+<tr><td>64</td><td>128</td><td>0</td><td>128</td><td>24</td><td>164</td><td>78.0%</td></tr>
+<tr><td>65</td><td>130</td><td>2</td><td>132</td><td>24</td><td>168</td><td>77.4%</td></tr>
+<tr><td>66</td><td>132</td><td>0</td><td>132</td><td>24</td><td>168</td><td>78.6%</td></tr>
+<tr><td>67</td><td>134</td><td>2</td><td>136</td><td>24</td><td>172</td><td>77.9%</td></tr>
+<tr><td>68</td><td>136</td><td>0</td><td>136</td><td>24</td><td>172</td><td>79.1%</td></tr>
+<tr><td>69</td><td>138</td><td>2</td><td>140</td><td>24</td><td>176</td><td>78.4%</td></tr>
+<tr><td>70</td><td>140</td><td>0</td><td>140</td><td>24</td><td>176</td><td>79.5%</td></tr>
+<tr><td>71</td><td>142</td><td>2</td><td>144</td><td>24</td><td>180</td><td>78.9%</td></tr>
+<tr><td>72</td><td>144</td><td>0</td><td>144</td><td>24</td><td>180</td><td>80.0%</td></tr>
+<tr><td>73</td><td>146</td><td>2</td><td>148</td><td>24</td><td>184</td><td>79.3%</td></tr>
+<tr><td>74</td><td>148</td><td>0</td><td>148</td><td>24</td><td>184</td><td>80.4%</td></tr>
+<tr><td>75</td><td>150</td><td>2</td><td>152</td><td>24</td><td>188</td><td>79.8%</td></tr>
+<tr><td>76</td><td>152</td><td>0</td><td>152</td><td>24</td><td>188</td><td>80.9%</td></tr>
+<tr><td>77</td><td>154</td><td>2</td><td>156</td><td>24</td><td>192</td><td>80.2%</td></tr>
+<tr><td>78</td><td>156</td><td>0</td><td>156</td><td>24</td><td>192</td><td>81.3%</td></tr>
+<tr><td>79</td><td>158</td><td>2</td><td>160</td><td>24</td><td>196</td><td>80.6%</td></tr>
+<tr><td>80</td><td>160</td><td>0</td><td>160</td><td>24</td><td>196</td><td>81.6%</td></tr>
+<tr><td>81</td><td>162</td><td>2</td><td>164</td><td>24</td><td>200</td><td>81.0%</td></tr>
+<tr><td>82</td><td>164</td><td>0</td><td>164</td><td>24</td><td>200</td><td>82.0%</td></tr>
+<tr><td>83</td><td>166</td><td>2</td><td>168</td><td>24</td><td>204</td><td>81.4%</td></tr>
+<tr><td>84</td><td>168</td><td>0</td><td>168</td><td>24</td><td>204</td><td>82.4%</td></tr>
+<tr><td>85</td><td>170</td><td>2</td><td>172</td><td>24</td><td>208</td><td>81.7%</td></tr>
+<tr><td>86</td><td>172</td><td>0</td><td>172</td><td>24</td><td>208</td><td>82.7%</td></tr>
+<tr><td>87</td><td>174</td><td>2</td><td>176</td><td>24</td><td>212</td><td>82.1%</td></tr>
+<tr><td>88</td><td>176</td><td>0</td><td>176</td><td>24</td><td>212</td><td>83.0%</td></tr>
+<tr><td>89</td><td>178</td><td>2</td><td>180</td><td>24</td><td>216</td><td>82.4%</td></tr>
+<tr><td>90</td><td>180</td><td>0</td><td>180</td><td>24</td><td>216</td><td>83.3%</td></tr>
+<tr><td>91</td><td>182</td><td>2</td><td>184</td><td>24</td><td>220</td><td>82.7%</td></tr>
+<tr><td>92</td><td>184</td><td>0</td><td>184</td><td>24</td><td>220</td><td>83.6%</td></tr>
+<tr><td>93</td><td>186</td><td>2</td><td>188</td><td>24</td><td>224</td><td>83.0%</td></tr>
+<tr><td>94</td><td>188</td><td>0</td><td>188</td><td>24</td><td>224</td><td>83.9%</td></tr>
+<tr><td>95</td><td>190</td><td>2</td><td>192</td><td>24</td><td>228</td><td>83.3%</td></tr>
+<tr><td>96</td><td>192</td><td>0</td><td>192</td><td>24</td><td>228</td><td>84.2%</td></tr>
+<tr><td>97</td><td>194</td><td>2</td><td>196</td><td>24</td><td>232</td><td>83.6%</td></tr>
+<tr><td>98</td><td>196</td><td>0</td><td>196</td><td>24</td><td>232</td><td>84.5%</td></tr>
+<tr><td>99</td><td>198</td><td>2</td><td>200</td><td>24</td><td>236</td><td>83.9%</td></tr>
+<tr><td>100</td><td>200</td><td>0</td><td>200</td><td>24</td><td>236</td><td>84.7%</td></tr>
+<tr><td>101</td><td>202</td><td>2</td><td>204</td><td>24</td><td>240</td><td>84.2%</td></tr>
+<tr><td>102</td><td>204</td><td>0</td><td>204</td><td>24</td><td>240</td><td>85.0%</td></tr>
+<tr><td>103</td><td>206</td><td>2</td><td>208</td><td>24</td><td>244</td><td>84.4%</td></tr>
+<tr><td>104</td><td>208</td><td>0</td><td>208</td><td>24</td><td>244</td><td>85.2%</td></tr>
+<tr><td>105</td><td>210</td><td>2</td><td>212</td><td>24</td><td>248</td><td>84.7%</td></tr>
+<tr><td>106</td><td>212</td><td>0</td><td>212</td><td>24</td><td>248</td><td>85.5%</td></tr>
+<tr><td>107</td><td>214</td><td>2</td><td>216</td><td>24</td><td>252</td><td>84.9%</td></tr>
+<tr><td>108</td><td>216</td><td>0</td><td>216</td><td>24</td><td>252</td><td>85.7%</td></tr>
+<tr><td>109</td><td>218</td><td>2</td><td>220</td><td>24</td><td>256</td><td>85.2%</td></tr>
+<tr><td>110</td><td>220</td><td>0</td><td>220</td><td>24</td><td>256</td><td>85.9%</td></tr>
+<tr><td>111</td><td>222</td><td>2</td><td>224</td><td>24</td><td>260</td><td>85.4%</td></tr>
+<tr><td>112</td><td>224</td><td>0</td><td>224</td><td>24</td><td>260</td><td>86.2%</td></tr>
+<tr><td>113</td><td>226</td><td>2</td><td>228</td><td>24</td><td>264</td><td>85.6%</td></tr>
+<tr><td>114</td><td>228</td><td>0</td><td>228</td><td>24</td><td>264</td><td>86.4%</td></tr>
+<tr><td>115</td><td>230</td><td>2</td><td>232</td><td>24</td><td>268</td><td>85.8%</td></tr>
+<tr><td>116</td><td>232</td><td>0</td><td>232</td><td>24</td><td>268</td><td>86.6%</td></tr>
+<tr><td>117</td><td>234</td><td>2</td><td>236</td><td>24</td><td>272</td><td>86.0%</td></tr>
+<tr><td>118</td><td>236</td><td>0</td><td>236</td><td>24</td><td>272</td><td>86.8%</td></tr>
+<tr><td>119</td><td>238</td><td>2</td><td>240</td><td>24</td><td>276</td><td>86.2%</td></tr>
+<tr><td>120</td><td>240</td><td>0</td><td>240</td><td>24</td><td>276</td><td>87.0%</td></tr>
+<tr><td>121</td><td>242</td><td>2</td><td>244</td><td>24</td><td>280</td><td>86.4%</td></tr>
+<tr><td>122</td><td>244</td><td>0</td><td>244</td><td>24</td><td>280</td><td>87.1%</td></tr>
+<tr><td>123</td><td>246</td><td>2</td><td>248</td><td>24</td><td>284</td><td>86.6%</td></tr>
+<tr><td>124</td><td>248</td><td>0</td><td>248</td><td>24</td><td>284</td><td>87.3%</td></tr>
+<tr><td>125</td><td>250</td><td>2</td><td>252</td><td>24</td><td>288</td><td>86.8%</td></tr>
+<tr><td>126</td><td>252</td><td>0</td><td>252</td><td>24</td><td>288</td><td>87.5%</td></tr>
+<tr><td>127</td><td>254</td><td>2</td><td>256</td><td>24</td><td>292</td><td>87.0%</td></tr>
+<tr><td>128</td><td>256</td><td>0</td><td>256</td><td>24</td><td>292</td><td>87.7%</td></tr>
+<tr><td>129</td><td>258</td><td>2</td><td>260</td><td>24</td><td>296</td><td>87.2%</td></tr>
+<tr><td>130</td><td>260</td><td>0</td><td>260</td><td>24</td><td>296</td><td>87.8%</td></tr>
+<tr><td>131</td><td>262</td><td>2</td><td>264</td><td>24</td><td>300</td><td>87.3%</td></tr>
+<tr><td>132</td><td>264</td><td>0</td><td>264</td><td>24</td><td>300</td><td>88.0%</td></tr>
+<tr><td>133</td><td>266</td><td>2</td><td>268</td><td>24</td><td>304</td><td>87.5%</td></tr>
+<tr><td>134</td><td>268</td><td>0</td><td>268</td><td>24</td><td>304</td><td>88.2%</td></tr>
+<tr><td>135</td><td>270</td><td>2</td><td>272</td><td>24</td><td>308</td><td>87.7%</td></tr>
+<tr><td>136</td><td>272</td><td>0</td><td>272</td><td>24</td><td>308</td><td>88.3%</td></tr>
+<tr><td>137</td><td>274</td><td>2</td><td>276</td><td>24</td><td>312</td><td>87.8%</td></tr>
+<tr><td>138</td><td>276</td><td>0</td><td>276</td><td>24</td><td>312</td><td>88.5%</td></tr>
+<tr><td>139</td><td>278</td><td>2</td><td>280</td><td>24</td><td>316</td><td>88.0%</td></tr>
+<tr><td>140</td><td>280</td><td>0</td><td>280</td><td>24</td><td>316</td><td>88.6%</td></tr>
+<tr><td>141</td><td>282</td><td>2</td><td>284</td><td>24</td><td>320</td><td>88.1%</td></tr>
+<tr><td>142</td><td>284</td><td>0</td><td>284</td><td>24</td><td>320</td><td>88.8%</td></tr>
+<tr><td>143</td><td>286</td><td>2</td><td>288</td><td>24</td><td>324</td><td>88.3%</td></tr>
+<tr><td>144</td><td>288</td><td>0</td><td>288</td><td>24</td><td>324</td><td>88.9%</td></tr>
+<tr><td>145</td><td>290</td><td>2</td><td>292</td><td>24</td><td>328</td><td>88.4%</td></tr>
+<tr><td>146</td><td>292</td><td>0</td><td>292</td><td>24</td><td>328</td><td>89.0%</td></tr>
+<tr><td>147</td><td>294</td><td>2</td><td>296</td><td>24</td><td>332</td><td>88.6%</td></tr>
+<tr><td>148</td><td>296</td><td>0</td><td>296</td><td>24</td><td>332</td><td>89.2%</td></tr>
+<tr><td>149</td><td>298</td><td>2</td><td>300</td><td>24</td><td>336</td><td>88.7%</td></tr>
+<tr><td>150</td><td>300</td><td>0</td><td>300</td><td>24</td><td>336</td><td>89.3%</td></tr>
+<tr><td>151</td><td>302</td><td>2</td><td>304</td><td>24</td><td>340</td><td>88.8%</td></tr>
+<tr><td>152</td><td>304</td><td>0</td><td>304</td><td>24</td><td>340</td><td>89.4%</td></tr>
+<tr><td>153</td><td>306</td><td>2</td><td>308</td><td>24</td><td>344</td><td>89.0%</td></tr>
+<tr><td>154</td><td>308</td><td>0</td><td>308</td><td>24</td><td>344</td><td>89.5%</td></tr>
+<tr><td>155</td><td>310</td><td>2</td><td>312</td><td>24</td><td>348</td><td>89.1%</td></tr>
+<tr><td>156</td><td>312</td><td>0</td><td>312</td><td>24</td><td>348</td><td>89.7%</td></tr>
+<tr><td>157</td><td>314</td><td>2</td><td>316</td><td>24</td><td>352</td><td>89.2%</td></tr>
+<tr><td>158</td><td>316</td><td>0</td><td>316</td><td>24</td><td>352</td><td>89.8%</td></tr>
+<tr><td>159</td><td>318</td><td>2</td><td>320</td><td>24</td><td>356</td><td>89.3%</td></tr>
+<tr><td>160</td><td>320</td><td>0</td><td>320</td><td>24</td><td>356</td><td>89.9%</td></tr>
+<tr><td>161</td><td>322</td><td>2</td><td>324</td><td>24</td><td>360</td><td>89.4%</td></tr>
+<tr><td>162</td><td>324</td><td>0</td><td>324</td><td>24</td><td>360</td><td>90.0%</td></tr>
+</table>
+
+<p>Zajímavější je však graf, který ukazuje (pravá Y-ová osa a průběh vykreslený
+hnědou barvou), jak efektivita uložení nelineárně roste a teprve pro řetězce o
+délce 161 znaků překračuje 90% (z&nbsp;360 alokovaných bajtů se 324 bajtů
+použije pro uložení znaků, zbytek je vlastně režie).</p>
+
+<img src="http://i.iinfo.cz/images/376/java-string-storage-efficiency.png" alt="string_storage_graph" />
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Zdrojové kódy všech tří agentů a k&nbsp;nim příslušných testovacích příkladů</h2>
+
+<p>Podobně jako ve čtyřech předcházejících částech tohoto seriálu byly i dnešní
+tři demonstrační příklady kvůli snazšímu udržování všech zdrojových kódů
+uloženy do Mercurial repositáře, který je dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze dnes popisovaných <i>JVM TI</i> agentů i dalších
+potřebných skriptů a testovacích javovských tříd jsou dostupné na následujících
+adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad/podpůrný soubor</th><th>Umístění</th></tr>
+<tr><td>Agent #23          </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/agent23.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/agent23.c</a></td></tr>
+<tr><td>Skript pro překlad </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/test.sh</a></td></tr>
+<tr><td>Testovací třída    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/Test23.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent23/Test23.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Agent #24          </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/agent24.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/agent24.c</a></td></tr>
+<tr><td>Skript pro překlad </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/test.sh</a></td></tr>
+<tr><td>Testovací třída    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/Test24.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/jvmti-agents/agent24/Test24.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Výpočet efektivity uložení řetězců</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/tools/string_storage.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f61c1eead131/tools/string_storage.c</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
