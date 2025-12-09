@@ -1,0 +1,1028 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - průchod objekty uloženými na haldě (heapu)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - průchod objekty uloženými na haldě (heapu)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM se seznámíme se způsobem práce s objekty uloženými na haldě s využitím rozhraní JVM TI. Agenti připojení k virtuálnímu stroji Javy přes JVM TI totiž poměrně často potřebují nějaké údaje (instance určitých tříd) z haldy přečíst a následně zpracovat.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - průchod objekty uloženými na haldě (heapu)</a></p>
+<p><a href="#k02">2. Callback funkce volané při průchodu haldou</a></p>
+<p><a href="#k03">3. Osmnáctý demonstrační příklad &ndash; průchod všemi objekty uloženými na haldě</a></p>
+<p><a href="#k04">4. Uživatelská data přenášená do callback funkce při průchodu objekty uloženými na hladě</a></p>
+<p><a href="#k05">5. Devatenáctý demonstrační příklad &ndash; výpis souhrnných informací o obsazení haldy (počet objektů a jejich velikost)</a></p>
+<p><a href="#k06">6. Přidání tagů ke třídám</a></p>
+<p><a href="#k07">7. Použití tagů při přiřazování objektů k&nbsp;jejich třídám</a></p>
+<p><a href="#k08">8. Dvacátý demonstrační příklad &ndash; výpis všech objektů na haldě včetně jména příslušné třídy</a></p>
+<p><a href="#k09">9. Zdrojové kódy všech tří demonstračních příkladů</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - průchod objekty uloženými na haldě (heapu)</h2>
+
+<p>V&nbsp;dnešní &ndash; již 59.části &ndash; <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> si na
+třech demonstračních příkladech ukážeme, jakým způsobem je možné
+s&nbsp;využitím agentů komunikujících s&nbsp;JVM přes rozhraní <i>JVM TI</i>
+procházet všemi objekty uloženými na haldě (<i>heap</i>) a získat i další
+informace o těchto objektech, především pak třídu, z&nbsp;níž je objekt uložený
+na haldě vytvořen. V&nbsp;rozhraní <i>JVM TI</i> je možné pro zahájení průchodu
+všemi objekty na haldě využít funkci nazvanou
+<strong>IterateThroughHeap()</strong>. Při volání této funkce se jí
+mj.&nbsp;předá i datová struktura obsahující ukazatele na callback funkce
+volané pro jednotlivé objekty nalezené na haldě; v&nbsp;současné verzi rozhraní
+<i>JVM TI</i> se jedná o pětici callback funkcí, zbytek datové struktury není
+využit.</p>
+
+<p>Důležité je, že haldou (<i>heapem</i>) je možné procházet nepřímo právě
+s&nbsp;využitím <strong>IterateThroughHeap()</strong> a na ni navázaných
+callback funkcí, protože již minule jsme si řekli, že v&nbsp;rozhraní <i>JVM
+TI</i> nejsou k&nbsp;dispozici žádné funkce, které by dokázaly přímo vrátit
+seznam objektů vyfiltrovaný na základě nějaké podmínky. Pokud tedy programátor
+potřebuje zjistit informace o určitých typech objektů na haldě, musí si sám
+implementovat a následně zaregistrovat příslušné callback funkce, kterým se
+budou tyto informace předávat. Hlavička funkce
+<strong>IterateThroughHeap()</strong> vypadá následovně:</p>
+
+<pre>
+jvmtiError <strong>IterateThroughHeap</strong>(
+            jvmtiEnv* env,
+            jint      heap_filter,
+            jclass    klass,
+            const jvmtiHeapCallbacks* callbacks,
+            const void* user_data)
+</pre>
+
+<p>Význam prvního parametru této funkce je zřejmý, protože je v&nbsp;něm
+přenesena (přesněji řečeno pouze odkázána) struktura obsahující aktuální
+prostředí <i>JVM TI</i>. Zajímavější je druhý parametr, přes který je možné
+specifikovat základní filtr, který určuje, pro které typy objektů se budou
+callback funkce volat. Využít je možné následující hodnoty, popř.&nbsp;jejich
+bitové kombinace spojené přes operátor + nebo |:</p>
+
+<table>
+<tr><th>Konstanta</th><th>Hodnota</th><th>Význam</th></tr>
+<tr><td>JVMTI_HEAP_FILTER_TAGGED        </td><td>0x04</td><td>objekty s&nbsp;přiřazeným tagem jsou odfiltrovány</td></tr>
+<tr><td>JVMTI_HEAP_FILTER_UNTAGGED      </td><td>0x08</td><td>objekty bez tagu jsou odfiltrovány</td></tr>
+<tr><td>JVMTI_HEAP_FILTER_CLASS_TAGGED  </td><td>0x10</td><td>objekty, jejichž třídy mají přiřazeny tag jsou odfiltrovány</td></tr>
+<tr><td>JVMTI_HEAP_FILTER_CLASS_UNTAGGED</td><td>0x20</td><td>přesný opak předchozí konstanty</td></tr>
+</table>
+
+<p>Označením <i>tag</i> je zde myšlen celočíselný údaj rozdílný od nuly, kterým
+mohou být objekty &bdquo;označkovány&ldquo;, a to opět pomocí rozhraní <i>JVM
+TI</i>. Tagy mají při procházení haldou poměrně velký význam a seznámíme se
+s&nbsp;nimi <a href="#k06">v&nbsp;šesté kapitole</a>.</p>
+
+<p>Ve třetím parametru lze předat buď hodnotu <strong>NULL</strong>
+popř.&nbsp;identifikátor třídy, který je opět použit pro filtraci. To například
+znamená, že pokud nás zajímají informace pouze o instancích třídy
+<strong>org.foo.bar.Baz</strong>, lze toho velmi jednoduše docílit, aniž by se
+musela procházet celá halda, resp.&nbsp; aniž by byla příslušná callback funkce
+volána pro všechny instance ostatních tříd.</p>
+
+<p>Čtvrtým parametrem je ukazatel na datovou strukturu nazvanou
+<strong>jvmtiHeapCallbacks</strong>. Právě do této struktury může programátor
+uložit odkazy na callback funkce. Struktura sice teoreticky pojme šestnáct
+ukazatelů na callback funkce, ovšem využito je v&nbsp;současnosti jen pět
+prvních ukazatelů a i libovolný z&nbsp;těchto ukazatelů může mít hodnotu
+<strong>NULL</strong>:</p>
+
+<pre>
+<strong>typedef struct</strong> {
+    jvmtiHeapIterationCallback        heap_iteration_callback;
+    jvmtiHeapReferenceCallback        heap_reference_callback;
+    jvmtiPrimitiveFieldCallback       primitive_field_callback;
+    jvmtiArrayPrimitiveValueCallback  array_primitive_value_callback;
+    jvmtiStringPrimitiveValueCallback string_primitive_value_callback;
+    jvmtiReservedCallback             reserved5;
+    jvmtiReservedCallback             reserved6;
+    jvmtiReservedCallback             reserved7;
+    jvmtiReservedCallback             reserved8;
+    jvmtiReservedCallback             reserved9;
+    jvmtiReservedCallback             reserved10;
+    jvmtiReservedCallback             reserved11;
+    jvmtiReservedCallback             reserved12;
+    jvmtiReservedCallback             reserved13;
+    jvmtiReservedCallback             reserved14;
+    jvmtiReservedCallback             reserved15;
+} <strong>jvmtiHeapCallbacks</strong>;
+</pre>
+
+<p>Význam pěti ukazatelů na callback funkce je následující:</p>
+
+<table>
+<tr><th>#</th><th>Typ</th><th>Název</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmtiHeapIterationCallback       </td><td>heap_iteration_callback        </td><td>voláno pro běžné objekty</td></tr>
+<tr><td>2</td><td>jvmtiHeapReferenceCallback       </td><td>heap_reference_callback        </td><td>voláni pro reference na objekty</td></tr>
+<tr><td>3</td><td>jvmtiPrimitiveFieldCallback      </td><td>primitive_field_callback       </td><td>voláno pro atributy primitivního datového typu</td></tr>
+<tr><td>4</td><td>jvmtiArrayPrimitiveValueCallback </td><td>array_primitive_value_callback </td><td>voláno pro pole primitivních datových typů</td></tr>
+<tr><td>5</td><td>jvmtiStringPrimitiveValueCallback</td><td>string_primitive_value_callback</td><td>voláno pro řetězce</td></tr>
+</table>
+
+<p>V&nbsp;pátém parametru se předává buď hodnota NULL nebo ukazatel na
+uživatelská data, například na pole či na nějakou datovou strukturu. Tato
+uživatelská data jsou při volání zaregistrovaných callback funkcí těmto funkcím
+jednoduše předána. Příklad použití uživatelských dat si ukážeme <a
+href="#k04">ve čtvrté</a> a <a href="#k05">v&nbsp;páté kapitole</a>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Callback funkce volané při průchodu haldou</h2>
+
+<p>V&nbsp;datové struktuře <strong>jvmtiHeapIterationCallback</strong> popsané
+<a href="#k01">v&nbsp;předchozí kapitole</a> je první položka určena pro
+uložení ukazatele na callback funkci označenou
+<strong>heap_iteration_callback</strong>. S&nbsp;velkou pravděpodobností se
+jedná o nejčastěji používanou callback funkci, která může být zavolána pro
+všechny &bdquo;běžné&ldquo; objekty uložené na haldě, tj.&nbsp;jak pro instance
+tříd, tak i pro pole objektů o libovolné dimenzi, protože tato pole jsou
+v&nbsp;Javě považována taktéž za běžné objekty. Hlavička callback funkce, jejíž
+ukazatel může být uložen do položky
+<strong>jvmtiHeapIterationCallback.heap_iteration_callback</strong>, musí
+vypadat následovně:</p>
+
+<pre>
+jint <strong>jvmtiHeapIterationCallback</strong> (
+        jlong  class_tag, 
+        jlong  size, 
+        jlong* tag_ptr, 
+        jint   length, 
+        void*  user_data);
+</pre>
+
+<p>V&nbsp;tabulce níže je vypsán význam všech pěti parametrů této callback
+funkce, které jsou správně naplněny při jejím zavolání:</p>
+
+<table>
+<tr><th>#</th><th>Jméno</th><th>Typ</th><th>Popis</th></tr>
+<tr><td>1</td><td>class_tag</td><td>jlong </td><td>tag přiřazený ke třídě, popř.&nbsp;nula, pokud ke třídě není žádný tag přiřazen</td></tr>
+<tr><td>2</td><td>size     </td><td>jlong </td><td>velikost objektu uvedená v&nbsp;bajtech</td></tr>
+<tr><td>3</td><td>tag_ptr  </td><td>jlong*</td><td>tag přiřazený k&nbsp;objektu, popř.&nbsp;nula, pokud objektu žádný tak nebyl přiřazen</td></tr>
+<tr><td>4</td><td>length   </td><td>jint  </td><td>délka pole (pokud je objektem pole), jinak by zde měla být předána hodnota -1</td></tr>
+<tr><td>5</td><td>user_data</td><td>void* </td><td>uživatelská data předávaná této callback funkci</td></tr>
+</table>
+
+<p>Důležitá je i návratová hodnota této callback funkce, a to z&nbsp;toho
+důvodu, že s&nbsp;využitím návratové hodnoty je možné do určité míry ovlivňovat
+průchod haldou. Pokud se vrací hodnota <strong>JVMTI_VISIT_OBJECTS</strong>,
+znamená to, že se má pokračovat v&nbsp;dalším procházení haldou, pokud se však
+vrátí hodnota <strong>JVMTI_VISIT_ABORT</strong>, je procházení zastaveno. Ve
+skutečnosti jsou sice možné i další kombinace návratových hodnot callback
+funkcí, ty se však využijí zejména v&nbsp;případech, kdy se prochází pouze
+referencemi (to si ukážeme příště):</p>
+
+<table>
+<tr><th>#</th><th>Konstanta</th><th>Hodnota konstanty</th><th>Význam</th></tr>
+<tr><td>1</td><td>JVMTI_VISIT_OBJECTS</td><td>0x0100</td><td>pokračovat v průchodu haldou</td></tr>
+<tr><td>2</td><td>JVMTI_VISIT_ABORT  </td><td>0x8000</td><td>ukončení průchodu haldou</td></tr>
+</table>
+
+<p>První verze callback funkce, kterou využijeme v&nbsp;osmnáctém demonstračním
+příkladu, bude velmi jednoduchá, protože bude pouze vypisovat <i>tag</i>
+přiřazený ke třídě a taktéž velikost haldy alokovanou pro daný objekt.
+<i>Tag</i> bude mít vždy hodnotu nula, protože jsme (alespoň prozatím)
+neprovedli jeho explicitní přenastavení:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdy objekt "navstiveny" na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_heap_object</strong>(
+        jlong  class_tag,
+        jlong  size,
+        jlong* tag_ptr,
+        jint   length,
+        void*  user_data)
+{
+    printf("instance of class with tag #%ld of size %ld\n", (long int)class_tag, (long int)size);
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Osmnáctý demonstrační příklad &ndash; průchod všemi objekty uloženými na haldě</h2>
+
+<p>Zdrojový kód osmnáctého demonstračního příkladu vychází z&nbsp;příkladů
+popsaných v&nbsp;předchozích částech tohoto seriálu, proto si zde uvedeme pouze
+úpravy provedené v&nbsp;některých funkcích (úplné zdrojové kódy najdete <a
+href="#k09">v&nbsp;deváté kapitole</a>). V&nbsp;pomocné funkci
+<strong>set_capabilities()</strong> nastavíme požadavek na možnost nastavovat
+<i>tagy</i> pro třídy a objekty (ve skutečnosti tuto možnost využijeme až
+v&nbsp;dalších příkladech). Musíme mít na paměti, že možnost nastavovat
+<i>tagy</i> nemusí být implementována všemi virtuálními stroji Javy, ovšem
+v&nbsp;případě OpenJDK a Oracle JDK je tuto technologii možné využít. Žádné
+další požadavky nastavovány nebudou, protože na rozdíl od některých předchozích
+příkladů nepotřebujeme detekovat výjimky ani zjišťovat čísla řádků:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+<i>    /* vyuzivame pouze jednu specialni schopnost agenta */</i>
+    capabilities.can_tag_objects = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+</pre>
+
+<p>Dále v&nbsp;<i>JVM TI</i> agentovi zaregistrujeme tři callback funkce volané
+samotným virtuálním strojem Javy (tyto callback funkce samozřejmě nemají nic
+společného s&nbsp;callback funkcí volanou při procházení haldou). První dvě
+callback funkce již dokonale známe &ndash; jsou volány při spuštění a naopak
+při ukončování činnosti JVM. Poslední callback funkce je nová a je zavolána ve
+chvíli, kdy přijde systémový požadavek na přečtení dat &ndash; typicky se jedná
+o reakci na ukončení javovského procesu z&nbsp;klávesnice atd. (tímto způsobem
+si tedy můžeme vynutit výpis haldy kdykoli za běhu JVM):</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace tri callback funkci zavolanych virtualnim strojem Javy.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+<i>    /* JVMTI_EVENT_VM_INIT */</i>
+    callbacks.VMInit = &amp;callback_on_vm_init;
+&nbsp;
+<i>    /* JVMTI_EVENT_VM_DEATH */</i>
+    callbacks.VMDeath = &amp;callback_on_vm_death;
+&nbsp;
+<i>    /* JVMTI_EVENT_DATA_DUMP_REQUEST */</i>
+    callbacks.DataDumpRequest = &amp;callback_on_data_dump_request;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+</pre>
+
+<p>Obsah haldy bude naším demonstračním <i>JVM TI</i> agentem (pro větší
+jednoduchost implementace) vypsán automaticky ve chvíli, kdy má dojít
+k&nbsp;ukončení činnosti virtuálního stroje Javy. To znamená, že musíme
+v&nbsp;callback funkci <strong>callback_on_vm_death()</strong> nejprve zakázat
+reakci na příkaz o ukončení JVM z&nbsp;klávesnice a poté provést vlastní výpis
+haldy. Důvod, proč je reakce na příkaz o ukončení JVM zakázána je prostý
+&ndash; nechceme, aby se halda vypsala několikrát. Taktéž si povšimněte, že
+celý výpis haldy je umístěn do kritické sekce, což je ostatně vyžadováno i
+rozhraním <i>JVM TI</i>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri ukonceni cinnosti virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_vm_death</strong>(jvmtiEnv *jvmti_env, JNIEnv* env)
+{
+    MSG("Got VM Death event");
+&nbsp;
+<i>    /* veskere operace se budou provadet v kriticke sekci */</i>
+    enter_critical_section(jvmti_env);
+&nbsp;
+<i>    /* jen pro jistotu zakazeme notifikaci */</i>
+    (*jvmti_env)-&gt;SetEventNotificationMode(jvmti_env, JVMTI_DISABLE, JVMTI_EVENT_DATA_DUMP_REQUEST, NULL);
+&nbsp;
+<i>    /* data request */</i>
+    callback_on_data_dump_request(jvmti_env);
+&nbsp;
+<i>    /* a vystup z kriticke sekce */</i>
+    exit_critical_section(jvmti_env);
+}
+</pre>
+
+<p>Přípravné práce jsou dokončeny, nyní nám již zbývá si ukázat, jak vypadá
+callback funkce <strong>callback_on_data_dump_request()</strong>. Ta je ve
+skutečnosti velmi jednoduchá:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri cteni informaci z haldy.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_data_dump_request</strong>(jvmtiEnv *jvmti_env)
+{
+    MSG("Got data dump request");
+    register_heap_callback_and_run_dump(jvmti_env);
+}
+</pre>
+
+<p>Vidíme, že se z&nbsp;této callback funkce pouze volá další pomocná funkce,
+která zahájí vlastní proces výpisu haldy &ndash; konkrétně zaregistruje
+příslušnou callback funkci přes datovou strukturu <strong>jvmtiHeapCallbacks
+</strong>a nakonec zavolá <strong>IterateThroughHeap()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace callback funkce pro prochazeni heapem a zacatek prochazeni.</i>
+<i> */</i>
+static void <strong>register_heap_callback_and_run_dump</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jvmtiHeapCallbacks heap_callbacks;
+&nbsp;
+<i>    /* naplnit strukturu heap_callbacks jednou callback funkci */</i>
+    (void)memset(&amp;heap_callbacks, 0, sizeof(heap_callbacks));
+    heap_callbacks.heap_iteration_callback = &amp;callback_for_heap_object;
+&nbsp;
+<i>    /* zahajit prochazeni haldou */</i>
+    error = (*jvmti_env)-&gt;IterateThroughHeap(jvmti_env, 0, NULL,
+            &amp;heap_callbacks, NULL);
+    check_jvmti_error(jvmti_env, error, "read heap content");
+}
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že prozatím nemáme možnost si vypsat jména tříd pro
+všechny objekty uložené na haldě, je vcelku jedno, jak bude vypadat
+demonstrační javovská třída. Použijeme tedy kód využitý i dalšími agenty:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test osmnacteho</i>
+<i>  * demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class Test18 {
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void main(String[] args) {
+        int[]     intArray = new int[1000];
+        float[][] floatMatrix = new float[100][100];
+        String    hello = "Hello" + ' ' + "world" + '!';
+        Object    x = new Test18();
+    }
+}
+</pre>
+
+<p>Výstup bude poměrně zajímavý, protože se ukazuje, že i JVM spuštěná pro tak
+jednoduchý příklad bude mít na haldě uloženo přes pět tisíc objektů! Samozřejmě
+se jedná především o objekty využívané interně virtuálním strojem:</p>
+
+<pre>
+Agent18: Agent_OnLoad
+Agent18: JVM TI version is correct
+Agent18: Got VM init event
+Agent18: Got VM Death event
+Agent18: Got data dump request
+instance of class with tag #0 of size 16
+instance of class with tag #0 of size 24
+instance of class with tag #0 of size 48
+instance of class with tag #0 of size 24
+...
+...
+... cca 5000(!) řádků
+...
+...
+instance of class with tag #0 of size 32
+instance of class with tag #0 of size 640
+instance of class with tag #0 of size 32
+instance of class with tag #0 of size 96
+instance of class with tag #0 of size 32
+instance of class with tag #0 of size 464
+instance of class with tag #0 of size 40
+Agent18: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Uživatelská data přenášená do callback funkce při průchodu objekty uloženými na hladě</h2>
+
+<p>V&nbsp;předchozích kapitolách jsme si řekli, že při volání <i>JVM TI</i>
+funkce <strong>IterateThroughHeap()</strong> je možné v&nbsp;pátém parametru
+této funkce předat ukazatel na &bdquo;nějaká&ldquo; uživatelská data
+s&nbsp;tím, že tento ukazatel bude předáván do callback funkce volané pro každý
+objekt umístěný na heapu. Pokud se do tohoto parametru předá pouze hodnota
+<strong>NULL</strong> (což je ostatně zcela legální), bude prostě tato hodnota
+jednoduše předávána i do callback funkce:</p>
+
+<pre>
+jvmtiError <strong>IterateThroughHeap</strong>(
+            jvmtiEnv* env,
+            jint      heap_filter,
+            jclass    klass,
+            const jvmtiHeapCallbacks* callbacks,
+            const void* user_data)
+</pre>
+
+<p>Při pohledu na naši implementaci funkce
+<strong>callback_for_heap_object()</strong> je patrné, že se tento ukazatel
+prozatím nijak nevyužívá:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdy objekt "navstiveny" na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_heap_object</strong>(
+        jlong  class_tag,
+        jlong  size,
+        jlong* tag_ptr,
+        jint   length,
+        void*  user_data)
+{
+    printf("instance of class with tag #%ld of size %ld\n", (long int)class_tag, (long int)size);
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+<p>Ovšem hned <a href="#k05">v&nbsp;navazující kapitole</a> si ukážeme, jak
+tento ukazatel využít &ndash; bude se jednat o příklad, který taktéž vypíše
+zjednodušený obsah haldy, ale navíc ještě spočítá celkový počet těchto objektů
+a počet alokovaných bajtů pro tyto objekty.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Devatenáctý demonstrační příklad &ndash; výpis souhrnných informací o obsazení haldy (počet objektů a jejich velikost)</h2>
+
+<p>Devatenáctý demonstrační <i>JVM TI</i> agent se od předchozího
+demonstračního agenta liší pouze minimálně, takže si opět uvedeme pouze nové či
+pozměněné části s&nbsp;tím, že úplné zdrojové texty jsou uvedeny <a
+href="#k09">v&nbsp;deváté kapitole</a>. Nejprve je přidána definice velmi
+jednoduché datové struktury, do níž se budou zaznamenávat počty objektů a
+jejich celková velikost na haldě. Tato struktura je umístěna na začátku celého
+programu (jak je ostatně v&nbsp;céčkových programech zvykem):</p>
+
+<pre>
+<i>/* Definice struktura se zakladnimi informacemi o objektech na halde */</i>
+typedef struct
+{
+    int  object_count;
+    long total_size;
+} t_heap_stat;
+</pre>
+
+<p>Dále došlo ke změně callback funkce volané pro každý objekt umístěný na
+haldě. Povšimněte si, že nyní předpokládáme, že se v&nbsp;parametru
+<strong>user_data</strong> bude předávat ukazatel na výše popsanou datovou
+strukturu <strong>t_heap_stat</strong>, takže je nejprve provedeno přetypování
+původního ukazatele <strong>void*</strong> na <strong>t_heap_stat*</strong> a
+posléze se pozmění hodnota obou prvků uložených v&nbsp;této struktuře &ndash;
+počet objektů a počet alokovaných bajtů:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdy objekt "navstiveny" na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_heap_object</strong>(jlong class_tag, jlong size, jlong* tag_ptr,
+        jint length, void* user_data)
+{
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+&nbsp;
+    heap_stat-&gt;object_count++;
+    heap_stat-&gt;total_size += size;
+    printf("instance of class with tag #%ld of size %ld\n", (long int)class_tag, (long int)size);
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+<p>Poslední změna byla provedena ve funkci
+<strong>register_heap_callback_and_run_dump()</strong>, kde je nejprve na
+zásobníku vytvořena lokální datová struktura <strong>t_heap_stat</strong> a
+posléze je ukazatel na tuto strukturu předán do funkce
+<strong>IterateThroughHeap()</strong>. Až tato funkce skončí, tj.&nbsp;až se
+zavolají všechny callback funkce při průchodu haldou, vypíše se na standardní
+výstup počet všech objektů na haldě i počet bajtů alokovaných na haldě:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace callback funkce pro prochazeni heapem a zacatek prochazeni.</i>
+<i> */</i>
+static void <strong>register_heap_callback_and_run_dump</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jvmtiHeapCallbacks heap_callbacks;
+    t_heap_stat heap_stat = {0,0};
+&nbsp;
+<i>    /* naplnit strukturu heap_callbacks jednou callback funkci */</i>
+    (void)memset(&amp;heap_callbacks, 0, sizeof(heap_callbacks));
+    heap_callbacks.heap_iteration_callback = &amp;callback_for_heap_object;
+&nbsp;
+<i>    /* zahajit prochazeni haldou */</i>
+    error = (*jvmti_env)-&gt;IterateThroughHeap(jvmti_env, 0, NULL,
+            &amp;heap_callbacks, (const void *)&amp;heap_stat);
+    check_jvmti_error(jvmti_env, error, "read heap content");
+&nbsp;
+<i>    /* vypis statistiky */</i>
+    printf("Object count: %d\n", heap_stat.object_count);
+    printf("Total size:   %ld bytes\n", heap_stat.total_size);
+}
+</pre>
+
+<p>A jak bude vypadat výstup tohoto demonstračního příkladu? Opět se nejprve
+vypíšou základní informace o všech objektech umístěných na haldě (jejich tagy
+by měly být nulové) a navíc se na konci vypíše krátká statistika o využití
+haldy:</p>
+
+<pre>
+Agent19: Agent_OnLoad
+Agent19: JVM TI version is correct
+Agent19: Got VM init event
+Agent19: Got VM Death event
+Agent19: Got data dump request
+instance of class with tag #0 of size 16
+instance of class with tag #0 of size 24
+instance of class with tag #0 of size 48
+instance of class with tag #0 of size 24
+instance of class with tag #0 of size 40
+instance of class with tag #0 of size 24
+instance of class with tag #0 of size 88
+...
+...
+... cca 5000(!) řádků
+...
+...
+instance of class with tag #0 of size 32
+instance of class with tag #0 of size 640
+instance of class with tag #0 of size 32
+instance of class with tag #0 of size 96
+instance of class with tag #0 of size 32
+instance of class with tag #0 of size 464
+instance of class with tag #0 of size 40
+Object count: 5233
+Total size:   607264 bytes
+Agent19: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Přidání tagů ke třídám</h2>
+
+<p>Předchozí dva demonstrační příklady postrádaly jednu velice důležitou
+vlastnost &ndash; nedokázaly vypsat jména tříd pro jednotlivé objekty uložené
+na haldě. Je tomu tak z&nbsp;toho důvodu, že do callback funkce
+<strong>callback_for_heap_object()</strong> se potřebné informace nepředávají.
+Ovšem můžeme zde využít faktu, že se do této funkce předává <i>tag</i>
+přiřazený ke třídě. <i>Tagem</i> je zde myšleno celé číslo rozdílné od nuly,
+protože nula má speciální význam oznamující, že žádný <i>tag</i> nebyl
+přiřazen. Teoreticky je tedy možné provést následující sekvenci operací:</p>
+
+<ol>
+<li>Získat seznam všech tříd ve virtuálním stroji Javy.</li>
+<li>Jména tříd uložit do globálního pole řetězců.</li>
+<li>Přiřadit třídám tagy takovým způsobem, aby n-té jméno v&nbsp;poli odpovídalo tagu <i>n</i> (nebo spíše n+1).</li>
+<li>V callback funkci <strong>callback_for_heap_object()</strong> využít předané číslo tagu i globální pole názvů.</li>
+</ol>
+
+<p>První bod lze splnit velmi snadno s&nbsp;využitím <i>JVM TI</i> funkce
+<strong>GetLoadedClasses()</strong>, která vrátí jak počet tříd načtených do
+virtuálního stroje Javy, tak i pole s&nbsp;vyplněnými položkami typu
+<strong>jclass</strong>, s&nbsp;nimiž již umíme pracovat:</p>
+
+<pre>
+jvmtiError <strong>GetLoadedClasses</strong>(
+            jvmtiEnv* env,
+            jint* class_count_ptr,
+            jclass** classes_ptr)
+</pre>
+
+<p>V&nbsp;následujícím úryvku kódu je ukázáno, jak lze tyto informace využít
+při naplnění globálního pole <strong>class_names</strong>. Povšimněte si, že
+v&nbsp;celém kódu jsou použity pouze tři <i>JVM TI</i> funkce
+<strong>GetLoadedClasses()</strong>, <strong>GetClassSignature()</strong> a
+<strong>Deallocate()</strong>, protože samozřejmě nesmíme zapomenout na
+uvolnění paměti alokované funkcí <strong>GetClassSignature()</strong> (jako
+malé cvičení si navíc do kódu přidejte dealokaci paměti po
+<strong>GetLoadedClasses()</strong>):</p>
+
+<pre>
+<i>/* Globální pole, do nějž se uloží jména všech použitých tříd. */</i>
+char **class_names;
+&nbsp;
+<i>/* Lokální proměnné použité pouze pro přečtení jmen tříd, posléze nebudou zapotřebí. */</i>
+jvmtiError error;
+jint       class_count;
+jclass    *class_array;
+int        i;
+&nbsp;
+<i>/* Přečíst jména všech načtených tříd. */</i>
+error = (*jvmti_env)-&gt;<strong>GetLoadedClasses</strong>(jvmti_env, &amp;class_count, &amp;class_array);
+check_jvmti_error(jvmti_env, error, "get loaded classes");
+&nbsp;
+<i>/* Alokovat globální pole, které bude jména obsahovat. */</i>
+class_names = (char**)malloc(class_count * sizeof(char*));
+&nbsp;
+<i>/* Projít získaným seznamem. */</i>
+for (i=0; i &lt; class_count; i++)
+{
+    char *class_name_ptr;
+    char *updated_class_name_ptr;
+&nbsp;
+<i>    /* Získat jméno (signaturu) jedné třídy */</i>
+    error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, class_array[i], &amp;class_name_ptr, NULL);
+    check_jvmti_error(jvmti_env, error, "get class signature");
+    if (class_name_ptr == NULL)
+    {
+        puts("Error: class has no signature");
+    }
+&nbsp;
+<i>    /* Upravit jméno třídy do čitelnější podoby. */</i>
+    updated_class_name_ptr = update_class_name(class_name_ptr, ' ');
+&nbsp;
+<i>    /* Kopie jména třídy do globálního pole class_names. */</i>
+    class_names[i] = (char*)malloc(1 + strlen(updated_class_name_ptr));
+    strcpy(class_names[i], updated_class_name_ptr);
+&nbsp;
+<i>    /* Dealokace paměti vrácené funkcí GetClassSignature() */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate class name");
+}
+</pre>
+
+<p>Funkci <strong>update_class_name()</strong> jsme si již uvedli
+v&nbsp;několika předchozích demonstračních <i>JVM TI</i> agentech &ndash; jejím
+úkolem je poněkud &bdquo;zlidštit&ldquo; názvy tříd.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Použití tagů při přiřazování objektů k&nbsp;jejich třídám</h2>
+
+<p>První a druhý bod našeho teoretického postupu tedy již máme splněn, musíme
+však ještě implementovat dva další body &ndash; přiřadit <i>tag</i> ke každé
+třídě a následně tento <i>tag</i> vhodně použít v&nbsp;callback funkci. O
+přiřazení tagu ke třídě či objektu se stará funkce <strong>SetTag()</strong>
+s&nbsp;následující hlavičkou:</p>
+
+<pre>
+jvmtiError <strong>SetTag</strong>(
+            jvmtiEnv* env,
+            jobject object,
+            jlong tag)
+</pre>
+
+<p>Relativně snadno lze tuto funkci vložit do kódu z&nbsp;předchozí kapitoly a
+následně tento kód zařadit do funkce
+<strong>callback_on_data_dump_request()</strong>. Nesmíme zapomenout na jednu
+maličkost &ndash; číslo tagu začíná jedničkou a ne nulou, takže pro tag číslo
+<i>n</i> bude příslušné jméno třídy uložené v&nbsp;globálním poli
+<strong>class_names</strong> pod indexem <i>n-1</i>. Celý zdrojový kód této
+funkce je sice poměrně dlouhý, ale to jenom z&nbsp;toho důvodu, že je zapotřebí
+ručně alokovat paměť, pracovat s&nbsp;řetězci s&nbsp;využitím céčkových funkcí
+a taktéž kontrolovat návratové hodnoty <i>JVM TI</i> funkcí:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri cteni informaci z haldy.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_data_dump_request</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jint       class_count;
+    jclass    *class_array;
+    int        i;
+&nbsp;
+    MSG("Got data dump request");
+&nbsp;
+    <i>/* Přečíst jména všech načtených tříd. */</i>
+    error = (*jvmti_env)-&gt;<strong>GetLoadedClasses</strong>(jvmti_env, &amp;class_count, &amp;class_array);
+    check_jvmti_error(jvmti_env, error, "get loaded classes");
+&nbsp;
+    <i>/* Alokovat globální pole, které bude jména obsahovat. */</i>
+    class_names = (char**)malloc(class_count * sizeof(char*));
+&nbsp;
+    <i>/* Projít získaným seznamem. */</i>
+    for (i=0; i &lt; class_count; i++)
+    {
+        char *class_name_ptr;
+        char *updated_class_name_ptr;
+&nbsp;
+    <i>    /* Získat jméno (signaturu) jedné třídy */</i>
+        error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, class_array[i], &amp;class_name_ptr, NULL);
+        check_jvmti_error(jvmti_env, error, "get class signature");
+        if (class_name_ptr == NULL)
+        {
+            puts("Error: class has no signature");
+        }
+&nbsp;
+    <i>    /* Upravit jméno třídy do čitelnější podoby. */</i>
+        updated_class_name_ptr = update_class_name(class_name_ptr, ' ');
+&nbsp;
+    <i>    /* Kopie jména třídy do globálního pole class_names. */</i>
+        class_names[i] = (char*)malloc(1 + strlen(updated_class_name_ptr));
+        strcpy(class_names[i], updated_class_name_ptr);
+&nbsp;
+        printf("class %s has tag %d\n", class_names[i], i + 1);
+&nbsp;
+    <i>    /* Dealokace paměti vrácené funkcí GetClassSignature() */</i>
+        error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+        check_jvmti_error(jvmti_env, error, "deallocate class name");
+&nbsp;
+<i>        /* Nastavení tagu pro třídu. */</i>
+        error = (*jvmti_env)-&gt;<strong>SetTag</strong>(jvmti_env, class_array[i], i + 1);
+        check_jvmti_error(jvmti_env, error, "deallocate class name");
+    }
+    register_heap_callback_and_run_dump(jvmti_env);
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Dvacátý demonstrační příklad &ndash; výpis všech objektů na haldě včetně jména příslušné třídy</h2>
+
+<p>Poslední variantu funkce <strong>callback_on_data_dump_request()</strong>
+uvedenou <a href="#k07">v&nbsp;předchozí kapitole</a> použijeme ve dvacátém
+demonstračním <i>JVM TI</i> agentovi. Tato funkce připraví globální seznam jmen
+tříd a přiřadí každé třídě nějaký <i>tag</i>, tj.&nbsp;celé číslo odlišné od
+nuly. Následně je zavolána funkce
+<strong>register_heap_callback_and_run_dump()</strong>, která zaregistruje
+callback funkci přes datovou strukturu <strong>jvmtiHeapCallbacks</strong>,
+zavolá funkci <strong>IterateThroughHeap()</strong> a následně na standardní
+výstup vypíše počet objektů uložených na haldě i celkovou obsazenost haldy
+v&nbsp;bajtech:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace callback funkce pro prochazeni heapem a zacatek prochazeni.</i>
+<i> */</i>
+static void <strong>register_heap_callback_and_run_dump</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jvmtiHeapCallbacks heap_callbacks;
+    t_heap_stat heap_stat = {0,0};
+&nbsp;
+<i>    /* naplnit strukturu heap_callbacks jednou callback funkci */</i>
+    (void)memset(&amp;heap_callbacks, 0, sizeof(heap_callbacks));
+    heap_callbacks.heap_iteration_callback = &amp;callback_for_heap_object;
+&nbsp;
+<i>    /* zahajit prochazeni haldou */</i>
+    error = (*jvmti_env)-&gt;IterateThroughHeap(jvmti_env, 0, NULL,
+            &amp;heap_callbacks, (const void *)&amp;heap_stat);
+    check_jvmti_error(jvmti_env, error, "read heap content");
+&nbsp;
+<i>    /* vypis statistiky */</i>
+    printf("Object count: %d\n", heap_stat.object_count);
+    printf("Total size:   %ld bytes\n", heap_stat.total_size);
+}
+</pre>
+
+<p>Jak zajisté očekáváte, došlo i ke změně samotné callback funkce
+<strong>callback_for_heap_object()</strong> volané pro každý objekt na haldě.
+Vylepšená varianta této funkce použije globální seznam jmen tříd
+<strong>class_names</strong> společně s&nbsp;hodnotou parametru
+<strong>class_tag</strong> k&nbsp;získání jména třídy, z&nbsp;níž byl daný
+objekt získán. V&nbsp;produkčním kódu by zde bylo nutné přidat kontrolu, zda se
+náhodou nepřekračuje kapacita pole <strong>class_names</strong>, zde se to
+pro jednoduchost neprovádí:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdy objekt "navstiveny" na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_heap_object</strong>(jlong class_tag, jlong size, jlong* tag_ptr,
+        jint length, void* user_data)
+{
+    int index = class_tag - 1;
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+&nbsp;
+    heap_stat-&gt;object_count++;
+    heap_stat-&gt;total_size += size;
+    printf("instance of class %s with tag #%ld of size %ld\n",
+            class_names[index], (long int)class_tag, (long int)size);
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+<p>Z&nbsp;výpisu práce tohoto demonstračního agenta je patrné, že jsme se
+konečně dostali k&nbsp;požadovaným jménům tříd. Ty jsou vypsány hned na
+začátku:</p>
+
+<pre>
+Agent20: Agent_OnLoad
+Agent20: JVM TI version is correct
+Agent20: Got VM init event
+Agent20: Got VM Death event
+Agent20: Got data dump request
+class java.io.BufferedOutputStream  has tag 1
+class java.util.Enumeration  has tag 3
+class sun.misc.Version  has tag 4
+class sun.misc.ExtensionDependency  has tag 5
+class java.nio.HeapByteBuffer  has tag 6
+class java.util.Arrays  has tag 7
+class sun.misc.JavaIOAccess  has tag 8
+class java.util.IdentityHashMap  has tag 9
+class java.net.URLStreamHandlerFactory  has tag 10
+class java.util.AbstractCollection  has tag 11
+class java.util.AbstractMap  has tag 12
+class java.util.concurrent.locks.AbstractOwnableSynchronizer  has tag 13
+class java.lang.ClassCastException  has tag 14
+class java.lang.Class  has tag 169
+...
+...
+...
+</pre>
+
+<p>Mnoho tříd obsahuje ve svém jménu znak &bdquo;$&ldquo;. V&nbsp;tomto případě
+se v&nbsp;některých případech jedná o vnitřní třídy:</p>
+
+<pre>
+class java.lang.Thread$UncaughtExceptionHandler  has tag 15
+class java.util.HashMap$KeySet  has tag 49
+class java.util.IdentityHashMap$KeyIterator  has tag 73
+class java.util.concurrent.locks.ReentrantLock$Sync  has tag 179
+</pre>
+
+<p>A v&nbsp;dalších případech pak o třídy anonymní:</p>
+
+<pre>
+class java.lang.Class$3  has tag 2
+class java.io.File$1  has tag 68
+class java.lang.Class$1  has tag 154
+class java.io.File$2  has tag 178
+class java.nio.charset.CoderResult$2  has tag 180
+</pre>
+
+<p>U některých jmen naleznete na začátku jeden či více znaků &bdquo;[&ldquo;,
+jejichž význam však již známe &ndash; označují pole, popř.&nbsp;vícerozměrné
+pole o tolika dimenzích, kolik znaků je zde umístěno. Typy prvků pole jsou
+zapsány ihned za těmito závorkami:</p>
+
+<pre>
+class [Ljava.lang.Comparable  has tag 88
+class [Ljava.io.ObjectStreamField  has tag 93
+class [Ljava.util.Map$Entry  has tag 221
+class [Ljava.lang.String  has tag 230
+</pre>
+
+<p>Poslední speciální skupinou tříd jsou pole obsahující jako své položky
+primitivní datové typy. Tato pole opět začínají jedním či více znaky
+&bdquo;[&ldquo;, ovšem namísto jmen tříd se používají jednopísmenné zkratky
+odpovídající základním datovým typům Javy:</p>
+
+<pre>
+class [Z has tag 372
+class [B has tag 373
+class [C has tag 374
+class [I has tag 375
+class [S has tag 376
+class [J has tag 377
+class [F has tag 378
+class [[F has tag 379
+class [D has tag 380
+</pre>
+
+<p>Převodní tabulku pro tyto kódy jsme si již v&nbsp;tomto seriálu několikrát
+uvedli, ale možná nebude na škodu si ji zopakovat:</p>
+
+<table>
+<tr><th>#</th><th>Znak</th><th>Datový typ</th><th>Význam</th></tr>
+<tr><td>1</td><td>B</td><td>byte</td><td>osmibitové celé číslo se znaménkem</td></tr>
+<tr><td>2</td><td>C</td><td>char</td><td>znak reprezentovaný v&nbsp;Unikódu</td></tr>
+<tr><td>3</td><td>D</td><td>double</td><td>číslo s&nbsp;plovoucí řádovou čárkou s&nbsp;dvojitou přesností</td></tr>
+<tr><td>4</td><td>F</td><td>float</td><td>číslo s&nbsp;plovoucí řádovou čárkou s&nbsp;jednoduchou přesností</td></tr>
+<tr><td>5</td><td>I</td><td>int</td><td>32bitové celé číslo se znaménkem</td></tr>
+<tr><td>6</td><td>J</td><td>long</td><td>64bitové celé číslo se znaménkem</td></tr>
+<tr><td>7</td><td>S</td><td>short</td><td>16bitové celé číslo se znaménkem</td></tr>
+<tr><td>8</td><td>Z</td><td>boolean</td><td>pravdivostní hodnota true/false</td></tr>
+<tr><td>9</td><td>V</td><td>void</td><td>void &ndash; pouze u návratového typu (nebude použito ve výpisu haldy)</td></tr>
+</table>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Zdrojové kódy všech tří demonstračních příkladů</h2>
+
+<p>Podobně jako v&nbsp;minulé a předminulé části tohoto seriálu, i dnešní tři
+demonstrační příklady byly kvůli snazšímu udržování všech zdrojových kódů
+uloženy do Mercurial repositáře, který je dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím poslední verze dnes popisovaných <i>JVM TI</i> agentů i další potřebné
+skripty a testovací javovské třídy jsou dostupné na následujících adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad</th><th>Umístění</th></tr>
+<tr><td>Agent #18</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent18/agent18.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent18/agent18.c</a></td></tr>
+<tr><td>skript pro překlad</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent18/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent18/compile.sh</a></td></tr>
+<tr><td>skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent18/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent18/test.sh</a></td></tr>
+<tr><td>Agent #19</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent19/agent19.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent19/agent19.c</a></td></tr>
+<tr><td>skript pro překlad</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent19/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent19/compile.sh</a></td></tr>
+<tr><td>skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent19/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent19/test.sh</a></td></tr>
+<tr><td>Agent #20</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent20/agent20.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent20/agent20.c</a></td></tr>
+<tr><td>skript pro překlad</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent20/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent20/compile.sh</a></td></tr>
+<tr><td>skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent20/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2cce3440ed10/jvmti-agents/agent20/test.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2012</small></p>
+</body>
+</html>
+
