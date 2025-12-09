@@ -1,0 +1,995 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - průchod hodnotami atributů objektů uložených na haldě (heapu)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - průchod hodnotami atributů objektů uložených na haldě (heapu)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM si řekneme, jak je možné s využitím JVM TI agenta vypsat hodnoty všech statických a nestatických atributů uložených na haldě. Zaměříme se zejména na průchod atributy základních (primitivních) datových typů, protože ty se zpracovávají odlišně od objektových (referenčních) typů.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - průchod hodnotami atributů objektů uložených na haldě (heapu)</a></p>
+<p><a href="#k02">2. Callback funkce volaná při průchodu hodnotami primitivních datových typů uložených na haldě</a></p>
+<p><a href="#k03">3. Rozlišení mezi atributem třídy (statickým atributem) a atributem objektu (nestatickým atributem)</a></p>
+<p><a href="#k04">4. Zjištění typu hodnoty uložené na haldě</a></p>
+<p><a href="#k05">5. Zjištění třídy, k&nbsp;níž atribut uložený na haldě přísluší</a></p>
+<p><a href="#k06">6. Demonstrační agent číslo 21: výpis atributů pro všechny instance tříd "Foo" a "Bar"</a></p>
+<p><a href="#k07">7. Výpočet obsazení haldy hodnotami primitivních datových typů</a></p>
+<p><a href="#k08">8. Tisk všech hodnot nalezených agentem</a></p>
+<p><a href="#k09">9. Demonstrační agent číslo 22: podrobnější výpis atributů pro instance tříd "Foo" a "Bar"</a></p>
+<p><a href="#k10">10. Zdrojové kódy obou agentů a k&nbsp;nim příslušných testovacích příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - průchod hodnotami atributů objektů uložených na haldě (heapu)</h2>
+
+<p>V&nbsp;dnešní (již šedesáté :-) části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> si
+popíšeme a následně na dvojici demonstračních agentů i prakticky ukážeme, jakým
+způsobem je možné přes rozhraní <i>JVM TI</i> procházet všemi (neobjektovými)
+atributy tříd i atributy objektů uložených na haldě (heapu). Připomeňme si, že
+atributy tříd (=statické atributy) i atributy objektů (=nestatické atributy)
+mohou být, podobně jako lokální proměnné či parametry metod, buď objektového
+typu (instancí nějaké třídy, která opět rekurzivně může obsahovat další objekty
+nebo primitivní hodnoty) nebo mohou být představovány takzvaným <i>primitivním
+datovým typem</i>, což je v&nbsp;případě programovacího jazyka Java jeden
+z&nbsp;následujících osmi typů:</p>
+
+<table>
+<tr><th>#</th><th>Primitivní datový typ</th><th>Skupina</th><th></th><th>Rozsah hodnot</th></tr>
+<tr><td>1</td><td>boolean</td><td>pravdivostní typ</td><td>true,false</td></tr>
+<tr><td>2</td><td>byte   </td><td>celočíselný typ</td><td>-128..127</td></tr>
+<tr><td>3</td><td>short  </td><td>celočíselný typ</td><td>-32768..32767</td></tr>
+<tr><td>4</td><td>int    </td><td>celočíselný typ</td><td>-2<sup>31</sup>..2<sup>31</sup>-1</td></tr>
+<tr><td>5</td><td>long   </td><td>celočíselný typ</td><td>-2<sup>63</sup>..2<sup>63</sup>-1</td></tr>
+<tr><td>6</td><td>char   </td><td>znakový typ    </td><td>0..2<sup>32</sup>-1</td></tr>
+<tr><td>7</td><td>float  </td><td>číselný typ s plovoucí řádovou čárkou</td><td>&plusmn;3.40282347&times;10<sup>38</sup></td></tr>
+<tr><td>8</td><td>double </td><td>číselný typ s plovoucí řádovou čárkou</td><td>&plusmn;1.79769313486231570&times;10<sup>308</sup></td></tr>
+</table>
+
+<p>Atributy všech živých objektů jsou samozřejmě při běhu virtuálního stroje
+Javy uloženy na haldě, podobně jako vlastní instance tříd (objekty). Rozhraní
+<i>JVM TI</i> obsahuje potřebnou funkcionalitu i pro procházení atributy;
+v&nbsp;podstatě se jedná o stejný princip, s&nbsp;nímž jsme se již seznámili <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-pruchod-objekty-ulozenymi-na-halde-heapu/">minule</a>,
+ovšem s&nbsp;tím rozdílem, že se při procházení atributy uloženými na haldě
+použije jiný typ callback funkce, jejíž parametry jsou odlišné od callback
+funkce používané pro každý běžný objekt. Inicializaci průchodu haldou
+(<i>heapem</i>) budeme, podobně jako v&nbsp;předchozí části tohoto seriálu,
+iniciovat pomocí JVM TI funkce nazvané <strong>IterateThroughHeap()</strong> a
+na ni navázaných callback funkcí. Hlavička funkce
+<strong>IterateThroughHeap()</strong> vypadá následovně:</p>
+
+<pre>
+jvmtiError <strong>IterateThroughHeap</strong>(
+            jvmtiEnv* env,
+            jint      heap_filter,
+            jclass    klass,
+            const jvmtiHeapCallbacks* callbacks,
+            const void* user_data)
+</pre>
+
+<p>Význam všech parametrů této funkce jsme si již popsali <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-prace-se-zasobnikem-a-haldou-pres-rozhrani-jvm-ti/">předminule</a>
+a <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-pruchod-objekty-ulozenymi-na-halde-heapu/">minule</a>,
+v&nbsp;dnešních dvou demonstračních příkladech popsaných v&nbsp;následujících
+kapitolách však dojde ke změně obsahu struktury typu
+<strong>jvmtiHeapCallbacks</strong>, která se předává jako čtvrtý parametr
+<i>JVM TI</i> funkci <strong>IterateThroughHeap()</strong>. Struktura
+<strong>jvmtiHeapCallbacks</strong> je navržena takovým způsobem, aby mohla
+pojmout celkem šestnáct ukazatelů na různé typy callback funkcí. Ve skutečnosti
+je však v&nbsp;současné verzi rozhraní JVM TI použito pouze pět typů callback
+funkcí, takže by dalších jedenáct ukazatelů mělo mít hodnotu
+<strong>NULL</strong> (není to sice striktně vyžadováno, ale je to bezpečnější
+v&nbsp;případě, kdyby se agent použil na novější verzi JVM):</p>
+
+<pre>
+<strong>typedef struct</strong> {
+    jvmtiHeapIterationCallback        heap_iteration_callback;
+    jvmtiHeapReferenceCallback        heap_reference_callback;
+    jvmtiPrimitiveFieldCallback       primitive_field_callback;
+    jvmtiArrayPrimitiveValueCallback  array_primitive_value_callback;
+    jvmtiStringPrimitiveValueCallback string_primitive_value_callback;
+    jvmtiReservedCallback             reserved5;
+    jvmtiReservedCallback             reserved6;
+    jvmtiReservedCallback             reserved7;
+    jvmtiReservedCallback             reserved8;
+    jvmtiReservedCallback             reserved9;
+    jvmtiReservedCallback             reserved10;
+    jvmtiReservedCallback             reserved11;
+    jvmtiReservedCallback             reserved12;
+    jvmtiReservedCallback             reserved13;
+    jvmtiReservedCallback             reserved14;
+    jvmtiReservedCallback             reserved15;
+} <strong>jvmtiHeapCallbacks</strong>;
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Callback funkce volaná při průchodu hodnotami primitivních datových typů uložených na haldě</h2>
+
+<p>Význam pěti v&nbsp;současnosti přesně definovaných ukazatelů na callback
+funkce uložený v&nbsp;datové struktuře <strong>jvmtiHeapCallbacks</strong> je
+následující:</p>
+
+<table>
+<tr><th>#</th><th>Typ</th><th>Název</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmtiHeapIterationCallback       </td><td>heap_iteration_callback        </td><td>voláno pro běžné objekty</td></tr>
+<tr><td>2</td><td>jvmtiHeapReferenceCallback       </td><td>heap_reference_callback        </td><td>voláno pro reference na objekty</td></tr>
+<tr><td>3</td><td>jvmtiPrimitiveFieldCallback      </td><td>primitive_field_callback       </td><td>voláno pro atributy primitivního datového typu</td></tr>
+<tr><td>4</td><td>jvmtiArrayPrimitiveValueCallback </td><td>array_primitive_value_callback </td><td>voláno pro pole primitivních datových typů</td></tr>
+<tr><td>5</td><td>jvmtiStringPrimitiveValueCallback</td><td>string_primitive_value_callback</td><td>voláno pro řetězce</td></tr>
+</table>
+
+<p>Callback funkce <strong>jvmtiHeapIterationCallback()</strong> byla již
+poměrně dopodrobna popsána v&nbsp;předchozí části tohoto seriálu, kde jsme ji
+použili ve třech demonstračních JVM TI agentech. Tato callback funkce může být
+zavolána pro každý objekt nalezený na haldě, přičemž se jí pokaždé předají
+nejdůležitější informace o nalezeném objektu &ndash; jeho třída, velikost
+objektu v&nbsp;bajtech, tag přiřazený k&nbsp;objektu (nebo NULL, pokud tag
+přiřazen není), délka pole v&nbsp;případě, že je objektem pole a konečně
+ukazatel na uživatelská data, který byl předán funkci
+<strong>IterateThroughHeap()</strong> při inicializaci průchodu haldou:</p>
+
+<pre>
+jint <strong>jvmtiHeapIterationCallback</strong> (
+        jlong  class_tag, 
+        jlong  size, 
+        jlong* tag_ptr, 
+        jint   length, 
+        void*  user_data);
+</pre>
+
+<p>V&nbsp;případě, že potřebujeme procházet atributy objektů (přesněji řečeno
+atributy primitivního typu), je nutné namísto callback funkce
+<strong>jvmtiHeapIterationCallback()</strong> zaregistrovat a následně použít
+funkci <strong>jvmtiPrimitiveFieldCallback()</strong>, jejíž hlavička je
+v&nbsp;mnoha ohledech od <strong>jvmtiHeapIterationCallback()</strong> odlišná,
+což je ostatně pochopitelné, protože o atributech (a především o primitivních
+hodnotách) potřebujeme znát odlišné informace, než o instancích tříd:</p>
+
+<pre>
+jint <strong>jvmtiPrimitiveFieldCallback</strong> (
+        jvmtiHeapReferenceKind        kind,
+        const jvmtiHeapReferenceInfo* info,
+        jlong                         object_class_tag,
+        jlong*                        object_tag_ptr,
+        jvalue                        value,
+        jvmtiPrimitiveType            value_type,
+        void*                         user_data);
+</pre>
+
+<p>Tento typ callback funkce je možné v&nbsp;agentovi zaregistrovat velmi
+snadno &ndash; následující úryvek kódu je prakticky shodný s&nbsp;kódem
+použitým v&nbsp;demonstračních příkladech minule, liší se pouze řádek,
+v&nbsp;němž je naplňována datová struktura <strong>jvmtiHeapCallbacks
+heap_callbacks</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace callback funkce pro prochazeni heapem a zacatek prochazeni.</i>
+<i> */</i>
+static void <strong>register_heap_callback_and_run_dump</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jvmtiHeapCallbacks heap_callbacks;
+    t_heap_stat heap_stat = {0};
+&nbsp;
+<i>    /* naplnit strukturu heap_callbacks jednou callback funkci */</i>
+    (void)memset(&amp;heap_callbacks, 0, sizeof(heap_callbacks));
+    <strong>heap_callbacks.primitive_field_callback = &amp;callback_for_primitive_values;</strong>
+&nbsp;
+<i>    /* zahajit prochazeni haldou */</i>
+    error = (*jvmti_env)-&gt;IterateThroughHeap(jvmti_env, 0, NULL,
+            &amp;heap_callbacks, (const void *)&amp;heap_stat);
+    check_jvmti_error(jvmti_env, error, "read heap content");
+&nbsp;
+<i>    /* vypis statistiky */</i>
+    printf("Primitive values count: %d (fields only)\n", heap_stat.primitive_count);
+}
+</pre>
+
+<p>Vlastní volaná callback funkce pak může ve zcela minimalistické variantě
+vypadat následovně:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdou hodnotu primitivniho datoveho typu</i>
+<i> * ulozenou na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_primitive_values</strong>(
+        jvmtiHeapReferenceKind        kind,
+        const jvmtiHeapReferenceInfo* info,
+        jlong                         object_class_tag,
+        jlong*                        object_tag_ptr,
+        jvalue                        value,
+        jvmtiPrimitiveType            value_type,
+        void*                         user_data)
+{
+<i>    /* pokracovat dal v prochazeni haldy */</i>
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+<p>Tato callback funkce bude zavolána pro každý atribut primitivního datového
+typu, který bude na haldě nalezen. O to, aby se prošla skutečně celá halda, se
+stará návratová hodnota <strong>JVMTI_VISIT_OBJECTS </strong>, přesněji řečeno
+jakákoli hodnota, která neobsahuje nastavený bit
+<strong>JVMTI_VISIT_ABORT</strong>. Ještě však neznáme, jaké hodnoty se vlastně
+této callback funkci pro každý atribut předávají. Popis jednotlivých parametrů
+této callback funkce je uveden v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Typ parametru</th><th>Jméno parametru</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmtiHeapReferenceKind</td><td>kind</td><td>rozlišení, zda se jedná o atribut třídy nebo atribut objektu</td></tr>
+<tr><td>2</td><td>jvmtiHeapReferenceInfo*</td><td>info</td><td>ukazatel na unii struktur, kde je uložen index (pořadí) atributu (viz další text)</td></tr>
+<tr><td>3</td><td>jlong</td><td>object_class_tag</td><td>tag přiřazený ke třídě, které je objekt instancí</td></tr>
+<tr><td>4</td><td>jlong*</td><td>object_tag_ptr</td><td>ukazatel na tag přiřazený k&nbsp;objektu</td></tr>
+<tr><td>5</td><td>jvalue</td><td>value</td><td>hodnota atributu (jde o unii, viz další text)</td></tr>
+<tr><td>6</td><td>jvmtiPrimitiveType</td><td>value_type</td><td>typ hodnoty (byte, int, float...)</td></tr>
+<tr><td>7</td><td>void*</td><td>user_data</td><td>ukazatel na uživatelská data (má stejný význam, jaký již známe z minula)</td></tr>
+</table>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Rozlišení mezi atributem třídy (statickým atributem) a atributem objektu (nestatickým atributem)</h2>
+
+<p>Podívejme se nyní na význam prvního parametru callback funkce
+<strong>callback_for_primitive_values()</strong>. Tento parametr je typu
+<strong>jvmtiHeapReferenceKind</strong> a při pohledu na obsah hlavičkového
+souboru <strong>jvmti.h</strong> můžeme jednoduše zjistit, že se jedná o
+výčtový typ, tj.&nbsp;callback funkci je ve skutečnosti předáno celé číslo typu
+<strong>int</strong>:</p>
+
+<pre>
+typedef enum {
+        JVMTI_HEAP_REFERENCE_CLASS = 1,
+        JVMTI_HEAP_REFERENCE_FIELD = 2,
+        JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT = 3,
+        JVMTI_HEAP_REFERENCE_CLASS_LOADER = 4,
+        JVMTI_HEAP_REFERENCE_SIGNERS = 5,
+        JVMTI_HEAP_REFERENCE_PROTECTION_DOMAIN = 6,
+        JVMTI_HEAP_REFERENCE_INTERFACE = 7,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD = 8,
+        JVMTI_HEAP_REFERENCE_CONSTANT_POOL = 9,
+        JVMTI_HEAP_REFERENCE_SUPERCLASS = 10,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL = 21,
+        JVMTI_HEAP_REFERENCE_SYSTEM_CLASS = 22,
+        JVMTI_HEAP_REFERENCE_MONITOR = 23,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL = 24,
+        JVMTI_HEAP_REFERENCE_JNI_LOCAL = 25,
+        JVMTI_HEAP_REFERENCE_THREAD = 26,
+        JVMTI_HEAP_REFERENCE_OTHER = 27
+} jvmtiHeapReferenceKind;
+</pre>
+
+<p>Ve skutečnosti se však nemusíme rozhodovat mezi sedmnácti hodnotami, které
+jsou v&nbsp;tomto výčtovém typu definovány, protože je zaručeno, že
+v&nbsp;prvním parametru callback funkce
+<strong>callback_for_primitive_values()</strong> může být uložena pouze hodnota
+<strong>JVMTI_HEAP_REFERENCE_STATIC_FIELD</strong> pro atributy tříd,
+popř.&nbsp;hodnota <strong>JVMTI_HEAP_REFERENCE_FIELD</strong> pro atributy
+objektů.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Zjištění typu hodnoty uložené na haldě</h2>
+
+<p>Dalším parametrem callback funkce
+<strong>callback_for_primitive_values()</strong>, kterým se budeme zabývat, je
+předposlední parametr nazvaný <strong>value_type</strong>, jehož datovým typem
+je <strong>jvmtiPrimitiveType</strong>. Patrně jste již správně uhodli, že se
+v&nbsp;tomto parametru předává typ atributu. Jak jsme si již řekli <a
+href="#k03">v&nbsp;první kapitole</a>, rozeznáváme v&nbsp;programovacím jazyku
+Java celkem osm primitivních datových typů:</p>
+
+<pre>
+typedef enum {
+        JVMTI_PRIMITIVE_TYPE_BOOLEAN = 90,
+        JVMTI_PRIMITIVE_TYPE_BYTE = 66,
+        JVMTI_PRIMITIVE_TYPE_CHAR = 67,
+        JVMTI_PRIMITIVE_TYPE_SHORT = 83,
+        JVMTI_PRIMITIVE_TYPE_INT = 73,
+        JVMTI_PRIMITIVE_TYPE_LONG = 74,
+        JVMTI_PRIMITIVE_TYPE_FLOAT = 70,
+        JVMTI_PRIMITIVE_TYPE_DOUBLE = 68
+} jvmtiPrimitiveType;
+</pre>
+
+<p>V&nbsp;prvním demonstračním příkladu popsaném dále budeme mj.&nbsp;vypisovat
+i typy atributů. O převod mezi číselně vyjádřeným datovým typem a popisným
+řetězcem se postará funkce <strong>get_primitive_type_str()</strong>,
+v&nbsp;níž bylo jednodušší použít rozvětvení typu switch z&nbsp;toho důvodu, že
+číselné kódy datových typů (kupodivu) netvoří celočíselnou posloupnost:</p>
+
+<pre>
+<i>/**</i>
+<i> * Prevod ciselneho identifikatoru datoveho typu na retezec.</i>
+<i> */</i>
+char *<strong>get_primitive_type_str</strong>(jvmtiPrimitiveType value_type)
+{
+    switch (value_type)
+    {
+        case <strong>JVMTI_PRIMITIVE_TYPE_BOOLEAN:</strong>
+            return "boolean";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_BYTE:</strong>
+            return "byte";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_CHAR:</strong>
+            return "char";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_SHORT:</strong>
+            return "short";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_INT:</strong>
+            return "int";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_LONG:</strong>
+            return "long";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_FLOAT:</strong>
+            return "float";
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_DOUBLE:</strong>
+            return "double";
+            break;
+        default: <i>/* nemelo by nikdy nastat */</i>
+            return "unknown!";
+            break;
+    }
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zjištění třídy, k&nbsp;níž atribut uložený na haldě přísluší</h2>
+
+<p>Dalším důležitým parametrem callback funkce
+<strong>callback_for_primitive_values()</strong> je třetí parametr pojmenovaný
+<strong>object_class_tag</strong>. S&nbsp;tímto parametrem jsme se vlastně již
+setkali, i když v&nbsp;poněkud odlišné podobě, i v&nbsp;předchozí části tohoto
+seriálu &ndash; v&nbsp;tomto parametru je totiž předán <i>tag</i> přiřazený ke
+třídě, k&nbsp;níž přísluší právě nalezený statický/třídní atribut,
+popř.&nbsp;ke třídě, jejíž instance je právě procházena. My již víme, jakým
+způsobem je možné <i>tag</i> využít; dokážeme totiž již při načítání tříd,
+popř.&nbsp;po zavolání funkce <strong>GetLoadedClasses()</strong> každé třídě
+nastavit nenulový <i>tag</i> a současně si uložit jméno třídy do globálního
+pole řetězců. Následně je možné s&nbsp;využitím předaného <i>tagu</i> převést
+tuto číselnou hodnotu na jméno třídy. Globální pole
+<strong>class_names</strong> lze naplnit například následujícím kódem:</p>
+
+<pre>
+<i>/* Globální pole, do něhož se uloží jména všech použitých tříd. */</i>
+char **class_names;
+&nbsp;
+<i>/* Lokální proměnné použité pouze pro přečtení jmen tříd, posléze nebudou zapotřebí. */</i>
+jvmtiError error;
+jint       class_count;
+jclass    *class_array;
+int        i;
+&nbsp;
+<i>/* Přečíst jména všech načtených tříd. */</i>
+error = (*jvmti_env)-&gt;<strong>GetLoadedClasses</strong>(jvmti_env, &amp;class_count, &amp;class_array);
+check_jvmti_error(jvmti_env, error, "get loaded classes");
+&nbsp;
+<i>/* Alokovat globální pole, které bude jména obsahovat. */</i>
+class_names = (char**)malloc(class_count * sizeof(char*));
+&nbsp;
+<i>/* Projít získaným seznamem. */</i>
+for (i=0; i &lt; class_count; i++)
+{
+    char *class_name_ptr;
+    char *updated_class_name_ptr;
+&nbsp;
+<i>    /* Získat jméno (signaturu) jedné třídy */</i>
+    error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, class_array[i], &amp;class_name_ptr, NULL);
+    check_jvmti_error(jvmti_env, error, "get class signature");
+    if (class_name_ptr == NULL)
+    {
+        puts("Error: class has no signature");
+    }
+&nbsp;
+<i>    /* Upravit jméno třídy do čitelnější podoby. */</i>
+    updated_class_name_ptr = update_class_name(class_name_ptr, ' ');
+&nbsp;
+<i>    /* Kopie jména třídy do globálního pole class_names. */</i>
+    class_names[i] = (char*)malloc(1 + strlen(updated_class_name_ptr));
+    strcpy(class_names[i], updated_class_name_ptr);
+&nbsp;
+<i>    /* Dealokace paměti vrácené funkcí GetClassSignature() */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate class name");
+}
+</pre>
+
+<p>Nyní již můžeme callback funkci
+<strong>callback_for_primitive_values()</strong> upravit takovým způsobem, že
+pro každý nalezený (statický i nestatický) atribut vypíše jak jeho typ, tak i
+jméno příslušné třídy:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdou hodnotu primitivniho datoveho typu</i>
+<i> * ulozenou na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_primitive_values</strong>(
+        jvmtiHeapReferenceKind        kind,
+        const jvmtiHeapReferenceInfo* info,
+        jlong                         object_class_tag,
+        jlong*                        object_tag_ptr,
+        jvalue                        value,
+        jvmtiPrimitiveType            value_type,
+        void*                         user_data)
+{
+    int index;
+    char *primitive_type_str;
+    char *class_name;
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat jmeno typu jako retezec */</i>
+    primitive_type_str = get_primitive_type_str(value_type);
+&nbsp;
+<i>    /* jmeno tridy lze ziskat na zaklade tagu z globalniho pole */</i>
+    index = object_class_tag - 1;
+    class_name = class_names[index];
+&nbsp;
+<i>    /* vypiseme informace */</i>
+    printf("Found field of type %-7s in instance of class %s\n",
+        primitive_type_str, class_name);
+&nbsp;
+<i>    /* spocitani statistickych informaci o obsazeni haldy */</i>
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+    heap_stat-&gt;primitive_count++;
+&nbsp;
+<i>    /* pokracovat dal v prochazeni haldy */</i>
+    return <strong>JVMTI_VISIT_OBJECTS</strong>;
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační agent číslo 21: výpis atributů pro všechny instance tříd "Foo" a "Bar"</h2>
+
+<p>Konečně se dostáváme k&nbsp;dnešnímu prvnímu demonstračnímu příkladu &ndash;
+<i>JVM TI</i> agentu. V&nbsp;tomto příkladu se vypíšou typy všech nestatických
+atributů instancí tříd <strong>Foo</strong> a <strong>Bar</strong>. Instance
+těchto dvou tříd jsou vytvořeny v&nbsp;metodě
+<strong>Test21.main()</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test dvacateho</i>
+<i>  * prvniho demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class <strong>Test21</strong> {
+&nbsp;
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void main(String[] args) {
+        Foo foo1 = new Foo(42, 3.1415f, false);
+        Foo foo2 = new Foo(6502, 2.7172f, true);
+        Bar bar1 = new Bar();
+        Bar bar2 = new Bar();
+    }
+}
+&nbsp;
+class <strong>Foo</strong> {
+&nbsp;
+    boolean booleanValue;
+    int     intValue;
+    float   floatValue;
+&nbsp;
+    public Foo(int intValue, float floatValue, boolean booleanValue) {
+        this.intValue = intValue;
+        this.floatValue = floatValue;
+        this.booleanValue = booleanValue;
+    }
+&nbsp;
+}
+&nbsp;
+class <strong>Bar</strong> {
+&nbsp;
+    byte  b;
+    short s;
+    int  i;
+    long l;
+&nbsp;
+    public Bar() {
+        this.b = (byte)1;
+        this.s = (short)2;
+        this.i = 3;
+        this.l = 4L;
+    }
+&nbsp;
+}
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že potřebujeme vypsat jen nestatické atributy, budeme
+muset do callback funkce <strong>callback_for_primitive_values()</strong>
+přidat kontrolu na to, zda je v&nbsp;parametru <strong>kind</strong> předána
+hodnota <strong>JVMTI_HEAP_REFERENCE_FIELD</strong>. Druhou filtraci provedeme
+na základě jména třídy, protože potřebujeme vypsat pouze atributy instancí tříd
+<strong>Foo</strong> a <strong>Bar</strong>. Rychlejší by sice bylo si
+zapamatovat <i>tagy</i> těchto tříd a potom provádět pouze porovnání dvou
+celých čísel a nikoli porovnávání řetězců, celý program by to však zbytečně
+zkomplikovalo. Výsledná podoba callback funkce je vypsána pod tímto
+odstavcem:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdou hodnotu primitivniho datoveho typu</i>
+<i> * ulozenou na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_primitive_values</strong>(
+        jvmtiHeapReferenceKind        kind,
+        const jvmtiHeapReferenceInfo* info,
+        jlong                         object_class_tag,
+        jlong*                        object_tag_ptr,
+        jvalue                        value,
+        jvmtiPrimitiveType            value_type,
+        void*                         user_data)
+{
+    int index;
+    char *primitive_type_str;
+    char *class_name;
+&nbsp;
+<i>    /* zajimaji nas pouze nestaticke atributy objektu */</i>
+    if (kind != <strong>JVMTI_HEAP_REFERENCE_FIELD</strong>) return <strong>JVMTI_VISIT_OBJECTS;</strong>
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat jmeno typu jako retezec */</i>
+    primitive_type_str = get_primitive_type_str(value_type);
+&nbsp;
+<i>    /* jmeno tridy lze ziskat na zaklade tagu z globalniho pole */</i>
+    index = object_class_tag - 1;
+    class_name = class_names[index];
+&nbsp;
+<i>    /* vypiseme informace pouze pro dve testovaci tridy "Foo" a "Bar" */</i>
+    if (strcmp("Foo ", class_name)==0 || strcmp("Bar ", class_name)==0)
+    {
+        printf("Found field of type %-7s in instance of class %s\n",
+                primitive_type_str, class_name);
+    }
+&nbsp;
+<i>    /* spocitani statistickych informaci o obsazeni haldy */</i>
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+    heap_stat-&gt;primitive_count++;
+&nbsp;
+<i>    /* pokracovat dal v prochazeni haldy */</i>
+    return <strong>JVMTI_VISIT_OBJECTS</strong>;
+}
+</pre>
+
+<p>Kompletní zdrojový kód 21.demonstračního agenta i všechny potřebné soubory
+použité pro jeho překlad a spuštění můžete nalézt <a href="#k10">v&nbsp;desáté
+kapitole</a>. Zde si jen ukážeme zprávy vypisované agentem na standardní
+výstup:</p>
+
+<pre>
+Agent21: Agent_OnLoad
+Agent21: JVM TI version is correct
+Agent21: Got VM init event
+Agent21: Got VM Death event
+Agent21: Got data dump request
+class java.io.BufferedOutputStream  has tag 1
+class java.lang.Class$3  has tag 2
+class java.util.Enumeration  has tag 3
+class sun.misc.Version  has tag 4
+...
+...
+...
+class [Z has tag 373
+class [B has tag 374
+class [C has tag 375
+class [I has tag 376
+class [S has tag 377
+class [J has tag 378
+class [F has tag 379
+class [D has tag 380
+Found field of type float   in instance of class Foo 
+Found field of type int     in instance of class Foo 
+Found field of type boolean in instance of class Foo 
+Found field of type float   in instance of class Foo 
+Found field of type int     in instance of class Foo 
+Found field of type boolean in instance of class Foo 
+Found field of type long    in instance of class Bar 
+Found field of type int     in instance of class Bar 
+Found field of type short   in instance of class Bar 
+Found field of type byte    in instance of class Bar 
+Found field of type long    in instance of class Bar 
+Found field of type int     in instance of class Bar 
+Found field of type short   in instance of class Bar 
+Found field of type byte    in instance of class Bar 
+Primitive values count: 5522 (fields only)
+Agent21: Agent_OnUnload
+</pre>
+
+<p>Z&nbsp;výpisu je patrné, že se nejdříve každé načtené třídě přiřadí
+celočíselný <i>tag</i> rozdílný od nuly a následně se při průchodu haldou
+vypíšou datové typy atributů instancí tříd <strong>Foo</strong> a
+<strong>Bar</strong>. Nakonec je vypsán celkový počet atributů (základního
+datového typu), které byly na haldě nalezeny.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Výpočet obsazení haldy hodnotami primitivních datových typů</h2>
+
+<p>Další úpravy demonstračního agenta již budou poměrně jednoduché. Do
+statistiky obsazení haldy nejprve přidáme i informaci o tom, kolik místa je zde
+vyhrazeno pro atributy základních datových typů. Dopředu je nutné říci, že se
+bude jednat pouze o odhad (a to ještě o dolní hranici tohoto odhadu), protože
+každá implementace virtuálního stroje Javy si může sama rozhodnout, zda se bude
+při ukládání používat nějaká forma zarovnání dat, například na celočíselné
+násobky 32bitových či dnes spíše 64bitových adres. I tak se však jedná o
+zajímavé informace, zvláště když si uvědomíme, že primitivní datové typy a pole
+těchto typů jsou vlastně jedinými &bdquo;skutečnými&ldquo; daty uloženými na
+haldě, protože objekty jsou zde uloženy ve formě referencí, které
+v&nbsp;důsledku zase ukazují pouze na hodnoty primitivních datových typů. Pro
+výpočet minimálního místa na haldě obsazené určitou hodnotou je použita pomocná
+funkce <strong>get_primitive_type_size()</strong>. Její chování je jednoduché,
+snad až na výpočet velikosti u typu <strong>boolean</strong>, kde teoreticky
+postačuje pro uložení hodnoty <strong>true/false</strong> pouze jeden bit,
+nicméně JVM většinou pracuje s&nbsp;celým bajtem (a v&nbsp;bajtkódu je navíc
+<strong>boolean</strong> zpracováván jako <strong>int</strong>, podobně jako je
+tomu u typů <strong>byte</strong> a <strong>short</strong>). Z&nbsp;tohoto důvodu
+se budeme držet rozhraní <i>JNI</i>, kde je jasně řečeno, že se hodnoty typu
+<strong>boolean</strong> předávají v&nbsp;jako osmibitové hodnoty:</p>
+
+<pre>
+<i>/**</i>
+<i> * Ziskani velikosti (bajty) hodnoty daneho primitivniho datoveho typu.</i>
+<i> */</i>
+int get_primitive_type_size(jvmtiPrimitiveType value_type)
+{
+    switch (value_type)
+    {
+        case <strong>JVMTI_PRIMITIVE_TYPE_BOOLEAN</strong>:
+        case <strong>JVMTI_PRIMITIVE_TYPE_BYTE</strong>:
+            return 1;
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_CHAR</strong>:
+        case <strong>JVMTI_PRIMITIVE_TYPE_SHORT</strong>:
+            return 2;
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_INT</strong>:
+        case <strong>JVMTI_PRIMITIVE_TYPE_FLOAT</strong>:
+            return 4;
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_LONG</strong>:
+        case <strong>JVMTI_PRIMITIVE_TYPE_DOUBLE</strong>:
+            return 8;
+            break;
+        default: <i>/* nemelo by nastat */</i>
+            return 0;
+            break;
+    }
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Tisk všech hodnot nalezených agentem</h2>
+
+<p>Dalším úkolem agenta bude tisk hodnot primitivních datových typů. Jak jsme
+se již dozvěděli ve <a href="#k02">druhé kapitole</a>, je hodnota jakéhokoli
+primitivního datového typu předána v&nbsp;pátém parametru funkce
+<strong>callback_for_primitive_values()</strong>. Tento parametr je typu
+<strong>jvalue</strong> a pohledem do hlavičkového souboru
+<strong>jni.h</strong> (nikoli <strong>jvmti.h</strong>!) snadno zjistíme, že
+se jedná o unii (v&nbsp;céčku <i>union</i>), v&nbsp;níž může být uložena jak
+hodnota jakéhokoli základního datového typu, tak i reference na objekt. Nás
+však budou v&nbsp;tuto chvíli zajímat pouze hodnoty základních datových typů a
+nikoli reference, takže z&nbsp;unie <strong>jvalue</strong> budeme používat
+pouze prvních osm (v&nbsp;paměti se překrývajících) prvků:</p>
+
+<pre>
+typedef union jvalue {
+        jboolean z;
+        jbyte    b;
+        jchar    c;
+        jshort   s;
+        jint     i;
+        jlong    j;
+        jfloat   f;
+        jdouble  d;
+        jobject  l;
+} jvalue;
+</pre>
+
+<p>Funkce, která provede tisk jakékoli hodnoty základního datového typu na
+standardní výstup, může vypadat například následovně (úprava pro GCC
+v&nbsp;případě céčkového datového typu <strong>long long</strong>):</p>
+
+<pre>
+<i>/**</i>
+<i> * Tisk hodnoty primitivniho datoveho typu na standardni vystup.</i>
+<i> */</i>
+void <strong>print_value</strong>(jvmtiPrimitiveType value_type, jvalue value)
+{
+    switch (value_type)
+    {
+        case <strong>JVMTI_PRIMITIVE_TYPE_BOOLEAN:</strong>
+            puts(value.z ? "true" : "false");
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_CHAR:</strong>
+            printf("%d\n", (int)value.c);
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_BYTE:</strong>
+            printf("%d\n", (int)value.b);
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_SHORT:</strong>
+            printf("%d\n", (int)value.s);
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_INT:</strong>
+            printf("%d\n", (int)value.i);
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_LONG:</strong>
+            printf("%Ld\n", (long long)value.j);
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_FLOAT:</strong>
+            printf("%f\n", value.f);
+            break;
+        case <strong>JVMTI_PRIMITIVE_TYPE_DOUBLE:</strong>
+            printf("%lf\n", value.d);
+            break;
+        default:
+            puts("unknown!");
+            break;
+    }
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Demonstrační agent číslo 22: podrobnější výpis atributů pro instance tříd "Foo" a "Bar"</h2>
+
+<p>Pomocné funkce popsané v&nbsp;předchozích dvou kapitolách nyní můžeme využít
+v&nbsp;dalším (22.) demonstračním <i>JVM TI</i> agentovi, který pro každý
+atribut nalezený na haldě vypíše příslušnou třídu, typ atributu (boolean,
+float, int...) a taktéž jeho hodnotu. Přitom se provádí filtrace na atributy
+tříd <strong>Foo</strong> a <strong>Bar</strong>; tento filtr lze samozřejmě
+velmi snadno odstranit, pokud budete potřebovat vypsat všech přibližně 5500
+atributů :-) Kromě obou nových pomocných funkcí
+<strong>get_primitive_type_size()</strong> a
+<strong>get_primitive_type_str()</strong> došlo ke změně v&nbsp;callback funkci
+<strong>callback_for_primitive_values()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdou hodnotu primitivniho datoveho typu</i>
+<i> * ulozenou na halde.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_primitive_values</strong>(
+        jvmtiHeapReferenceKind        kind,
+        const jvmtiHeapReferenceInfo* info,
+        jlong                         object_class_tag,
+        jlong*                        object_tag_ptr,
+        jvalue                        value,
+        jvmtiPrimitiveType            value_type,
+        void* user_data)
+{
+    int index;
+    int size;
+    char *primitive_type_str;
+    char *class_name;
+&nbsp;
+<i>    /* zajimaji nas pouze nestaticke atributy objektu */</i>
+    if (kind != JVMTI_HEAP_REFERENCE_FIELD) return JVMTI_VISIT_OBJECTS;
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat jmeno typu jako retezec */</i>
+    primitive_type_str = get_primitive_type_str(value_type);
+&nbsp;
+<i>    /* na zaklade predaneho typu ziskat velikost v bajtech */</i>
+    size = get_primitive_type_size(value_type);
+&nbsp;
+<i>    /* jmeno tridy lze ziskat na zaklade tagu z globalniho pole */</i>
+    index = object_class_tag - 1;
+    class_name = class_names[index];
+&nbsp;
+<i>    /* vypiseme informace pouze pro dve testovaci tridy "Foo" a "Bar" */</i>
+    if (strcmp("Foo ", class_name)==0 || strcmp("Bar ", class_name)==0)
+    {
+        printf("Field of type %-7s in instance of class %shas size %1d byte%c and value ",
+                primitive_type_str, class_name, size, size &gt; 1 ? 's' : ' ');
+        print_value(value_type, value);
+    }
+&nbsp;
+<i>    /* spocitani statistickych informaci o obsazeni haldy */</i>
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+    heap_stat-&gt;primitive_count++;
+    heap_stat-&gt;total_size += size;
+&nbsp;
+<i>    /* pokracovat dal v prochazeni haldy */</i>
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+<p>Takto upravený agent vypíše po svém připojení k&nbsp;běžícímu virtuálnímu
+stroji Javy následující zprávy:</p>
+
+<pre>
+Agent22: Agent_OnLoad
+Agent22: JVM TI version is correct
+Agent22: Got VM init event
+Agent22: Got VM Death event
+Agent22: Got data dump request
+class java.io.BufferedOutputStream  has tag 1
+class java.lang.Class$3  has tag 2
+class java.util.Enumeration  has tag 3
+class sun.misc.Version  has tag 4
+...
+...
+...
+class [Z has tag 373
+class [B has tag 374
+class [C has tag 375
+class [I has tag 376
+class [S has tag 377
+class [J has tag 378
+class [F has tag 379
+class [D has tag 380
+Field of type float   in instance of class Foo has size 4 bytes and value 3.141500
+Field of type int     in instance of class Foo has size 4 bytes and value 42
+Field of type boolean in instance of class Foo has size 1 byte  and value false
+Field of type float   in instance of class Foo has size 4 bytes and value 2.717200
+Field of type int     in instance of class Foo has size 4 bytes and value 6502
+Field of type boolean in instance of class Foo has size 1 byte  and value true
+Field of type long    in instance of class Bar has size 8 bytes and value 4
+Field of type int     in instance of class Bar has size 4 bytes and value 3
+Field of type short   in instance of class Bar has size 2 bytes and value 2
+Field of type byte    in instance of class Bar has size 1 byte  and value 1
+Field of type long    in instance of class Bar has size 8 bytes and value 4
+Field of type int     in instance of class Bar has size 4 bytes and value 3
+Field of type short   in instance of class Bar has size 2 bytes and value 2
+Field of type byte    in instance of class Bar has size 1 byte  and value 1
+Primitive values count: 5522 (fields only)
+Total size:   21422 bytes
+Agent22: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Zdrojové kódy obou agentů a k&nbsp;nim příslušných testovacích příkladů</h2>
+
+<p>Podobně jako ve třech předcházejících částech tohoto seriálu [<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-sledovani-cinnosti-virtualniho-stroje-javy-pres-rozhrani-jvm-ti-5-cast-detekce-vzniku-vsech-vyjimek/">57</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-prace-se-zasobnikem-a-haldou-pres-rozhrani-jvm-ti/">58</a>][<a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-pruchod-objekty-ulozenymi-na-halde-heapu/">59</a>],
+byly i dnešní dva demonstrační příklady kvůli snazšímu udržování všech
+zdrojových kódů uloženy do Mercurial repositáře, který je dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze dnes popisovaných <i>JVM TI</i> agentů i dalších
+potřebných skriptů a testovacích javovských tříd jsou dostupné na následujících
+adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad/podpůrný soubor</th><th>Umístění</th></tr>
+<tr><td>Agent #21          </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/agent21.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/agent21.c</a></td></tr>
+<tr><td>Skript pro překlad </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/test.sh</a></td></tr>
+<tr><td>Testovací třída    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/Test21.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent21/Test21.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Agent #22          </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/agent22.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/agent22.c</a></td></tr>
+<tr><td>Skript pro překlad </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/test.sh</a></td></tr>
+<tr><td>Testovací třída    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/Test22.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/5d9c9b6db35f/jvmti-agents/agent22/Test22.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
