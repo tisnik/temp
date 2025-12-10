@@ -1,0 +1,834 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - sledování čtení i zápisu do vybraného atributu třídy či atributu objektu (dokončení)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - sledování čtení i zápisu do vybraného atributu třídy či atributu objektu (dokončení)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM dokončíme téma, jemuž jsme se začali věnovat již minule. Na příkladu demonstračního JVM TI agenta si ukážeme, jakým způsobem lze zjistit všechny důležité informace o místech, v nichž dochází ke čtení či naopak k zápisu do vybraného atributu třídy či atributu objektu.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Zjištění podrobnějších informací o čteném či zapisovaném atributu i o metodě, která k&nbsp;tomuto atributu přistupuje</a></p>
+<p><a href="#k02">2. Popis parametrů callback funkce <strong>callback_on_field_access()</strong></strong></a></p>
+<p><a href="#k03">3. Popis parametrů callback funkce <strong>callback_on_field_modification()</strong></a></p>
+<p><a href="#k04">4. Demonstrační agent číslo 29 &ndash; implementace callback funkcí <strong>callback_on_field_access()</strong> a <strong>callback_on_field_modification()</strong></a></p>
+<p><a href="#k05">5. Zjištění jména třídy, k&nbsp;níž atribut náleží a jména sledovaného atributu</a></p>
+<p><a href="#k06">6. Zjištění jména třídy a metody, v&nbsp;níž dochází ke čtení či zápisu do sledovaného atributu</a></p>
+<p><a href="#k07">7. Přečtení čísla řádku ve volající metodě</a></p>
+<p><a href="#k08">8. Přečtení jména zdrojového souboru volající metody</a></p>
+<p><a href="#k09">9. Nastavení všech požadavků JVM TI agenta</a></p>
+<p><a href="#k10">10. Testovací příklad a výsledek běhu 29. demonstračního JVM TI agenta</a></p>
+<p><a href="#k11">11. Zdrojový kód demonstračního agenta a k&nbsp;němu příslušných testovacích příkladů a skriptů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Zjištění podrobnějších informací o čteném či zapisovaném atributu i o metodě, která k&nbsp;tomuto atributu přistupuje</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a>
+dokončíme téma, jemuž jsme se začali věnovat již v&nbsp;předchozím dílu. Na
+příkladu dvacátého devátého demonstračního <i>JVM TI</i> agenta, který bude
+popsán v&nbsp;navazujících devíti kapitolách, si ukážeme, jakým způsobem je
+možné zjistit všechny důležité informace o místě (myšleno je v&nbsp;tomto
+kontextu samozřejmě místo v&nbsp;programovém kódu, tj.&nbsp;třída, metoda a
+příslušné číslo řádku), v&nbsp;němž dochází ke čtení či naopak k&nbsp;zápisu do
+vybraného atributu třídy (statického atributu) či k&nbsp;atributu objektu
+(nestatického atributu).</p>
+
+<p>Rozhraní <i>JVM TI</i> nám při sledování čtení či zápisu do vybraného
+atributu (či většího množství vybraných atributů) dává k&nbsp;dispozici dvě
+skupiny údajů &ndash; informace o čteném a/nebo zapisovaném atributu (jedná se
+o třídu, objekt a vlastní atribut, popř.&nbsp;i informace o nově zapisované
+hodnotě, včetně typu této hodnoty) a taktéž informace o místě, v&nbsp;němž ke
+čtení či k&nbsp;zápisu do atributu dochází. Oba typy informací tedy musíme umět
+přečíst a náležitě zpracovat.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Popis parametrů callback funkce <strong>callback_on_field_access()</strong></h2>
+
+<p>Na začátku si připomeňme informaci uvedenou již v&nbsp;předchozí části
+tohoto seriálu &ndash; pro každý atribut, ať již atribut třídy (statický
+atribut) či atribut objektu, je možné s&nbsp;využitím funkce
+<strong>jvmti_env-&gt;SetFieldAccessWatch()</strong> zaregistrovat callback
+funkci volanou ve chvíli, kdy dojde ke čtení hodnoty tohoto atributu, a to
+nezávisle na tom, odkud je ve skutečnosti atribut čten. V&nbsp;případě veřejně
+viditelného atributu se může jednat v&nbsp;podstatě o zcela libovolnou část
+aplikace, naopak u atributů privátních se bude jednat o metody ze stejné třídy,
+k&nbsp;níž sledovaný atribut náleží. V&nbsp;případě, že je nastaveno sledování
+většího množství atributů, volá se pro ně shodná callback funkce, budou se však
+samozřejmě lišit parametry předávané pro každý sledovaný atribut. Volaná
+callback funkce má následující hlavičku:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri pristupu (cteni) vybranych atributu.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_field_access</strong>(
+        jvmtiEnv  *jvmti_env,
+        JNIEnv    *jni_env,
+        jthread    thread,
+        jmethodID  method,
+        jlocation  location,
+        jclass     class,
+        jobject    object,
+        jfieldID   field)
+{
+}
+</pre>
+
+<p>V&nbsp;následující tabulce jsou jednotlivé parametry této callback funkce
+stručně popsány:</p>
+
+<table>
+<tr><th>#</th><th>Typ parametru</th><th>Název parametru</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmtiEnv  *</td><td>jvmti_env</td><td>JVM TI prostředí agenta (je předáváno do většiny callback funkcí)</td></tr>
+<tr><td>2</td><td>JNIEnv    *</td><td>jni_env  </td><td>JNI prostředí platné pro dané vlákno (je předáváno do některých callback funkcí)</td></tr>
+<tr><td>3</td><td>jthread    </td><td>thread   </td><td>vlákno, v&nbsp;němž došlo ke čtení atributu</td></tr>
+<tr><td>4</td><td>jmethodID  </td><td>method   </td><td>metoda, v&nbsp;níž došlo ke čtení atributu</td></tr>
+<tr><td>5</td><td>jlocation  </td><td>location </td><td>řádek v&nbsp;rámci metody, kde došlo ke čtení atributu</td></tr>
+<tr><td>6</td><td>jclass     </td><td>class    </td><td>třída se sledovaným atributem</td></tr>
+<tr><td>7</td><td>jobject    </td><td>object   </td><td>objekt, jehož atribut je čten (pokud se jedná o nestatický atribut)</td></tr>
+<tr><td>8</td><td>jfieldID   </td><td>field    </td><td>identifikátor sledovaného atributu</td></tr>
+</table>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Popis parametrů callback funkce <strong>callback_on_field_modification()</strong></h2>
+
+<p>Podobná callback funkce registrovaná s&nbsp;využitím
+<strong>jvmti_env-&gt;SetFieldModificationWatch()</strong> může být zavolána i
+při zápisu do atributu. Zápis do atributu opět může proběhnout
+z&nbsp;jakéhokoli místa aplikace. Tato callback funkce má poněkud složitější
+hlavičku, protože se jí ještě předává informace o nové hodnotě zapisované do
+atributu, včetně typu této hodnoty:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zapisu vybranych atributu</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_field_modification</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jmethodID method,
+        jlocation location,
+        jclass    class,
+        jobject   object,
+        jfieldID  field,
+        char      signature_type,
+        jvalue    new_value)
+{
+}
+</pre>
+
+<p>Opět si popišme význam jednotlivých parametrů této callback funkce:</p>
+
+<table>
+<tr><th>#</th><th>Typ parametru</th><th>Název parametru</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmtiEnv  *</td><td>jvmti_env</td><td>JVM TI prostředí agenta (je předáváno do většiny callback funkcí)</td></tr>
+<tr><td>2</td><td>JNIEnv    *</td><td>jni_env  </td><td>JNI prostředí platné pro dané vlákno (je předáváno do některých callback funkcí)</td></tr>
+<tr><td>3</td><td>jthread    </td><td>thread   </td><td>vlákno, v&nbsp;němž došlo k&nbsp;zápisu do atributu</td></tr>
+<tr><td>4</td><td>jmethodID  </td><td>method   </td><td>metoda, v&nbsp;níž došlo k&nbsp;zápisu do atributu</td></tr>
+<tr><td>5</td><td>jlocation  </td><td>location </td><td>řádek v&nbsp;rámci metody, kde došlo k&nbsp;zápisu</td></tr>
+<tr><td>6</td><td>jclass     </td><td>class    </td><td>třída se sledovaným atributem</td></tr>
+<tr><td>7</td><td>jobject    </td><td>object   </td><td>objekt, jehož atribut je čten (pokud se jedná o nestatický atribut)</td></tr>
+<tr><td>8</td><td>jfieldID   </td><td>field    </td><td>identifikátor sledovaného atributu</td></tr>
+<tr><td> 9</td><td>char      </td><td>signature_type</td><td>typ zapisované hodnoty</td></tr>
+<tr><td>10</td><td>jvalue    </td><td>new_value</td><td>univerzální datová struktura (unie), která může obsahovat hodnotu libovolného typu</td></tr>
+</table>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační agent číslo 29 &ndash; implementace callback funkcí <strong>callback_on_field_access()</strong> a <strong>callback_on_field_modification()</strong></h2>
+
+<p>Vraťme se ještě na chvíli k&nbsp;parametru <strong>signature_type</strong>
+předávaného do callback funkce
+<strong>callback_on_field_modification()</strong>. V&nbsp;tomto atributu je
+uloženo celé číslo, které určuje, jaká hodnota je do atributu předávána
+(zapisována). Hodnota, která může být přes tento parametr předána, je
+definována výčtovým typem <strong>jvmtiPrimitiveType</strong>, s&nbsp;nímž jsme
+se již v&nbsp;tomto seriálu jednou setkali:</p>
+
+<pre>
+typedef enum {
+    JVMTI_PRIMITIVE_TYPE_BOOLEAN = 90,
+    JVMTI_PRIMITIVE_TYPE_BYTE = 66,
+    JVMTI_PRIMITIVE_TYPE_CHAR = 67,
+    JVMTI_PRIMITIVE_TYPE_SHORT = 83,
+    JVMTI_PRIMITIVE_TYPE_INT = 73,
+    JVMTI_PRIMITIVE_TYPE_LONG = 74,
+    JVMTI_PRIMITIVE_TYPE_FLOAT = 70,
+    JVMTI_PRIMITIVE_TYPE_DOUBLE = 68
+} <strong>jvmtiPrimitiveType</strong>;
+</pre>
+
+<p>Samotný typ <strong>jvalue</strong> je unií (<i>union</i>) definovanou
+v&nbsp;hlavičkovém souboru <strong>jni.h</strong> (nikoli
+<strong>jvmti.h</strong>!):</p>
+
+<pre>
+typedef union jvalue {
+    jboolean z;
+    jbyte    b;
+    jchar    c;
+    jshort   s;
+    jint     i;
+    jlong    j;
+    jfloat   f;
+    jdouble  d;
+    jobject  l;
+} jvalue;
+</pre>
+
+<p>Pojďme si nyní v&nbsp;této kapitole i v&nbsp;navazujících kapitolách popsat
+jednotlivé části, z&nbsp;nichž se bude skládat dvacátý devátý demonstrační
+<i>JVM TI</i> agent. Nejprve je nastaveno sledování čtení a zápisu do atributu
+nazvaného jednoduše <strong>i</strong> třídy <strong>MyInteger</strong>, a to
+naprosto stejným způsobem, jaký jsme si ukazovali již v&nbsp;předchozí části
+tohoto seriálu. Obě zaregistrované callback funkce mají velmi podobné tělo,
+v&nbsp;němž se pouze zavolá společná uživatelská funkce, která se postará a
+výpis všech potřebných informací:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri pristupu (cteni) vybranych atributu</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_field_access</strong>(
+        jvmtiEnv  *jvmti_env,
+        JNIEnv    *jni_env,
+        jthread    thread,
+        jmethodID  method,
+        jlocation  location,
+        jclass     class,
+        jobject    object,
+        jfieldID   field)
+{
+    print_field_info(jvmti_env, jni_env, READ, method, location, class, object, field, 0);
+}
+</pre>
+
+<p>U callback funkce volané při zápisu do vybraného atributu si dovolíme malé
+zjednodušení &ndash; dopředu již víme, že se sleduje atribut typu
+<strong>integer</strong>, tudíž je možné z&nbsp;unie <strong>new_value</strong>
+přímo získat hodnotu <strong>new_value.i</strong>. Obecně to však není možné a
+v&nbsp;reálných agentech by se musel provést rozeskok na základě hodnoty
+uložené v&nbsp;parametru <strong>signature_type</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zapisu vybranych atributu</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_field_modification</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jmethodID method,
+        jlocation location,
+        jclass    class,
+        jobject   object,
+        jfieldID  field,
+        char signature_type,
+        jvalue new_value)
+{
+    int value = (int)new_value.i;
+    printf("%d\n", signature_type);
+    print_field_info(jvmti_env, jni_env, WRITE, method, location, class, object, field, value);
+}
+</pre>
+
+<p>Hodnoty <strong>READ</strong> a <strong>WRITE</strong> jsou konstanty
+definované ve výčtovém typu:</p>
+
+<pre>
+<i>/*</i>
+<i> * Typ pristupu k atributu - cteni ci zapis.</i>
+<i> */</i>
+typedef enum
+{
+    READ,
+    WRITE
+} <strong>FieldAccessMode</strong>;
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zjištění jména třídy, k&nbsp;níž atribut náleží a jména sledovaného atributu</h2>
+
+<p><a href="#k04">V&nbsp;předchozí kapitole</a> jsme si řekli, že obě callback
+funkce volají jedinou &bdquo;univerzální&ldquo; funkci
+<strong>print_field_info()</strong>, v&nbsp;níž se získají a následně vypíšou
+informace o sledovaném atributu i informace o kódu, z&nbsp;něhož je atribut
+čten a/nebo modifikován. První informací, kterou je nutné vypsat, je jméno
+třídy a jméno sledovaného atributu (&bdquo;sledovací&ldquo; callback funkce
+totiž mohou být registrovány pro větší množství atributů). Jméno třídy a jméno
+atributu lze zjistit velmi jednoduše, můžeme totiž použít nám již známou
+dvojici <i>JVM TI</i> funkcí <strong>jvmti-&gt;GetClassSignature()</strong> a
+<strong>jvmti-&gt;GetFieldName()</strong>. U obou funkcí je samozřejmě vhodné
+kontrolovat, zda při jejich volání nedošlo k&nbsp;nějaké chybě (ta je většinou
+způsobena tím, že nejsou správně nastaveny požadované vlastnosti agenta).
+Vzhledem k&nbsp;tomu, že obě zmíněné <i>JVM TI</i> funkce vrací řetězce
+alokované uvnitř <i>JVM TI</i>, je nutné oba řetězce explicitně dealokovat
+s&nbsp;použitím funkce <strong>jvmti-&gt;Deallocate()</strong>:</p>
+
+<pre>
+<i>/* lokalni retezce */</i>
+char *class_name;
+char *updated_class_name;
+char *field_name;
+&nbsp;
+<i>/* ziskat jmeno tridy */</i>
+error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, class, &amp;class_name, NULL);
+check_jvmti_error(jvmti_env, error, "GetClassSignature() failed");
+&nbsp;
+<i>/* ziskat jmeno atributu */</i>
+error = (*jvmti_env)-&gt;<strong>GetFieldName</strong>(jvmti_env, class, field, &amp;field_name, NULL, NULL);
+check_jvmti_error(jvmti_env, error, "GetFieldName() failed");
+&nbsp;
+<i>/* upravit jmeno tridy s atributem */</i>
+updated_class_name = update_class_name(class_name, '.');
+&nbsp;
+...
+...
+...
+&nbsp;
+<i>/* dealokace retezce s nazvem tridy */</i>
+error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)class_name);
+check_jvmti_error(jvmti_env, error, "deallocate class name");
+&nbsp;
+<i>/* dealokace retezce s nazvem atributu */</i>
+error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)field_name);
+check_jvmti_error(jvmti_env, error, "deallocate field name");
+</pre>
+
+<p>Funkci <strong>update_class_name()</strong> používanou pro úpravu jména
+třídy do čitelnějšího tvaru již známe z&nbsp;mnoha dalších demonstračních
+<i>JVM TI</i> agentů:</p>
+
+<pre>
+<i>/*</i>
+<i> * Uprava jmena tridy pro tisk.</i>
+<i> */</i>
+char* <strong>update_class_name</strong>(char *class_name_ptr, char replace_to)
+{
+    char *class_name_ptr_;
+    char *c;
+    if (class_name_ptr != NULL)
+    {
+<i>        /* odstraneni pocatecniho L na zacatku jmena tridy */</i>
+        class_name_ptr_ = class_name_ptr;
+        if (class_name_ptr_[0] == 'L')
+        {
+            class_name_ptr_++;
+        }
+<i>        /* nahrada znaku ; za tecku ci jiny definovany znak */</i>
+        char *last_char = class_name_ptr_ + strlen(class_name_ptr_) - 1;
+        if (*last_char == ';')
+        {
+            *last_char = replace_to;
+        }
+<i>        /* nahrada vsech znaku '/' za '.' */</i>
+        c = class_name_ptr_;
+        for (c = class_name_ptr_; *c != 0; c++)
+        {
+            if (*c == '/') *c = '.';
+        }
+    }
+    return class_name_ptr_;
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zjištění jména třídy a metody, v&nbsp;níž dochází ke čtení či zápisu do sledovaného atributu</h2>
+
+<p>Dále by měl náš demonstrační <i>JVM TI</i> agent umět vypsat všechny
+dostupné informace o kódu, v&nbsp;němž je sledovaný atribut čten či kde jsou do
+něj zapisovány nové hodnoty. Všechny potřebné údaje o tomto kódu nám rozhraní
+<i>JVM TI</i> samozřejmě nabízí v&nbsp;parametrech obou callback funkcí, my
+pouze musíme tyto údaje vhodným způsobem využít a zpracovat. Jméno volající
+metody lze získat pomocí <i>JVM TI</i> funkce
+<strong>jvmti-&gt;GetMethodName()</strong> a následně můžeme s&nbsp;využitím
+funkce <strong>jvmti-&gt;GetMethodDeclaringClass()</strong> získat
+identifikátor představující třídu, v&nbsp;níž je tato metoda deklarována.
+Získání jména třídy je pak již jednoduché, protože postačuje zavolat funkci
+<strong>jvmti-&gt;GetClassSignature()</strong>. Po využití všech tří řetězců
+samozřejmě opět nesmíme zapomenout na jejich dealokaci pomocí funkce
+<strong>jvmti-&gt;Deallocate()</strong>, podobně jako tomu bylo u řetězců
+získaných funkcemi popsanými <a href="#k05">v&nbsp;předchozí kapitole</a>:</p>
+
+<pre>
+char *method_name;
+char *declaring_class_name;
+char *updated_declaring_class_name;
+&nbsp;
+<i>/* ziskat jmeno volajici metody i jeji tridu */</i>
+error = (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name, NULL, NULL);
+check_jvmti_error(jvmti_env, error, "GetMethodName() failed");
+&nbsp;
+error = (*jvmti_env)-&gt;<strong>GetMethodDeclaringClass</strong>(jvmti_env, method, &amp;declaring_class);
+check_jvmti_error(jvmti_env, error, "GetMethodDeclaringClass() failed");
+&nbsp;
+<i>/* tridu jiz zname, takze muzeme ziskat jeji jmeno (signaturu) */</i>
+error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, declaring_class, &amp;declaring_class_name, NULL);
+check_jvmti_error(jvmti_env, error, "GetClassSignature() failed");
+&nbsp;
+<i>/* upravit jmeno volajici tridy */</i>
+updated_declaring_class_name = update_class_name(declaring_class_name, '.');
+&nbsp;
+...
+...
+...
+&nbsp;
+<i>/* dealokace retezce s nazvem tridy */</i>
+error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)class_name);
+check_jvmti_error(jvmti_env, error, "deallocate class name");
+&nbsp;
+<i>/* dealokace retezce s nazvem atributu */</i>
+error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)field_name);
+check_jvmti_error(jvmti_env, error, "deallocate field name");
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Přečtení čísla řádku ve volající metodě</h2>
+
+<p>Zbývá nám ještě získat informaci o čísle řádku v&nbsp;rámci metody,
+v&nbsp;níž se provádí čtení či naopak zápis do sledovaného atributu:</p>
+
+<pre>
+<i>/* na kterem radku je atribut menen */</i>
+line_number = get_line_number(jvmti_env, method, location);
+</pre>
+
+<p>Pro získání tabulky obsahující převodní informace mezi hodnotou
+<strong>location</strong> a skutečným číslem řádku použijeme <i>JVM TI</i>
+funkci <strong>jvmti-&gt;GetLineNumberTable()</strong>:</p>
+
+<pre>
+jvmtiError JNICALL <strong>GetLineNumberTable</strong> (
+    jvmtiEnv* env,
+    jmethodID method,
+    jint* entry_count_ptr,
+    jvmtiLineNumberEntry** table_ptr);
+</pre>
+
+<p>Uživatelskou funkci provádějící převod hodnoty <strong>location</strong> na
+číslo řádku již známe, protože jsme ji použili již v&nbsp;několika předchozích
+<i>JVM TI</i> agentech:</p>
+
+<pre>
+<i>/*</i>
+<i> * Ziskani cisla radku pro zadanou metodu a index instrukce.</i>
+<i> */</i>
+int <strong>get_line_number</strong>(jvmtiEnv *jvmti_env, jmethodID method, jlocation location)
+{
+    int count;
+    int line_number = 0;
+    int i;
+    jvmtiLineNumberEntry *location_table;
+    jvmtiError error_code;
+&nbsp;
+    if (method == NULL)
+    {
+        return -1;
+    }
+&nbsp;
+<i>    /* nacteni tabulky s cisly radku a indexy instrukci */</i>
+    error_code = (*jvmti_env)-&gt;<strong>GetLineNumberTable</strong>(jvmti_env, method, &amp;count, &amp;location_table);
+<i>    /* v nekterych pripadech se nacist tabulku nepodari */</i>
+    if (error_code != JVMTI_ERROR_NONE)
+    {
+        return -1;
+    }
+&nbsp;
+<i>    /* projit celou tabulkou */</i>
+    for (i = 0; i &lt; count - 1; i++)
+    {
+        jvmtiLineNumberEntry entry1 = location_table[i];
+        jvmtiLineNumberEntry entry2 = location_table[i+1];
+<i>        /* pokud se lokace nachazi mezi entry1 (vcetne) a entry2 (krome)</i>
+<i>         * nasli jsme spravny radek */</i>
+        if (location &gt;= entry1.start_location &amp;&amp; location &lt; entry2.start_location)
+        {
+            line_number = entry1.line_number;
+            break;
+        }
+    }
+<i>    /* take se muze jednat o uplne posledni instrukci v metode */</i>
+    if (location &gt;= location_table[count-1].start_location)
+    {
+        line_number = location_table[count-1].line_number;
+    }
+&nbsp;
+<i>    /* dealokace tabulky */</i>
+    (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)location_table);
+    return line_number;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Přečtení jména zdrojového souboru volající metody</h2>
+
+<p>Dostáváme se k&nbsp;problematice, kterou jsme se prozatím v&nbsp;tomto
+seriálu nezabývali. Jedná se o zjištění jména zdrojového kódu, z&nbsp;něhož
+byla nějaká zvolená třída přeložena. Tato informace je většinou součástí
+bajtkódu přeložené třídy a lze ji zjistit například s&nbsp;využitím nástroje
+<strong>javap</strong>. Podívejme se, jaká informace o zdrojovém kódu se vypíše
+pro testovací třídy <strong>Test29</strong> a <strong>MyInteger</strong>, které
+později využijeme současně s&nbsp;dvacátým devátým demonstračním <i>JVM TI</i>
+agentem. Zajímat nás bude především řádek začínající slovy &bdquo;Compiled
+from&ldquo;:</p>
+
+<pre>
+<strong>javac Test29.java</strong>
+&nbsp;
+<strong>javap Test29</strong>
+&nbsp;
+Compiled from "Test29.java"
+public class Test29 extends java.lang.Object{
+    public Test29();
+    public int foo(int);
+    public int bar(int, int);
+    public void run(MyInteger);
+    public static void main(java.lang.String[]);
+}
+&nbsp;
+<strong>javap MyInteger</strong>
+&nbsp;
+Compiled from "Test29.java"
+class MyInteger extends java.lang.Object{
+    public int i;
+    public void setValue(int);
+    public int getValue();
+    public MyInteger(int);
+}
+</pre>
+
+<p>Při běhu <i>JVM TI</i> agenta je možné zjistit jméno zdrojového kódu pro
+danou třídu (reprezentovanou hodnotou typu <strong>jclass</strong>)
+s&nbsp;využitím <i>JVM TI</i> funkce
+<strong>jvmti-&gt;GetSourceFileName()</strong>, jejíž hlavička je velmi
+jednoduchá:</p>
+
+<pre>
+jvmtiError JNICALL <strong>GetSourceFileName</strong> (
+    jvmtiEnv* env,
+    jclass klass,
+    char** source_name_ptr);
+</pre>
+
+<p>Využití této funkce je velmi jednoduché &ndash; po jejím zavolání by měl být
+naplněn řetězec, který je do funkce předán přes adresu (řetězec je interně
+naalokován a je vrácen ukazatel na jeho začátek). Posléze je samozřejmě nutné
+tento řetězec dealokovat s&nbsp;využitím nám již známé funkce
+<strong>jvmti-&gt;Deallocate()</strong>:</p>
+
+<pre>
+<i>/* ziskat jmeno zdrojoveho souboru volajici metody */</i>
+error = (*jvmti_env)-&gt;<strong>GetSourceFileName</strong>(jvmti_env, declaring_class, &amp;source_file_name);
+check_jvmti_error(jvmti_env, error, "GetSourceFileName() failed");
+&nbsp;
+...
+...
+...
+&nbsp;
+<i>/* dealokace retezce s nazvem atributu */</i>
+error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)source_file_name
+check_jvmti_error(jvmti_env, error, "deallocate source file name");
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Nastavení všech požadavků JVM TI agenta</h2>
+
+<p>Vzhledem k&nbsp;tomu, že náš demonstrační <i>JVM TI</i> agent potřebuje
+využít poměrně velké množství vlastností poskytovaných virtuálním strojem Javy,
+musíme si podporu pro poskytnutí těchto vlastností explicitně vyžádat. Postup
+je již známý &ndash; veškeré nastavení se provede ve funkci
+<strong>set_capabilities()</strong>, kde se vyžádají čtyři speciální schopnosti
+&ndash; schopnost zachytit okamžik čtení hodnoty atributu
+(<strong>can_generate_field_access_events</strong>), schopnost zachytit okamžik
+zápisu nové hodnoty do atributu
+(<strong>can_generate_field_modification_events</strong>), získání čísla řádku,
+resp.&nbsp;převedení hodnoty <i>jlocation</i> na číslo řádku
+(<strong>can_get_line_numbers</strong>) a konečně potřebujeme mít možnost
+získat pro libovolnou třídu jméno zdrojového souboru
+(<strong>can_get_source_file_name</strong>):</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+<i>    /* vyuzivame ctyti specialni schopnosti agenta */</i>
+    capabilities.<strong>can_generate_field_access_events</strong> = 1;
+    capabilities.<strong>can_generate_field_modification_events</strong> = 1;
+    capabilities.<strong>can_get_line_numbers</strong> = 1;
+    capabilities.<strong>can_get_source_file_name</strong> = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;<strong>AddCapabilities</strong>(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Testovací příklad a výsledek běhu 29. demonstračního JVM TI agenta</h2>
+
+<p>Všechny důležité součásti dvacátého devátého demonstračního <i>JVM TI</i>
+agenta, jehož úplný zdrojový kód je uložen do Mercurial repositáře (viz <a
+href="#k11">následující kapitolu</a>), jsme si již popsali. Tohoto agenta
+otestujeme na dvojici javovských tříd <strong>MyInteger</strong> a
+<strong>Test29</strong>. Ve třídě <strong>MyInteger</strong> je definován
+veřejný nestatický atribut nazvaný jednoduše <strong>i</strong>, který je čten
+i zapisován jak v&nbsp;konstruktoru a metodách vlastní třídy
+<strong>MyInteger</strong>, tak i z&nbsp;metod ve třídě
+<strong>Test29</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci tridy pouzite pro test dvacateho</i>
+<i>  * devateho demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+&nbsp;
+class <strong>MyInteger</strong> {
+    public int i;
+&nbsp;
+    public void setValue(int i) {
+        this.i = i;
+    }
+&nbsp;
+    public int getValue() {
+        return this.i;
+    }
+&nbsp;
+    public MyInteger(int i) {
+        this.i = i;
+    }
+}
+&nbsp;
+public class <strong>Test29</strong> {
+    public int foo(int x) {
+        return x * x;
+    }
+&nbsp;
+    public int bar(int x, int y) {
+        return (x+1) / y;
+    }
+&nbsp;
+    public void run(MyInteger in) {
+        in.i = 10;
+        in.i = in.i+1;
+        in.i = foo(in.i);
+        in.i--;
+        in.i = bar(in.i, in.i);
+        in.i *= 2;
+        in.setValue(6502);
+        ++in.i;
+        int x = in.getValue();
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void main(String[] args) {
+        new Test29().run(new MyInteger(42));
+    }
+}
+</pre>
+
+<p>Agent se přeloží podobným způsobem, jako tomu bylo i u všech předchozích
+demonstračních <i>JVM TI</i> agentů:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent29.so agent29.c
+</pre>
+
+<p>Po překladu agenta i obou testovacích tříd je již možné provést spuštění
+virtuálního stroje Javy a <i>JVM TI</i> agenta k&nbsp;němu připojit:</p>
+
+<pre>
+java -agentpath:./libagent29.so Test29 2&gt; /dev/null
+</pre>
+
+<p>Agent po svém spuštění vypíše na standardní výstup následující údaje,
+z&nbsp;nichž lze velmi snadno vyčíst, ve kterém místě je provedeno čtení obsahu
+atributu <strong>MyInteger.i</strong> i to, kde a jaká hodnota je do tohoto
+atributu zapisována. Povšimněte si, že informaci o místě čtení/zápisu do
+atributu získáme velmi přesně, až na úroveň řádku ve zdrojovém kódu, kde se
+nachází příslušný příkaz:</p>
+
+<pre>
+Agent29: Agent_OnLoad
+Agent29: JVM TI version is correct
+Agent29: Got VM init event
+Class MyInteger; prepared, setting field monitor
+Setting monitors for field #34
+Writting     42 value into attribute MyInteger.i.  This operation is called from MyInteger.&lt;init&gt;(Test29.java:18)
+Writting     10 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:32)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:33)
+Writting     11 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:33)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:34)
+Writting    121 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:34)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:35)
+Writting    120 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:35)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:36)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:36)
+Writting      1 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:36)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:37)
+Writting      2 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:37)
+Writting   6502 value into attribute MyInteger.i.  This operation is called from MyInteger.setValue(Test29.java:10)
+Reading integer value from attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:39)
+Writting   6503 value into attribute MyInteger.i.  This operation is called from Test29.run(Test29.java:39)
+Reading integer value from attribute MyInteger.i.  This operation is called from MyInteger.getValue(Test29.java:14)
+Agent29: Got VM Death event
+Agent29: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Zdrojový kód demonstračního agenta a k&nbsp;němu příslušných testovacích příkladů a skriptů</h2>
+
+<p>Zdrojové kódy dvacátého devátého demonstračního <i>JVM TI</i> agenta jsou
+společně s&nbsp;dvojicí testovacích javovských tříd i se všemi podpůrnými
+skripty uloženy do Mercurial repositáře, který je dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze všech dnes použitých souborů můžete nalézt na
+následujících adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad/podpůrný soubor</th><th>Umístění</th></tr>
+<tr><td>Agent #29                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/agent29.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/agent29.c</a></td></tr>
+<tr><td>Skript pro překlad            </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/test.sh</a></td></tr>
+<tr><td>Testovací třída Test29.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/Test29.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/810c61d5d549/jvmti-agents/agent29/Test29.java</a></td></tr>
+<tr><td>(obsahuje i testovací třídu MyInteger)</td><td>&nbsp;</td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
