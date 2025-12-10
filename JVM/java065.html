@@ -1,0 +1,641 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - nastavení breakpointů s využitím rozhraní JVM TI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - nastavení breakpointů s využitím rozhraní JVM TI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM se začneme zabývat další velmi důležitou funkcí nabízenou rozhraním JVM TI. Jedná se o funkci určenou pro nastavení breakpointů (bodů přerušení). Breakpoint je možné nastavit v libovolné metodě na zvolenou instrukci, takže v JVM TI je práce s breakpointy přesnější, než ve většině debuggerů či IDE.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Podpora práce s&nbsp;breakpointy v&nbsp;rozhraní JVM TI</a></p>
+<p><a href="#k02">2. JVM TI funkce <strong>SetBreakpoint()</strong> a <strong>ClearBreakpoint()</strong></a></p>
+<p><a href="#k03">3. Callback funkce zavolaná ve chvíli dosažení breakpointu</a></p>
+<p><a href="#k04">4. Postup při nastavení breakpointů</a></p>
+<p><a href="#k05">5. Získání identifikátorů všech metod pro zvolenou třídu</a></p>
+<p><a href="#k06">6. Demonstrační agent číslo 30 &ndash; výpis všech metod pro zvolenou třídu</a></p>
+<p><a href="#k07">7. Spuštění třicátého demonstračního agenta</a></p>
+<p><a href="#k08">8. Zdrojové kódy demonstračního agenta i k&nbsp;němu příslušných testovacích příkladů a skriptů</a></p>
+<p><a href="#k09">9. Obsah následující části seriálu</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Podpora práce s&nbsp;breakpointy v&nbsp;rozhraní JVM TI</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> se
+budeme zabývat popisem jedné z&nbsp;nejužitečnějších funkcí nabízených
+rozhraním <i>JVM TI</i>. Jedná se o funkci nazvanou
+<strong>SetBreakpoint()</strong> a v&nbsp;menší míře i o funkci
+<strong>ClearBreakpoint()</strong>. Jak již názvy těchto funkcí naznačují, lze
+je využít pro nastavení či naopak zrušení breakpointů vkládaných na určitá
+místa v&nbsp;bajtkódu. Breakpointů může být zaregistrováno libovolné množství a
+ve chvíli, kdy nějaké vlákno k&nbsp;zaregistrovanému breakpointu dojde, zavolá
+rozhraní <i>JVM TI</i> callback funkci společnou pro všechny nastavené
+breakpointy.</p>
+
+<p>V&nbsp;této callback funkci je již možné získat všechny potřebné informace o
+místě, kde vlákno došlo k&nbsp;breakpointu, lze samozřejmě získat hodnoty
+atributů sledovaného objektu, výpis zásobníkových rámců platných pro aktuální
+vlákno atd. atd. Možnosti nabízené rozhraním <i>JVM TI</i> jsou v&nbsp;tomto
+ohledu dosti velké, i když je nutné říci, že pro implementaci plnohodnotného
+debuggeru může být jednodušší využít rozhraní <i>JDWP</i> (k&nbsp;popisu tohoto
+velmi zajímavého a užitečného rozhraní se v&nbsp;tomto seriálu dostaneme
+později).</p>
+
+<p>Na tomto místě ještě stojí za zmínku si připomenout, že v&nbsp;předchozích
+částech tohoto seriálu jsme si popsali funkce, které lze využít pro trasování
+vstupu do metod a výstupu z&nbsp;metod:</p>
+
+<pre>
+void JNICALL <strong>MethodEntry</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv   *jni_env,
+            jthread   thread,
+            jmethodID method)
+</pre>
+
+<pre>
+void JNICALL <strong>MethodExit</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv   *jni_env,
+            jthread   thread,
+            jmethodID method,
+            jboolean  was_popped_by_exception,
+            jvalue    return_value)
+</pre>
+
+<p>Tyto funkce mohou v&nbsp;některých případech nahradit breakpointy, ovšem
+mají jednu dosti zásadní nevýhodu &ndash; tyto callback funkce jsou totiž
+zaregistrovány globálně pro <strong>všechny</strong> metody, což
+mj.&nbsp;znamená, že se při jejich použití výrazně zpomalí běh virtuálního
+stroje Javy. U breakpointů toto nebezpečí nehrozí, samozřejmě v&nbsp;případě,
+že jich nebudeme mít zaregistrováno několik tisíc :-) Zajímavé taktéž je, že
+nastavené breakpointy zůstanou zachovány i tehdy, pokud je daná metoda
+přeložena JIT překladačem do nativního strojového kódu (ostatně algoritmus,
+který breakpointy zachovává i v&nbsp;tomto případě je dosti složitý a
+v&nbsp;minulosti nebyl zcela bez chyb).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. JVM TI funkce <strong>SetBreakpoint()</strong> a <strong>ClearBreakpoint()</strong></h2>
+
+<p>Popišme si nyní obě funkce určené pro nastavování a rušení breakpointů. Pro
+nastavení breakpointu se používá funkce
+<strong>jvmti-&gt;SetBreakpoint()</strong>. Této funkci je nutné předat dva
+důležité údaje. Jedná se v&nbsp;první řadě o identifikátor metody, tj.&nbsp;o
+hodnotu typu <strong>jmethodID</strong>, kterou je nutné nějakým způsobem
+získat (jak, to se dozvíme v&nbsp;navazujících kapitolách). Druhým důležitým
+parametrem je parametr typu <strong>jlocation</strong>, který určuje přesné
+místo v&nbsp;rámci metody, kam má být breakpoint umístěn. Ve většině
+existujících virtuálních strojů Javy platí, že <strong>jlocation</strong>
+odpovídá indexům instrukcí bajtkódu v&nbsp;metodě, což znamená, že breakpoint
+lze nastavit s&nbsp;přesností na instrukci, zatímco většina (?) debuggerů a
+integrovaných vývojových prostředí pracuje s&nbsp;řádky zdrojového kódu.
+V&nbsp;praxi to znamená, že přes rozhraní <i>JVM TI</i> lze umístit breakpoint
+například doprostřed výrazu, což může být v&nbsp;některých případech
+užitečné.</p>
+
+<p>Hlavička funkce <strong>jvmti-&gt;SetBreakpoint()</strong> vypadá
+následovně:</p>
+
+<pre>
+jvmtiError <strong>SetBreakpoint</strong>(
+            jvmtiEnv* env,
+            jmethodID method,
+            jlocation location)
+</pre>
+
+<p>Zajímavé je, že funkce určená pro rušení existujícího breakpointu
+(<strong>jvmti-&gt;ClearBreakpoint()</strong>) má stejné parametry jako funkce
+<strong>jvmti-&gt;SetBreakpoint()</strong>. Je to vlastně pochopitelné, neboť i
+při rušení breakpointu je nutné specifikovat metodu a index instrukce
+v&nbsp;rámci této metody:</p>
+
+<pre>
+jvmtiError <strong>ClearBreakpoint</strong>(
+            jvmtiEnv* env,
+            jmethodID method,
+            jlocation location)
+</pre>
+
+<p>Jak jsme si již řekli <a href="#k01">v&nbsp;předchozí kapitole</a>, zůstává
+breakpoint nastaven i v&nbsp;případě, že je metoda přeložena JIT překladačem do
+nativního strojového kódu. U většiny virtuálních strojů Javy se však musí
+interně zakázat některé optimalizace, které by vedly například k&nbsp;eliminaci
+kódu, na němž je breakpoint nastaven. Teoreticky to tedy znamená, že nastavením
+breakpointu se běh programu zpomalí, ve skutečnosti se však většinou jedná o
+minimální rozdíly. Výjimkou by byly případy, kdy by byl breakpoint nastaven ve
+vnitřní smyčce nějakého výpočtu, který by jinak mohl být eliminován
+optimalizujícím JIT překladačem. Druhý problém může nastat u některých
+&bdquo;alternativních&ldquo; JVM (například Zero+Shark pro ARM) ve chvíli, kdy
+se breakpoint nastavuje do metody s&nbsp;prázdným tělem &ndash; Shark totiž
+volání prázdných metod eliminuje i v&nbsp;případě, že je zde breakpoint
+nastaven (což by v&nbsp;ideálním případě mělo být ošetřeno).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Callback funkce zavolaná ve chvíli dosažení breakpointu</h2>
+
+<p>Nastavení breakpointu s&nbsp;využitím funkce
+<strong>jvmti-&gt;SetBreakpoint()</strong> však ještě nestačí k&nbsp;tomu, aby
+<i>JVM TI</i> agent dostával zprávy o tom, že nějaké vlákno breakpointu
+skutečně dosáhlo. Musíme totiž ještě implementovat uživatelskou callback funkci
+zavolanou ve chvíli dosažení breakpointu. Hlavička této callback funkce vypadá
+následovně:</p>
+
+<pre>
+void JNICALL <strong>Breakpoint</strong>(
+            jvmtiEnv *jvmti_env,
+            JNIEnv   *jni_env,
+            jthread   thread,
+            jmethodID method,
+            jlocation location)
+</pre>
+
+<p>V&nbsp;následující tabulce je vypsán význam všech pěti parametrů této
+funkce. Tyto parametry jsou samozřejmě naplňovány virtuálním strojem Javy ve
+chvíli před zavoláním callback funkce:</p>
+
+<table>
+<tr><th>#</th><th>Typ parametru</th><th>Jméno parametru</th><th>Význam</th></tr>
+<tr><td>1</td><td>jvmtiEnv *</td><td>jvmti_env</td><td>JVM TI prostředí agenta (je předáváno do většiny callback funkcí)</td></tr>
+<tr><td>2</td><td>JNIEnv   *</td><td>jni_env  </td><td>JNI prostředí platné pro dané vlákno (je předáváno do některých callback funkcí)</td></tr>
+<tr><td>3</td><td>jthread   </td><td>thread   </td><td>vlákno, v&nbsp;němž došlo k&nbsp;dosažení instrukce označené breakpointem</td></tr>
+<tr><td>4</td><td>jmethodID </td><td>method   </td><td>metoda s&nbsp;registrovaným breakpointem</td></tr>
+<tr><td>5</td><td>jlocation </td><td>location </td><td>identifikace instrukce, na níž je nastavený registrovaný breakpoint</td></tr>
+</table>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Postup při nastavení breakpointů</h2>
+
+<p>V&nbsp;dalším kroku je nutné povolit generování událostí ve chvíli dosažení
+breakpointu. Podobně jako u dalších typů událostí, i zde se &bdquo;povolovací
+sekvence&ldquo; rozděluje na dva kroky. Nejprve musíme přes <i>JVM TI</i>
+rozhraní oznámit, že danou funkcionalitu vyžadujeme, a to s&nbsp;využitím
+struktury <strong>jvmtiCapabilities</strong> a <i>JVM TI</i> funkce
+<strong>jvmti-&gt;AddCapabilities()</strong>:</p>
+
+<pre>
+jvmtiCapabilities capabilities;
+&nbsp;
+memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+capabilities.can_generate_breakpoint_events = 1;
+(*jvmti)-&gt;<strong>AddCapabilities</strong>(jvmti, &amp;capabilities);
+</pre>
+
+<p>Následně je nutné nastavit režim notifikace s&nbsp;využitím funkce
+<strong>jvmti-&gt;SetEventNotificationMode()</strong>, které se předá hodnota
+<strong>JVMTI_EVENT_BREAKPOINT</strong>:</p>
+
+<pre>
+(*jvmti)-&gt;SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_BREAKPOINT, NULL)
+</pre>
+
+<p>Následně musíme provést tyto kroky:</p>
+
+<ol>
+
+<li>Získat identifikátor metody, pro níž se breakpoint nastavuje.</li>
+
+<li>Získat lokaci (umístění) breakpointu v&nbsp;rámci metody (většinou na
+základě čísla řádku).</li>
+
+<li>Provést registraci breakpointu s&nbsp;využitím funkce
+<strong>SetBreakpoint()</strong>.</li>
+
+<li>Definovat uživatelskou callback funkci popsanou <a
+href="#k03">v&nbsp;předchozí kapitole</a>.</li>
+
+</ol>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Získání identifikátorů všech metod pro zvolenou třídu</h2>
+
+<p>V&nbsp;předchozích kapitolách jsme si řekli, že pro zdárné zaregistrování
+nového breakpointu je nutné funkci <strong>SetBreakpoint()</strong> předat
+identifikátor metody a umístění breakpointu v&nbsp;rámci této metody. Nejprve
+se podívejme na to, jakým způsobem se zjistí všechny metody zvolené třídy. Ve
+skutečnosti je to velmi jednoduché, protože můžeme využít postup, s&nbsp;nímž
+jsme se seznámili v&nbsp;předchozích dvou dílech tohoto seriálu &ndash;
+využijeme uživatelskou callback funkci
+<strong>callback_on_class_prepare()</strong> volanou v&nbsp;době, kdy jsou do
+virtuálního stroje Javy načítány jednotlivé třídy. Pro každou třídu zjistíme
+pomocí funkce <strong>GetClassSignature()</strong> její jméno a pokud se jedná
+o testovací třídu (resp.&nbsp;třídu, pro jejíž metodu má být nastaven
+breakpoint), zavolá se uživatelská funkce <strong>list_all_methods()</strong>,
+která vypíše jména všech metod deklarovaných v&nbsp;rámci nalezené třídy:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana ve chvili, kdy je trida ve virtualnim stroji ve stavu,</i>
+<i> * kdy ji lze normalne pouzivat.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_class_prepare</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jclass    class)
+{
+    jvmtiError error;
+    char *class_name_ptr;
+    char *updated_class_name_ptr;
+&nbsp;
+    enter_critical_section(jvmti_env);
+&nbsp;
+<i>    /* ziskat jmeno tridy */</i>
+    error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, class, &amp;class_name_ptr, NULL);
+    check_jvmti_error(jvmti_env, error, "get class signature");
+    if (class_name_ptr == NULL)
+    {
+        puts("Error: class has no signature");
+    }
+&nbsp;
+<i>    /* upravit jmeno tridy */</i>
+    updated_class_name_ptr = update_class_name(class_name_ptr, ';');
+&nbsp;
+<i>    /* pokud jsme nasli to pravou tridu */</i>
+    if (strcmp(updated_class_name_ptr, TEST_CLASS_NAME) == 0)
+    {
+        puts("Class "TEST_CLASS_NAME" prepared, listing all its methods");
+        list_all_methods(jvmti_env, class);
+    }
+&nbsp;
+<i>    /* dealokace pameti po GetClassSignature() */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate class name");
+    exit_critical_section(jvmti_env);
+}
+</pre>
+
+<p>Uživatelské funkci <strong>list_all_methods()</strong> je předán
+identifikátor třídy představovaný hodnotou typu <strong>jclass</strong>. Pro
+získání seznamu všech metod této třídy se použije funkce
+<strong>GetClassMethods()</strong>, která vrátí pole obsahující prvky typu
+<strong>jmethodID</strong> a taktéž vrátí délku tohoto pole. Pro každý prvek
+typu <strong>jmethodID</strong> lze již snadno získat jméno i signaturu metody,
+a to s&nbsp;využitím <i>JVM TI</i> funkce <strong>GetMethodName()</strong>. Po
+využití jména i signatury samozřejmě nesmíme zapomenout na dealokaci obou
+řetězců, což zajistí nám již dobře známá funkce
+<strong>Deallocate()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Vypis vsech metod zvolene tridy.</i>
+<i> */</i>
+void <strong>list_all_methods</strong>(jvmtiEnv *jvmti_env, jclass class)
+{
+    jvmtiError  error;
+    int         method_count;
+    jmethodID  *methods_array;
+&nbsp;
+<i>    /* precist vsechny metody tridy */</i>
+    error = (*jvmti_env)-&gt;<strong>GetClassMethods</strong>(jvmti_env, class, &amp;method_count, &amp;methods_array);
+    check_jvmti_error(jvmti_env, error, "get class methods");
+&nbsp;
+<i>    /* pole metod bylo inicializovano */</i>
+    if (error == JVMTI_ERROR_NONE)
+    {
+        int i;
+<i>        /* projit vsemi metodami */</i>
+        for (i = 0; i &lt; method_count; i++)
+        {
+            char *method_name;
+            char *method_signature;
+            jmethodID method = methods_array[i];
+            error = (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name, &amp;method_signature, NULL);
+            if (error == JVMTI_ERROR_NONE)
+            {
+                printf("Found method(): %s with signature %s\n", method_name, method_signature);
+                (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)method_name);
+                (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)method_signature);
+            }
+        }
+    }
+&nbsp;
+<i>    /* dealokace pole ziskaneho pres GetClassFields() */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)methods_array);
+    check_jvmti_error(jvmti_env, error, "deallocate class fields array");
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační agent číslo 30 &ndash; výpis všech metod pro zvolenou třídu</h2>
+
+<p>Výše popsané uživatelské funkce <strong>callback_on_class_prepare()</strong>
+a <strong>list_all_methods()</strong> tvoří ústřední prvek již třicátého
+demonstračního <i>JVM TI</i> agenta, který po svém spuštění v&nbsp;rámci JVM
+vypíše seznam všech metod testovací třídy <strong>Test30</strong>. U každé
+metody je vypsáno jak její jméno (které nemusí být jednoznačné), tak i
+signatura metody, z&nbsp;níž lze nám již známým postupem vyčíst počet a typ
+parametrů metody i typ návratové hodnoty této metody. Testovací třída
+<strong>Test30</strong> mj.&nbsp;obsahuje i několik metod se shodným názvem
+<strong>x</strong>, které se však liší (=musí se lišit) svými signaturami:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzite pro test tricateho</i>
+<i>  * demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class <strong>Test30</strong> {
+&nbsp;
+    public void <strong>foo</strong>() {
+        System.out.println("Test30.foo()");
+        bar();
+    }
+&nbsp;
+    public void <strong>bar</strong>() {
+        System.out.println("Test30.bar() line 12");
+        System.out.println("Test30.bar() line 13");
+        System.out.println("Test30.bar() line 14");
+        System.out.println("Test30.bar() line 15");
+    }
+&nbsp;
+    public void <strong>run</strong>() {
+        System.out.println("Test30.run()");
+        foo();
+    }
+&nbsp;
+    public int <strong>x</strong>() {return 0;}
+    public int <strong>x</strong>(int y) {return 0;}
+    public int <strong>x</strong>(int y, boolean z) {return 0;}
+    public int[] <strong>x</strong>(int[] y, double[][] z) {return null;}
+&nbsp;
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void <strong>main</strong>(String[] args) {
+        new Test30().run();
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Spuštění třicátého demonstračního agenta</h2>
+
+<p>Demonstrační <i>JVM TI</i> agent i k&nbsp;němu příslušná testovací třída
+<strong>Test30</strong> se přeloží stejným způsobem, jaký jsme použili i u
+všech předchozích příkladů:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent30.so agent30.c
+javac -g Test30.java
+</pre>
+
+<p>O spuštění virtuálního stroje Javy společně s&nbsp;<i>JVM TI</i> agentem se
+postará příkaz:</p>
+
+<pre>
+java -agentpath:./libagent30.so Test30 2&gt; /dev/null
+</pre>
+
+<p>Po spuštění by se měl na standardním výstupu objevit mj.&nbsp;i seznam všech
+metod testovací třídy <strong>Test30</strong>, a to včetně signatur těchto
+metod:</p>
+
+<pre>
+Test30.run()
+Test30.foo()
+Test30.bar() line 12
+Test30.bar() line 13
+Test30.bar() line 14
+Test30.bar() line 15
+Agent30: Agent_OnLoad
+Agent30: JVM TI version is correct
+Agent30: Got VM init event
+Class Test30; prepared, listing all its methods
+Found method(): &lt;init&gt; with signature ()V
+Found method(): main with signature ([Ljava/lang/String;)V
+Found method(): run with signature ()V
+Found method(): x with signature ()I
+Found method(): x with signature (I)I
+Found method(): x with signature (IZ)I
+Found method(): x with signature ([I[[D)[I
+Found method(): foo with signature ()V
+Found method(): bar with signature ()V
+Agent30: Got VM Death event
+Agent30: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Zdrojové kódy demonstračního agenta i k&nbsp;němu příslušných testovacích příkladů a skriptů</h2>
+
+<p>Podobně jako v&nbsp;mnoha předcházejících částech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> byl i dnešní demonstrační <i>JVM TI</i> agent kvůli snazšímu
+udržování všech zdrojových kódů uložen do Mercurial repositáře, který je
+dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze dnes popisovaného <i>JVM TI</i> agenta i dalších
+potřebných skriptů a testovacích javovských tříd jsou dostupné na následujících
+adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad/podpůrný soubor</th><th>Umístění</th></tr>
+<tr><td>Agent #30                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/agent30.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/agent30.c</a></td></tr>
+<tr><td>Skript pro překlad agenta #30 </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění agenta #30</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/test.sh</a></td></tr>
+<tr><td>Testovací třída Test30.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/Test30.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2a7ebf111840/jvmti-agents/agent30/Test30.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Obsah následující části seriálu</h2>
+
+<p>První část našeho problému již vlastně máme vyřešenou &ndash; na základě
+jména třídy a jména metody totiž dokážeme získat hodnotu typu
+<strong>jmethodID</strong>, která vybranou metodu jednoznačně reprezentuje
+v&nbsp;rámci spuštěného virtuálního stroje Javy. Můžeme se tedy pustit do
+přípravy 31 demonstračního <i>JVM TI</i> agenta, v&nbsp;němž bude nutné provést
+tyto operace:</p>
+
+<ol>
+
+<li>Zjistit hodnotu typu <strong>jmethodID</strong> pro metodu, v&nbsp;níž
+budeme chtít zaregistrovat breakpoint.</li>
+
+<li>Převést číslo řádku na hodnotu typu <strong>jlocation</strong>. Číslo řádku
+přitom odpovídá pořadí řádku v&nbsp;textovém souboru se zdrojovým kódem
+třídy.</li>
+
+<li>Nastavit požadované schopnosti agenta, zejména povolit generování callback
+funkcí při průchodu breakpointem.</li>
+
+<li>Nastavit breakpoint funkcí <strong>SetBreakpoint()</strong> na základě
+hodnot <strong>jmethodID</strong> a <strong>jlocation</strong> zjištěných
+v&nbsp;bodech 1 a 2.</li>
+
+<li>Zaregistrovat callback funkci zavolanou při průchodu breakpointem (viz též
+<a href="#k03">třetí kapitolu</a>).</li>
+
+</ol>
+
+<p>Všechny tyto kroky si podrobně popíšeme v&nbsp;navazující části tohoto
+seriálu. Zde si jen jako malou ukázku uvedeme zprávy, které agent po svém
+spuštění vypíše na standardní výstup:</p>
+
+<pre>
+Test31.run()
+Test31.foo()
+Test31.bar() line 1
+Test31.bar() line 2
+Test31.bar() line 3
+Test31.bar() line 4
+Agent31: Agent_OnLoad
+Agent31: JVM TI version is correct
+Agent31: Got VM init event
+Class Test31; prepared, setting breakpoint for method bar
+Found method(): &lt;init&gt; with signature ()V
+Found method(): main with signature ([Ljava/lang/String;)V
+Found method(): run with signature ()V
+Found method(): x with signature ()I
+Found method(): x with signature (I)I
+Found method(): x with signature (IZ)I
+Found method(): x with signature ([I[[D)[I
+Found method(): foo with signature ()V
+Found method(): bar with signature ()V
+...going to set breakpoint for this method
+<strong>*** breakpoint visited!!! ***</strong>
+Agent31: Got VM Death event
+Agent31: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
