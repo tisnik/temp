@@ -1,0 +1,956 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - sledování čtení i zápisu do vybraného atributu třídy či atributu objektu</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - sledování čtení i zápisu do vybraného atributu třídy či atributu objektu</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o vlastnostech JVM si ukážeme, jakým způsobem může být použit JVM TI agent pro sledování čtení či zápisu do vybraného atributu třídy či atributu objektu. Rozhraní JVM TI nám totiž dává k dispozici callback funkce zavolané ve chvíli, kdy libovolné vlákno k označeným (vybraným) atributům přistupuje.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Callback funkce zavolaná při načítání třídy do virtuálního stroje Javy</a></p>
+<p><a href="#k02">2. Callback funkce zavolaná po inicializaci třídy</a></p>
+<p><a href="#k03">3. Demonstrační agent číslo 27 &ndash; výpis všech načítaných a inicializovaných tříd</a></p>
+<p><a href="#k04">4. Výsledek běhu demonstračního agenta číslo 27</a></p>
+<p><a href="#k05">5. Sledování přístupu (čtení, zápis) k&nbsp;vybranému atributu</a></p>
+<p><a href="#k06">6. Nastavení požadovaných vlastností JVM TI agenta</a></p>
+<p><a href="#k07">7. Nastavení režimů notifikace a registrace callback funkcí</a></p>
+<p><a href="#k08">8. Demonstrační agent číslo 28 &ndash; jednoduchá detekce přístupu k&nbsp;atributu třídy Test28</a></p>
+<p><a href="#k09">9. Výsledek běhu demonstračního agenta číslo 28</a></p>
+<p><a href="#k10">10. Zdrojové kódy obou demonstračních agentů a k&nbsp;nim příslušných testovacích příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Callback funkce zavolaná při načítání třídy do virtuálního stroje Javy</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> jsme si
+vysvětlili činnost demonstračního <i>JVM TI</i> agenta, který pro vybranou
+třídu dokázal vypsat všechny atributy, včetně jejich typu a případných
+modifikátorů. Dnes postoupíme poněkud dále, protože si ukážeme, jak je možné
+sledovat všechny operace čtení a především pak zápisu do vybraného atributu, ať
+již se jedná o třídní atribut (statický) či o atribut objektu (nestatický).
+Nejprve si však musíme popsat ještě jednu funkcionalitu nabízenou rozhraním
+<i>JVM TI</i>, která se týká možností sledování načítání a inicializace tříd ve
+virtuálním stroji Javy. Jeden z&nbsp;problémů se sledováním přístupu
+k&nbsp;atributům totiž spočívá v&nbsp;tom, <strong>kdy</strong> přesně je možné
+zaregistrovat callback funkce zavolané ve chvíli, kdy je atribut čten nebo je
+do něj zapisována nová hodnota.</p>
+
+<p>Nejjednodušší je provést registraci ve chvíli, kdy je příslušná třída (jejíž
+atribut/atributy se mají sledovat) načtena do virtuálního stroje Javy. Ve
+skutečnosti se jedná o dvoufázovou činnost, alespoň z&nbsp;hlediska <i>JVM
+TI</i> agenta. Můžeme zachytit okamžik, kdy je třída skutečně teprve načítána,
+ale ještě se neprovádí její inicializace. V&nbsp;tomto okamžiku je například
+možné provést takzvanou retransformaci třídy, tj.&nbsp;například změnu bajtkódu
+jednotlivých metod atd. Retransformace je poměrně často používána například
+tehdy, pokud je zapotřebí sledovat vstupy a výstupy z&nbsp;vybraných metod,
+protože použití obecných sledovacích nástrojů založených na callback funkcích
+<strong>MethodEntry()</strong> a <strong>MethodExit()</strong> vede
+k&nbsp;velké degradaci výpočetního výkonu celého sledovaného virtuálního stroje
+Javy. Vraťme se však k&nbsp;okamžiku, kdy je třída načítána do virtuálního
+stroje Javy. Tento okamžik je možné pro každou načítanou třídu jednoduše
+detekovat; postačuje pouze nastavit vhodný režim notifikace:</p>
+
+<pre>
+<i>    /* Udalost pri nacitani tridy. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_CLASS_LOAD)) != JNI_OK)
+    {
+        return error_code;
+    }
+</pre>
+
+<p>A následně zaregistrovat callback funkci
+<strong>ClassLoad()</strong>v&nbsp;datové struktuře
+<strong>jvmtiEventCallbacks</strong>. Volaná callback funkce musí mít
+následující hlavičku:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri nacitani tridy do virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_class_load</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jclass    class)
+</pre>
+
+<p><ins>Poznámka: pro sledování načítání tříd do JVM není zapotřebí nastavovat
+žádné speciální schopnosti <i>JVM TI</i> agenta, tj.&nbsp;nemusí se měnit obsah
+struktury <strong>jvmtiCapabilities</strong>.</ins></p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Callback funkce zavolaná po inicializaci třídy</h2>
+
+<p>Callback funkce <strong>callback_on_class_load()</strong> popsaná <a
+href="#k01">v&nbsp;předchozí kapitole</a> je volána ještě předtím, než je třída
+korektně inicializována, zpracována a uložena do příslušné paměťové oblasti
+virtuálního stroje Javy. To s&nbsp;sebou přináší klady, ale samozřejmě i
+zápory. Mezi klady patří již zmíněná možnost retransformace třídy či libovolné
+úpravy třídy před jejím dalším standardním zpracováním. Mezi zápory pak patří
+především fakt, že se o třídě v&nbsp;daném okamžiku dá získat jen velmi málo
+informací standardními prostředky &ndash; můžeme například získat signaturu
+třídy, ale již ne její metody a atributy. Z&nbsp;tohoto důvodu by pro nás bylo
+vhodnější zachytit spíše okamžik, kdy je již třída korektně inicializována a
+kdy již můžeme získat seznam jejich atributů. I tuto funkcionalitu nám rozhraní
+<i>JVM TI</i> samozřejmě nabízí; konkrétně se jedná o callback funkci
+pojmenovanou v&nbsp;datové struktuře <strong>jvmtiEventCallbacks</strong>
+<strong>ClassPrepare()</strong>. Zajímavé je, že tato callback funkce má zcela
+stejnou hlavičku, jako callback funkce <strong>ClassLoad()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana ve chvili, kdy je trida ve virtualnim stroji ve stavu,</i>
+<i> * kdy ji lze normalne pouzivat.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_class_prepare</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jclass    class)
+{
+}
+</pre>
+
+<p>Ani pro zavolání této callback funkce není zapotřebí nastavovat žádnou
+speciální schopnost <i>JVM TI</i> agenta, tj.&nbsp;nemusí se měnit obsah
+struktury <strong>jvmtiCapabilities</strong>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační agent číslo 27 &ndash; výpis všech načítaných a inicializovaných tříd</h2>
+
+<p>Obě události popsané v&nbsp;předchozích dvou kapitolách budou využity
+v&nbsp;dnešním prvním demonstračním <i>JVM TI</i> agentovi, který na standardní
+výstup postupně vypíše všechny třídy načítané do virtuálního stroje Javy i
+třídy skutečně inicializované (oba dva seznamy tříd by samozřejmě měly být
+shodné). V&nbsp;dalších odstavcích budou popsány nejzajímavější funkce
+implementované v&nbsp;<i>JVM TI</i> agentovi.</p>
+
+<p>Nejprve je nutné nastavit nové režimy notifikace, což se provádí ve funkci
+<strong>set_event_notification_modes()</strong>. V&nbsp;agentovi budou
+zachytávány čtyři typy událostí &ndash; inicializace virtuálního stroje Javy,
+ukončení práce virtuálního stroje Javy, načtení třídy a inicializace třídy
+&ndash; z&nbsp;nichž každá má přiřazen vlastní režim notifikace:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni udalosti, pro nez se maji zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_modes</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost inicializace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_INIT)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Potrebujeme zachytavat udalost ukonceni prace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_DEATH)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Udalost pri nacitani tridy. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_CLASS_LOAD)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+<i>    /* Udalost pri priprave tridy ve virtualnim stroji. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_CLASS_PREPARE)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return error_code;
+}
+</pre>
+
+<p>Dále je nutné v&nbsp;datové struktuře <strong>jvmtiEventCallbacks</strong>
+nastavit ukazatele na všechny čtyři callback funkce (inicializace JVM, ukončení
+práce JVM, načtení třídy, inicializace třídy). To se provede ve funkci
+<strong>register_all_callback_functions()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace ctyr callback funkci zavolanych virtualnim strojem Javy.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+    <i>/* JVMTI_EVENT_VM_INIT */</i>
+    callbacks.VMInit = &amp;callback_on_vm_init;
+&nbsp;
+    <i>/* JVMTI_EVENT_VM_DEATH */</i>
+    callbacks.VMDeath = &amp;callback_on_vm_death;
+&nbsp;
+    <i>/* JVMTI_EVENT_CLASS_LOAD */</i>
+    callbacks.ClassLoad = &amp;callback_on_class_load;
+&nbsp;
+    <i>/* JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE */</i>
+    callbacks.ClassPrepare = &amp;callback_on_class_prepare;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+</pre>
+
+<p>Callback funkce zavolaná při načtení každé třídy je interně velmi jednoduchá
+&ndash; pouze se v&nbsp;kritické sekci zavolá uživatelská funkce
+<strong>print_class_name()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri nacitani tridy do virtualniho stroje.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_class_load</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jclass    class)
+{
+    enter_critical_section(jvmti_env);
+    printf("Class load:   ");
+    print_class_name(jvmti_env, class);
+    exit_critical_section(jvmti_env);
+}
+</pre>
+
+<p>To stejné platí pro callback funkci zavolanou ve chvíli inicializace
+třídy:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana ve chvili, kdy je trida ve virtualnim stroji ve stavu,</i>
+<i> * kdy ji lze normalne pouzivat.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_class_prepare</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jclass    class)
+{
+    enter_critical_section(jvmti_env);
+    printf("Class prepare:");
+    print_class_name(jvmti_env, class);
+    exit_critical_section(jvmti_env);
+}
+</pre>
+
+<p>Pomocná uživatelská funkce <strong>print_class_name()</strong> získá
+signaturu třídy (ta existuje v&nbsp;obou případech, tj.&nbsp;již při načtení
+třídy) a následně tuto signaturu upraví do čitelnějšího tvaru, který je
+následně vytištěn na standardní výstup:</p>
+
+<pre>
+<i>/*</i>
+<i> * Vypise jmeno tridy pro zadany jclass</i>
+<i> */</i>
+void <strong>print_class_name</strong>(jvmtiEnv *jvmti_env, jclass class)
+{
+    jvmtiError error;
+    char *class_name_ptr;
+    char *updated_class_name_ptr;
+&nbsp;
+    <i>/* ziskat jmeno tridy */</i>
+    error = (*jvmti_env)-&gt;GetClassSignature(jvmti_env, class, &amp;class_name_ptr, NULL);
+    check_jvmti_error(jvmti_env, error, "get class signature");
+    if (class_name_ptr == NULL)
+    {
+        puts("Error: class has no signature");
+    }
+&nbsp;
+    <i>/* upravit jmeno tridy */</i>
+    updated_class_name_ptr = update_class_name(class_name_ptr, ';');
+&nbsp;
+    <i>/* tisk upraveneho jmena tridy */</i>
+    puts(updated_class_name_ptr);
+&nbsp;
+    <i>/* dealokace pameti po GetClassSignature() */</i>
+    error = (*jvmti_env)-&gt;Deallocate(jvmti_env, (unsigned char *)class_name_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate class name");
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výsledek běhu demonstračního agenta číslo 27</h2>
+
+<p>Demonstrační agent popsaný výše se přeloží stejným způsobem, jako již dříve
+popsaní agenti:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent27.so agent27.c
+</pre>
+
+<p>Spuštění virtuálního stroje Javy společně s&nbsp;<i>JVM TI</i> agentem je
+zajištěno příkazem:</p>
+
+<pre>
+java -agentpath:./libagent27.so Test27 2&gt; /dev/null
+</pre>
+
+<p>Po spuštění agent na standardní výstup vypíše všechny načítané i
+inicializované třídy. Ve výpisu je zvýrazněna testovací třída
+<strong>Test27</strong>, která je samozřejmě taktéž načtena, protože až poté
+může být nalezena a spuštěna její metoda <strong>public static void
+main(String[] args)</strong>:</p>
+
+<pre>
+Agent27: Agent_OnLoad
+Agent27: JVM TI version is correct
+Agent27: Got VM init event
+Class load:   java.lang.System;
+Class load:   java.nio.charset.Charset;
+Class load:   java.lang.String;
+Class prepare:java.lang.ClassNotFoundException;
+Class load:   java.net.URLClassLoader$1;
+Class prepare:java.net.URLClassLoader$1;
+Class load:   sun.misc.URLClassPath$3;
+Class prepare:sun.misc.URLClassPath$3;
+Class load:   sun.misc.URLClassPath$Loader;
+Class load:   sun.misc.URLClassPath$JarLoader;
+Class prepare:sun.misc.URLClassPath$Loader;
+Class prepare:sun.misc.URLClassPath$JarLoader;
+Class prepare:java.lang.StringBuffer;
+Class prepare:java.lang.Short;
+Class load:   sun.misc.URLClassPath$JarLoader$1;
+Class prepare:sun.misc.URLClassPath$JarLoader$1;
+Class load:   sun.misc.FileURLMapper;
+Class prepare:sun.misc.FileURLMapper;
+Class load:   java.util.zip.ZipConstants;
+Class load:   java.util.zip.ZipFile;
+Class load:   java.util.jar.JarFile;
+Class prepare:java.util.zip.ZipConstants;
+Class prepare:java.util.zip.ZipFile;
+Class prepare:java.util.jar.JarFile;
+Class load:   sun.misc.JavaUtilJarAccess;
+Class load:   java.util.jar.JavaUtilJarAccessImpl;
+Class prepare:sun.misc.JavaUtilJarAccess;
+Class prepare:java.util.jar.JavaUtilJarAccessImpl;
+Class load:   sun.misc.JarIndex;
+Class prepare:sun.misc.JarIndex;
+Class load:   sun.misc.ExtensionDependency;
+Class prepare:sun.misc.ExtensionDependency;
+Class load:   java.util.zip.ZipEntry;
+Class prepare:java.util.zip.ZipEntry;
+Class load:   java.util.jar.JarEntry;
+Class load:   java.util.jar.JarFile$JarFileEntry;
+Class prepare:java.util.jar.JarEntry;
+Class prepare:java.util.jar.JarFile$JarFileEntry;
+Class load:   java.io.DataInput;
+Class load:   java.io.DataInputStream;
+Class prepare:java.io.DataInput;
+Class prepare:java.io.DataInputStream;
+Class load:   java.util.zip.ZipFile$ZipFileInputStream;
+Class prepare:java.util.zip.ZipFile$ZipFileInputStream;
+Class load:   java.security.PrivilegedActionException;
+Class prepare:java.security.PrivilegedActionException;
+Class load:   sun.misc.URLClassPath$FileLoader;
+Class prepare:sun.misc.URLClassPath$FileLoader;
+Class load:   sun.misc.Resource;
+Class load:   sun.misc.URLClassPath$FileLoader$1;
+Class prepare:sun.misc.Resource;
+Class prepare:sun.misc.URLClassPath$FileLoader$1;
+Class load:   sun.nio.ByteBuffered;
+Class load:   java.security.CodeSource;
+Class prepare:java.security.CodeSource;
+Class load:   java.security.PermissionCollection;
+Class load:   java.security.Permissions;
+Class prepare:java.security.PermissionCollection;
+Class prepare:java.security.Permissions;
+Class load:   java.net.URLConnection;
+Class load:   sun.net.www.URLConnection;
+Class load:   sun.net.www.protocol.file.FileURLConnection;
+Class prepare:java.net.URLConnection;
+Class prepare:sun.net.www.URLConnection;
+Class prepare:sun.net.www.protocol.file.FileURLConnection;
+Class load:   java.net.ContentHandler;
+Class load:   java.net.UnknownContentHandler;
+Class prepare:java.net.ContentHandler;
+Class prepare:java.net.UnknownContentHandler;
+Class load:   sun.net.www.MessageHeader;
+Class prepare:sun.net.www.MessageHeader;
+Class load:   java.io.FilePermission;
+Class prepare:java.io.FilePermission;
+Class load:   java.io.FilePermission$1;
+Class prepare:java.io.FilePermission$1;
+Class load:   java.security.Policy;
+Class load:   sun.security.provider.PolicyFile;
+Class prepare:java.security.Policy;
+Class prepare:sun.security.provider.PolicyFile;
+Class load:   java.security.Policy$UnsupportedEmptyCollection;
+Class prepare:java.security.Policy$UnsupportedEmptyCollection;
+Class load:   java.io.FilePermissionCollection;
+Class prepare:java.io.FilePermissionCollection;
+Class load:   java.security.AllPermission;
+Class load:   java.security.UnresolvedPermission;
+Class load:   java.security.BasicPermissionCollection;
+Class prepare:java.security.BasicPermissionCollection;
+Class prepare:java.security.ProtectionDomain;
+Class load:   sun.misc.JavaSecurityProtectionDomainAccess;
+Class load:   java.security.ProtectionDomain$2;
+Class prepare:sun.misc.JavaSecurityProtectionDomainAccess;
+Class prepare:java.security.ProtectionDomain$2;
+Class load:   java.security.ProtectionDomain$Key;
+Class prepare:java.security.ProtectionDomain$Key;
+Class load:   java.security.Principal;
+Class load:   java.security.cert.Certificate;
+Class load:   java.lang.Object;
+<strong>Class load:   Test27;</strong>
+<strong>Class prepare:Test27;</strong>
+Class load:   java.util.ArrayList$Itr;
+Class prepare:java.util.ArrayList$Itr;
+Class load:   java.util.IdentityHashMap$KeySet;
+Class prepare:java.util.IdentityHashMap$KeySet;
+Class load:   java.util.IdentityHashMap$IdentityHashMapIterator;
+Class load:   java.util.IdentityHashMap$KeyIterator;
+Class prepare:java.util.IdentityHashMap$IdentityHashMapIterator;
+Class prepare:java.util.IdentityHashMap$KeyIterator;
+Class load:   java.io.DeleteOnExitHook;
+Class prepare:java.io.DeleteOnExitHook;
+Class load:   java.util.LinkedHashSet;
+Class prepare:java.util.LinkedHashSet;
+Class load:   java.util.HashMap$KeySet;
+Class prepare:java.util.HashMap$KeySet;
+Class load:   java.util.LinkedHashMap$LinkedHashIterator;
+Class load:   java.util.LinkedHashMap$KeyIterator;
+Class prepare:java.util.LinkedHashMap$LinkedHashIterator;
+Class prepare:java.util.LinkedHashMap$KeyIterator;
+Class load:   java.util.Collections;
+Class prepare:java.util.Collections;
+Class load:   java.util.Collections$EmptySet;
+Class prepare:java.util.Collections$EmptySet;
+Class load:   java.util.Collections$EmptyList;
+Class prepare:java.util.Collections$EmptyList;
+Class load:   java.util.Collections$EmptyMap;
+Class prepare:java.util.Collections$EmptyMap;
+Agent27: Got VM Death event
+Agent27: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Sledování přístupu (čtení, zápis) k&nbsp;vybranému atributu</h2>
+
+<p>V&nbsp;dalším demonstračním <i>JVM TI</i> agentovi, jehož konstrukci si
+postupně popíšeme v&nbsp;následujících čtyřech kapitolách, budeme chtít vypsat
+všechny operace čtení a zápisu do atributu <strong>i</strong> definovaného ve
+třídě <strong>Test28</strong>. Jedná se o nestatický atribut, což znamená, že
+v&nbsp;paměti bude uložen společně s&nbsp;každou instancí třídy
+<strong>Test28</strong>. K&nbsp;atributu se přistupuje především v&nbsp;metodě
+<strong>run()</strong>, kde je na některých řádcích vidět, že se provádí
+současné čtení staré hodnoty i zápis hodnoty nové:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test dvacateho</i>
+<i>  * osmeho demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class Test28 {
+    int i;
+&nbsp;
+    public void run() {
+        i = 10;
+        i = i+1;
+        i--;
+        i *= 2;
+        ++i;
+    }
+&nbsp;
+    <i>/**</i>
+    <i>  * Spusteni testu.</i>
+    <i>  */</i>
+    public static void main(String[] args) {
+        new Test28().run();
+    }
+}
+</pre>
+
+<p>(čtenářům tohoto seriálu asi nemá smysl popisovat, že příkaz
+<strong>++i;</strong> znamená přečtení a současně i zápis nové hodnoty do
+atributu <strong>i</strong>)</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Nastavení požadovaných vlastností JVM TI agenta</h2>
+
+<p>První věcí, kterou musíme ve vytvářeném demonstračním <i>JVM TI</i> agentovi
+implementovat, je nastavení nových požadovaných schopností agenta. Aby bylo
+možné detekovat čtení i zápis do libovolného atributu, musí být v&nbsp;datové
+struktuře <strong>jvmtiCapabilities</strong> nastaveny položky
+<strong>can_generate_field_access_events</strong> (čtení) a
+<strong>can_generate_field_modification_events</strong> (modifikace=zápis).
+Toto nastavení se provede v&nbsp;uživatelské funkci
+<strong>set_capabilities()</strong>, samozřejmě s&nbsp;testem, zda daný
+virtuální stroj Javy tuto funkcionalitu skutečně podporuje:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+    <i>/* vyuzivame dve specialni schopnosti agenta */</i>
+    capabilities.can_generate_field_access_events = 1;
+    capabilities.can_generate_field_modification_events = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Nastavení režimů notifikace a registrace callback funkcí</h2>
+
+<p>Dále je nutné vhodně nastavit režimy notifikace, což se v&nbsp;našich
+demonstračních <i>JVM TI</i> agentech již tradičně provádí v&nbsp;uživatelské
+funkci <strong>set_event_notification_modes()</strong>. Ke dvěma již
+existujícím režimům notifikace je přidána další dvojice &ndash;
+<strong>JVMTI_EVENT_FIELD_ACCESS</strong> a
+<strong>JVMTI_EVENT_FIELD_MODIFICATION</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni udalosti, pro nez se maji zavolat callback funkce.</i>
+<i> */</i>
+jvmtiError <strong>set_event_notification_modes</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiError error_code;
+&nbsp;
+    <i>/* Potrebujeme zachytavat udalost inicializace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_INIT)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* Potrebujeme zachytavat udalost ukonceni prace virtualniho stroje. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_VM_DEATH)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* Udalost pri priprave tridy ve virtualnim stroji. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_CLASS_PREPARE)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* Udalost pri pristupu k atributu. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_FIELD_ACCESS)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    <i>/* Udalost pri modifikaci atributu. */</i>
+    if ((error_code = set_event_notification_mode(jvmti, JVMTI_EVENT_FIELD_MODIFICATION)) != JNI_OK)
+    {
+        return error_code;
+    }
+&nbsp;
+    return error_code;
+}
+</pre>
+
+<p>Posléze musíme zaregistrovat celkem pět callback funkcí. Ke dvěma známým
+callback funkcím (inicializace a konec práce JVM) se přidává callback funkce
+zavolaná po instalaci každé třídy (<strong>ClassPrepare</strong>), callback
+funkce zavolaná při přístupu k&nbsp;atributu (<strong>FieldAccess</strong>) a
+konečně callback funkce zavolaná při změně hodnoty atributu
+(<strong>FieldModification</strong>):</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace peti callback funkci zavolanych virtualnim strojem javy.</i>
+<i> */</i>
+jvmtiError <strong>register_all_callback_functions</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiEventCallbacks callbacks;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;callbacks, 0, sizeof(callbacks));
+&nbsp;
+    <i>/* JVMTI_EVENT_VM_INIT */</i>
+    callbacks.VMInit = &amp;callback_on_vm_init;
+&nbsp;
+    <i>/* JVMTI_EVENT_VM_DEATH */</i>
+    callbacks.VMDeath = &amp;callback_on_vm_death;
+&nbsp;
+    <i>/* JVMTI_EVENT_CLASS_PREPARE */</i>
+    callbacks.ClassPrepare = &amp;callback_on_class_prepare;
+&nbsp;
+    <i>/* JVMTI_EVENT_FIELD_ACCESS */</i>
+    callbacks.FieldAccess = &amp;callback_on_field_access;
+&nbsp;
+    <i>/* JVMTI_EVENT_FIELD_MODIFICATION */</i>
+    callbacks.FieldModification = &amp;callback_on_field_modification;
+&nbsp;
+    error_code = (*jvmti)-&gt;SetEventCallbacks(jvmti, &amp;callbacks, (jint)sizeof(callbacks));
+    check_jvmti_error(jvmti, error_code, "Cannot set JVM TI callbacks");
+    return error_code;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační agent číslo 28 &ndash; jednoduchá detekce přístupu k&nbsp;atributu třídy Test28</h2>
+
+<p>Callback funkce zavolaná při přístupu k&nbsp;označenému atributu je prozatím
+velmi jednoduchá, protože obsahuje pouze hlášení vypisované na standardní
+výstup. Vylepšení této funkce si ukážeme až příště:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri pristupu (cteni) vybranych atributu</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_field_access</strong>(
+        jvmtiEnv  *jvmti_env,
+        JNIEnv    *jni_env,
+        jthread    thread,
+        jmethodID  method,
+        jlocation  location,
+        jclass     class,
+        jobject    object,
+        jfieldID   field)
+{
+    <i>/* prozatim bude telo monitoru takto jednoduche */</i>
+    MSG("Field access");
+}
+</pre>
+
+<p>Callback funkce volaná při změně hodnoty atributu má prvních osm parametrů
+shodných z&nbsp;předchozí callback funkcí
+<strong>callback_on_field_access()</strong>, ovšem přidávají se dva nové
+parametry. Především poslední parametr je zajímavý, protože nese informaci o
+nové hodnotě, která se má do atributu přiřadit. My si práci poněkud
+zjednodušíme, protože víme, že monitorovaný atribut <strong>i</strong> je typu
+<strong>int</strong>, tudíž přímo, bez dalších zkoumání budeme vypisovat
+hodnotu uloženou v&nbsp;<strong>jvalue.i</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zapisu vybranych atributu</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_field_modification</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jmethodID method,
+        jlocation location,
+        jclass    class,
+        jobject   object,
+        jfieldID  field,
+        char signature_type,
+        jvalue new_value)
+{
+    <i>/* prozatim vypiseme pouze novou hodnotu zapisovanou do atributu */</i>
+    int value = (int)<strong>new_value.i</strong>;
+    printf("i := %d\n", value);
+}
+</pre>
+
+<p>Aby se tyto dvě callback funkce skutečně zavolaly při každém přístupu
+k&nbsp;atributu <strong>Test28.i</strong>, musíme pro tento atribut callback
+funkce zaregistrovat s&nbsp;využitím <i>JVM TI</i> funkcí
+<strong>SetFieldAccessWatch()</strong> a
+<strong>SetFieldModificationWatch()</strong>. Uděláme to prozatím velmi
+primitivním způsobem &ndash; ve chvíli, kdy je načítána třída se jménem
+<strong>Test28</strong> se pro jistotu pro všechny její atributy (bude ovšem
+existovat je jeden) tyto dvě registrační funkce zavolají. Podívejte se, jak je
+to uděláno:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana ve chvili, kdy je trida ve virtualnim stroji ve stavu,</i>
+<i> * kdy ji lze normalne pouzivat.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_class_prepare</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jclass    class)
+{
+    jvmtiError error;
+    char *class_name_ptr;
+    char *updated_class_name_ptr;
+&nbsp;
+    enter_critical_section(jvmti_env);
+&nbsp;
+    <i>/* ziskat jmeno tridy */</i>
+    error = (*jvmti_env)-&gt;GetClassSignature(jvmti_env, class, &amp;class_name_ptr, NULL);
+    check_jvmti_error(jvmti_env, error, "get class signature");
+    if (class_name_ptr == NULL)
+    {
+        puts("Error: class has no signature");
+    }
+&nbsp;
+    <i>/* upravit jmeno tridy */</i>
+    updated_class_name_ptr = update_class_name(class_name_ptr, ';');
+&nbsp;
+    <i>/* pokud jsme nasli to pravou tridu */</i>
+    if (strcmp(updated_class_name_ptr, TEST_CLASS_NAME) == 0)
+    {
+        puts("Class "TEST_CLASS_NAME" prepared, setting field monitor");
+        prepare_field_monitor(jvmti_env, class);
+    }
+&nbsp;
+    <i>/* dealokace pameti po GetClassSignature() */</i>
+    error = (*jvmti_env)-&gt;Deallocate(jvmti_env, (unsigned char *)class_name_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate class name");
+    exit_critical_section(jvmti_env);
+}
+</pre>
+
+<p>Při pohledu na funkci <strong>callback_on_class_prepare()</strong> je
+patrné, že ve chvíli, kdy je načítána třída, jejíž jméno je uloženo
+v&nbsp;symbolické konstantě <strong>TEST_CLASS_NAME</strong>, je pro tuto třídu
+zavolána funkce <strong>prepare_field_monitor()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace monitoru pro vsechny atributy vybrane tridy.</i>
+<i> */</i>
+void <strong>prepare_field_monitor</strong>(jvmtiEnv *jvmti_env, jclass class)
+{
+    jvmtiError error;
+    int        field_count;
+    jfieldID  *fields_array;
+&nbsp;
+    <i>/* precist vsechny atributy tridy */</i>
+    error = (*jvmti_env)-&gt;GetClassFields(jvmti_env, class, &amp;field_count, &amp;fields_array);
+    check_jvmti_error(jvmti_env, error, "get class fields");
+&nbsp;
+    <i>/* pole atributu bylo inicializovano */</i>
+    if (error == JVMTI_ERROR_NONE)
+    {
+        int i;
+        <i>/* projit vsemi atributy a nastavit monitory */</i>
+        for (i = 0; i &lt; field_count; i++)
+        {
+            jfieldID field = fields_array[i];
+            printf("Setting monitors for field #%ld\n", (long)field);
+&nbsp;
+            error = (*jvmti_env)-&gt;SetFieldModificationWatch(jvmti_env, class, field);
+            check_jvmti_error(jvmti_env, error, "SetFieldModificationWatch");
+&nbsp;
+            error = (*jvmti_env)-&gt;SetFieldAccessWatch(jvmti_env, class, field);
+            check_jvmti_error(jvmti_env, error, "SetFieldAccessWatch");
+        }
+    }
+&nbsp;
+    <i>/* dealokace pole ziskaneho pres GetClassFields() */</i>
+    error = (*jvmti_env)-&gt;Deallocate(jvmti_env, (unsigned char*)fields_array);
+    check_jvmti_error(jvmti_env, error, "deallocate class fields array");
+}
+</pre>
+
+<p>Ve funkci <strong>prepare_field_monitor()</strong> se prochází všechny
+atributy třídy stejným způsobem, jaký již známe z&nbsp;minula.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Výsledek běhu demonstračního agenta číslo 28</h2>
+
+<p>Demonstrační agent popsaný v&nbsp;předchozích čtyřech kapitolách se přeloží
+stejným způsobem, jako již dříve popsaní agenti:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent28.so agent28.c
+</pre>
+
+<p>Spuštění virtuálního stroje Javy společně s&nbsp;<i>JVM TI</i> agentem je
+zajištěno příkazem:</p>
+
+<pre>
+java -agentpath:./libagent28.so Test28 2&gt; /dev/null
+</pre>
+
+<p><i>JVM TI</i> agent po načtení, inicializaci a spuštění testovací javovské
+třídy <strong>Test28</strong> vypíše na standardní výstup následující sekvenci
+zpráv, z&nbsp;nichž je patrné, že celkem čtyřikrát došlo k&nbsp;přečtení
+hodnoty atributu (<strong>i</strong>) a pětkrát k&nbsp;zápisu nové hodnoty:</p>
+
+<pre>
+Agent28: Agent_OnLoad
+Agent28: JVM TI version is correct
+Agent28: Got VM init event
+Class Test28; prepared, setting field monitor
+Setting monitors for field #34
+i := 10
+Agent28: Field access
+i := 11
+Agent28: Field access
+i := 10
+Agent28: Field access
+i := 20
+Agent28: Field access
+i := 21
+Agent28: Got VM Death event
+Agent28: Agent_OnUnload
+</pre>
+
+<p>Tento výpis je vhodné porovnat se zdrojovým kódem testovací javovské třídy
+<strong>Test28</strong>, který byl uveden <a href="#k05">v&nbsp;páté
+kapitole</a>.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Zdrojové kódy obou demonstračních agentů a k&nbsp;nim příslušných testovacích příkladů</h2>
+
+<p>Podobně jako v&nbsp;mnoha předcházejících částech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> byly i dnešní dva demonstrační <i>JVM TI</i> agenti kvůli snazšímu
+udržování všech zdrojových kódů uloženi do Mercurial repositáře, který je
+dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze dnes popisovaných <i>JVM TI</i> agentů i dalších
+potřebných skriptů a testovacích javovských tříd jsou dostupné na následujících
+adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad/podpůrný soubor</th><th>Umístění</th></tr>
+<tr><td>Agent #27                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/agent27.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/agent27.c</a></td></tr>
+<tr><td>Skript pro překlad            </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/test.sh</a></td></tr>
+<tr><td>Testovací třída Test27.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/Test27.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent27/Test27.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Agent #28                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/agent28.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/agent28.c</a></td></tr>
+<tr><td>Skript pro překlad            </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/test.sh</a></td></tr>
+<tr><td>Testovací třída Test28.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/Test28.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/e78af9a76fa5/jvmti-agents/agent28/Test28.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
