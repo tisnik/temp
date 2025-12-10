@@ -1,0 +1,814 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - předčasný výskok z metody s využitím rozhraní JVM TI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - předčasný výskok z metody s využitím rozhraní JVM TI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V šedesáté osmé části seriálu o programovacím jazyce Java i o vlastnostech JVM si řekneme, jakým způsobem je možné přes rozhraní JVM TI vynutit předčasné ukončení libovolné metody. Většinou se jedná o metody, na kterých je nastavený breakpoint, ovšem ve skutečnosti je možné si vynutit ukončení zcela libovolné metody.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - předčasný výskok z&nbsp;metody s&nbsp;využitím rozhraní JVM TI</a></p>
+<p><a href="#k02">2. Paměťový prostor přidělený každému vláknu: zásobník a zásobníkové rámce (stack frames)</a></p>
+<p><a href="#k03">3. Instrukce bajtkódu sloužící pro ukončení metody s&nbsp;předáním návratové hodnoty této metody</a></p>
+<p><a href="#k04">4. Podpora JVM TI pro výskok z&nbsp;metody mající návratovou hodnotu i z&nbsp;metody bez návratové hodnoty</a></p>
+<p><a href="#k05">5. Testovací třída použitá třicátým třetím demonstračním JVM TI agentem</a></p>
+<p><a href="#k06">6. Nastavení breakpointů pro všechny testované metody</a></p>
+<p><a href="#k07">7. Tvar callback funkce <strong>callback_on_breakpoint()</strong></a></p>
+<p><a href="#k08">8. Tvar uživatelské funkce <strong>force_early_return()</strong></a></p>
+<p><a href="#k09">9. Spuštění třicátého třetího demonstračního JVM TI agenta</a></p>
+<p><a href="#k10">10. Zdrojové kódy třicátého třetího demonstračního agenta i k&nbsp;němu příslušných testovacích příkladů a skriptů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - předčasný výskok z&nbsp;metody s&nbsp;využitím rozhraní JVM TI</h2>
+
+<p>V&nbsp;závěru <a
+href="http://www.root.cz/clanky/pohled-pod-kapotu-jvm-nastaveni-breakpointu-s-vyuzitim-rozhrani-jvm-ti-dokonceni/">předchozí části</a> <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> jsme si
+řekli, že v&nbsp;tomto seriálu již byla popsána většina funkcí nabízených
+rozhraním <i>JVM TI</i>. Zbývá nám tak popsat a na demonstračních příkladech
+ukázat pouze dvě relativně malé skupiny funkcí. Do první skupiny patří šestice
+funkcí začínajících prefixem <strong>ForceEarlyReturn*()</strong>. Tyto funkce
+slouží k&nbsp;tomu, aby si <i>JVM TI</i> agent mohl v&nbsp;případě potřeby
+vynutit opuštění nějaké javovské metody a současně vrátil z&nbsp;této metody
+specifikovanou hodnotu (vynucením se zde myslí situace, kdy agent do kódu
+jakoby vloží pomyslný příkaz <strong>return</strong>). Může se jednat jak o
+hodnotu primitivního datového typu (<strong>boolean</strong>,
+<strong>char</strong>, <strong>byte</strong>, <strong>short</strong>,
+<strong>int</strong>, <strong>long</strong>, <strong>float</strong>,
+<strong>double</strong> s&nbsp;omezeními popsanými v&nbsp;dalším textu), tak i
+o referenci, tj.&nbsp;odkaz na instanci nějaké třídy.</p>
+
+<p>Právě popisem zmíněné šestice funkcí <strong>ForceEarlyReturn*()</strong> se
+budeme zabývat v&nbsp;následujících kapitolách. Řekneme si, jak tyto funkce
+ovlivní chování virtuálního stroje Javy a posléze si na třicátém třetím
+demonstračním <i>JVM TI</i> agentovi ukážeme, jak lze tyto funkce využít
+v&nbsp;praxi, konkrétně v&nbsp;agentovi, který si vynutí předčasné opuštění
+všech metod, pro něž je nastavený breakpoint.</p>
+
+<p>Poznámka: aby bylo možné <i>JVM TI</i> funkce určené pro vynucené opuštění
+metod v&nbsp;<i>JVM TI</i> agentech skutečně použít, je nutné agenta nastavit
+takovým způsobem, aby byla podporována schopnost
+<strong>can_force_early_return</strong>. Jak se tato vlastnost v&nbsp;našem
+demonstračním <i>JVM TI</i> agentovi nastavuje, je vidět z&nbsp;následující
+ukázky:</p>
+
+<pre>
+<i>/*</i>
+<i> * Nastaveni pozadovanych schopnosti agenta.</i>
+<i> */</i>
+jvmtiError <strong>set_capabilities</strong>(jvmtiEnv *jvmti)
+{
+    jvmtiCapabilities capabilities;
+    jvmtiError error_code;
+&nbsp;
+    memset(&amp;capabilities, 0, sizeof(jvmtiCapabilities));
+&nbsp;
+<i>    /* vyuzivame pouze tri specialni schopnosti agenta */</i>
+    capabilities.can_get_line_numbers = 1;
+    capabilities.can_generate_breakpoint_events = 1;
+    capabilities.can_force_early_return = 1;
+&nbsp;
+    error_code = (*jvmti)-&gt;AddCapabilities(jvmti, &amp;capabilities);
+    check_jvmti_error(jvmti, error_code, "Unable to get necessary JVMTI capabilities.");
+    return error_code;
+}
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Paměťový prostor přidělený každému vláknu: zásobník a zásobníkové rámce (stack frames)</h2>
+
+<p>Dříve než si popíšeme funkce nabízené rozhraním <i>JVM TI</i>, které dokážou
+vynutit předčasné ukončení zvolené metody, si připomeňme, jakým způsobem je
+vlastně organizována paměť využívaná &bdquo;uvnitř&ldquo; metod.  Již
+v&nbsp;úvodních částech tohoto seriálu jsme si řekli, že instance tříd,
+tj.&nbsp;vlastně hodnoty jednotlivých atributů, jsou alokovány na haldě
+(<i>heapu</i>). Tato paměťová oblast je pro nás v&nbsp;tomto momentě relativně
+nezajímavá, protože se jí předčasné ukončení metod vlastně nijak netýká. Mnohem
+důležitější paměťovou oblastí je pro nás zásobník (<i>stack</i>), který je
+tvořen sekvencí vzájemně pouze nepřímo propojených zásobníkových rámců
+(<i>stack frame(s)</i>). Označení &bdquo;zásobník&ldquo; sice může navozovat
+pocit, že se jedná o kontinuální oblast paměti, ve skutečnosti však mezi
+jednotlivými zásobníkovými rámci neexistují žádné přímé vazby a proto se každý
+zásobníkový rámec může (ale nemusí) nacházet v&nbsp;paměti kdekoli &ndash;
+rámce například mohou být vytvářeny přímo na haldě (hodně zde záleží na
+konkrétní implementaci JVM).</p>
+
+<p>Důležité je, že zásobník je virtuálním strojem Javy automaticky vytvořen
+<strong>pro každé vlákno</strong>, což při bližším zamyšlení dává smysl,
+protože jedna metoda může být v&nbsp;jednom okamžiku volána z&nbsp;většího
+množství vláken a je tedy nutné oddělit parametry metody i její lokální
+proměnné od dalších volání téže metody. Ostatně právě fakt, že zásobník je
+vytvořen pro každé vlákno, vede k&nbsp;tomu, že dále popsané <i>JVM TI</i>
+funkce <strong>ForceEarlyReturn*()</strong> vyžadují jako jeden ze svých
+parametrů i identifikátor vlákna, jenž je typu <strong>jthread</strong>.
+Zásobníkové rámce jsou tvořeny lokálními proměnnými metod a parametry metod.
+Jejich součástí je však taktéž zásobník operandů (<i>operand stack</i>)
+využívaný jak při všech aritmetických a logických operacích, tak i při volání
+jiné metody. Opět platí, že není možné získat přímou adresu lokálních
+proměnných, parametrů metod ani dat uložených na zásobníku operandů, proto se
+nemusí jednat o kontinuální oblast paměti.</p>
+
+<p>V&nbsp;předchozím textu bylo řečeno, že v&nbsp;zásobníkovém rámci jsou
+uloženy jak parametry metod, tak i její lokální proměnné. Nejdříve jsou
+v&nbsp;zásobníkovém rámci uloženy parametry metod (včetně parametru
+<strong>this</strong>, ovšem logicky pouze u nestatických metod) a ihned za
+nimi se nachází oblast vyhrazená pro lokální proměnné. Ke všem těmto údajům,
+tj.&nbsp;jak k&nbsp;parametrům, tak i k&nbsp;lokálním proměnným, se
+v&nbsp;bajtkódu přistupuje s&nbsp;využitím indexu: první údaj má index 0, další
+1 atd. Ukažme si to na jednoduchém příkladu třídy s&nbsp;dvojicí metod &ndash;
+jedné nestatické a druhé statické:</p>
+
+<pre>
+class <strong>Test</strong> {
+    void <strong>add1</strong>(int x, int y) {
+        int z = x + y;
+    }
+&nbsp;
+    static void <strong>add2</strong>(int x, int y) {
+        int z = x + y;
+    }
+}
+</pre>
+
+<p>Obě metody sice provádí tutéž činnost &ndash; součet dvou celých čísel
+s&nbsp;uložením výsledku do lokální proměnné &ndash; ovšem způsob indexování
+parametrů je uvnitř JVM odlišný, protože v&nbsp;nestatické metodě je
+v&nbsp;první pozici zásobníkového rámce (tato pozice má index roven nule)
+uložen implicitní parametr <strong>this</strong>, kdežto v&nbsp;metodě statické
+se na stejné pozici zásobníkového rámce nachází již přímo první parametr:</p>
+
+<pre>
+void <strong>add1</strong>(int, int);
+  Code:
+   Stack=2, Locals=4, Args_size=3
+                        // v prvním parametru je uložena hodnota this, tu nepotřebujeme
+   0:   iload_1         // načtení druhého parametru metody s jeho uložením na zásobník operandů
+   1:   iload_2         // načtení třetího parametru metody s jeho uložením na zásobník operandů
+   2:   iadd            // provedení součtu
+   3:   istore_3        // uložení výsledku na čtvrtou pozici v zásobníkovém rámci: první lokální proměnné
+   4:   return          // návrat z metody
+</pre>
+
+<pre>
+static void <strong>add2</strong>(int, int);
+  Code:
+   Stack=2, Locals=3, Args_size=2
+   0:   iload_1         // načtení druhého parametru metody s jeho uložením na zásobník operandů
+   1:   iload_2         // načtení třetího parametru metody s jeho uložením na zásobník operandů
+   2:   iadd            // provedení součtu
+   3:   istore_2        // uložení výsledku na třetí pozici v zásobníkovém rámci: první lokální proměnné
+   4:   return          // návrat z metody
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Instrukce bajtkódu sloužící pro ukončení metody s&nbsp;předáním návratové hodnoty této metody</h2>
+
+<p>V&nbsp;bajtkódu virtuálního stroje Javy je možné využít několik (konkrétně
+se jedná o šest) instrukcí sloužících pro ukončení metody, tj.&nbsp;pro výskok
+z&nbsp;těla metody se současným úklidem zásobníku operandů i zásobníkového
+rámce popsaného <a href="#k02">v&nbsp;předchozí kapitole</a>. Kromě úklidu
+zásobníku operandů tyto instrukce taktéž zajišťují předání návratové hodnoty
+(pokud ovšem nějaká existuje, tj.&nbsp;pokud návratový typ metody není
+<strong>void</strong>) do volající metody (<i>caller method</i>). Zmíněné
+instrukce jsou většinou generovány překladačem Javy, a to jak na konci
+zdrojového kódu metody, tak i v&nbsp;těch místech, kde programátor do
+zdrojového kódu vložil příkaz <strong>return výraz</strong>. Připomeňme si, že
+volající metoda si může tuto návratovou hodnotu vyzvednout z&nbsp;vrcholu
+<strong>svého</strong> zásobníku operandů (to je zařízeno virtuálním strojem
+Javy většinou bez nutnosti přesunu těchto hodnot).</p>
+
+<p>Použití dále vypsaných instrukcí typu <strong>*return</strong> je ostatně
+jedinou možností, jak může volaná metoda modifikovat obsah zásobníku operandů
+volající metody &ndash; v&nbsp;ostatních případech jsou totiž zásobníky
+operandů (taktéž i datová oblast s&nbsp;parametry a lokálními proměnnými) obou
+metod od sebe izolovány, což přispívá jak k&nbsp;větší bezpečnosti práce
+virtuálního stroje (nelze vytvořit metodu s&nbsp;postranním účinkem), tak i
+k&nbsp;oddělení jednotlivých částí kódu. Navíc tato vlastnost samozřejmě
+zjednodušuje práci just-in-time překladače při provádění optimalizací. Ukončení
+metody s&nbsp;uložením návratové hodnoty zabezpečuje šestice instrukcí
+<strong>*return</strong>, která je vypsaná v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Datový typ na TOS</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>ireturn</td><td>0xAC</td><td>int</td><td>získání návratové hodnoty typu int z&nbsp;TOS zásobníku operandů + návrat z&nbsp;metody</td></tr>
+<tr><td>2</td><td>lreturn</td><td>0xAD</td><td>long</td><td>získání návratové hodnoty typu long z&nbsp;TOS zásobníku operandů + návrat z&nbsp;metody</td></tr>
+<tr><td>3</td><td>freturn</td><td>0xAE</td><td>float</td><td>získání návratové hodnoty typu float z&nbsp;TOS zásobníku operandů + návrat z&nbsp;metody</td></tr>
+<tr><td>4</td><td>dreturn</td><td>0xAF</td><td>double</td><td>získání návratové hodnoty typu double z&nbsp;TOS zásobníku operandů + návrat z&nbsp;metody</td></tr>
+<tr><td>5</td><td>areturn</td><td>0xB0</td><td>reference</td><td>získání návratové hodnoty typu reference na objekt z&nbsp;TOS zásobníku operandů + návrat z&nbsp;metody</td></tr>
+<tr><td>6</td><td>return</td><td>0xB1</td><td>&times;</td><td>pouze návrat z&nbsp;metody, žádná hodnota se nevrací</td></tr>
+</table>
+
+<p>Zkratka <i>TOS</i> znamená <i>Top Of Stack</i>, v&nbsp;tomto případě se
+jedná o hodnotu uloženou na vrcholu lokálního zásobníku operandů, která je
+předána do volající metody. <i>Opkód</i> je zkrácenina sousloví &bdquo;operační
+kód&ldquo;, tedy vlastního číselného kódu instrukce v&nbsp;bajtkódu.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Podpora JVM TI pro výskok z&nbsp;metody mající návratovou hodnotu i z&nbsp;metody bez návratové hodnoty</h2>
+
+<p>Asi nejdůležitější informací, která byla <a href="#k04">v&nbsp;předchozí
+kapitole</a> uvedena, je fakt, že i když v&nbsp;Javě existuje celkem osm
+primitivních datových typů (<i>boolean</i>, <i>char</i>, <i>byte</i>,
+<i>short</i>, <i>int</i>, <i>long</i>, <i>float</i> a <i>double</i>), je ve
+skutečnosti možné z&nbsp;metody vrátit hodnoty jen čtyř primitivních datových
+typů a to konkrétně <i>int</i>, <i>long</i>, <i>float</i> a <i>double</i>
+s&nbsp;využitím instrukcí <strong>ireturn</strong>, <strong>lreturn</strong>,
+<strong>freturn</strong> a <strong>dreturn</strong>.</p>
+
+<p>Je tomu tak z&nbsp;toho důvodu, že celočíselné datové typy <i>byte</i> a
+<i>short</i> jsou ve většině instrukcí bajtkódu automaticky rozšířeny na typ
+<i>int</i> (tomu ostatně odpovídá i sémantika Javy, která pro tyto dva datové
+typy nemá vyhrazenu například ani operaci součtu). Podobná konverze platí i pro
+zbývající dva typy <i>boolean</i> a <i>char</i>. Další instrukce nazvaná pouze
+<strong>return</strong> je použita pro výskok z&nbsp;metody bez návratové
+hodnoty (<i>void</i>) a poslední, šestou instrukci <strong>areturn</strong> lze
+využít pro výskok z&nbsp;metody se současným vrácením reference na objekt
+(popř.&nbsp;hodnoty <strong>null</strong>).</p>
+
+<p>Šesti zmíněným instrukcím <strong>return</strong>, <strong>ireturn</strong>,
+<strong>lreturn</strong>, <strong>freturn</strong>, <strong>dreturn</strong> a
+<strong>areturn</strong> odpovídá i šestice funkcí nabízených rozhraním <i>JVM
+TI</i>, které vlastně slouží pro &bdquo;vnucení&ldquo; těchto instrukcí
+virtuálnímu stroji i v&nbsp;místě, kde bajtkód ve skutečnosti obsahuje zcela
+odlišnou instrukci. Následuje výpis hlaviček všech šesti <i>JVM TI</i>
+funkcí.</p>
+
+<p>Vynucení výskoku z&nbsp;metody bez návratové hodnoty
+(<strong>void</strong>):</p>
+
+<pre>
+jvmtiError JNICALL <strong>ForceEarlyReturnVoid</strong>(
+    jvmtiEnv* env,
+    jthread   thread);
+</pre>
+
+<p>Vynucení výskoku z&nbsp;metody, jejíž návratová hodnota je typu
+<strong>boolean</strong>, <strong>char</strong>, <strong>byte</strong>,
+<strong>short</strong> nebo <strong>int</strong>:</p>
+
+<pre>
+jvmtiError JNICALL <strong>ForceEarlyReturnInt</strong>(
+    jvmtiEnv* env,
+    jthread   thread,
+    jint      value);
+</pre>
+
+<p>Vynucení výskoku z&nbsp;metody, jejíž návratová hodnota je typu
+<strong>long</strong>:</p>
+
+<pre>
+jvmtiError JNICALL <strong>ForceEarlyReturnLong</strong>(
+    jvmtiEnv* env,
+    jthread   thread,
+    jlong     value);
+</pre>
+
+<p>Vynucení výskoku z&nbsp;metody, jejíž návratová hodnota je typu
+<strong>float</strong>:</p>
+
+<pre>
+jvmtiError JNICALL <strong>ForceEarlyReturnFloat</strong>(
+    jvmtiEnv* env,
+    jthread   thread,
+    jfloat    value);
+</pre>
+
+<p>Vynucení výskoku z&nbsp;metody, jejíž návratová hodnota je typu
+<strong>double</strong>:</p>
+
+<pre>
+jvmtiError JNICALL <strong>ForceEarlyReturnDouble</strong>(
+    jvmtiEnv* env,
+    jthread   thread,
+    jdouble   value);
+</pre>
+
+<p>Vynucení výskoku z&nbsp;metody, jejíž návratová hodnota je typu reference na
+objekt (samotná instance třídy=objekt je samozřejmě uložený na
+haldě/<i>heapu</i>):</p>
+
+<pre>
+jvmtiError JNICALL <strong>ForceEarlyReturnObject</strong>(
+    jvmtiEnv* env,
+    jthread   thread,
+    jobject   value);
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Testovací třída použitá třicátým třetím demonstračním JVM TI agentem</h2>
+
+<p>Pojďme si nyní ukázat, jakým způsobem je možné <i>JVM TI</i> funkce popsané
+<a href="#k04">v&nbsp;předchozí kapitole</a> využít. Následující javovská třída
+nazvaná <strong>Test33</strong> obsahuje šest testovacích metod pojmenovaných
+<strong>voidMethod()</strong>, <strong>booleanMethod()</strong>,
+<strong>intMethod()</strong>, <strong>longMethod()</strong>,
+<strong>floatMethod()</strong> a <strong>doubleMethod()</strong>. Všechny tyto
+metody při svém zavolání vypíšou na standardní výstup dvě zprávy a pět
+z&nbsp;těchto metod navíc vrátí volající metodě konstantní návratovou
+hodnotu:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test tricateho</i>
+<i>  * tretiho demonstracniho JVM TI agenta.</i>
+<i>  * Agent se pokusi u kazde metody vynutit predcasny navrat.</i>
+<i>  */</i>
+public class <strong>Test33</strong> {
+&nbsp;
+    private void <strong>voidMethod</strong>() {
+        System.out.println("voidMethod1");
+        System.out.println("voidMethod2");
+    }
+&nbsp;
+    private boolean <strong>booleanMethod</strong>() {
+        System.out.println("booleanMethod1");
+        System.out.println("booleanMethod2");
+        <strong>return</strong> false;
+    }
+&nbsp;
+    private int <strong>intMethod</strong>() {
+        System.out.println("intMethod1");
+        System.out.println("intMethod2");
+        <strong>return</strong> 0;
+    }
+&nbsp;
+    private long <strong>longMethod</strong>() {
+        System.out.println("longMethod1");
+        System.out.println("longMethod2");
+        <strong>return</strong> 0;
+    }
+&nbsp;
+    private float <strong>floatMethod</strong>() {
+        System.out.println("floatMethod1");
+        System.out.println("floatMethod2");
+        <strong>return</strong> 0.0f;
+    }
+&nbsp;
+    private double <strong>doubleMethod</strong>() {
+        System.out.println("doubleMethod1");
+        System.out.println("doubleMethod2");
+        <strong>return</strong> 0.0;
+    }
+&nbsp;
+    public void <strong>run</strong>() {
+        voidMethod();
+        System.out.println(booleanMethod());
+        System.out.println(intMethod());
+        System.out.println(longMethod());
+        System.out.println(floatMethod());
+        System.out.println(doubleMethod());
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void <strong>main</strong>(String[] args) {
+        new Test33().run();
+    }
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Nastavení breakpointů pro všechny testované metody</h2>
+
+<p>Úkolem dnešního demonstračního <i>JVM TI</i> agenta bude vynutit si
+předčasné ukončení všech šesti testovacích metod <strong>voidMethod()</strong>,
+<strong>booleanMethod()</strong>, <strong>intMethod()</strong>,
+<strong>longMethod()</strong>, <strong>floatMethod()</strong> a
+<strong>doubleMethod()</strong> s&nbsp;tím, že se z&nbsp;těchto metod vrátí
+odlišná návratová hodnota, než jaká je zadána ve výrazu umístěného za příkazem
+<strong>return</strong>. Pro implementaci dnešního agenta využijeme zdrojový
+kód agenta popsaného minule, dojde však k&nbsp;několika úpravám. Nejprve musíme
+nastavit breakpointy do všech šesti zmíněných metod. Přesné umístění
+jednotlivých breakpointů je uloženo v&nbsp;poli <strong>breakpoints</strong>,
+podobně jako tomu bylo i minule:</p>
+
+<pre>
+<i>/*</i>
+<i> * Breakpointy se budou nastavovat celkem pro sest metod.</i>
+<i> */</i>
+t_breakpoint <strong>breakpoints</strong>[] = {
+    {"voidMethod",        10},
+    {"booleanMethod",     15},
+    {"intMethod",         21},
+    {"longMethod",        27},
+    {"floatMethod",       33},
+    {"doubleMethod",      39},
+    {NULL,  0}    <i>/* zarazka - je pouzita pri prochazeni timto polem! */</i>
+};
+</pre>
+
+<p>Pokud si čísla řádků zapsaná do pole <strong>breakpoints</strong> porovnáme
+se zdrojovým kódem testovací třídy <strong>Test33</strong>, uvidíme, že
+breakpointy jsou nastaveny vždy na druhý příkaz
+<strong>System.out.println();</strong>. Tento příkaz se již ve skutečnosti
+neprovede, protože dojde k&nbsp;násilnému ukončení metod.</p>
+
+<p>O nastavení breakpointů se postará uživatelská funkce nazvaná
+<strong>set_breakpoint_for_selected_method()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Pokud se metoda nachazi v poli breakpoints, nastavi se pro ni breakpoint.</i>
+<i> */</i>
+void <strong>set_breakpoint_for_selected_method</strong>(jvmtiEnv *jvmti_env, jmethodID method)
+{
+    jvmtiError  error;
+    char *method_name;
+    char *method_signature;
+&nbsp;
+    error = (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name, &amp;method_signature, NULL);
+&nbsp;
+<i>    /* podarilo se ziskat jmeno metody, otestujme tedy, zda pro ni mame nastavit breakpoint */</i>
+    if (error == JVMTI_ERROR_NONE)
+    {
+        int j;
+        printf(AGENT_NAME " Found method(): %s with signature %s\n", method_name, method_signature);
+        for (j=0; breakpoints[j].method_name != NULL; j++)
+        {
+            if (strcmp(method_name, breakpoints[j].method_name) == 0)
+            {
+                puts(AGENT_NAME " ...going to set breakpoint for this method");
+                <strong>set_breakpoint</strong>(jvmti_env, method, breakpoints[j].line_number);
+            }
+        }
+&nbsp;
+        (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)method_name);
+        (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)method_signature);
+    }
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Tvar callback funkce <strong>callback_on_breakpoint()</strong></h2>
+
+<p>Ve chvíli, kdy je všech šest breakpointů zaregistrováno, je možné spustit
+statickou metodu <strong>main</strong> demonstrační třídy
+<strong>Test33</strong>. Při každém přístupu do jedné ze šesti testovacích
+metod dojde k&nbsp;zavolání callback funkce nazvané
+<strong>callback_on_breakpoint</strong>, v&nbsp;níž se nejprve zjistí jméno a
+signatura metody s&nbsp;breakpointem a posléze se ze signatury metody zjistí,
+jaká je její návratová hodnota. Využíváme zde přitom faktu, že všech šest
+testovacích metod vrací buď hodnotu primitivního datového typu nebo se jedná o
+metodu typu <strong>void</strong>. Ve všech těchto případech lze typ návratové
+hodnoty jednoduše zjistit z&nbsp;posledního znaku signatury. Poněkud složitější
+je to v&nbsp;případě, že metoda bude vracet referenci (tj.&nbsp;odkaz na
+instanci nějaké třídy), tuto situaci však prozatím nemusíme řešit:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri zapisu vybranych atributu</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_breakpoint</strong>(
+        jvmtiEnv *jvmti_env,
+        JNIEnv   *jni_env,
+        jthread   thread,
+        jmethodID method,
+        jlocation location)
+{
+    char      *method_name_ptr;
+    char      *method_signature_ptr;
+    char       return_type;
+    jvmtiError error;
+&nbsp;
+<i>    /* veskere operace se budou provadet v kriticke sekci */</i>
+    enter_critical_section(jvmti_env);
+&nbsp;
+<i>    /* ziskat jmeno metody */</i>
+    (*jvmti_env)-&gt;<strong>GetMethodName</strong>(jvmti_env, method, &amp;method_name_ptr, &amp;method_signature_ptr, NULL);
+&nbsp;
+<i>    /* ze signatury lze ziskat jmeno navratoveho typu (nepouzivame prozatim objektove typy) */</i>
+    return_type = method_signature_ptr[strlen(method_signature_ptr)-1];
+&nbsp;
+<i>    /* vypis vsech informaci o vyjimce */</i>
+    printf(AGENT_NAME " *** visited breakpoint in method %s with signature %s and return type %c ***\n",
+            method_name_ptr,
+            method_signature_ptr,
+            return_type);
+&nbsp;
+<i>    /* vynutime si predcasne ukonceni metod */</i>
+    <strong>force_early_return</strong>(jvmti_env, thread, return_type);
+&nbsp;
+<i>    /* dealokace vsech ziskanych pametovych struktur */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_name_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate method name");
+&nbsp;
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)method_signature_ptr);
+    check_jvmti_error(jvmti_env, error, "deallocate method signature");
+&nbsp;
+<i>    /* a vystup z kriticke sekce */</i>
+    exit_critical_section(jvmti_env);
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Tvar uživatelské funkce <strong>force_early_return()</strong></h2>
+
+<p>V&nbsp;callback funkci <strong>callback_on_breakpoint()</strong> popsané <a
+href="#k07">v&nbsp;předchozí kapitole</a> se volá uživatelská funkce nazvaná
+příznačně <strong>force_early_return()</strong>. Této funkci se předává
+reference na prostředí <i>JVM TI</i> (to potřebujeme ve všech případech), dále
+pak identifikátor vlákna, v&nbsp;němž došlo k&nbsp;průchodu breakpointem a
+konečně se ve třetím parametru předává znak určující návratový typ metody.
+Právě na základě tohoto znaku se provede rozeskok, který zajistí, že se zavolá
+korektní varianta <i>JVM TI</i> funkce <strong>ForceEarlyReturn*()</strong>.
+Pokud by se totiž například použila funkce
+<strong>ForceEarlyReturnVoid()</strong> u metody s&nbsp;návratovým typem
+<strong>int</strong>, byla by tato akce zamítnuta jako chyba (kontrolu
+samozřejmě provádí přímo virtuální stroj Javy):</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce, ktera zajisti predcasny vyskok z metody</i>
+<i> */</i>
+void <strong>force_early_return</strong>(jvmtiEnv *jvmti_env, jthread thread, char return_type)
+{
+    jvmtiError error;
+    switch (return_type)
+    {
+        case 'V':
+            error = (*jvmti_env)-&gt;<strong>ForceEarlyReturnVoid</strong>(jvmti_env, thread);
+            check_jvmti_error(jvmti_env, error, "ForceEarlyReturnVoid");
+            break;
+        case 'Z':
+            error = (*jvmti_env)-&gt;<strong>ForceEarlyReturnInt</strong>(jvmti_env, thread, 1);
+            check_jvmti_error(jvmti_env, error, "ForceEarlyReturnInt");
+            break;
+        case 'I':
+            error = (*jvmti_env)-&gt;<strong>ForceEarlyReturnInt</strong>(jvmti_env, thread, 42);
+            check_jvmti_error(jvmti_env, error, "ForceEarlyReturnInt");
+            break;
+        case 'J':
+            error = (*jvmti_env)-&gt;<strong>ForceEarlyReturnLong</strong>(jvmti_env, thread, 0x7fffffffffffffffLL);
+            check_jvmti_error(jvmti_env, error, "ForceEarlyReturnLong");
+            break;
+        case 'F':
+            error = (*jvmti_env)-&gt;<strong>ForceEarlyReturnFloat</strong>(jvmti_env, thread, 0.5f);
+            check_jvmti_error(jvmti_env, error, "ForceEarlyReturnFloat");
+            break;
+        case 'D':
+            error = (*jvmti_env)-&gt;<strong>ForceEarlyReturnDouble</strong>(jvmti_env, thread, 3.1415927);
+            check_jvmti_error(jvmti_env, error, "ForceEarlyReturnDouble");
+            break;
+        default:
+            break;
+    }
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Spuštění třicátého třetího demonstračního JVM TI agenta</h2>
+
+<p>Nyní si již můžeme třicátého třetího demonstračního <i>JVM TI</i> agenta
+otestovat. Pokud pouze spustíme testovací třídu <strong>Test33</strong> bez
+použití agenta, budou zprávy vypisované na standardní výstup vypadat
+následovně:</p>
+
+<pre>
+voidMethod1
+voidMethod2
+&nbsp;
+booleanMethod1
+booleanMethod2
+false
+&nbsp;
+intMethod1
+intMethod2
+0
+&nbsp;
+longMethod1
+longMethod2
+0
+&nbsp;
+floatMethod1
+floatMethod2
+0.0
+&nbsp;
+doubleMethod1
+doubleMethod2
+0.0
+</pre>
+
+<p>Vidíme, že se v&nbsp;každé metodě skutečně zavolaly oba příkazy
+<strong>System.out.println();</strong> a provedl se i příkaz <strong>return
+(návratová hodnota)</strong>. Ovšem v&nbsp;případě, že spustíme virtuální stroj
+Javy i s&nbsp;agentem, bude výstup vypadat značně odlišně:</p>
+
+<pre>
+voidMethod1
+&nbsp;
+booleanMethod1
+true
+&nbsp;
+intMethod1
+42
+&nbsp;
+longMethod1
+9223372036854775807
+&nbsp;
+floatMethod1
+0.5
+&nbsp;
+doubleMethod1
+3.1415927
+</pre>
+
+<p>V&nbsp;každé testovací metodě se v&nbsp;tomto případě zavolal pouze první
+příkaz <strong>System.out.println();</strong> a ihned poté došlo v&nbsp;<i>JVM
+TI</i> agentovi k&nbsp;zavolání callback funkce
+<strong>callback_on_breakpoint()</strong>, kde se provedl předčasný výskok
+z&nbsp;metody.</p>
+
+<p>Pro úplnost si ještě uveďme zprávy vypisované samotným agentem při běhu
+virtuálního stroje Javy:</p>
+
+<pre>
+Agent33: Agent_OnLoad
+Agent33: JVM TI version is correct
+Agent33: Got VM init event
+Agent33: Class Test33; prepared, setting breakpoints for its methods
+Agent33: Found method(): &lt;init&gt; with signature ()V
+Agent33: Found method(): main with signature ([Ljava/lang/String;)V
+Agent33: Found method(): run with signature ()V
+Agent33: Found method(): voidMethod with signature ()V
+Agent33: ...going to set breakpoint for this method
+Agent33: Found method(): booleanMethod with signature ()Z
+Agent33: ...going to set breakpoint for this method
+Agent33: Found method(): intMethod with signature ()I
+Agent33: ...going to set breakpoint for this method
+Agent33: Found method(): longMethod with signature ()J
+Agent33: ...going to set breakpoint for this method
+Agent33: Found method(): floatMethod with signature ()F
+Agent33: ...going to set breakpoint for this method
+Agent33: Found method(): doubleMethod with signature ()D
+Agent33: ...going to set breakpoint for this method
+Agent33: *** visited breakpoint in method voidMethod with signature ()V and return type V ***
+Agent33: *** visited breakpoint in method booleanMethod with signature ()Z and return type Z ***
+Agent33: *** visited breakpoint in method intMethod with signature ()I and return type I ***
+Agent33: *** visited breakpoint in method longMethod with signature ()J and return type J ***
+Agent33: *** visited breakpoint in method floatMethod with signature ()F and return type F ***
+Agent33: *** visited breakpoint in method doubleMethod with signature ()D and return type D ***
+Agent33: ERROR: JVMTI: 34(JVMTI_ERROR_TYPE_MISMATCH): ForceEarlyReturnDouble
+Agent33: Got VM Death event
+Agent33: Agent_OnUnload
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Zdrojové kódy třicátého třetího demonstračního agenta i k&nbsp;němu příslušných testovacích příkladů a skriptů</h2>
+
+<p>V&nbsp;tomto seriálu se již stalo zvykem ukládat všechny zdrojové soubory i
+pomocné skripty do Mercurial repositáře dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Výjimku samozřejmě neuděláme ani dnes:</p>
+
+<table>
+<tr><td>Agent #33                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/agent33.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/agent33.c</a></td></tr>
+<tr><td>Skript pro překlad agenta #33 </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění agenta #33</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/test.sh</a></td></tr>
+<tr><td>Testovací třída Test33.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/Test33.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/6f4c18dd1787/jvmti-agents/agent33/Test33.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
