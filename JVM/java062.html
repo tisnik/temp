@@ -1,0 +1,1006 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - řetězce na haldě (dokončení) a využití JVM TI pro ladění</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - řetězce na haldě (dokončení) a využití JVM TI pro ladění</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o jazyce Java i o vlastnostech JVM nejprve dokončíme téma, kterým jsme se začali zabývat v předchozím díle &ndash; ukážeme si, jakým způsobem jsou využívány (krátké) řetězce ve vybrané reálné Javovské aplikaci. Ve druhé polovině článku si řekneme, jak lze využít rozhraní JVM TI pro ladění (debugging).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Průchod haldou a výpis všech řetězců uložených na haldě</a></p>
+<p><a href="#k02">2. Callback funkce <strong>jvmtiStringPrimitiveValueCallback()</strong></a></p>
+<p><a href="#k03">3. Demonstrační agent číslo 25 &ndash; výpis řetězců uložených na haldě</a></p>
+<p><a href="#k04">4. Statistika využití řetězců v&nbsp;jednoduchém testovacím příkladu (Test25)</a></p>
+<p><a href="#k05">5. Statistika využití řetězců v&nbsp;reálné aplikaci (Freemind)</a></p>
+<p><a href="#k06">6. Využití rozhraní JVM TI pro ladění (debugging) javovských aplikací</a></p>
+<p><a href="#k07">7. Zjištění všech atributů vybrané třídy</a></p>
+<p><a href="#k08">8. Demonstrační agent číslo 26 &ndash; výpis informací o všech atributech vybrané třídy</a></p>
+<p><a href="#k09">9. Zdrojové kódy obou demonstračních agentů a k&nbsp;nim příslušných testovacích příkladů</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Průchod haldou a výpis všech řetězců uložených na haldě</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o vlastnostech virtuálního stroje Javy</a> jsme se
+seznámili s&nbsp;tím, jakým způsobem jsou uloženy řetězce na haldě
+(<i>heapu</i>) virtuálního stroje (JVM). Dnes popis této poměrně důležité
+problematiky dokončíme, protože si ukážeme demonstračního <i>JVM TI</i> agenta,
+který dokáže vypsat všechny řetězce uložené na haldě &ndash; z&nbsp;těchto
+informací posléze budeme moci získat alespoň rámcovou představu o tom, jak
+paměťově náročná je práce s&nbsp;řetězci v&nbsp;jednoduchém demonstračním
+příkladu (<a href="#k04">kapitola 4</a>) i v&nbsp;reálné desktopové aplikaci
+<i>Freemind</i> (<a href="#k05">kapitola 5</a>). Toto měření však samozřejmě
+lze provést i pro ostatní javovské aplikace, například i pro aplikační servery
+a na nich nasazené (<i>deploy</i>) aplikace. Připomeňme si však nejdříve, jakým
+způsobem jsou řetězce na haldě uloženy. Řetězec je představován dvojicí objektů
+&ndash; instancí třídy <strong>String</strong> a instancí pole
+<strong>char[]</strong>, které je atributem třídy <strong>String</strong>.</p>
+
+<p>Pole <strong>char[]</strong> mohou být ve skutečnosti sdílená mezi větším
+množstvím řetězců, protože každá instance třídy <strong>String</strong>
+obsahuje další dva důležité atributy &ndash; <i>délku</i> řetězce (ve znacích)
+a <i>offset</i> od začátku pole <strong>char[]</strong>. Díky tomu je například
+možné implementovat metodu <strong>String.substring()</strong> takovým
+způsobem, že se neprovádí časově i paměťově náročné vytváření nového pole se
+znaky, ale prostě se vrátí nová instance třídy <strong>String</strong> se
+stejným atributem <strong>char[]</strong>, ovšem s&nbsp;rozdílnými hodnotami
+atributů <strong>count</strong> a <strong>offset</strong> a samozřejmě též
+posledního atributu <strong>hash</strong> (proč je možné
+<strong>String.substring()</strong> takto implementovat je zřejmé &ndash;
+řetězce jsou v&nbsp;Javě neměnné neboli <i>immutable</i>). Každá instance třídy
+<strong>String</strong> zabere na haldě většinou 24 bajtů (platí pro 32bitové
+JVM i 64bitové JVM s&nbsp;relativně malou velikostí haldy), jak je to ostatně
+patrné i při pohledu na následující tabulku:</p>
+
+<table>
+<tr><th>#</th><th>Velikost (B)</th><th>Struktura</th><th>Popis</th></tr>
+<tr><td>1</td><td>8</td><td>HEADER    </td><td>hlavička objektu (přiřazena každému objektu na haldě)</td></tr>
+<tr><td>2</td><td>4</td><td>int offset</td><td>atribut <strong>offset</strong> instance třídy String</td></tr>
+<tr><td>3</td><td>4</td><td>int count </td><td>atribut <strong>count</strong> instance třídy String</td></tr>
+<tr><td>4</td><td>4</td><td>int hash  </td><td>atribut <strong>hash</strong> instance třídy String</td></tr>
+<tr><td>5</td><td>4</td><td>char[]    </td><td>reference na pole znaků</td></tr>
+</table>
+
+<p>(Potenciálně) sdílené pole <strong>char[]</strong> má na haldě samozřejmě
+proměnnou délku v&nbsp;závislosti na tom, kolik znaků řetězec skutečně
+obsahuje:</p>
+
+<table>
+<tr><th>#</th><th>Velikost (B)</th><th>Struktura</th><th>Popis</th></tr>
+<tr><td>1</td><td>8</td><td>HEADER</td><td>hlavička objektu (přiřazena každému objektu na haldě)</td></tr>
+<tr><td>2</td><td>4</td><td>int length</td><td>délka pole = délka řetězce ve znacích</td></tr>
+<tr><td>3</td><td>length*2</td><td>char[] </td><td>vlastní obsah řetězce (char má dva bajty)</td></tr>
+<tr><td>4</td><td>0 nebo 2</td><td>PADDING</td><td>výplň, aby celková délka objektu byla dělitelná čtyřmi (někdy osmi)</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Callback funkce <strong>jvmtiStringPrimitiveValueCallback()</strong></h2>
+
+<p>Nyní tedy již víme, jak jsou řetězce na haldě uloženy. Teoreticky již
+dokonce umíme všechny řetězce na haldě přečíst, protože by postačovalo projít
+instancemi všech tříd s&nbsp;využitím callback funkce
+<strong>jvmtiHeapReferenceCallback()</strong>, vybrat z&nbsp;nich všechny
+instance třídy <strong>String</strong> (což není těžké) a potom s&nbsp;využitím
+callback funkce <strong>jvmtiArrayPrimitiveValueCallback()</strong> projít
+všemi poli znaků (char[]) a z&nbsp;nich nějakým způsobem vyfiltrovat pouze ta
+pole, která jsou atributy instancí tříd <strong>String</strong>. Ovšem vzhledem
+k&nbsp;tomu, že se s&nbsp;řetězci pracuje skutečně velmi často a navíc i proto,
+že řetězce mají (jako objekty) v&nbsp;Javě poněkud zvláštní postavení, existuje
+v&nbsp;rozhraní <i>JVM TI</i> pro průchod řetězci speciální typ callback funkce
+<strong>jvmtiStringPrimitiveValueCallback()</strong>. Ukazatel na tuto callback
+funkci lze uložit do struktury <strong>jvmtiHeapCallbacks</strong>, kterou si
+v&nbsp;tomto seriálu již ukážeme skutečně naposledy:</p>
+
+<pre>
+<strong>typedef struct</strong> {
+    jvmtiHeapIterationCallback        heap_iteration_callback;
+    jvmtiHeapReferenceCallback        heap_reference_callback;
+    jvmtiPrimitiveFieldCallback       primitive_field_callback;
+    jvmtiArrayPrimitiveValueCallback  array_primitive_value_callback;
+    <strong>jvmtiStringPrimitiveValueCallback string_primitive_value_callback;</strong>
+    jvmtiReservedCallback             reserved5;
+    jvmtiReservedCallback             reserved6;
+    jvmtiReservedCallback             reserved7;
+    jvmtiReservedCallback             reserved8;
+    jvmtiReservedCallback             reserved9;
+    jvmtiReservedCallback             reserved10;
+    jvmtiReservedCallback             reserved11;
+    jvmtiReservedCallback             reserved12;
+    jvmtiReservedCallback             reserved13;
+    jvmtiReservedCallback             reserved14;
+    jvmtiReservedCallback             reserved15;
+} <strong>jvmtiHeapCallbacks</strong>;
+</pre>
+
+<p>Ukazatel zapsaný do položky datové struktury
+<strong>jvmtiHeapCallbacks.jvmtiStringPrimitiveValueCallback</strong> musí
+obsahovat adresu callback funkce, jejíž hlavička má následující tvar:</p>
+
+<pre>
+jint JNICALL <strong>jvmtiStringPrimitiveValueCallback</strong>(
+     jlong        class_tag, 
+     jlong        size, 
+     jlong*       tag_ptr, 
+     const jchar* value, 
+     jint         value_length, 
+     void*        user_data);
+</pre>
+
+<p>Vidíme, že této callback funkci, která může být zavolána pro každý řetězec
+uložený na haldě, se při jejím zavolání předá šestice parametrů, z&nbsp;nichž
+některé již známe z&nbsp;dalších callback funkcí, ale některé parametry jsou
+zde zcela nové:</p>
+
+<table>
+<tr><th>#</th><th>Typ parametru</th><th>Jméno parametru</th><th>Význam</th></tr>
+<tr><td>1</td><td>jlong </td><td>class_tag</td><td>tag přiřazený ke třídě, které je objekt instancí (bude to vždy třída String)</td></tr>
+<tr><td>2</td><td>jlong </td><td>size</td><td>celková velikost alokovaná pro <strong>objekt</strong> na haldě (typicky 24 bajtů)</td></tr>
+<tr><td>3</td><td>jlong*</td><td>tag_ptr</td><td>ukazatel na tag přiřazený k&nbsp;objektu</td></tr>
+<tr><td>4</td><td>char* </td><td>value</td><td>obsah řetězce v&nbsp;Unicode (modifikovaný UTF-8)</td></tr>
+<tr><td>5</td><td>jint  </td><td>value_length</td><td>délka řetězce (odpovídá počtu 16bitových znaků)</td></tr>
+<tr><td>6</td><td>void* </td><td>user_data</td><td>ukazatel na uživatelská data (má stejný význam, jaký již známe z minula)</td></tr>
+</table>
+
+<p>V&nbsp;prvním parametru se předává tag přiřazený ke třídě, jejíž instancí se
+právě na haldě prochází. V&nbsp;této callback funkci by se vždy mělo jednat o
+tag přiřazený ke třídě <strong>String</strong>, což si ostatně můžeme otestovat
+na demonstračním <i>JVM TI</i> agentovi. Ve druhém parametru je předávána
+velikost instance této třídy, což je (možná poněkud překvapivě) konstantní
+hodnota &ndash; většinou 24 bajtů. Proč tomu tak je bylo vysvětleno <a
+href="#k01">v&nbsp;předchozí kapitole</a>. Užitečnější je pátý parametr
+obsahující skutečnou délku řetězce a samozřejmé též čtvrtý parametr
+s&nbsp;vlastním obsahem řetězce. Z&nbsp;toho vyplývá, že <i>JVM TI</i> dokáže
+automaticky zpárovat instanci třídy <strong>String</strong> s&nbsp;příslušnou
+instancí pole <strong>char[]</strong>, takže tuto relativně složitou činnost
+nemusíme dělat ručně.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační agent číslo 25 &ndash; výpis řetězců uložených na haldě</h2>
+
+<p>Informace získané <a href="#k02">v&nbsp;předchozí kapitole</a> využijeme ve
+dvacátém pátém demonstračním <i>JVM TI</i> agentovi, v&nbsp;němž je
+implementována speciální callback funkce pojmenovaná
+<strong>callback_for_each_string()</strong>, která musí být zaregistrována přes
+<strong>heap_callbacks.string_primitive_value_callback</strong>. Způsob
+registrace této callback funkce je ukázán na následujícím úryvku kódu, kde
+nejprve dojde k&nbsp;vlastní registraci callback funkce a následně se zahájí
+procházení haldou:</p>
+
+<pre>
+<i>/*</i>
+<i> * Registrace callback funkce pro prochazeni haldou a zacatek prochazeni.</i>
+<i> */</i>
+static void <strong>register_heap_callback_and_run_dump</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jvmtiHeapCallbacks heap_callbacks;
+    t_heap_stat heap_stat = {0,0};
+&nbsp;
+<i>    /* naplnit strukturu heap_callbacks jednou callback funkci */</i>
+    (void)memset(&amp;heap_callbacks, 0, sizeof(heap_callbacks));
+    heap_callbacks.string_primitive_value_callback = &amp;callback_for_each_string;
+&nbsp;
+<i>    /* zahajit prochazeni haldou */</i>
+    error = (*jvmti_env)-&gt;IterateThroughHeap(jvmti_env, 0, NULL,
+            &amp;heap_callbacks, (const void *)&amp;heap_stat);
+    check_jvmti_error(jvmti_env, error, "read heap content");
+&nbsp;
+<i>    /* vypis statistiky o obsazeni haldy */</i>
+    printf("String count: %d\n", heap_stat.arrays_count);
+    printf("Total size:   %ld bytes\n", heap_stat.total_size);
+}
+</pre>
+
+<p>Pro každý řetězec nalezený na haldě se vypíše délka tohoto řetězce (uvedená
+ve znacích), velikost objektu představujícího řetězec (jak jsme se již zmínili,
+bude zde většinou konstantní hodnota 24) a následně se řetězec vypíše, ale pro
+jistotu se budou vypisovat jen znaky s&nbsp;kódy 32 až 127, protože řetězec
+(resp. přesněji řečeno jednotlivé znaky v&nbsp;něm uložené) jsou reprezentovány
+v&nbsp;modifikovaném kódu <i>UTF-8</i>, s&nbsp;nímž se v&nbsp;čistém céčku
+pracuje dosti obtížně. V&nbsp;modifikovaném <i>UTF-8</i> je znak uložen
+v&nbsp;jednom až třech bajtech, tj.&nbsp;délka je proměnná a oproti normálnímu
+kódování <i>UTF-8</i> zde existuje omezení na maximálně tříbajtové sekvence.
+Navíc je zaručeno, že ASCII znaky 0x00 až 0x7f jsou reprezentovány jedním
+bajtem s&nbsp;ASCII kódem, zatímco všechny znaky s&nbsp;kódem 0x80 až 0x7ff
+jsou uloženy ve dvou bajtech a znaky s&nbsp;kódem 0x800 až 0xffff ve třech
+bajtech &ndash; v&nbsp;tomto případě však mají všechny bajty nastaven nejvyšší
+bit na jedničku, tj.&nbsp;jejich hodnota je větší než 127.</p>
+
+<p>Pokud tedy budeme v&nbsp;řetězci vyhledávat a následně tisknout pouze bajty
+s&nbsp;hodnotou menší než 128, je zaručeno, že se provede tisk pouze ASCII
+znaků a nikoli například &bdquo;rozsypaného čaje&ldquo;:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce volana pro kazdy retezec.</i>
+<i> */</i>
+static jint JNICALL <strong>callback_for_each_string</strong>(
+        jlong  class_tag, 
+        jlong  size, 
+        jlong* tag_ptr, 
+        const  jchar* value,
+        jint   value_length,
+        void*  user_data)
+{
+    int i;
+    printf("length: %4d chars,  size: %ld bytes    ",
+        value_length, (long int)size);
+&nbsp;
+<i>    /* velmi zjednoduseny tisk *podmnoziny* Unicode znaku */</i>
+    putchar('"');
+    for (i=0; i&lt;value[i]; i++)
+    {
+        if (value[i] &gt;= 32 &amp;&amp; value[i] &lt;= 127)
+        {
+            putchar(value[i]);
+        }
+    }
+    putchar('"');
+    putchar('\n');
+&nbsp;
+<i>    /* spocitani statistickych informaci o obsazeni haldy */</i>
+    t_heap_stat *heap_stat = (t_heap_stat*)user_data;
+    heap_stat-&gt;arrays_count++;
+    heap_stat-&gt;total_size += size;
+&nbsp;
+<i>    /* pokracovat dale v prochazeni haldy */</i>
+    return JVMTI_VISIT_OBJECTS;
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Statistika využití řetězců v&nbsp;jednoduchém testovacím příkladu (Test25)</h2>
+
+<p>Celý zdrojový kód demonstračního <i>JVM TI</i> agenta číslo 25 je, podobně
+jako i předchozí demonstrační agenti, dostupný <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">v&nbsp;Mercurial
+repositáři</a>. Zajímavé bude zjistit, kolik řetězců je uloženo na haldě
+virtuálního stroje Javy v&nbsp;případě, že je v&nbsp;JVM spuštěn pouze velmi
+jednoduchý a krátký příklad, jehož zdrojový kód je vypsán pod tímto
+odstavcem:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test dvacateho</i>
+<i>  * pateho demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class <strong>Test25</strong> {
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void <strong>main</strong>(String[] args) {
+        String s1 = "Hello world!";
+        String s2 = "http://www.root.cz";
+        String s3 = "abcdefghijklmnopqrstuvwxyz";
+        String s4 = "Příliš žluťoučký kůň úpěl ďábelské ódy";
+    }
+}
+</pre>
+
+<p>Vidíme, že v&nbsp;této testovací třídě jsou použity pouze čtyři řetězce,
+ovšem ve skutečnosti bude na haldě běžící JVM uloženo řetězců mnohem více. Po
+překladu <i>JVM TI</i> agenta i testovací třídy <i>Test25</i> se virtuální
+stroj Javy spustí následujícím příkazem:</p>
+
+<pre>
+gcc -Wall -ansi -I/usr/lib/jvm/java-1.6.0-openjdk/include/ -shared -o libagent25.so agent25.c
+javac -g Test25.java
+</pre>
+
+<p>I když všichni očekáváme, že na haldě bude uloženo větší množství řetězců,
+může být výsledek i tak poměrně překvapivý:</p>
+
+<pre>
+Agent25: Agent_OnLoad
+Agent25: JVM TI version is correct
+Agent25: Got VM init event
+Agent25: Got VM Death event
+Agent25: Got data dump request
+class java.io.BufferedOutputStream  has tag 1
+class java.lang.Class$3  has tag 2
+class java.util.Enumeration  has tag 3
+...
+...
+...
+class [Z has tag 371
+class [B has tag 372
+class [C has tag 373
+class [I has tag 374
+class [S has tag 375
+class [J has tag 376
+class [F has tag 377
+class [D has tag 378
+length:   15 chars,  size: 24 bytes    "Java heap space"
+length:   13 chars,  size: 24 bytes    "PermGen space"
+length:   37 chars,  size: 24 bytes    "Requested array size exceeds VM limit"
+length:   26 chars,  size: 24 bytes    "GC overhead limit exceeded"
+length:    9 chars,  size: 24 bytes    "/ by zero"
+length:    4 chars,  size: 24 bytes    "main"
+length:    4 chars,  size: 24 bytes    "main"
+length:   90 chars,  size: 24 bytes    "Method sun.misc.Unsafe.prefetchRead(Ljava/lang/Object;J"
+length:  108 chars,  size: 24 bytes    "Method sun.misc.Unsafe.copyMemory(Ljava/lang/Object;JLjava"
+...
+...
+...
+length:    5 chars,  size: 24 bytes    "java."
+length:    4 chars,  size: 24 bytes    "main"
+length:   12 chars,  size: 24 bytes    "Hello world!"
+length:   18 chars,  size: 24 bytes    "http://www.root.cz"
+length:   26 chars,  size: 24 bytes    "abcdefghijklmnopqrstuvwxyz"
+length:   38 chars,  size: 24 bytes    "Pli luouk k pl belsk"
+Strings count: 927
+Total size:   22248 bytes
+Agent25: Agent_OnUnload
+</pre>
+
+<p>Na haldě je tedy uloženo celkem 927 řetězců (toto číslo se může na vaší JVM
+o několik procent měnit) a velikost paměti obsazené <i>pouze</i> instancemi
+třídy <strong>String</strong>, nikoli tedy vlastními řetězci
+<strong>char[]</strong>, dosahuje přibližné hodnoty dvacet jedna kilobajtů.
+V&nbsp;následující tabulce jsou vypsány další zajímavé statistické
+informace:</p>
+
+<table>
+<tr><td>Počet řetězců</td><td>927</td></tr>
+<tr><td>Minimální délka řetězce</td><td>0 znaků</td></tr>
+<tr><td>Maximální délka řetězce</td><td>517 znaků</td></tr>
+<tr><td>Průměrná délka řetězce</td><td>15,6 znaků</td></tr>
+<tr><td>Medián</td><td>10 znaků</td></tr>
+<tr><td>Průměrná efektivita uložení</td><td>44%</td></tr>
+</table>
+
+<p>Průměrná délka řetězce ani medián nám ovšem nedají zcela přesnou informaci o
+tom, jak dlouhé řetězce ve skutečnosti na haldě najdeme. Proto si navíc ještě
+ukážeme histogram, na jehož horizontální osu je nanesena délka řetězce (ve
+znacích) a na osu vertikální pak počet řetězců majících tuto délku. Histogram
+je zobrazen pro dva různé rozsahy horizontální osy: první zobrazuje frekvenci
+výskytu řetězců s&nbsp;délkou 0-600 znaků a druhý pouze řetězce s&nbsp;délkou
+0-100 znaků:</p>
+
+<a href="http://www.root.cz/obrazek/117192/"><img src="http://i.iinfo.cz/images/430/jvm-62-2-prev.png" class="image-117192" width="370" height="258" alt="&#160;" /></a>
+<p><i>Obrázek 1: Histogram s&nbsp;frekvencí výskytu řetězců s&nbsp;délkou 0-600 znaků.</i></p>
+
+<a href="http://www.root.cz/obrazek/117193/"><img src="http://i.iinfo.cz/images/430/jvm-62-3-prev.png" class="image-117193" width="370" height="236" alt="&#160;" /></a>
+<p><i>Obrázek 2: Histogram s&nbsp;frekvencí výskytu řetězců s&nbsp;délkou 0-100 znaků.</i></p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Statistika využití řetězců v&nbsp;reálné aplikaci (Freemind)</h2>
+
+<p>Pro malé javovské programy lze předpokládat, že se na haldě budou nacházet
+především objekty vytvořené a využívané přímo virtuálním strojem Javy, což bude
+platit i o řetězcích. O tom jsme se ostatně mohli přesvědčit v&nbsp;předchozím
+případě, kdy javovský program obsahoval pouze čtyři explicitně zadané řetězce,
+zatímco na haldě jich bylo uloženo celkem 927. Přitom se většinou jednalo o
+velmi krátké řetězce s&nbsp;průměrnou délkou 15,6 znaků a s&nbsp;mediánem
+dokonce pouhých 10 znaků. Zkusme tedy využít našeho <i>JVM TI</i> agenta pro
+získání statistiky o řetězcích pro reálnou aplikaci. Bude se jednat o poměrně
+známý desktopový program <i>Freemind</i> sloužící pro tvorbu takzvaných
+myšlenkových map. Jedná se o středně velkou aplikaci, takže získané informace
+by mohly být poměrně zajímavé.</p>
+
+<a href="http://www.root.cz/obrazek/117191/"><img src="http://i.iinfo.cz/images/430/jvm-62-1-prev.png" class="image-117191" width="370" height="270" alt="&#160;" /></a>
+<p><i>Obrázek 3: Screenshot programu Freemind ve chvíli, kdy je virtuální stroj
+monitorován JVM TI agentem číslo 25.</i></p>
+
+<p><i>Freemind</i> se spouští pomocí skriptu, v&nbsp;němž se nastavují cesty
+k&nbsp;různým Java archivům. Tento skript bylo pro potřeby měření <i>JVM TI</i>
+agentem nutné upravit do následující podoby (která je ovšem závislá na
+konkrétních adresářích, kde jsou uloženy Java archivy):</p>
+
+<pre>
+CLASSPATH=\
+/usr/share/java/SimplyHTML.jar:\
+/usr/share/java/gnu-regexp.jar:\
+/usr/share/java/jibx-run.jar:\
+/usr/share/java/xpp3.jar:\
+/usr/share/freemind/lib/bindings.jar:\
+/usr/share/freemind/lib/freemind.jar:\
+/usr/share/java/commons-lang.jar:\
+/usr/share/java/forms.jar
+&nbsp;
+java -agentpath:./libagent25.so -Xmx256M -Dfreemind.base.dir="/usr/share/freemind" -cp "${CLASSPATH}" freemind.main.FreeMindStarter
+</pre>
+
+<p>Po spuštění tohoto skriptu dojde k&nbsp;zobrazení grafického uživatelského
+rozhraní <i>Freemindu</i> a je možné s&nbsp;ním normálně pracovat. Až teprve
+při ukončování činnosti virtuálního stroje se zavolá callback funkce
+v&nbsp;<i>JVM TI</i> agentovi, která nastartuje procházení všemi řetězci na
+haldě:</p>
+
+<pre>
+Checking Java Version...
+Agent25: Agent_OnLoad
+Agent25: JVM TI version is correct
+Agent25: Got VM init event
+Agent25: Got VM Death event
+Agent25: Got data dump request
+class freemind.modes.common.GotoLinkNodeAction  has tag 1
+class sun.awt.image.IntegerComponentRaster  has tag 2
+class javax.swing.plaf.PanelUI  has tag 3
+class sun.awt.MostRecentKeyValue  has tag 4
+class javax.swing.plaf.basic.BasicHTML$BasicHTMLViewFactory  has tag 5
+class java.util.TaskQueue  has tag 6
+class java.util.Currency  has tag 7
+class sun.awt.X11.XNETProtocol  has tag 8
+class sun.awt.X11.XProtocolConstants  has tag 9
+...
+...
+...
+class [[S has tag 3405
+class [[[S has tag 3406
+class [J has tag 3407
+class [[J has tag 3408
+class [F has tag 3409
+class [[F has tag 3410
+class [D has tag 3411
+class [[D has tag 3412
+length:   31 chars,  size: 24 bytes    "End paint in 213. Mean time:247"
+length:    0 chars,  size: 24 bytes    " "
+length:    9 chars,  size: 24 bytes    "18.1.2013"
+length:    8 chars,  size: 24 bytes    "23:38:41"
+length:    0 chars,  size: 24 bytes    " "
+length:    4 chars,  size: 24 bytes    "cs__"
+length:   97 chars,  size: 24 bytes    "18.1.2013 23:38:41 freemind.view.mindmapview.MapView"
+length:   38 chars,  size: 24 bytes    "Java_java_awt_AWTEvent_nativeSetSource"
+length:   58 chars,  size: 24 bytes    "Java_sun_awt_X11_XWindow_haveCurrentX11InputMethodInstance"
+length:   51 chars,  size: 24 bytes    "Java_sun_awt_X11_XWindow_x11inputMethodLookupString"
+length:   20 chars,  size: 24 bytes    "The X.Org Foundation"
+length:   40 chars,  size: 24 bytes    "Java_sun_awt_X11_XlibWrapper_IsKeypadKey"
+length:   17 chars,  size: 24 bytes    "type = FocusOut, "
+length:   31 chars,  size: 24 bytes    "type = FocusOut, serial = 695, "
+...
+...
+...
+length:   10 chars,  size: 24 bytes    "US/Central"
+length:   10 chars,  size: 24 bytes    "US/Eastern"
+length:    9 chars,  size: 24 bytes    "US/Hawaii"
+length:   17 chars,  size: 24 bytes    "US/Indiana-Starke"
+length:   15 chars,  size: 24 bytes    "US/East-Indiana"
+length:   11 chars,  size: 24 bytes    "US/Michigan"
+length:   11 chars,  size: 24 bytes    "US/Mountain"
+length:   10 chars,  size: 24 bytes    "US/Pacific"
+length:   14 chars,  size: 24 bytes    "US/Pacific-New"
+length:    8 chars,  size: 24 bytes    "US/Samoa"
+length:    3 chars,  size: 24 bytes    "VST"
+length:    4 chars,  size: 24 bytes    "W-SU"
+length:    4 chars,  size: 24 bytes    "Zulu"
+length:   17 chars,  size: 24 bytes    "filter_conditions"
+Strings count: 29737
+Total size:   713688 bytes
+Agent25: Agent_OnUnload
+</pre>
+
+<p>Pro tuto průměrnou desktopovou aplikaci se tedy na haldě vytvořilo necelých
+třicet tisíc(!) řetězců a pouze instance třídy <strong>String</strong> zabraly
+téměř 700 kilobajtů (do této velikosti nejsou počítána pole
+<strong>char[]</strong>). V&nbsp;následující tabulce jsou zobrazeny další
+zajímavé statistické informace:</p>
+
+<table>
+<tr><td>Počet řetězců</td><td>29737</td></tr>
+<tr><td>Minimální délka řetězce</td><td>0 znaků</td></tr>
+<tr><td>Maximální délka řetězce</td><td>10387 znaků</td></tr>
+<tr><td>Průměrná délka řetězce</td><td>23,7 znaků</td></tr>
+<tr><td>Medián</td><td>16 znaků</td></tr>
+<tr><td>Průměrná efektivita uložení</td><td>55 %</td></tr>
+</table>
+
+<p>Průměrná délka řetězce i medián se oproti první testovací aplikaci zvýšily,
+což znamená, že se zlepšila i efektivita uložení řetězců (poměr mezi obsazením
+haldy znaky dělený celkovým obsazením instancemi tříd <strong>String</strong> a
+jejími atributy <strong>char[]</strong>). Podívejme se taktéž na histogramy.
+První histogram opět ukazuje frekvenci řetězců s&nbsp;délkami 0 až 600 znaků a
+druhý pouze frekvence řetězců s&nbsp;délkou 0 až 100 znaků.</p>
+
+<a href="http://www.root.cz/obrazek/117194/"><img src="http://i.iinfo.cz/images/430/jvm-62-4-prev.png" class="image-117194" width="370" height="241" alt="&#160;" /></a>
+<p><i>Obrázek 4: Histogram s&nbsp;frekvencí výskytu řetězců s&nbsp;délkou 0-600 znaků.</i></p>
+
+<a href="http://www.root.cz/obrazek/117195/"><img src="http://i.iinfo.cz/images/430/jvm-62-5-prev.png" class="image-117195" width="370" height="244" alt="&#160;" /></a>
+<p><i>Obrázek 5: Histogram s&nbsp;frekvencí výskytu řetězců s&nbsp;délkou 0-100 znaků.</i></p>
+
+<p>Jen pro doplnění je ještě vhodné k&nbsp;oběma histogramům přidat minule
+vysvětlený graf, na jehož horizontální osu je vynesena délka řetězce a na osu
+vertikální (pravá osa) pak efektivita uložení takto dlouhého řetězce
+v&nbsp;paměti:</p>
+
+<img src="http://i.iinfo.cz/images/376/java-string-storage-efficiency.png" alt="string_storage_graph" />
+<p><i>Obrázek 6: Efektivita uložení řetězců s&nbsp;různou délkou.</i></p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Využití rozhraní JVM TI pro ladění (debugging) javovských aplikací</h2>
+
+<p>Rozhraní <i>JVM TI</i> je možné využít i pro ladění javovských aplikací
+&ndash; jinými slovy je možné s&nbsp;využitím <i>JVM TI</i> naprogramovat i
+poměrně složitý <i>debugger</i>, i když je na tomto místě nutné říci, že
+výhodnější a především jednodušší bývá v&nbsp;tomto případě použití rozhraní
+<i>JDWP</i>, které je přímo určené právě pro implementaci debuggerů. Pokud se
+smíříme s&nbsp;tím, že <i>JVM TI</i> je nízkoúrovňové rozhraní, nabízí nám
+v&nbsp;oblasti ladění ve skutečnosti poměrně širokou funkcionalitu,
+například:</p>
+
+<ol>
+<li>Zjištění vzniku zachycované či nezachycované výjimky (to již umíme).</li>
+<li>Zjištění zachycení výjimky (taktéž již umíme).</li>
+<li>Získání seznamu všech načtených tříd (-//-).</li>
+<li>Přečtení všech objektů, polí i primitivních hodnot na haldě (-//-).</li>
+<li>Zjištění zápisu do atributu.</li>
+<li>Zjištění pouhého čtení hodnoty atributu.</li>
+<li>Zachycení vstupu do metody.</li>
+<li>Zachycení výstupu z&nbsp;metody.</li>
+<li>Nastavení breakpointu.</li>
+<li>Vynucení výskoku z&nbsp;funkce s&nbsp;vybranou návratovou hodnotou.</li>
+<li>Krokování po jednotlivých instrukcích.</li>
+</ol>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zjištění všech atributů vybrané třídy</h2>
+
+<p>V&nbsp;následujícím textu se budeme zabývat především body číslo 5 a 6,
+tj.&nbsp;způsobem detekce zápisu do atributu vybrané třídy/objektu a způsobem
+detekce čtení tohoto atributu. Tuto užitečnou funkci nám nabízí prakticky
+všechny moderní debuggery (příkaz <strong>watch...</strong>). S&nbsp;využitím
+funkcionality nabízené rozhraním <i>JVM TI</i> je možné k&nbsp;libovolnému
+atributu třídy či objektu zaregistrovat callback funkci zavolanou ve chvíli,
+kdy je hodnota tohoto atributu změněna (je proveden zápis) či kdy je naopak jen
+přečtena aktuální hodnota tohoto atributu. Nicméně při registraci těchto
+callback funkcí je zapotřebí znát identifikátor tohoto atributu reprezentovaný
+hodnotou typu <strong>jfieldID</strong>, kterou musíme nějakým způsobem získat.
+Nejprve si ukážeme, jak je možné získat informace o všech atributech vybrané
+javovské třídy, protože přesně tato činnost se provádí v&nbsp;debuggeru &ndash;
+tam je taktéž nutné vybrat třídu/objekt a její/jeho atribut, který se má
+sledovat.</p>
+
+<p>Demonstrační agent číslo 26 získá a vypíše jména, signatury a modifikátory
+všech atributů třídy <strong>Test26</strong> (a samozřejmě i všech případných
+instancí této třídy). Základem funkcionality tohoto agenta je funkce
+<strong>callback_on_info_request()</strong> zavolaná ve chvíli ukončování práce
+JVM. Ve skutečnosti je však možné tuto funkci zavolat naopak při inicializaci
+JVM, v&nbsp;této chvíli je to jedno. V&nbsp;callback funkci
+<strong>callback_on_info_request()</strong> se získá seznam všech načtených
+tříd a ve smyčce se tímto seznamem prochází. Ve chvíli, kdy jméno třídy
+odpovídá zadanému jménu "Test26" je zavolána funkce
+<strong>print_attributes_info()</strong>, které se předá identifikátor
+příslušné třídy:</p>
+
+<pre>
+<i>/*</i>
+<i> * Callback funkce zavolana pri cteni informaci o atributech vybrane tridy.</i>
+<i> */</i>
+static void JNICALL <strong>callback_on_info_request</strong>(jvmtiEnv *jvmti_env)
+{
+    jvmtiError error;
+    jint       class_count;
+    jclass    *class_array;
+    int        i;
+&nbsp;
+    MSG("Got data dump request");
+&nbsp;
+    error = (*jvmti_env)-&gt;<strong>GetLoadedClasses</strong>(jvmti_env, &amp;class_count, &amp;class_array);
+    check_jvmti_error(jvmti_env, error, "get loaded classes");
+&nbsp;
+    for (i=0; i &lt; class_count; i++)
+    {
+        char *class_name_ptr;
+        char *updated_class_name_ptr;
+&nbsp;
+        <i>/* ziskat jmeno tridy */</i>
+        error = (*jvmti_env)-&gt;<strong>GetClassSignature</strong>(jvmti_env, class_array[i], &amp;class_name_ptr, NULL);
+        check_jvmti_error(jvmti_env, error, "get class signature");
+        if (class_name_ptr == NULL)
+        {
+            puts("Error: class has no signature");
+        }
+        <i>/* upravit jmeno tridy */</i>
+        updated_class_name_ptr = update_class_name(class_name_ptr, ';');
+&nbsp;
+        <i>/* nasli jsme nasi testovaci tridu? */</i>
+        if (strcmp(TEST_CLASS_NAME, updated_class_name_ptr) == 0)
+        {
+            printf("Field\t%-20s\t%-25s\tModifiers\n", "Name", "Signature");
+            print_attributes_info(jvmti_env, class_array[i]);
+        }
+&nbsp;
+        <i>/* dealokace pameti po GetClassSignature() */</i>
+        error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char *)class_name_ptr);
+        check_jvmti_error(jvmti_env, error, "deallocate class name");
+    }
+}
+</pre>
+
+<p>Ve funkci <strong>print_attributes_info()</strong> se s&nbsp;využitím <i>JVM
+TI</i> funkce <strong>GetClassFields()</strong> získá pole obsahující
+identifikátory všech atributů, které jsou v&nbsp;dané třídě deklarovány. Toto
+pole obsahuje prvky typu <strong>jfieldID</strong> a <i>JVM TI</i> funkce
+<strong>GetClassFields()</strong> kromě tohoto pole vrátí i jeho délku, čehož
+se využije v&nbsp;programové smyčce, která všemi hodnotami
+<strong>jfieldID</strong> prochází a pro každou získanou hodnotu zavolá funkci
+<strong>print_info_for_attribute()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Zjisteni a nasledny tisk informaci o atributech tridy.</i>
+<i> */</i>
+static void JNICALL <strong>print_attributes_info</strong>(jvmtiEnv *jvmti_env, jclass class)
+{
+    jvmtiError error;
+    int        field_count;
+    jfieldID  *fields_array;
+&nbsp;
+    <i>/* precist vsechny atributy tridy */</i>
+    error = (*jvmti_env)-&gt;<strong>GetClassFields</strong>(jvmti_env, class, &amp;field_count, &amp;fields_array);
+    check_jvmti_error(jvmti_env, error, "get class fields");
+&nbsp;
+    <i>/* pole atributu bylo inicializovano */</i>
+    if (error == JVMTI_ERROR_NONE)
+    {
+        int i;
+        <i>/* projit vsemi atributy a vypsat o nich informace */</i>
+        for (i = 0; i &lt; field_count; i++)
+        {
+            print_info_for_attribute(jvmti_env, class, fields_array[i], i);
+        }
+    }
+&nbsp;
+    <i>/* dealokace pole ziskaneho pres GetClassFields() */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)fields_array);
+    check_jvmti_error(jvmti_env, error, "deallocate class fields array");
+}
+</pre>
+
+<p>Do funkce <strong>print_info_for_attribute()</strong> jsou předány dvě
+důležité informace &ndash; hodnoty <strong>jclass</strong> a
+<strong>jfieldID</strong>, které jednoznačně určují příslušný atribut třídy.
+Pro získání jména a signatury atributu se použije <i>JVM TI</i> funkce nazvaná
+<strong>GetFieldName()</strong> a pro přečtení modifikátorů (viz další text)
+pak funkce nazvaná <strong>GetFieldModifiers()</strong>. Použití obou zmíněných
+<i>JVM TI</i> funkcí je jednoduché, pouze nesmíme zapomenout na dealokaci
+řetězců vrácených z&nbsp;<strong>GetFieldName()</strong>:</p>
+
+<pre>
+<i>/*</i>
+<i> * Tisk informaci o vybranem atributu tridy.</i>
+<i> */</i>
+static void <strong>print_info_for_attribute</strong>(jvmtiEnv *jvmti_env, jclass class, jfieldID field, int i)
+{
+    jvmtiError error;
+    char *name;
+    char *signature;
+    int  modifiers;
+&nbsp;
+    error = (*jvmti_env)-&gt;<strong>GetFieldName</strong>(jvmti_env, class, field, &amp;name, &amp;signature, NULL);
+    check_jvmti_error(jvmti_env, error, "get field name");
+    error = (*jvmti_env)-&gt;<strong>GetFieldModifiers</strong>(jvmti_env, class, field, &amp;modifiers);
+    check_jvmti_error(jvmti_env, error, "get field modifiers");
+&nbsp;
+    <i>/* zakladni informace */</i>
+    printf("%d\t%-20s\t%-25s\t", i, name, signature);
+    <i>/* tisk pripadnych modifikatoru */</i>
+    print_modifiers(modifiers);
+    putchar('\n');
+&nbsp;
+    <i>/* dealokace pameti */</i>
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)name);
+    check_jvmti_error(jvmti_env, error, "deallocate field name");
+    error = (*jvmti_env)-&gt;<strong>Deallocate</strong>(jvmti_env, (unsigned char*)signature);
+    check_jvmti_error(jvmti_env, error, "deallocate field signature");
+}
+</pre>
+
+<p>Nyní nám již zbývá pouze vytisknout všechny případné modifikátory atributu.
+Tyto modifikátory jsou uloženy v&nbsp;jediné celočíselné hodnotě jako bitové
+příznaky. My již vlastně hodnoty těchto příznaků známe, protože jsou stejné,
+jako příznaky používané v&nbsp;bajtkódu JVM (části 18 až 31 tohoto
+seriálu):</p>
+
+<pre>
+<i>/*</i>
+<i> * Priznaky tridy, rozhrani ci datove polozky</i>
+<i> */</i>
+enum
+{
+    ACC_PUBLIC       = 0x0001,   <i>/* verejna trida/rozhrani/datova polozka */</i>
+    ACC_PRIVATE      = 0x0002,   <i>/* privatni datova polozka dostupna pouze uvnitr tridy */</i>
+    ACC_PROTECTED    = 0x0004,   <i>/* chranena datova polozka dostupna uvnitr tridy a z pripadne odvozene tridy */</i>
+    ACC_STATIC       = 0x0008,   <i>/* staticka datova polozka */</i>
+    ACC_FINAL        = 0x0010,   <i>/* finalni trida ci datova polozka */</i>
+    ACC_VOLATILE     = 0x0040,   <i>/* priznak volatile - hodnota se vzdy precte ci zapise do pameti */</i>
+    ACC_TRANSIENT    = 0x0080,   <i>/* priznak transient - nebude se zpracovavat pri (de)serializaci */</i>
+    ACC_INTERFACE    = 0x0200,   <i>/* rozliseni trida/rozhrani */</i>
+    ACC_ABSTRACT     = 0x0400,   <i>/* abstraktni trida */</i>
+    ACC_SYNTHETIC    = 0x1000,   <i>/* synteticka trida ci datova polozka, nema svuj protejsek ve zdrojovem kodu */</i>
+    ACC_ANNOTATION   = 0x2000,   <i>/* anotace */</i>
+    ACC_ENUM         = 0x4000,   <i>/* vycet */</i>
+};
+</pre>
+
+<p>Se znalostí číselného kódu vráceného <i>JVM TI</i> funkcí
+<strong>GetFieldModifiers()</strong> a výše vypsaného výčtu s&nbsp;bitovými
+maskami je možné vypsat všechny modifikátory příslušného atributu či jejich
+různé kombinace například následujícím způsobem:</p>
+
+<pre>
+<i>/*</i>
+<i> * Tisk informaci o modifikatorech atributu.</i>
+<i> */</i>
+static void <strong>print_modifiers</strong>(int modifiers)
+{
+    if (modifiers &amp; ACC_PUBLIC)     fputs(" public", stdout);
+    if (modifiers &amp; ACC_PRIVATE)    fputs(" private", stdout);
+    if (modifiers &amp; ACC_PROTECTED)  fputs(" protected", stdout);
+    if (modifiers &amp; ACC_STATIC)     fputs(" static", stdout);
+    if (modifiers &amp; ACC_FINAL)      fputs(" final", stdout);
+    if (modifiers &amp; ACC_ABSTRACT)   fputs(" abstract", stdout);
+    if (modifiers &amp; ACC_SYNTHETIC)  fputs(" synthetic", stdout);
+    if (modifiers &amp; ACC_TRANSIENT)  fputs(" transient", stdout);
+    if (modifiers &amp; ACC_INTERFACE)  fputs(" interface", stdout);
+    if (modifiers &amp; ACC_ANNOTATION) fputs(" annotation", stdout);
+    if (modifiers &amp; ACC_ENUM)       fputs(" enum", stdout);
+    if (modifiers &amp; ACC_VOLATILE)   fputs(" volatile", stdout);
+}
+</pre>
+
+<p>Poznámka: funkce <strong>fputs()</strong> je zde použita pouze z&nbsp;toho
+důvodu, že nevkládá do standardního výstupu znak pro konec řádku, jiný důvod
+pro provádění této &bdquo;magie&ldquo; neexistuje :-)</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační agent číslo 26 &ndash; výpis informací o všech atributech vybrané třídy</h2>
+
+<p>Pro vyzkoušení činnosti dvacátého šestého demonstračního <i>JVM TI</i>
+agenta, jehož zdrojový kód je opět uložen v&nbsp;Mercurial repositáři (viz též
+<a href="#k09">kapitola číslo 9</a>) bude tento agent spuštěn s&nbsp;testovací
+třídou <strong>Test26</strong>, v&nbsp;níž je deklarováno poměrně velké
+množství různých atributů. Jedná se o atributy primitivního datového typu, pole
+primitivních datových typů, reference na objekty i pole referencí na objekty.
+Navíc jsou u některých atributů použity různé modifikátory, ať již se jedná o
+modifikátory přístupu (<strong>public/protected/private</strong>), tak i
+modifikátory <strong>static</strong> (třídní atribut),
+<strong>transient</strong> (atribut nebude serializován),
+<strong>volatile</strong> (nebude se provádět žádná optimalizace při čtení a
+zápisu hodnoty atributu) a <strong>final</strong> (jedná se o konstantní
+hodnotu). Tyto atributy lze samozřejmě různě kombinovat, což je taktéž
+v&nbsp;testovací třídě použito:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Testovaci trida pouzita pro test dvacateho</i>
+<i>  * sesteho demonstracniho JVM TI agenta.</i>
+<i>  */</i>
+public class <strong>Test26</strong> {
+<i>    /* Zakladni datove typy a obalove tridy */</i>
+    int         i;
+    Integer     I;
+    float       f;
+    Float       F;
+&nbsp;
+<i>    /* Pole, tridy a rozhrani */</i>
+    int[]       pole;
+    boolean[][] matice;
+    String      retezec;
+    String[]    moc_retezcu;
+    Test26      instance;
+    Comparable  comparable;
+&nbsp;
+<i>    /* Ruzne modifikatory */</i>
+    public int    public_int;
+    private int   private_int;
+    protected int protected_int;
+    int           proste_jen_int;
+    transient int transient_int;
+    volatile int  volatile_int;
+    final int     final_int = 0;
+    static int    static_int;
+&nbsp;
+<i>    /* Kombinace modifikatoru */</i>
+    public static final int public_static_final_int = 42;
+    private transient java.awt.Color color;
+    protected volatile static java.util.Date date;
+&nbsp;
+<i>    /**</i>
+<i>      * Spusteni testu.</i>
+<i>      */</i>
+    public static void main(String[] args) {
+    }
+}
+</pre>
+
+<p>Po spuštění virtuálního stroje Javy společně s&nbsp;<i>JVM TI</i>
+agentem:</p>
+
+<pre>
+java -agentpath:./libagent26.so Test26 2&gt; /dev/null
+</pre>
+
+<p>Získáme následující výpis, který přesně odpovídá deklaraci atributů
+v&nbsp;testovací třídě <strong>Test26</strong>:</p>
+
+<pre>
+Agent26: Agent_OnLoad
+Agent26: JVM TI version is correct
+Agent26: Got VM init event
+Agent26: Got VM Death event
+Agent26: Got data dump request
+Field   Name                    Signature                       Modifiers
+0       i                       I                               
+1       I                       Ljava/lang/Integer;             
+2       f                       F                               
+3       F                       Ljava/lang/Float;               
+4       pole                    [I                              
+5       matice                  [[Z                             
+6       retezec                 Ljava/lang/String;              
+7       moc_retezcu             [Ljava/lang/String;             
+8       instance                LTest26;                        
+9       comparable              Ljava/lang/Comparable;          
+10      public_int              I                                public
+11      private_int             I                                private
+12      protected_int           I                                protected
+13      proste_jen_int          I                               
+14      transient_int           I                                transient
+15      volatile_int            I                                volatile
+16      final_int               I                                final
+17      static_int              I                                static
+18      public_static_final_int I                                public static final
+19      color                   Ljava/awt/Color;                 private transient
+20      date                    Ljava/util/Date;                 protected static volatile
+Agent26: Agent_OnUnload
+</pre>
+
+<p>V&nbsp;následující části tohoto seriálu si ukážeme, jak lze takto získané
+informace dále využít při tvorbě jednoduchého &bdquo;debuggeru&ldquo;.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Zdrojové kódy obou demonstračních agentů a k&nbsp;nim příslušných testovacích příkladů</h2>
+
+<p>Podobně jako v&nbsp;pěti předcházejících částech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> byly i dnešní dva demonstrační <i>JVM TI</i> agenti kvůli snazšímu
+udržování všech zdrojových kódů uloženi do Mercurial repositáře, který je
+dostupný na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze dnes popisovaných <i>JVM TI</i> agentů i dalších
+potřebných skriptů a testovacích javovských tříd jsou dostupné na následujících
+adresách:</p>
+
+<table>
+<tr><th>Demonstrační příklad/podpůrný soubor</th><th>Umístění</th></tr>
+<tr><td>Agent #25                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/agent25.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/agent25.c</a></td></tr>
+<tr><td>Skript pro překlad            </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/test.sh</a></td></tr>
+<tr><td>Skript pro spuštění Freemindu </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/freemind.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/freemind.sh</a></td></tr>
+<tr><td>Testovací třída Test25.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/Test25.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/Test25.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Výsledek pro třídu Test26     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/Test25.out">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/Test25.out</a></td></tr>
+<tr><td>Výsledek pro aplikaci Freemind</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/freemind.out">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent25/freemind.out</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>Agent #26                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/agent26.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/agent26.c</a></td></tr>
+<tr><td>Skript pro překlad            </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/compile.sh</a></td></tr>
+<tr><td>Skript pro spuštění           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/test.sh</a></td></tr>
+<tr><td>Testovací třída Test26.java   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/Test26.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/f258f0f485b5/jvmti-agents/agent26/Test26.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
