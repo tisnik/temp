@@ -1,0 +1,1392 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - čtení informací o parametrech i o lokálních proměnných metod s využitím rozhraní JDI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - čtení informací o parametrech i o lokálních proměnných metod s využitím rozhraní JDI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Java i o virtuálním stroji Javy si popíšeme způsob přečtení informací o parametrech i o lokálních proměnných metod s využitím rozhraní JDI (Java Debugger Interface). Využijeme přitom velkou část funkcionality demonstračního příkladu popsaného minule.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - čtení informací o parametrech i o lokálních proměnných metod s využitím rozhraní JDI</a></p>
+<p><a href="#k02">2. Zásobník operandů</a></p>
+<p><a href="#k03">3. Struktura zásobníkového rámce (a zásobníku operandů) při zavolání metody</a></p>
+<p><a href="#k04">4. Informace o zásobníkovém rámci metody uložené v&nbsp;bajtkódu</a></p>
+<p><a href="#k05">5. Zdrojový kód testovací třídy <strong>Test3</strong></a></p>
+<p><a href="#k06">6. Rozhraní <strong>com.sun.jdi.LocalVariable</strong></a></p>
+<p><a href="#k07">7. Rozhraní <strong>com.sun.jdi.Type</strong> a všechna odvozená rozhraní</a></p>
+<p><a href="#k08">8. Výpis informací o lokálních proměnných v&nbsp;metodě <strong>printMethodLocalVariablesInfo()</strong></a></p>
+<p><a href="#k09">9. Kompletní zdrojový kód demonstračního příkladu <strong>JDIMethodVariables</strong></a></p>
+<p><a href="#k10">10. Spuštění demonstračního příkladu a ukázka informací vypsaných na standardní výstup</a></p>
+<p><a href="#k11">11. Repositář se zdrojovými kódy demonstračního příkladu <strong>JDIMethodVariables</strong> i podpůrných skriptů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - čtení informací o parametrech i o lokálních proměnných metod s využitím rozhraní JDI</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> jsme si popsali, jakým
+způsobem je možné s&nbsp;využitím rozhraní <i>JDI (Java Debugger Interface)</i>
+získat základní informace o zásobníkových rámcích. Víme již, že pro každé
+vlákno se ve virtuálním stroji Javy vytváří v&nbsp;průběhu volání metod
+takzvané zásobníkové rámce (<i>stack frames</i>). Jednotlivé zásobníkové rámce
+jednoho vlákna jsou vzájemně propojeny a v&nbsp;každém zásobníkovém rámci se
+nachází jak parametry předané volané metodě, tak i oblast vyhrazená pro lokální
+proměnné této metody. Velikost této paměťové oblasti, na níž se můžeme
+s&nbsp;určitým zjednodušením dívat jako na pole s&nbsp;možností indexace
+jednotlivých prvků, je zjištěna již při překladu zdrojových kódů a virtuální
+stroj Javy automaticky provádí kontrolu, zda nedochází k&nbsp;překročení
+indexu, tj.&nbsp;ke čtení či zápisu mimo vyhrazenou oblast (jedná se ovšem o
+pole nehomogenní, protože jeho prvky mohou mít různý typ). Navíc je součástí
+zásobníkového rámce i takzvaný zásobník operandů (<i>stack frame</i>) používaný
+při vyhodnocování výrazů či při volání dalších metod &ndash; bližší informace o
+zásobníku operandů budou uvedeny <a href="#k02">v&nbsp;následující
+kapitole</a>.</p>
+
+<p>Logická struktura paměti spravované virtuálním strojem Javy, která nás nyní
+bude zajímat, je zobrazena pod tímto odstavcem:</p>
+
+<pre>
++============================================+
+|              Zásobník (stack)              |
++============================================+
+|                                            |
+|   +------------------------------------+   |
+|   | Zásobníkový rámec #1 (stack frame) |   |
+|   +------------------------------------+   |
+|   |                                    |   |
+|   |      +---------------------+       |   |
+|   |      |  Zásobník operandů  |       |   |
+|   |      +---------------------+       |   |
+|   |                                    |   |
+|   |      +---------------------+       |   |
+|   |      |  Parametry metody   |       |   |
+|   |      |.....................|       |   |
+|   |      |  Lokální proměnné   |       |   |
+|   |      +---------------------+       |   |
+|   |                                    |   |
+|   +------------------------------------+   |
+|                                            |
+|   +------------------------------------+   |
+|   | Zásobníkový rámec #2 (stack frame) |   |
+|   +------------------------------------+   |
+|   |                                    |   |
+|   |      +---------------------+       |   |
+|   |      |  Zásobník operandů  |       |   |
+|   |      +---------------------+       |   |
+|   |                                    |   |
+|   |      +---------------------+       |   |
+|   |      |  Parametry metody   |       |   |
+|   |      |.....................|       |   |
+|   |      |  Lokální proměnné   |       |   |
+|   |      +---------------------+       |   |
+|   |                                    |   |
+|   +------------------------------------+   |
+|                                            |
+|   +------------------------------------+   |
+|   | Zásobníkový rámec #3 (stack frame) |   |
+|   +------------------------------------+   |
+|   |                                    |   |
+|   |      +---------------------+       |   |
+|   |      |  Zásobník operandů  |       |   |
+|   |      +---------------------+       |   |
+|   |                                    |   |
+|   |      +---------------------+       |   |
+|   |      |  Parametry metody   |       |   |
+|   |      |.....................|       |   |
+|   |      |  Lokální proměnné   |       |   |
+|   |      +---------------------+       |   |
+|   |                                    |   |
+|   +------------------------------------+   |
+|                                            |
+|  ::::::::::::::::::::::::::::::::::::::::  |
+|  :: Další zásobníkové rámce vytvářené  ::  |
+|  :: v čase běhu aplikace při volání    ::  |
+|  :: metod.                             ::  |
+|  ::::::::::::::::::::::::::::::::::::::::  |
++============================================+
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Zásobník operandů</h2>
+
+<p>Většina instrukcí virtuálního stroje Javy pracuje s&nbsp;operandy uloženými
+na takzvaném <i>zásobníku operandů (operand stack)</i>. Zásobník operandů
+(v&nbsp;tomto případě se již jedná o skutečný zásobník typu <i>LIFO &ndash;
+Last In, First Out</i>) je vytvářen v&nbsp;čase běhu aplikace pro každou
+zavolanou metodu, což mj.&nbsp;znamená, že je při spuštění metody vždy prázdný
+(zásobník operandů je podle specifikace součástí zásobníkového rámce, jeho
+konkrétní umístění však je libovolné). Již v&nbsp;čase překladu zdrojového kódu
+je pro každou metodu zjištěno, jak velká oblast paměti má být pro zásobník
+operandů vyhrazena a samozřejmě je prováděna kontrola, zda se v&nbsp;době běhu
+aplikace tato velikost nepřekročí (to by se nemělo u validního bajtkódu
+v&nbsp;žádném případě stát). Virtuální stroj Javy kontroluje typy operandů
+uložených na zásobník operandů a zajišťuje, že se nad těmito operandy budou
+provádět pouze <i>typově bezpečné operace</i>. V&nbsp;praxi to například
+znamená, že není možné na zásobník uložit dvě hodnoty typu
+<strong>float</strong> a následně provést instrukci <strong>iadd</strong>,
+protože tato instrukce vyžaduje, aby na zásobníku byly uloženy dvě hodnoty typu
+<strong>int</strong> (i když <strong>float</strong> i <strong>int</strong> mají
+shodnou bitovou šířku).</p>
+
+<p>Podívejme se nyní na jednoduchou ukázku využití zásobníku operandů při
+vyhodnocování složitějšího aritmetického výrazu:</p>
+
+<pre>
+class <strong>Test</strong> {
+    void <strong>test</strong>() {
+        int a=10;
+        int b=20;
+        int c=30;
+        int d=30;
+        int z=a+b*(c-d);
+    }
+}
+</pre>
+
+<p>Přeložený bajtkód metody <strong>Test.test()</strong> je následující:</p>
+
+<pre>
+void <strong>test</strong>();
+  Code:
+   0:   bipush  10
+   2:   istore_1           <i>// naplnění proměnné a hodnotou 10</i>
+   3:   bipush  20
+   5:   istore_2           <i>// naplnění proměnné b hodnotou 20</i>
+   6:   bipush  30
+   8:   istore_3           <i>// naplnění proměnné c hodnotou 30</i>
+   9:   bipush  30
+   11:  istore  4          <i>// naplnění proměnné d hodnotou 40</i>
+&nbsp;
+   13:  iload_1            <i>// vložení a na zásobník      [a]</i>
+   14:  iload_2            <i>// vložení b na zásobník      [a b]</i>
+   15:  iload_3            <i>// vložení c na zásobník      [a b c]</i>
+   16:  iload   4          <i>// vložení d na zásobník      [a b c d]</i>
+   18:  isub               <i>// provedení operace x=c-d    [a b c-d]</i>
+   19:  imul               <i>// provedení operace y=b*x    [a b*(c-d)]</i>
+   20:  iadd               <i>// provedení operace a+y      [a+b*(c-d)]</i>
+   21:  istore  5          <i>// uložení výsledku do z      []</i>
+&nbsp;
+   23:  return
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Struktura zásobníkového rámce (a zásobníku operandů) při zavolání metody</h2>
+
+<p>Zásobník operandů je taktéž použit při volání metod pro předání parametrů
+těmto metodám a pro vyzvednutí jejich návratových hodnot. Záleží jen na
+konkrétní implementaci virtuálního stroje Javy, jakým způsobem dojde při volání
+metody ke konverzi mezi zásobníkem operandů volající metody a lokálními
+parametry metody volané, většinou však můžeme předpokládat, že se minimalizují
+přesuny dat. Ukažme si způsob použití zásobníku operandů jak pro provádění
+aritmetické operace součtu, tak i pro předání parametrů volající metodě a
+získání výsledku z&nbsp;volané metody. Mějme jednoduchou třídu
+<strong>Test</strong> s&nbsp;dvojicí metod <strong>add()</strong> a
+<strong>callAdd()</strong>:</p>
+
+<pre>
+class <strong>Test</strong> {
+<i>    // provedení součtu dvou celých čísel</i>
+    static int <strong>add</strong>(int a, int b) {
+        int c=a+b;
+        return c;
+    }
+&nbsp;
+<i>    // zavolá metodu pro provedení součtu dvou čísel</i>
+<i>    // a uloží návratovou hodnotu do své lokální proměnné</i>
+    static void <strong>callAdd</strong>() {
+        int result = add(1234,5678);
+    }
+}
+</pre>
+
+<p>Přeložený bajtkód obou metod vypadá následovně. Všechny poznámky jsou do
+disasemblovaného bajtkódu samozřejmě dopsány ručně:</p>
+
+<pre>
+<i>// v metodě add je zásobník operandů použit pouze pro provedení operace součtu</i>
+static int <strong>add</strong>(int, int);
+  Code:
+   0:   iload_0         <i>// uložení prvního parametru metody na zásobník operandů</i>
+   1:   iload_1         <i>// uložení druhého parametru metody na zásobník operandů</i>
+   2:   iadd            <i>// provedení operace součtu s odstraněním obou operandů</i>
+   3:   istore_2        <i>// vyzvednutí výsledku součtu a uložení do lokální proměnné</i>
+   4:   iload_2         <i>// opětovné uložení obsahu lokální proměnné na zásobník</i>
+   5:   ireturn         <i>// při operaci ireturn se využije hodnota z vrcholu zásobníku</i>
+</pre>
+
+<pre>
+<i>// v této metodě se zásobník operandů používá i pro komunikaci s metodou Test.add(int, int)</i>
+static void <strong>callAdd</strong>();
+  Code:
+   0:   sipush  1234    <i>// uložení konstanty 1234 na zásobník operandů</i>
+   3:   sipush  5678    <i>// uložení konstanty 5678 na zásobník operandů</i>
+   6:   invokestatic #2 <i>// zavolání statické metody Test.add(int, int)</i>
+   9:   istore_0        <i>// výsledná hodnota je umístěna na vrchol zásobníku operandů,</i>
+                        <i>// tak ji odtud vyzvedneme a uložíme do lokální proměnné</i>
+   10:  return          <i>// návrat z metody</i>
+</pre>
+
+<p>Povšimněte si, že překladač <strong>javac</strong> neprovedl žádné
+optimalizace, i když se nám například může zdát dvojice po sobě jdoucích
+instrukcí <strong>istore_2</strong> a <strong>iload_2</strong> nadbytečná (ve
+skutečnosti je to nutné pro správnou funkci debuggeru).</p>
+
+<p>V&nbsp;dalším testovacím příkladě si opět ukážeme způsob předávání parametrů
+do volaných metod: </p>
+
+<pre>
+class <strong>Test2</strong> {
+&nbsp;
+    static void <strong>method1</strong>(int a, int b, boolean vypln1, boolean vypln2, int c) {
+        a = b;
+        b = c;
+        c = a;
+    }
+&nbsp;
+    static void <strong>method2</strong>(long a, long b, boolean vypln1, boolean vypln2, long c) {
+        a = b;
+        b = c;
+        c = a;
+    }
+&nbsp;
+    static void <strong>method3</strong>(float a, float b, boolean vypln1, boolean vypln2, float c) {
+        a = b;
+        b = c;
+        c = a;
+    }
+&nbsp;
+    static void <strong>method4</strong>(double a, double b, boolean vypln1, boolean vypln2, double c) {
+        a = b;
+        b = c;
+        c = a;
+    }
+&nbsp;
+    static void <strong>method5</strong>(String a, String b, boolean vypln1, boolean vypln2, String c) {
+        a = b;
+        b = c;
+        c = a;
+    }
+&nbsp;
+}
+</pre>
+
+<p>Disassemlovaný bajtkód všech pěti testovacích metod s&nbsp;ručně dopsanými
+komentáři vypadá následovně:</p>
+
+<pre>
+static void <strong>method1</strong>(int, int, boolean, boolean, int);
+  Code:
+   Stack=1, Locals=5, Args_size=5
+   0:   iload_1           <i>// index je součástí operačního kódu instrukce</i>
+   1:   istore_0          <i>// index je součástí operačního kódu instrukce</i>
+   2:   iload   4         <i>// index je uveden v bajtu za operačním kódem</i>
+   4:   istore_1          <i>// index je součástí operačního kódu instrukce</i>
+   5:   iload_0           <i>// index je součástí operačního kódu instrukce</i>
+   6:   istore  4         <i>// index je uveden v bajtu za operačním kódem</i>
+   8:   return            <i>// návrat do volající metody</i>
+</pre>
+
+<pre>
+static void <strong>method2</strong>(long, long, boolean, boolean, long);
+  Code:
+   Stack=2, Locals=8, Args_size=5
+   0:   lload_2           <i>// index je součástí operačního kódu instrukce</i>
+   1:   lstore_0          <i>// index je součástí operačního kódu instrukce</i>
+   2:   lload   6         <i>// index je uveden v bajtu za operačním kódem</i>
+   4:   lstore_2          <i>// index je součástí operačního kódu instrukce</i>
+   5:   lload_0           <i>// index je součástí operačního kódu instrukce</i>
+   6:   lstore  6         <i>// index je uveden v bajtu za operačním kódem</i>
+   8:   return            <i>// návrat do volající metody</i>
+</pre>
+
+<pre>
+static void <strong>method3</strong>(float, float, boolean, boolean, float);
+  Code:
+   Stack=1, Locals=5, Args_size=5
+   0:   fload_1           <i>// index je součástí operačního kódu instrukce</i>
+   1:   fstore_0          <i>// index je součástí operačního kódu instrukce</i>
+   2:   fload   4         <i>// index je uveden v bajtu za operačním kódem</i>
+   4:   fstore_1          <i>// index je součástí operačního kódu instrukce</i>
+   5:   fload_0           <i>// index je součástí operačního kódu instrukce</i>
+   6:   fstore  4         <i>// index je uveden v bajtu za operačním kódem</i>
+   8:   return            <i>// návrat do volající metody</i>
+</pre>
+
+<pre>
+static void <strong>method4</strong>(double, double, boolean, boolean, double);
+  Code:
+   Stack=2, Locals=8, Args_size=5
+   0:   dload_2           <i>// index je součástí operačního kódu instrukce</i>
+   1:   dstore_0          <i>// index je součástí operačního kódu instrukce</i>
+   2:   dload   6         <i>// index je uveden v bajtu za operačním kódem</i>
+   4:   dstore_2          <i>// index je součástí operačního kódu instrukce</i>
+   5:   dload_0           <i>// index je součástí operačního kódu instrukce</i>
+   6:   dstore  6         <i>// index je uveden v bajtu za operačním kódem</i>
+   8:   return            <i>// návrat do volající metody</i>
+</pre>
+
+<pre>
+static void <strong>method5</strong>(java.lang.String, java.lang.String, boolean, boolean, java.lang.String);
+  Code:
+   Stack=1, Locals=5, Args_size=5
+   0:   aload_1           <i>// index je součástí operačního kódu instrukce</i>
+   1:   astore_0          <i>// index je součástí operačního kódu instrukce</i>
+   2:   aload   4         <i>// index je uveden v bajtu za operačním kódem</i>
+   4:   astore_1          <i>// index je součástí operačního kódu instrukce</i>
+   5:   aload_0           <i>// index je součástí operačního kódu instrukce</i>
+   6:   astore  4         <i>// index je uveden v bajtu za operačním kódem</i>
+   8:   return            <i>// návrat do volající metody</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Informace o zásobníkovém rámci metody uložené v&nbsp;bajtkódu</h2>
+
+<p>Při práci s&nbsp;parametry metod i s&nbsp;jejich lokálními proměnnými velmi
+brzy zjistíme, že při použití rozhraní <i>JDI</i> lze získat všechny potřebné
+informace o těchto objektech pouze v&nbsp;případě, že třídy byly přeloženy
+s&nbsp;přepínačem <strong>-g</strong>, tedy s&nbsp;vložením přídavných
+metainformací od generovaného bajtkódu. Ve skutečnosti totiž virtuální stroj
+Javy <i>nepotřebuje</i> při běhu znát přesná jména ani typy jednotlivých
+parametrů/lokálních proměnných. Typy jsou kontrolovány při každé operaci a
+jména není nutné znát vůbec &ndash; pouze pozice (indexy) parametrů a lokálních
+proměnných. Aby tedy náš demonstrační příklad pracoval korektně, musíme použít
+překlad s&nbsp;použitím již zmíněného přepínače <strong>-g</strong>. Podívejme
+se nyní na to, jakým způsobem se změní bajtkód při překladu testovací třídy
+<strong>Test3</strong>, jejíž zdrojový kód naleznete <a
+href="#k05">v&nbsp;následující kapitole</a>.</p>
+
+<p>Překlad třídy <strong>Test3</strong> bez přepínače <strong>-g</strong>:</p>
+
+<pre>
+Compiled from "Test3.java"
+public class <strong>Test3</strong> extends java.lang.Object
+  SourceFile: "Test3.java"
+  minor version: 0
+  major version: 50
+  Constant pool: === vynecháno ===
+{
+public <strong>Test3</strong>();
+  Code:
+   Stack=1, Locals=1, Args_size=1
+   0:   aload_0
+   1:   invokespecial   #1; //Method java/lang/Object."&lt;init&gt;":()V
+   4:   return
+  LineNumberTable: 
+   line 1: 0
+&nbsp;
+&nbsp;
+&nbsp;
+public void <strong>run</strong>(int, char);
+  Code:
+   Stack=3, Locals=5, Args_size=3
+   0:   bipush  10
+   2:   istore_3
+   3:   aconst_null
+   4:   astore  4
+   6:   aload_0
+   7:   fconst_1
+   8:   iload_1
+   9:   i2f
+   10:  fdiv
+   11:  invokevirtual   #2; //Method foo:(F)V
+   14:  return
+  LineNumberTable: 
+   line 4: 0
+   line 5: 3
+   line 6: 6
+   line 7: 14
+&nbsp;
+&nbsp;
+&nbsp;
+public void <strong>foo</strong>(float);
+  Code:
+   Stack=6, Locals=3, Args_size=2
+   0:   aload_0
+   1:   astore_2
+   2:   aload_0
+   3:   fload_1
+   4:   iconst_2
+   5:   newarray float
+   7:   dup
+   8:   iconst_0
+   9:   fload_1
+   10:  fastore
+   11:  dup
+   12:  iconst_1
+   13:  fload_1
+   14:  fastore
+   15:  ldc     #3; //String Hello world!
+   17:  invokevirtual   #4; //Method bar:(F[FLjava/lang/String;)V
+   20:  return
+  LineNumberTable: 
+   line 10: 0
+   line 11: 2
+   line 12: 20
+&nbsp;
+&nbsp;
+&nbsp;
+public void <strong>bar</strong>(float, float[], java.lang.String);
+  Code:
+   Stack=2, Locals=4, Args_size=4
+   0:   getstatic       #5; //Field java/lang/System.out:Ljava/io/PrintStream;
+   3:   aload_3
+   4:   invokevirtual   #6; //Method java/io/PrintStream.println:(Ljava/lang/String;)V
+   7:   goto    0
+  LineNumberTable: 
+   line 16: 0
+&nbsp;
+  StackMapTable: number_of_entries = 1
+   frame_type = 0 /* same */
+&nbsp;
+&nbsp;
+&nbsp;
+public static void <strong>main</strong>(java.lang.String[]);
+  Code:
+   Stack=3, Locals=1, Args_size=1
+   0:   new     #7; //class Test3
+   3:   dup
+   4:   invokespecial   #8; //Method "&lt;init&gt;":()V
+   7:   bipush  42
+   9:   bipush  97
+   11:  invokevirtual   #9; //Method run:(IC)V
+   14:  return
+  LineNumberTable: 
+   line 21: 0
+   line 22: 14
+}
+</pre>
+
+<p>Překlad třídy <strong>Test3</strong> s&nbsp;použitím přepínače
+<strong>-g</strong>:</p>
+
+<pre>
+Compiled from "Test3.java"
+public class <strong>Test3</strong> extends java.lang.Object
+  SourceFile: "Test3.java"
+  minor version: 0
+  major version: 50
+  Constant pool: === vynecháno ===
+{
+public <strong>Test3</strong>();
+  Code:
+   Stack=1, Locals=1, Args_size=1
+   0:   aload_0
+   1:   invokespecial   #1; //Method java/lang/Object."&lt;init&gt;":()V
+   4:   return
+  LineNumberTable: 
+   line 1: 0
+&nbsp;
+  <strong>LocalVariableTable:</strong>
+   Start  Length  Slot  Name   Signature
+   0      5       0    this    LTest3;
+&nbsp;
+&nbsp;
+&nbsp;
+public void <strong>run</strong>(int, char);
+  Code:
+   Stack=3, Locals=5, Args_size=3
+   0:   bipush  10
+   2:   istore_3
+   3:   aconst_null
+   4:   astore  4
+   6:   aload_0
+   7:   fconst_1
+   8:   iload_1
+   9:   i2f
+   10:  fdiv
+   11:  invokevirtual   #2; //Method foo:(F)V
+   14:  return
+  LineNumberTable: 
+   line 4: 0
+   line 5: 3
+   line 6: 6
+   line 7: 14
+&nbsp;
+  <strong>LocalVariableTable:</strong>
+   Start  Length  Slot  Name         Signature
+   0      15      0     this         LTest3;
+   0      15      1     value        I
+   0      15      2     znak         C
+   3      12      3     int_value    I
+   6       9      4     object_value Ljava/lang/Object;
+&nbsp;
+&nbsp;
+&nbsp;
+public void <strong>foo</strong>(float);
+  Code:
+   Stack=6, Locals=3, Args_size=2
+   0:   aload_0
+   1:   astore_2
+   2:   aload_0
+   3:   fload_1
+   4:   iconst_2
+   5:   newarray float
+   7:   dup
+   8:   iconst_0
+   9:   fload_1
+   10:  fastore
+   11:  dup
+   12:  iconst_1
+   13:  fload_1
+   14:  fastore
+   15:  ldc #3; //String Hello world!
+   17:  invokevirtual   #4; //Method bar:(F[FLjava/lang/String;)V
+   20:  return
+  LineNumberTable: 
+   line 10: 0
+   line 11: 2
+   line 12: 20
+&nbsp;
+  <strong>LocalVariableTable:</strong>
+   Start  Length  Slot  Name           Signature
+   0      21      0     this           LTest3;
+   0      21      1     value          F
+   2      19      2     object_value   Ljava/lang/Object;
+&nbsp;
+&nbsp;
+&nbsp;
+public void <strong>bar</strong>(float, float[], java.lang.String);
+  Code:
+   Stack=2, Locals=4, Args_size=4
+   0:   getstatic   #5; //Field java/lang/System.out:Ljava/io/PrintStream;
+   3:   aload_3
+   4:   invokevirtual   #6; //Method java/io/PrintStream.println:(Ljava/lang/String;)V
+   7:   goto    0
+  LineNumberTable: 
+   line 16: 0
+&nbsp;
+  <strong>LocalVariableTable:</strong>
+   Start  Length  Slot  Name       Signature
+   0      10      0     this       LTest3;
+   0      10      1     value      F
+   0      10      2     array      [F
+   0      10      3     message    Ljava/lang/String;
+&nbsp;
+  StackMapTable: number_of_entries = 1
+   frame_type = 0 /* same */
+&nbsp;
+&nbsp;
+&nbsp;
+public static void <strong>main</strong>(java.lang.String[]);
+  Code:
+   Stack=3, Locals=1, Args_size=1
+   0:   new #7; //class Test3
+   3:   dup
+   4:   invokespecial   #8; //Method "&lt;init&gt;":()V
+   7:   bipush  42
+   9:   bipush  97
+   11:  invokevirtual   #9; //Method run:(IC)V
+   14:  return
+  LineNumberTable: 
+   line 21: 0
+   line 22: 14
+&nbsp;
+  <strong>LocalVariableTable:</strong>
+   Start  Length  Slot  Name       Signature
+   0      15      0     args       [Ljava/lang/String;
+}
+</pre>
+
+<p>Vidíme, že se ve druhém případě v&nbsp;bajtkódu objevila nová struktura
+s&nbsp;metainformacemi nazvaná <strong>LocalVariableTable</strong>. Právě tuto
+strukturu bude používat náš demonstrační příklad
+<strong>JDIMethodVariables</strong> popsaný v&nbsp;navazujících kapitolách.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zdrojový kód testovací třídy <strong>Test3</strong></h2>
+
+<p>Dnešní demonstrační příklad nazvaný <strong>JDIMethodVariables</strong> bude
+vypisovat parametry metod jednoduché testovací třídy <strong>Test3</strong>,
+v&nbsp;níž se postupně zavolají metody main()&rarr;run()&rarr;foo()&rarr;bar().
+V&nbsp;poslední metodě je implementována nekonečná smyčka, která umožní snadné
+připojení k&nbsp;cílové JVM přes rozhraní <i>JDI</i>:</p>
+
+<pre>
+public class <strong>Test3</strong> {
+&nbsp;
+    public void <strong>run</strong>(int value, char znak) {
+        int int_value = 10;
+        Object object_value = null;
+        foo(1.0f/value);
+    }
+&nbsp;
+    public void <strong>foo</strong>(float value) {
+        Object object_value = this;
+        bar(value, new float[] {value, value}, "Hello world!");
+    }
+&nbsp;
+    public void <strong>bar</strong>(float value, float[] array, String message) {
+        while (true) {
+            System.out.println(message);
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        new Test3().run(42, 'a');
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Rozhraní <strong>com.sun.jdi.LocalVariable</strong></h2>
+
+<p>Seznam všech viditelných lokálních proměnných i parametrů metod lze ze
+zásobníkového rámce získat s&nbsp;využitím metody:</p>
+
+<pre>
+com.sun.jdi.StackFrame.visibleVariables()
+</pre>
+
+<p>Návratovou hodnotou této metody je seznam (<strong>List</strong>) objektů,
+jejichž třídy implementují rozhraní <strong>com.sun.jdi.LocalVariable</strong>.
+Tyto objekty nesou všechny důležité informace o proměnných/parametrech metod,
+které dokáže rozhraní <i>JDI</i> z&nbsp;cílového virtuálního stroje získat.
+V&nbsp;následující tabulce je seznam metod, jež lze s&nbsp;objekty typu
+<strong>com.sun.jdi.LocalVariable</strong> zavolat:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Metoda + parametry</th><th>Popis</th></tr>
+<tr><td>1</td><td>boolean</td><td>equals(Object obj)</td><td>zjištění, zda se jedná o shodnou proměnnou/parametr</td></tr>
+<tr><td>2</td><td>String </td><td>genericSignature()</td><td>vrátí signaturu generického typu, pokud je ovšem k&nbsp;proměnné přiřazen</td></tr>
+<tr><td>3</td><td>int    </td><td>hashCode()</td><td>vrací hashovací hodnotu (většinou nezajímavé)</td></tr>
+<tr><td>4</td><td>boolean</td><td>isArgument()</td><td>dokáže rozlišit mezi parametrem a skutečnou lokální proměnnou</td></tr>
+<tr><td>5</td><td>boolean</td><td>isVisible(StackFrame frame)</td><td>zjistí, zda je proměnná dostupná v&nbsp;předaném zásobníkovém rámci</td></tr>
+<tr><td>6</td><td>String </td><td>name()</td><td>vrátí čitelné jméno proměnné</td></tr>
+<tr><td>7</td><td>String </td><td>signature()</td><td>vrátí signaturu proměnné či parametru</td></tr>
+<tr><td>8</td><td>Type   </td><td>type()</td><td>vrátí typ proměnné (com.sun.jdi.Type)</td></tr>
+<tr><td>9</td><td>String </td><td>typeName()</td><td>vrátí textovou (čitelnou) reprezentaci typu proměnné/parametru</td></tr>
+</table>
+
+<p>Metoda <strong>signature()</strong> vrací údaje v&nbsp;následujícím
+formátu:</p>
+
+<table>
+<tr><th>#</th><th>Signatura</th><th>Typ v&nbsp;Javě</th></tr>
+<tr><td>1</td><td>Z</td><td>boolean</td></tr>
+<tr><td>2</td><td>B</td><td>byte   </td></tr>
+<tr><td>3</td><td>C</td><td>char   </td></tr>
+<tr><td>4</td><td>S</td><td>short  </td></tr>
+<tr><td>5</td><td>I</td><td>int    </td></tr>
+<tr><td>6</td><td>J</td><td>long   </td></tr>
+<tr><td>7</td><td>F</td><td>float  </td></tr>
+<tr><td>8</td><td>D</td><td>double </td></tr>
+<tr><td>9</td><td>L</td><td>plně kvalifikované jméno třídy ukončené středníkem</td></tr>
+<tr><td>10</td><td>[typ</td><td>typ[]</td></tr>
+</table>
+
+<p>Totéž platí i pro metodu <strong>genericSignature()</strong>.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Rozhraní <strong>com.sun.jdi.Type</strong> a všechna odvozená rozhraní</h2>
+
+<p>Zastavme se na chvíli u metody
+<strong>com.sun.jdi.LocalVariable.type()</strong>. Tato metoda vrací objekt,
+jehož třída implementuje rozhraní <strong>com.sun.jdi.Type</strong>, ve
+skutečnosti se však vždy bude jednat o třídu implementující i nějaké odvozené
+rozhraní. Pro primitivní datové typy existuje celkem osm takových rozhraní:</p>
+
+<table>
+<tr><th>#</th><th>Datový typ</th><th>Rozhraní</th></tr>
+<tr><td>1</td><td>boolean</td><td>com.sun.jdi.BooleanType</td></tr>
+<tr><td>2</td><td>byte   </td><td>com.sun.jdi.ByteType   </td></tr>
+<tr><td>3</td><td>char   </td><td>com.sun.jdi.CharType   </td></tr>
+<tr><td>4</td><td>double </td><td>com.sun.jdi.DoubleType </td></tr>
+<tr><td>5</td><td>float  </td><td>com.sun.jdi.FloatType  </td></tr>
+<tr><td>6</td><td>int    </td><td>com.sun.jdi.IntegerType</td></tr>
+<tr><td>7</td><td>long   </td><td>com.sun.jdi.LongType   </td></tr>
+<tr><td>8</td><td>short  </td><td>com.sun.jdi.ShortType  </td></tr>
+</table>
+
+<p>Pro reference či pro pole se bude jednat o tato rozhraní:</p>
+
+<table>
+<tr><th>#</th><th>Datový typ</th><th>Rozhraní</th></tr>
+<tr><td>1</td><td>třída   </td><td>com.sun.jdi.ClassType</td></tr>
+<tr><td>2</td><td>rozhraní</td><td>com.sun.jdi.InterfaceType</td></tr>
+<tr><td>3</td><td>pole    </td><td>com.sun.jdi.ArrayType</td></tr>
+</table>
+
+<p>Rozhraní <strong>com.sun.jdi.ArrayType</strong> navíc předepisuje metodu
+<strong>componentType()</strong>, z&nbsp;níž lze získat typ prvků pole.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výpis informací o lokálních proměnných v&nbsp;metodě <strong>printMethodLocalVariablesInfo()</strong></h2>
+
+<p>Podívejme se nyní, jakým způsobem je výpis informací o lokálních proměnných
+a parametrech metod implementován v&nbsp;našem demonstračním příkladu
+<strong>JDIMethodVariables</strong>. Tento příklad je založen na zdrojovém kódu
+minule popsaného příkladu <strong>JDIStackTraceList</strong> (<a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8fad31d36206/jdi/JDIStackTraceList.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8fad31d36206/jdi/JDIStackTraceList.java</a>).
+Došlo však k&nbsp;úpravě metody <strong>printThreadInfo()</strong> takovým
+způsobem, že se podrobnější výpis obsahu zásobníkových rámců provede pouze pro
+vlákno se jménem "main":</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci o vlaknech existujicich ve sledovanem virtualnim stroji.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printThreadInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Thread info:");
+        System.out.println("    UniqueID    Thread name            Status       Suspended");
+        List&lt;ThreadReference&gt; threads = virtualMachine.allThreads();
+<i>        // projit vsemi vlakny</i>
+        for (ThreadReference thread : threads) {
+            String threadName = thread.name();
+            String threadStatus = getThreadStatus(thread);
+            String threadSuspended = getThreadSuspended(thread);
+            long uniqueID = thread.uniqueID();
+            System.out.format("    %8d    %-20s   %-12s    %-5s\n", uniqueID, threadName, threadStatus, threadSuspended);
+<i>            // pro "hlavni" vlakno vypsat i informace o zasobnikovych ramcich</i>
+            if (MAIN_THREAD_NAME.equals(threadName)) {
+                printDetailInfoAboutStackFrames(thread);
+            }
+        }
+        System.out.println();
+    }
+&nbsp;
+</pre>
+
+<p>Nás bude dnes zajímat především výpis jmen, typů a hodnot parametrů metod i
+jejich lokálních proměnných. Tato funkcionalita je implementována v&nbsp;metodě
+pojmenované <strong>printMethodLocalVariablesInfo()</strong>, v&nbsp;níž se
+nejprve zjistí seznam všech viditelných proměnných/parametrů a posléze se pro
+každý z&nbsp;těchto objektů zjistí jeho jméno, jméno typu a taktéž hodnota (zde
+se s&nbsp;využitím ""+... provedl převod hodnoty na řetězec, což bude skvěle
+fungovat i v&nbsp;případě, kdy je hodnota/reference nastavena na
+<strong>null</strong>):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci o lokalnich promennych.</i>
+<i>     *</i>
+<i>     * @param frame zasobnikovy ramec</i>
+<i>     */</i>
+    private static void <strong>printMethodLocalVariablesInfo</strong>(StackFrame frame) {
+        List&lt;LocalVariable&gt; variables;
+        try {
+<i>            // precist seznam vsech viditelnych lokalnich promennych</i>
+            variables = frame.visibleVariables();
+            System.out.format("%20sVariables %d\n", "", variables.size());
+<i>            // vypis informaci o kazde lokalni promenne</i>
+            for (LocalVariable variable : variables) {
+                String name = variable.name();
+                String type = variable.typeName();
+<i>                // pomerne primitivni zpusob ziskani retezcove podoby</i>
+<i>                // hodnoty promenne</i>
+                String value = "" + frame.getValue(variable);
+<i>                // vypsat vsechny zjistene informace o promenne</i>
+                System.out.format("%20s%s %s = %s\n", "", type, name, value);
+            }
+        }
+        catch (AbsentInformationException e) {
+<i>            // neudelame nic, protoze udaje o lokalnich promennych</i>
+<i>            // skutecne nemusi byt k dispozici</i>
+        }
+    }
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Kompletní zdrojový kód demonstračního příkladu <strong>JDIMethodVariables</strong></h2>
+
+<p>V&nbsp;předchozích kapitolách byly popsány ty nejdůležitější metody, které
+jsou součástí dnešního demonstračního příkladu nazvaného
+<strong>JDIMethodVariables</strong>. Pod tímto odstavcem je vypsán celý
+zdrojový kód tohoto příkladu:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.IncompatibleThreadStateException;
+import com.sun.jdi.LocalVariable;
+import com.sun.jdi.Location;
+import com.sun.jdi.StackFrame;
+import com.sun.jdi.ThreadReference;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> * Po pripojeni se vypisou obsahy zasobnikovych ramcu vlakna "main"</i>
+<i> * vcetne jmen, typu a hodnot vsech lokalnich promennych</i>
+<i> * (pokud jsou tyto informace dostupne)</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIMethodVariables</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno "hlavniho" vlakna.</i>
+<i>     */</i>
+    private static final String <strong>MAIN_THREAD_NAME</strong> = "main";
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int <strong>EXIT_VALUE</strong> = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String <strong>SOCKET_ATTACH_CONNECTOR_NAME</strong> = "com.sun.jdi.SocketAttach";
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj po dobu jedne sekundy</i>
+            runVirtualMachineForOneSecond(virtualMachine);
+&nbsp;
+<i>            // vypis zakladnich informaci o pripojenem VM</i>
+            printVirtualMachineInfo(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj po dobu jedne sekundy</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachineForOneSecond</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+        try {
+            Thread.sleep(1000);
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        virtualMachine.suspend();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci ziskanych ze sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printVirtualMachineInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Basic virtual machine info:");
+        printThreadInfo(virtualMachine);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o vlaknech existujicich ve sledovanem virtualnim stroji.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printThreadInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Thread info:");
+        System.out.println("    UniqueID    Thread name            Status       Suspended");
+        List&lt;ThreadReference&gt; threads = virtualMachine.allThreads();
+<i>        // projit vsemi vlakny</i>
+        for (ThreadReference thread : threads) {
+            String threadName = thread.name();
+            String threadStatus = getThreadStatus(thread);
+            String threadSuspended = getThreadSuspended(thread);
+            long uniqueID = thread.uniqueID();
+            System.out.format("    %8d    %-20s   %-12s    %-5s\n", uniqueID, threadName, threadStatus, threadSuspended);
+<i>            // pro "hlavni" vlakno vypsat i informace o zasobnikovych ramcich</i>
+            if (MAIN_THREAD_NAME.equals(threadName)) {
+                printDetailInfoAboutStackFrames(thread);
+            }
+        }
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod stavu vlakna na retezec.</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     * @return stav vlakna v retezcove podobe</i>
+<i>     */</i>
+    private static String <strong>getThreadStatus</strong>(ThreadReference thread) {
+        switch (thread.status()) {
+        case ThreadReference.THREAD_STATUS_NOT_STARTED:
+            return "not started";
+        case ThreadReference.THREAD_STATUS_RUNNING:
+            return "running";
+        case ThreadReference.THREAD_STATUS_SLEEPING:
+            return "sleeping";
+        case ThreadReference.THREAD_STATUS_MONITOR:
+            return "wait/monitor";
+        case ThreadReference.THREAD_STATUS_WAIT:
+            return "Object.wait";
+        case ThreadReference.THREAD_STATUS_ZOMBIE:
+            return "zombie";
+        case ThreadReference.THREAD_STATUS_UNKNOWN:
+            return "*unkwnown*";
+        default:
+            return "should not happen!";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Informace (ve tvaru retezce) o tom, zda je vlakno pozastaveno ci nikoli.</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     * @return stav pozastaveni vlakna v retezcove podobe</i>
+<i>     */</i>
+    private static String <strong>getThreadSuspended</strong>(ThreadReference thread) {
+        return thread.isSuspended() ? "yes" : "no";
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis zasobnikovych ramcu</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     */</i>
+    private static void <strong>printDetailInfoAboutStackFrames</strong>(ThreadReference thread) {
+        try {
+            System.out.format("%16s-------------------------------------------------\n", "");
+            System.out.format("%16sStack frame count: %d\n", "", thread.frameCount());
+<i>            // vypsat detailni informace o vsech zasobnikovych ramcich</i>
+            for (StackFrame frame : thread.frames()) {
+                printStackFrameDetailInfo(frame);
+            }
+            System.out.format("%16s-------------------------------------------------\n", "");
+        }
+        catch (IncompatibleThreadStateException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis podrobnych informaci o vybranem zasobnikovem ramci</i>
+<i>     *</i>
+<i>     * @param frame zasobnikovy ramec</i>
+<i>     */</i>
+    private static void <strong>printStackFrameDetailInfo</strong>(StackFrame frame) {
+<i>        // informace o volane metode</i>
+        printLocationInfo(frame);
+<i>        // informace o lokalnich promennych volane metody</i>
+        printMethodLocalVariablesInfo(frame);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o volane metode</i>
+<i>     *</i>
+<i>     * @param frame zasobnikovy ramec</i>
+<i>     */</i>
+    private static void <strong>printLocationInfo</strong>(StackFrame frame) {
+        Location location = frame.location();
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("%16s%s.%s (%s:%s)\n", "", className, methodName, sourceName, lineNumber);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno tridy, jejiz metoda byla zavolana.</i>
+<i>     */</i>
+    private static String <strong>getClassName</strong>(Location location) {
+        return location.method().declaringType().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno volane metody.</i>
+<i>     */</i>
+    private static String <strong>getMethodName</strong>(Location location) {
+        return location.method().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani informaci o jmene zdrojoveho souboru pro danou lokaci.</i>
+<i>     */</i>
+    private static String <strong>getSourceName</strong>(Location location) {
+        try {
+            return location.sourceName();
+        }
+        catch (AbsentInformationException e) {
+            return "unknown";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod cisla radku na retezec, pokud je to mozne.</i>
+<i>     */</i>
+    private static String <strong>getLineNumber</strong>(Location location) {
+        int lineNumber = location.lineNumber();
+<i>        // u nativnich metod nelze zjistit cisla radku</i>
+        return lineNumber &gt;= 0 ? "" + lineNumber : "&lt;native method&gt;";
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o lokalnich promennych.</i>
+<i>     *</i>
+<i>     * @param frame zasobnikovy ramec</i>
+<i>     */</i>
+    private static void <strong>printMethodLocalVariablesInfo</strong>(StackFrame frame) {
+        List&lt;LocalVariable&gt; variables;
+        try {
+<i>            // precist seznam vsech viditelnych lokalnich promennych</i>
+            variables = frame.visibleVariables();
+            System.out.format("%20sVariables %d\n", "", variables.size());
+<i>            // vypis informaci o kazde lokalni promenne</i>
+            for (LocalVariable variable : variables) {
+                String name = variable.name();
+                String type = variable.typeName();
+<i>                // pomerne primitivni zpusob ziskani retezcove podoby</i>
+<i>                // hodnoty promenne</i>
+                String value = "" + frame.getValue(variable);
+<i>                // vypsat vsechny zjistene informace o promenne</i>
+                System.out.format("%20s%s %s = %s\n", "", type, name, value);
+            }
+        }
+        catch (AbsentInformationException e) {
+<i>            // neudelame nic, protoze udaje o lokalnich promennych</i>
+<i>            // skutecne nemusi byt k dispozici</i>
+        }
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Spuštění demonstračního příkladu a ukázka informací vypsaných na standardní výstup</h2>
+
+<p>Před vlastním spuštěním demonstračního příkladu
+<strong>JDIMethodVariables</strong> je nejprve nutné spustit samostatnou
+cílovou JVM i s&nbsp;testovanou aplikací <strong>Test3</strong>, jejíž zdrojový
+kód byl vypsán <a href="#k05">v&nbsp;páté kapitole</a>. Tato aplikace je velmi
+jednoduchá, protože se po své inicializaci dostane do nekonečné smyčky, což nám
+samozřejmě vyhovuje, neboť bude jisté, že po cca jednosekundovém běhu cílové
+JVM se bude hlavní vlákno aplikace skutečně nacházet uvnitř této smyčky.</p>
+
+<p>Překlad a spuštění této aplikace v&nbsp;cílovém virtuálním stroji Javy se
+provede následujícím způsobem (důležité je zde především číslo portu,
+k&nbsp;němuž se následně připojíme s&nbsp;využitím rozhraní <i>JDI</i>):</p>
+
+<pre>
+javac Test3.java
+java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Test3
+</pre>
+
+<p>Nyní již zbývá provést překlad a spuštění našeho demonstračního
+příkladu v&nbsp;samostatné JVM:</p>
+
+<pre>
+javac -classpath /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIMethodVariables.java
+java -cp /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIMethodVariables
+</pre>
+
+<p>Po spuštění by se měl na standardním výstupu objevit přibližně tento text
+obsahující jména metod a parametrů metod třídy <strong>Test3</strong>:</p>
+
+<pre>
+&nbsp;
+Connecting to virtual machine
+Connected
+Basic virtual machine info:
+Thread info:
+    UniqueID    Thread name            Status       Suspended
+          56    Attach Listener        running         yes  
+          57    Signal Dispatcher      running         yes  
+          58    Finalizer              Object.wait     yes  
+          59    Reference Handler      Object.wait     yes  
+           1    main                   running         yes  
+                -------------------------------------------------
+                Stack frame count: 16
+                java.io.FileOutputStream.writeBytes (FileOutputStream.java:<native method>)
+                java.io.FileOutputStream.write (FileOutputStream.java:260)
+                java.io.BufferedOutputStream.flushBuffer (BufferedOutputStream.java:65)
+                java.io.BufferedOutputStream.flush (BufferedOutputStream.java:123)
+                java.io.PrintStream.write (PrintStream.java:432)
+                sun.nio.cs.StreamEncoder.writeBytes (StreamEncoder.java:202)
+                sun.nio.cs.StreamEncoder.implFlushBuffer (StreamEncoder.java:272)
+                sun.nio.cs.StreamEncoder.flushBuffer (StreamEncoder.java:85)
+                java.io.OutputStreamWriter.flushBuffer (OutputStreamWriter.java:168)
+                java.io.PrintStream.write (PrintStream.java:477)
+                java.io.PrintStream.print (PrintStream.java:619)
+                java.io.PrintStream.println (PrintStream.java:756)
+                <strong>Test3.bar (Test3.java:16)</strong>
+                    Variables 3
+                    float value = 0.023809524
+                    float[] array = instance of float[2] (id=65)
+                    java.lang.String message = "Hello world!"
+                <strong>Test3.foo (Test3.java:11)</strong>
+                    Variables 2
+                    float value = 0.023809524
+                    java.lang.Object object_value = instance of Test3(id=68)
+                <strong>Test3.run (Test3.java:6)</strong>
+                    Variables 4
+                    int value = 42
+                    char znak = a
+                    int int_value = 10
+                    java.lang.Object object_value = null
+                <strong>Test3.main (Test3.java:21)</strong>
+                    Variables 1
+                    java.lang.String[] args = instance of java.lang.String[0] (id=69)
+                -------------------------------------------------
+&nbsp;
+Calling exit
+&nbsp;
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými kódy demonstračního příkladu <strong>JDIMethodVariables</strong> i podpůrných skriptů</h2>
+
+<p>Zdrojové kódy demonstračního příkladu <strong>JDIMethodVariables</strong>,
+testovací třídy i skriptů použitých pro překlad a spuštění tohoto
+demonstračního příkladu, byly uloženy (podobně jako tomu bylo i
+v&nbsp;předchozích částech tohoto seriálu) do Mercurial repositáře dostupného
+na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze všech zmíněných zdrojových souborů a skriptů můžete
+najít na adresách:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>JDIMethodVariables.java      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/JDIMethodVariables.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/JDIMethodVariables.java</a></td></tr>
+<tr><td>2</td><td>compile_JDIMethodVariables.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/compile_JDIMethodVariables.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/compile_JDIMethodVariables.sh</a></td></tr>
+<tr><td>3</td><td>Test3.java                   </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/Test3.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/Test3.java</a></td></tr>
+<tr><td>4</td><td>Test3.sh                     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/Test3.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/773bb88e02b6/jdi/Test3.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
