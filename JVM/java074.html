@@ -1,0 +1,995 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - připojení debuggeru k běžícímu virtuálnímu stroji přes rozhraní JDI (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - připojení debuggeru k běžícímu virtuálnímu stroji přes rozhraní JDI (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Java i o virtuálním stroji Javy si řekneme, jakým způsobem lze využít metody nabízené rozhraním com.sun.jdi.VirtualMachine pro získání základních informací o cílovém virtuálním stroji Javy, zejména o vláknech a třídách spravovaných tímto JVM.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - připojení debuggeru k běžícímu virtuálnímu stroji přes rozhraní JDI (2)</a></p>
+<p><a href="#k02">2. Připojení debuggeru k&nbsp;cílové JVM</a></p>
+<p><a href="#k03">3. Získání konektoru, který pro připojení k&nbsp;JVM využívá sockety</a></p>
+<p><a href="#k04">4. Připojení debuggeru k&nbsp;běžícímu virtuálnímu stroji přes socket</a></p>
+<p><a href="#k05">5. Nastavení parametrů JDI konektoru</a></p>
+<p><a href="#k06">6. Metody <strong>connectToVirtualMachine</strong> a <strong>shutdownVirtualMachine</strong></a></p>
+<p><a href="#k07">7. Výpis základních informací o JVM, k níž se debugger připojil</a></p>
+<p><a href="#k08">8. Výpis informací o vláknech existujících ve cílové JVM</a></p>
+<p><a href="#k09">9. Základní informace o vláknech, které lze přes JDI získat</a></p>
+<p><a href="#k10">10. Výpis informací o třídách načtených do cílové JVM</a></p>
+<p><a href="#k11">11. Kompletní zdrojový kód demonstračního příkladu <strong>JDIVirtualMachineInfo</strong></a></p>
+<p><a href="#k12">12. Překlad a spuštění demonstračního příkladu</a></p>
+<p><a href="#k13">13. Zdrojové kódy demonstračního příkladu i podpůrných skriptů</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - připojení debuggeru k běžícímu virtuálnímu stroji přes rozhraní JDI (2)</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> se již počtvrté
+vrátíme k&nbsp;popisu rozhraní <i>JDI (Java Debugger Interface)</i>. Již
+v&nbsp;předchozích dílech jsme si poměrně dopodrobna popsali dva základní
+způsoby připojení debuggeru či jiného podobného nástroje k&nbsp;takzvanému
+sledovanému (cílovému) virtuálnímu stroji Javy. Nyní se již k&nbsp;tomuto
+tématu nebudeme vracet a budeme předpokládat, že je cílová JVM vždy spuštěna
+takovým způsobem, aby se k&nbsp;ní mohl debugger připojit přes sockety.
+Konkrétně to znamená, že cílová JVM bude spuštěna následujícím způsobem
+(důležité je zde především zvolené číslo portu, které musí znát i
+debugger):</p>
+
+<pre>
+java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Test
+</pre>
+
+<p>Dnes si řekneme, jak lze s&nbsp;využitím metod nabízených rozhraním
+<strong>com.sun.jdi.VirtualMachine</strong> získat základní informace o cílové
+JVM. Zajímat nás budou zpočátku informace o vláknech vytvořených v&nbsp;cílové
+JVM (ať již se jedná o vlákna běžící či naopak o vlákna pozastavená) i
+informace o třídách, které byly do tohoto virtuálního stroje Javy načteny.
+Podobně, jako tomu bylo v&nbsp;předchozí části tohoto seriálu, se ukáže, že
+javovské rozhraní <i>JDI</i> je na použití mnohem jednodušší, než nativní
+rozhraní <i>JVM TI</i>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Připojení debuggeru k&nbsp;cílové JVM</h2>
+
+<p>Podobně jako minule, i dnes si funkce nabízené rozhraním <i>JDI</i> popíšeme
+a využijeme v&nbsp;relativně jednoduchém demonstračním příkladu, jehož úplný
+zdrojový kód najdete <a href="#k11">v&nbsp;jedenácté kapitole</a>. Tento
+demonstrační příklad představuje kostru debuggeru, který se k&nbsp;cílovému
+virtuálnímu stroji Javy připojuje přes sockety. To znamená, že je nejprve nutné
+získat všechny nabízené konektory implementující rozhraní
+<strong>com.sun.jdi.connect.AttachingConnector</strong> s&nbsp;využitím metody
+<strong>VirtualMachineManager.AttachingConnector()</strong> a posléze je nutné
+z&nbsp;tohoto seznamu vybrat jediný konektor umožňující spojení s&nbsp;cílovou
+JVM přes sockety &ndash; samotný výběr konektoru zajišťuje uživatelská metoda
+<strong>getSocketAttachConnector()</strong> vypsaná <a
+href="#k03">v&nbsp;následující kapitole</a>. Jakmile se příslušný konektor
+získá, zavolá se další uživatelská metoda nazvaná
+<strong>debugVirtualMachineUsingSocket()</strong>, jejímž popisem se budeme
+zabývat <a href="#k04">v&nbsp;kapitole čtvrté</a>:</p>
+
+<pre>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = <strong>Bootstrap.virtualMachineManager</strong>();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = <strong>virtualMachineManager.attachingConnectors</strong>();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = <strong>getSocketAttachConnector</strong>(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+        debugVirtualMachineUsingSocket(connector);
+    }
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Získání konektoru, který pro připojení k&nbsp;JVM využívá sockety</h2>
+
+<p>Metoda <strong>getSocketAttachConnector()</strong>, která je volána přímo
+z&nbsp;metody <strong>main()</strong> [<a href="#k02">kapitola 2</a>], je
+implementována sice jednoduše, ovšem (alespoň zdánlivě) neefektivně.
+Porovnáváme zde totiž jména jednotlivých konektorů s&nbsp;řetězcovou konstantou
+(literálem) a pokud je nalezen konektor se jménem "com.sun.jdi.SocketAttach"
+(tento řetězec je uložen v&nbsp;konstantě
+<strong>SOCKET_ATTACH_CONNECTOR_NAME</strong>), je tento konektor metodou ihned
+vrácen. Na tomto místě je vhodné poznamenat, že vzhledem k&nbsp;současnému
+stavu <i>JDI</i> zde není možné použít například operátor
+<strong>instanceof</strong>, protože konkrétní jméno třídy či rozhraní, kterou
+musí konektor typu "SocketAttach" implementovat, není přesně zdokumentováno a
+stabilizováno mezi různými implementacemi JVM (poznámka: zde popisovaná metoda
+je shodná se stejně pojmenovanou metodou použitou v&nbsp;předchozí části tohoto
+seriálu):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+        return null;
+    }
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Připojení debuggeru k&nbsp;běžícímu virtuálnímu stroji přes socket</h2>
+
+<p>Dostáváme se k&nbsp;metodě
+<strong>debugVirtualMachineUsingSocket()</strong>, která tvoří ústřední část
+našeho zatím stále ještě velmi jednoduchého debuggeru. V&nbsp;této metodě se
+nejprve přes uživatelskou metodu <strong>prepareConnectorArguments()</strong>
+[<a href="#k05">kapitola 5</a>] nastaví všechny argumenty používané konektorem
+při připojování k&nbsp;cílovému virtuálnímu stroji Javy, provede se vlastní
+připojení v&nbsp;další uživatelské metodě
+<strong>connectToVirtualMachine()</strong> [<a href="#k06">kapitola 6</a>] a
+posléze se na standardní výstup vytisknou všechny informace získané
+z&nbsp;cílové JVM. Následně je cílová JVM zastavena v&nbsp;metodě
+<strong>shutdownVirtualMachine()</strong> [<a href="#k06">kapitola 6</a>], a to
+především z&nbsp;toho důvodu, že by bylo poměrně obtížné navázat s&nbsp;cílovou
+JVM další spojení ve chvíli, kdy se již jeden debugger odpojil.</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // vypis zakladnich informaci o pripojenem VM</i>
+            printVirtualMachineInfo(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Nastavení parametrů JDI konektoru</h2>
+
+<p>Ve chvíli, kdy již máme vybrán správný konektor, je možné se připojit
+k&nbsp;běžícímu virtuálnímu stroji Javy. Aby se připojení skutečně provedlo,
+musí se nejprve nastavit port, přes který se debugger k&nbsp;cílové JVM
+připojí. My jsme si zvolili port číslo 6502 a nastavení příslušného parametru
+(či přesněji řečeno argumentu) konektoru je provedeno v&nbsp;samostatné
+uživatelské metodě nazvané <strong>prepareConnectorArguments()</strong>. Tato
+metoda pracuje velmi jednoduše &ndash; nejprve přečte všechny výchozí argumenty
+konektoru a posléze změní argument uložený pod klíčem "port". Připomeňme si, že
+mapa vrácená přes <strong>AttachingConnector.defaultArguments()</strong> je
+neměnitelná v&nbsp;tom smyslu, že do ní nelze přidávat či z&nbsp;ní odebírat
+další prvky, ovšem hodnoty jednotlivých prvků je samozřejmě možné měnit:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Metody <strong>connectToVirtualMachine</strong> a <strong>shutdownVirtualMachine</strong></h2>
+
+<p>V&nbsp;této kapitole si stručně popíšeme význam dvou pomocných uživatelských
+metod nazvaných <strong>connectToVirtualMachine</strong> a
+<strong>shutdownVirtualMachine</strong>. První z&nbsp;těchto metod slouží
+k&nbsp;připojení k&nbsp;cílovému virtuálnímu stroji Javy, což je uvnitř metody
+zajištěno voláním <strong>AttachingConnector.attach()</strong>, kterému se
+předá mapa obsahující nové argumenty (parametry) konektoru. V&nbsp;našem
+demonstračním debuggeru je modifikován argument "port" v&nbsp;již popsané
+metodě <strong>prepareConnectorArguments()</strong> [<a href="#k05">kapitola
+5</a>]:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+</pre>
+
+<p>Další pomocná metoda nazvaná <strong>shutdownVirtualMachine()</strong>
+slouží pro násilné ukončení cílové JVM s&nbsp;předáním návratového kódu, který
+je následně vrácen operačnímu systému:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Výpis základních informací o JVM, k níž se debugger připojil</h2>
+
+<p>Jakmile se náš demonstrační debugger připojí k&nbsp;cílovému virtuálnímu
+stroji Javy, je možné s&nbsp;využitím rozhraní
+<strong>com.sun.jdi.VirtualMachine</strong> získat mnoho důležitých informací o
+sledované JVM. Všechny informace jsou získávány a vypisovány v&nbsp;uživatelské
+metodě nazvané <strong>printVirtualMachineInfo()</strong>, z&nbsp;níž se volá
+čtveřice dalších uživatelských metod <strong>printDescription()</strong>,
+<strong>printVersion()</strong>, <strong>printThreadInfo()</strong> a
+<strong>printClassesInfo()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci ziskanych ze sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printVirtualMachineInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Basic virtual machine info:");
+        printDescription(virtualMachine);
+        printVersion(virtualMachine);
+        printThreadInfo(virtualMachine);
+        printClassesInfo(virtualMachine);
+    }
+</pre>
+
+<p>Zajímavá je metoda <strong>printDescription()</strong>, která na standardní
+výstup vypíše podrobnější víceřádkový popis propojení mezi cílovým JVM a
+debuggerem. Pro tento účel se uvnitř této metody volá bezparametrická metoda
+<strong>VirtualMachine.description()</strong> vracející řetězec:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Slovni viceradkovy popis sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printDescription</strong>(VirtualMachine virtualMachine) {
+        String description = virtualMachine.description();
+        System.out.println("Description: " + description);
+        System.out.println();
+    }
+</pre>
+
+<p>Zpráva získaná touto metodou může vypadat například takto:</p>
+
+<pre>
+Java Debug Interface (Reference Implementation) version 1.6 
+Java Debug Wire Protocol (Reference Implementation) version 1.6
+JVM Debug Interface version 1.1
+JVM version 1.6.0_01 (Java HotSpot(TM) Client VM, mixed mode, sharing)
+</pre>
+
+<p>Další metoda vypíše verzi cílového virtuálního stroje Javy, kterou je možné
+použít například pro rozhodování, které informace je možné z&nbsp;této JVM
+získat. Uvnitř je využito volání bezparametrické metody
+<strong>VirtualMachine.version()</strong> vracející řetězec (nikoli celé
+číslo!):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Verze sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printVersion</strong>(VirtualMachine virtualMachine) {
+        String version = virtualMachine.version();
+        System.out.println("Version: " + version);
+        System.out.println();
+    }
+</pre>
+
+<p>Zpráva vypsaná touto metodou může vypadat takto:</p>
+
+<pre>
+Version: 1.6.0_01
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výpis informací o vláknech existujících ve cílové JVM</h2>
+
+<p>S&nbsp;využitím metod dostupných přes rozhraní
+<strong>com.sun.jdi.VirtualMachine</strong> je možné přečíst i informace o
+všech vláknech vytvořených ve sledovaném virtuálním stroji Javy. Jedná se o
+vlákna, která se mohou nacházet v&nbsp;libovolném stavu, tj.&nbsp;o vlákna
+běžící, pozastavená, ještě nespuštěná, vlákna čekající na uvolnění zámku atd.
+atd. Seznam všech vláken se přečte metodou
+<strong>VirtualMachine.allThreads()</strong>, přičemž prvky tohoto seznamu jsou
+typu <strong>com.sun.jdi.ThreadReference</strong>. Každý objekt tohoto typu
+obsahuje mnoho informací o jednotlivých vláknech, například unikátní
+identifikátor vlákna, jeho jméno, stav vlákna a taktéž informaci o tom, zda je
+vlákno pozastaveno samotným debuggerem. O přečtení informací o všech vláknech a
+následný výpis těchto informací se stará uživatelská metoda nazvaná
+<strong>printThreadInfo()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci o vlaknech existujicich ve sledovanem virtualnim stroji.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printThreadInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Thread info:");
+        System.out.println("    UniqueID    Thread name            Status       Suspended");
+        List&lt;ThreadReference&gt; threads = <strong>virtualMachine.allThreads()</strong>;
+        for (ThreadReference thread : threads) {
+            String threadName = thread.name();
+            String threadStatus = getThreadStatus(thread);
+            String threadSuspended = getThreadSuspended(thread);
+            long uniqueID = thread.uniqueID();
+            System.out.format("    %8d    %-20s   %-12s    %-5s\n", uniqueID, threadName, threadStatus, threadSuspended);
+        }
+        System.out.println();
+    }
+</pre>
+
+<p>Použité metody:</p>
+
+<pre>
+String  com.sun.jdi.ThreadReference.name()
+long    com.sun.jdi.ObjectReference.uniqueID() - zděděno
+int     com.sun.jdi.ThreadReference.status()
+boolean com.sun.jdi.ThreadReference.isSuspended()
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Základní informace o vláknech, které lze přes JDI získat</h2>
+
+<p>Uživatelská metoda <strong>printThreadInfo()</strong> popsaná <a
+href="#k08">v&nbsp;předchozí kapitole</a> ve skutečnosti volá dvě další
+uživatelské metody nazvané <strong>getThreadStatus()</strong> a
+<strong>getThreadSuspended()</strong>. Metoda
+<strong>getThreadStatus()</strong> vrací stav vlákna jako řetězec. Ve
+skutečnosti je totiž stav vlákna reprezentován celočíselnou konstantou (nikoli
+plnohodnotným výčtovým typem), který lze na řetězec převést například
+s&nbsp;využitím strukturovaného příkazu <i>switch</i> (osobně si myslím, že by
+tento příkaz nemusel být v&nbsp;objektově orientovaném jazyce vůbec
+implementován, ovšem jeho interní implementace je v&nbsp;případě celočíselných
+konstant poměrně efektivní, a to jak po paměťové stránce, tak po stránce
+efektivity vygenerovaného bajtkódu):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Prevod stavu vlakna na retezec.</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     * @return stav vlakna v retezcove podobe</i>
+<i>     */</i>
+    private static String <strong>getThreadStatus</strong>(ThreadReference thread) {
+        switch (thread.status()) {
+        case ThreadReference.THREAD_STATUS_NOT_STARTED:
+            return "not started";
+        case ThreadReference.THREAD_STATUS_RUNNING:
+            return "running";
+        case ThreadReference.THREAD_STATUS_SLEEPING:
+            return "sleeping";
+        case ThreadReference.THREAD_STATUS_MONITOR:
+            return "wait/monitor";
+        case ThreadReference.THREAD_STATUS_WAIT:
+            return "Object.wait";
+        case ThreadReference.THREAD_STATUS_ZOMBIE:
+            return "zombie";
+        case ThreadReference.THREAD_STATUS_UNKNOWN:
+            return "*unkwnown*";
+        default:
+            return "should not happen!";
+        }
+    }
+</pre>
+
+<p>Další pomocná uživatelská metoda nazvaná
+<strong>getThreadSuspended()</strong> je velmi jednoduchá &ndash; vrací pouze
+řetězec "yes" či "no" na základě toho, zda je dané vlákno v&nbsp;cílovém
+virtuálním stroji Javy pozastaveno debuggerem či nikoli (tento stav je nutné
+odlišit od původního stavu vlákna):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Informace (ve tvaru retezce) o tom, zda je vlakno pozastaveno ci nikoli.</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     * @return stav pozastaveni vlakna v retezcove podobe</i>
+<i>     */</i>
+    private static String <strong>getThreadSuspended</strong>(ThreadReference thread) {
+        return thread.isSuspended() ? "yes" : "no";
+    }
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Výpis informací o třídách načtených do cílové JVM</h2>
+
+<p>Mezi další důležité informace o cílovém virtuálním stroji Javy patří seznam
+tříd, které jsou do této JVM načteny jak při inicializaci virtuálního stroje,
+tak i při běhu aplikace. Všechny dostupné třídy lze získat s&nbsp;využitím
+metody <strong>com.sun.jdi.VirtualMachine.allClasses()</strong> vracející
+seznam objektů typu <strong>com.sun.jdi.ReferenceType</strong>, což je třída
+odvozená od obecnější třídy <strong>com.sun.jdi.Type</strong>, s&nbsp;níž se
+pravděpodobně seznámíme příště. O každé třídě lze získat mnoho informací,
+samozřejmě včetně jejího jména a signatury. Aby nebyl výpis příliš dlouhý,
+omezíme se v&nbsp;našem testovacím příkladu na výpis tříd obsahujících řetězec
+"String":</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis zakladnich informaci o tridach nactenych do sledovane JVM.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printClassesInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Class info:");
+        System.out.format("    %-45s    %-45s   %s\n", "Name", "Signature", "Source");
+        List&lt;ReferenceType&gt; classes = virtualMachine.allClasses();
+        for (ReferenceType klass : classes) {
+            String className = klass.name();
+<i>            /* jednoduchy filtr */</i>
+            if (!className.contains("String")) continue;
+            String classSignature = klass.signature();
+            String sourceName;
+            try {
+                sourceName = klass.sourceName();
+            }
+            catch (AbsentInformationException e) {
+                sourceName = "unknown";
+            }
+            System.out.format("    %-45s    %-45s   %s\n", className, classSignature, sourceName);
+        }
+        System.out.println();
+    }
+</pre>
+
+<p>Použité metody:</p>
+
+<pre>
+String com.sun.jdi.ReferenceType.name()
+String com.sun.jdi.ReferenceType.sourceName()
+String com.sun.jdi.Type.signature() - zděděno
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Kompletní zdrojový kód demonstračního příkladu <strong>JDIVirtualMachineInfo</strong></h2>
+
+<p>V&nbsp;předchozích kapitolách byly popsány prakticky všechny metody, které
+jsou součástí dnešního demonstračního příkladu tvořícího kostru debuggeru. Pod
+tímto odstavcem je vypsán celý zdrojový kód tohoto velmi jednoduchého
+debuggeru:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.IncompatibleThreadStateException;
+import com.sun.jdi.ReferenceType;
+import com.sun.jdi.ThreadReference;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIVirtualMachineInfo</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // vypis zakladnich informaci o pripojenem VM</i>
+            printVirtualMachineInfo(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci ziskanych ze sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printVirtualMachineInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Basic virtual machine info:");
+        printDescription(virtualMachine);
+        printVersion(virtualMachine);
+        printThreadInfo(virtualMachine);
+        printClassesInfo(virtualMachine);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Slovni viceradkovy popis sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printDescription</strong>(VirtualMachine virtualMachine) {
+        String description = virtualMachine.description();
+        System.out.println("Description: " + description);
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Verze sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printVersion</strong>(VirtualMachine virtualMachine) {
+        String version = virtualMachine.version();
+        System.out.println("Version: " + version);
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o vlaknech existujicich ve sledovanem virtualnim stroji.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printThreadInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Thread info:");
+        System.out.println("    UniqueID    Thread name            Status       Suspended");
+        List&lt;ThreadReference&gt; threads = virtualMachine.allThreads();
+        for (ThreadReference thread : threads) {
+            String threadName = thread.name();
+            String threadStatus = getThreadStatus(thread);
+            String threadSuspended = getThreadSuspended(thread);
+            long uniqueID = thread.uniqueID();
+            System.out.format("    %8d    %-20s   %-12s    %-5s\n", uniqueID, threadName, threadStatus, threadSuspended);
+        }
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod stavu vlakna na retezec.</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     * @return stav vlakna v retezcove podobe</i>
+<i>     */</i>
+    private static String <strong>getThreadStatus</strong>(ThreadReference thread) {
+        switch (thread.status()) {
+        case ThreadReference.THREAD_STATUS_NOT_STARTED:
+            return "not started";
+        case ThreadReference.THREAD_STATUS_RUNNING:
+            return "running";
+        case ThreadReference.THREAD_STATUS_SLEEPING:
+            return "sleeping";
+        case ThreadReference.THREAD_STATUS_MONITOR:
+            return "wait/monitor";
+        case ThreadReference.THREAD_STATUS_WAIT:
+            return "Object.wait";
+        case ThreadReference.THREAD_STATUS_ZOMBIE:
+            return "zombie";
+        case ThreadReference.THREAD_STATUS_UNKNOWN:
+            return "*unkwnown*";
+        default:
+            return "should not happen!";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Informace (ve tvaru retezce) o tom, zda je vlakno pozastaveno ci nikoli.</i>
+<i>     *</i>
+<i>     * @param thread JDI objekt predstavujici vlakno</i>
+<i>     * @return stav pozastaveni vlakna v retezcove podobe</i>
+<i>     */</i>
+    private static String <strong>getThreadSuspended</strong>(ThreadReference thread) {
+        return thread.isSuspended() ? "yes" : "no";
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis zakladnich informaci o tridach nactenych do sledovane JVM.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>printClassesInfo</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Class info:");
+        System.out.format("    %-45s    %-45s   %s\n", "Name", "Signature", "Source");
+        List&lt;ReferenceType&gt; classes = virtualMachine.allClasses();
+        for (ReferenceType klass : classes) {
+            String className = klass.name();
+<i>            /* jednoduchy filtr */</i>
+            if (!className.contains("String")) continue;
+            String classSignature = klass.signature();
+            String sourceName;
+            try {
+                sourceName = klass.sourceName();
+            }
+            catch (AbsentInformationException e) {
+                sourceName = "unknown";
+            }
+            System.out.format("    %-45s    %-45s   %s\n", className, classSignature, sourceName);
+        }
+        System.out.println();
+    }
+}
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Překlad a spuštění demonstračního příkladu</h2>
+
+<p>Překlad demonstračního příkladu zajistí následující příkaz, který byl
+odladěn na OpenJDK6. Pokud je využita jiná JDK či odlišná verze OpenJDK, je
+nutné upravit cestu k&nbsp;java archivu <strong>tools.jar</strong>:</p>
+
+<pre>
+javac -classpath /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIVirtualMachineInfo.java
+</pre>
+
+<p>Pro kontrolu funkčnosti našeho demonstračního příkladu se použije
+následující testovací třída (stejná třída byla použita i minule):</p>
+
+<pre>
+public class <strong>Test</strong> {
+&nbsp;
+    public static void main(String[] args) {
+        while (true) {
+            System.out.println("Hello world!");
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po překladu testovací třídy:</p>
+
+<pre>
+javac Test
+</pre>
+
+<p>se provede její spuštění následujícím způsobem:</p>
+
+<pre>
+java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Test
+</pre>
+
+<p>Demonstrační debugger, který byl popsaný v&nbsp;předchozích kapitolách, je
+nutné spustit tak, aby virtuální stroj Javy našel i archiv
+<strong>tools.jar</strong>:</p>
+
+<pre>
+java -cp /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIVirtualMachineInfo
+</pre>
+
+<p>Po spuštění by se měla na standardním výstupu objevit přibližně tato zpráva
+(její konkrétní znění se může lišit v&nbsp;závislosti na tom, jaká JRE je
+použita pro spuštění cílové JVM):</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Basic virtual machine info:
+Description: Java Debug Interface (Reference Implementation) version 1.6 
+Java Debug Wire Protocol (Reference Implementation) version 1.6
+JVM Debug Interface version 1.1
+JVM version 1.6.0_01 (Java HotSpot(TM) Client VM, mixed mode, sharing)
+&nbsp;
+Version: 1.6.0_01
+&nbsp;
+Thread info:
+    UniqueID    Thread name            Status       Suspended
+           2    Attach Listener        running         yes  
+           3    Signal Dispatcher      running         yes  
+           4    Finalizer              Object.wait     yes  
+           5    Reference Handler      Object.wait     yes  
+           1    main                   running         yes  
+&nbsp;
+Class info:
+    Name                                             Signature                                       Source
+    java.lang.AbstractStringBuilder                  Ljava/lang/AbstractStringBuilder;               AbstractStringBuilder.java
+    java.lang.String                                 Ljava/lang/String;                              String.java
+    java.lang.String$CaseInsensitiveComparator       Ljava/lang/String$CaseInsensitiveComparator;    String.java
+    java.lang.StringBuffer                           Ljava/lang/StringBuffer;                        StringBuffer.java
+    java.lang.StringBuilder                          Ljava/lang/StringBuilder;                       StringBuilder.java
+    java.lang.StringCoding                           Ljava/lang/StringCoding;                        StringCoding.java
+    java.lang.StringCoding$StringDecoder             Ljava/lang/StringCoding$StringDecoder;          StringCoding.java
+    java.lang.StringCoding$StringEncoder             Ljava/lang/StringCoding$StringEncoder;          StringCoding.java
+    java.lang.String[]                               [Ljava/lang/String;                             unknown
+    java.util.StringTokenizer                        Ljava/util/StringTokenizer;                     StringTokenizer.java
+&nbsp;
+Calling exit
+</pre>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Zdrojové kódy demonstračního příkladu i podpůrných skriptů</h2>
+
+<p>Zdrojové kódy demonstračního příkladu, testovací třídy i skriptů použitých
+pro překlad a spuštění demonstračního příkladu, byly uloženy do Mercurial
+repositáře dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze všech zmíněných zdrojových souborů a skriptů můžete
+najít na adresách:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>JDIVirtualMachineInfo</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/cadf0d815a2b/jdi/JDIVirtualMachineInfo.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/cadf0d815a2b/jdi/JDIVirtualMachineInfo.java</a></td></tr>
+<tr><td>2</td><td>compile.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/cadf0d815a2b/jdi/compile.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/cadf0d815a2b/jdi/compile.sh</a></td></tr>
+<tr><td>3</td><td>Test.java                               </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/716580c5d0ab/jdi/Test.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/716580c5d0ab/jdi/Test.java</a></td></tr>
+<tr><td>4</td><td>Test.sh                                 </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/716580c5d0ab/jdi/Test.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/716580c5d0ab/jdi/Test.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
