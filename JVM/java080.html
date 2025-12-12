@@ -1,0 +1,1477 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - detekce čtení hodnoty vybraného atributu s využitím rozhraní JDI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - detekce čtení hodnoty vybraného atributu s využitím rozhraní JDI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Java i o virtuálním stroji Javy si na dvojici demonstračních příkladů ukážeme další možnosti nabízené rozhraním JDI &ndash; bude se jednat o jednoduché monitorovací nástroje, které dokážou zaregistrovat přístup (čtení) ke zvolenému atributu vybrané třídy.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - detekce čtení hodnoty vybraného atributu s využitím rozhraní JDI</a></p>
+<p><a href="#k02">2. Registrace události vyvolané při čtení vybraného atributu</a></p>
+<p><a href="#k03">3. Získání objektu typu <strong>Field</strong> představujícího sledovaný atribut</a></p>
+<p><a href="#k04">4. Smyčka událostí a výpis informace o události typu <strong>AccessWatchpointEvent</strong></a></p>
+<p><a href="#k05">5. Zdrojový kód prvního demonstračního příkladu <strong>JDIWatchpointDemo1</strong></a></p>
+<p><a href="#k06">6. Výstup generovaný prvním demonstračním příkladem</a></p>
+<p><a href="#k07">7. Výpis podrobnějších informací o watchpointu v&nbsp;metodě <strong>printAccessWatchpointInfo</strong></a></p>
+<p><a href="#k08">8. Rozhraní <strong>ObjectReference</strong> a z&nbsp;něj odvozená hierarchie tříd a rozhraní</a></p>
+<p><a href="#k09">9. Získání hodnoty vybraného atributu v&nbsp;metodě <strong>getFieldValue</strong></a></p>
+<p><a href="#k10">10. Zdrojový kód druhého demonstračního příkladu <strong>JDIWatchpointDemo2</strong></a></p>
+<p><a href="#k11">11. Výstup generovaný druhým demonstračním příkladem</a></p>
+<p><a href="#k12">12. Zdrojový kód testovací třídy <strong>Test6</strong></a></p>
+<p><a href="#k13">13. Repositář se zdrojovými kódy obou demonstračních příkladů</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - detekce čtení hodnoty vybraného atributu s využitím rozhraní JDI</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> se již potřetí budeme
+zabývat popisem systému událostí implementovaného v&nbsp;rozhraní <i>JDI (Java
+Debugger Interface)</i>. V&nbsp;předchozích demonstračních příkladech bylo
+ukázáno, jak může jednoduchý debugger reagovat na událost typu
+<strong>VMDeathEvent</strong> (ukončení činnosti sledovaného virtuálního
+stroje) a taktéž na událost typu <strong>MethodEntryEvent</strong>, která
+vznikne ve chvíli, kdy některé vlákno v&nbsp;monitorované JVM vstoupí do metody
+(dojde tedy k&nbsp;zavolání nějaké metody). S&nbsp;využitím těchto dvou typů
+událostí lze poměrně snadno implementovat například profiler,
+popř.&nbsp;nástroj sledující, které metody jsou pokryty testy, popř.&nbsp;
+naopak které metody se vůbec nevyužívají. Ovšem v&nbsp;případě, že bychom se
+snažili o vytvoření plnohodnotného debuggeru, je nutné začít využívat i další
+typy událostí.</p>
+
+<p>Prakticky všechny moderní debuggery nabízí svým uživatelům možnost sledování
+hodnot vybraných atributů nebo vybraných lokálních proměnných. My si dnes
+ukážeme, jakým způsobem lze poměrně jednoduše monitorovat čtení hodnoty
+vybraného atributu (ať již atributu statického, tak i atributu objektu). Celý
+systém pracuje následujícím způsobem: s&nbsp;využitím rozhraní <i>JDI</i> se
+nejdříve získá objekt typu <strong>com.sun.jdi.Field</strong> představující
+sledovaný atribut ve vybrané třídě. Posléze se zaregistruje a povolí vytváření
+událostí typu <strong>AccessWatchpointEvent</strong> ve chvíli, kdy se nějaké
+vlákno v&nbsp;monitorovaném virtuálním stroji Javy pokusí o přečtení vybraného
+atributu. Jakmile tato událost vznikne, lze (opět přes rozhraní <i>JDI</i>)
+zjistit jak místo (třída+metoda+řádek zdrojového kódu) čtení atributu, tak i
+jeho hodnotu. Celý postup si vysvětlíme na dvojici demonstračních příkladů
+<strong>JDIWatchpointDemo1</strong> a <strong>JDIWatchpointDemo2</strong>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Registrace události vyvolané při čtení vybraného atributu</h2>
+
+<p>V&nbsp;dnešních dvou demonstračních příkladech budou využity dva typy
+událostí. Kromě události typu <strong>VMDeathEvent</strong>, kterou potřebujeme
+pro korektní ukončení debuggeru budeme ještě zpracovávat událost typu
+<strong>AccessWatchpointEvent</strong>. Registrace obou zmíněných typů událostí
+se provádí v&nbsp;uživatelské metodě nazvané
+<strong>acquireAndUseEventRequestManager()</strong>, která nejprve zaregistruje
+oba typy událostí a posléze zavolá klasickou smyčku událostí implementovanou
+v&nbsp;samostatné metodě:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // udalost volana pri pristupu k vybranemu atributu</i>
+        AccessWatchpointRequest accessWatchPointRequest = registerAccessWatchpointRequest(virtualMachine, eventRequestManager);
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, accessWatchPointRequest);
+    }
+</pre>
+
+<p>V&nbsp;metodě <strong>registerAccessWatchpointRequest()</strong> se nejprve
+vyžádá generování událostí typu <strong>AccessWatchpointEvent</strong> a
+posléze se vytváření těchto typů událostí ještě musí explicitně povolit:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Registrace udalosti typu AccessWatchpointEvent</i>
+<i>     * @param virtualMachine </i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static AccessWatchpointRequest <strong>registerAccessWatchpointRequest</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+<i>        // ziskani objektu predstavujiciho vybrany atribut</i>
+        Field field = findField(virtualMachine);
+&nbsp;
+<i>        // registrace udalosti</i>
+        AccessWatchpointRequest accessWatchpointRequest = eventRequestManager.createAccessWatchpointRequest(field);
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        accessWatchpointRequest.enable();
+        return accessWatchpointRequest;
+    }
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Získání objektu typu <strong>Field</strong> představujícího sledovaný atribut</h2>
+
+<p>Jak jste si zajisté <a href="#k02">v&nbsp;předchozí kapitole</a> všimli,
+volá se v&nbsp;metodě <strong>registerAccessWatchpointRequest()</strong> další
+uživatelská metoda nazvaná <strong>findField()</strong>. Úkolem této metody je
+vytvořit objekt typu <strong>com.sun.jdi.Field</strong>, který bude
+představovat sledovaný atribut. Podívejme se nejdříve na to, jak metoda
+<strong>findField()</strong> vlastně vypadá:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ziskani objektu predstavujiciho vybrany atribut ve sledovane VM.</i>
+<i>     *</i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @return nalezeny atribut</i>
+<i>     */</i>
+    private static Field <strong>findField</strong>(VirtualMachine virtualMachine) {
+<i>        // mela by se vratit jedina trida</i>
+        List&lt;ReferenceType&gt; allClasses = virtualMachine.classesByName(TEST_CLASS_NAME);
+        System.out.println("Number of classes with name '" + TEST_CLASS_NAME + "': " + allClasses.size());
+        ReferenceType class1 = allClasses.get(0);
+<i>        // ziskani atributu</i>
+        return class1.fieldByName(TESTED_FIELD_NAME);
+    }
+</pre>
+
+<p>Nejdříve se přes <strong>VirtualMachine.classesByName()</strong> získá
+seznam všech tříd, jejichž jméno odpovídá řetězci "Test6". Vzhledem
+k&nbsp;tomu, že tato třída existuje pouze jedna, můžeme z&nbsp;vráceného
+seznamu jednoduše přečíst první prvek a následně s&nbsp;využitím volání
+<strong>ReferenceType.fieldByName()</strong> získat kýžený objekt typu
+<strong>com.sun.jdi.Field</strong>.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Smyčka událostí a výpis informace o události typu <strong>AccessWatchpointEvent</strong></h2>
+
+<p>Smyčka událostí implementovaná v&nbsp;demonstračním příkladu
+<strong>JDIWatchpointDemo1</strong> je téměř totožná se smyčkou událostí,
+kterou jsme si ukazovali již minule a předminule. V&nbsp;uživatelské metodě
+<strong>eventLoop()</strong> se čeká na událost typu
+<strong>VMDeathEvent</strong>, přičemž se pro všechny události volá další
+uživatelská metoda <strong>processEvents</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * @param accessWatchPointRequest</i>
+<i>     *            objekt pro rizeni udalosti typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest, AccessWatchpointRequest accessWatchPointRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+</pre>
+
+<p>Uživatelská metoda <strong>processEvents()</strong> vrací pravdivostní
+hodnotu <strong>true</strong> v&nbsp;případě, že se má pokračovat ve čtení a
+zpracování dalších událostí a hodnotu <strong>false</strong> ve chvíli, kdy
+přišla událost typu <strong>VMDeathEvent</strong> a kdy má tedy debugger
+(demonstrační příklad) ukončit svoji činnost:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof AccessWatchpointEvent) {
+                    printAccessWatchpointInfo((AccessWatchpointEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+</pre>
+
+<p>Ve chvíli, kdy nastane čtení sledovaného atributu, dojde k&nbsp;vytvoření
+události <strong>AccessWatchpointEvent</strong>, na což se v&nbsp;demonstračním
+příkladu reaguje zavoláním uživatelské metody
+<strong>printAccessWatchpointInfo()</strong>, která je prozatím velmi
+jednoduchá, protože pouze vypíše základní informace o získaném objektu typu
+<strong>AccessWatchpointEvent</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu AccessWatchpointEvent</i>
+<i>     * </i>
+<i>     * @param event</i>
+<i>     *            udalost typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static void <strong>printAccessWatchpointInfo</strong>(AccessWatchpointEvent event) {
+        System.out.println("    " + event.toString());
+    }
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zdrojový kód prvního demonstračního příkladu <strong>JDIWatchpointDemo1</strong></h2>
+
+<p>V&nbsp;dnešním prvním demonstračním příkladu je nejdříve s&nbsp;využitím
+objektu typu <strong>AccessWatchpointRequest</strong> vyžádáno a následně i
+povoleno generování událostí typu <strong>AccessWatchpointEvent</strong>.
+Vytváření těchto typů událostí nastane ve chvíli, kdy aplikace běžící
+v&nbsp;monitorovaném (cílovém) virtuálním stroji Javy přečte (v&nbsp;libovolném
+vláknu) atribut s&nbsp;plným jménem <strong>Test6.testedField</strong>. Ve
+chvíli, kdy k&nbsp;přečtení tohoto atributu dojde, může demonstrační příklad ze
+své fronty událostí získat objekt typu <strong>AccessWatchpointEvent</strong> a
+vypsat prozatím jen velmi základní informaci o této události na standardní
+výstup. Následuje výpis celého zdrojového kódu dnešního prvního demonstračního
+příkladu:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.Field;
+import com.sun.jdi.ReferenceType;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.AccessWatchpointEvent;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.AccessWatchpointRequest;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIWatchpointDemo1</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int <strong>EXIT_VALUE</strong> = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String <strong>SOCKET_ATTACH_CONNECTOR_NAME</strong> = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno testovane tridy.</i>
+<i>     */</i>
+    private static final String <strong>TEST_CLASS_NAME</strong> = "Test6";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno sledovaneho atributu v testovane tride.</i>
+<i>     */</i>
+    private static final String <strong>TESTED_FIELD_NAME</strong> = "testedField";
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // udalost volana pri pristupu k vybranemu atributu</i>
+        AccessWatchpointRequest accessWatchPointRequest = registerAccessWatchpointRequest(virtualMachine, eventRequestManager);
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, accessWatchPointRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu AccessWatchpointEvent</i>
+<i>     * @param virtualMachine </i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static AccessWatchpointRequest <strong>registerAccessWatchpointRequest</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+<i>        // ziskani objektu predstavujiciho vybrany atribut</i>
+        Field field = findField(virtualMachine);
+&nbsp;
+<i>        // registrace udalosti</i>
+        AccessWatchpointRequest accessWatchpointRequest = eventRequestManager.createAccessWatchpointRequest(field);
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        accessWatchpointRequest.enable();
+        return accessWatchpointRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani objektu predstavujiciho vybrany atribut ve sledovane VM.</i>
+<i>     *</i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @return nalezeny atribut</i>
+<i>     */</i>
+    private static Field <strong>findField</strong>(VirtualMachine virtualMachine) {
+<i>        // mela by se vratit jedina trida</i>
+        List&lt;ReferenceType&gt; allClasses = virtualMachine.classesByName(TEST_CLASS_NAME);
+        System.out.println("Number of classes with name '" + TEST_CLASS_NAME + "': " + allClasses.size());
+        ReferenceType class1 = allClasses.get(0);
+<i>        // ziskani atributu</i>
+        return class1.fieldByName(TESTED_FIELD_NAME);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * @param accessWatchPointRequest</i>
+<i>     *            objekt pro rizeni udalosti typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest, AccessWatchpointRequest accessWatchPointRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof AccessWatchpointEvent) {
+                    printAccessWatchpointInfo((AccessWatchpointEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu AccessWatchpointEvent</i>
+<i>     * </i>
+<i>     * @param event</i>
+<i>     *            udalost typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static void <strong>printAccessWatchpointInfo</strong>(AccessWatchpointEvent event) {
+        System.out.println("    " + event.toString());
+    }
+&nbsp;
+}
+</pre>
+
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Výstup generovaný prvním demonstračním příkladem</h2>
+
+<p>První demonstrační příklad <strong>JDIWatchpointDemo1</strong> se přeloží
+podobným způsobem, jako i všechny další demonstrační příklady využívající
+rozhraní <i>JDI</i>. V&nbsp;případě využití OpenJDK6 lze překlad provést
+následovně:</p>
+
+<pre>
+javac -classpath /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIWatchpointDemo1.java
+</pre>
+
+<p>Následně je nutné v&nbsp;dalším terminálu spustit sledovanou aplikaci:</p>
+
+<pre>
+java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Test6
+</pre>
+
+<p>A posléze demonstrační &bdquo;debugger&ldquo; spustit:</p>
+
+<pre>
+java -cp /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIWatchpointDemo1
+</pre>
+
+<p>Po spuštění by měl debugger na svůj standardní výstup vypsat následující
+informace:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Number of classes with name 'Test6': 1
+Got 1 request:
+    AccessWatchpoint@Test6:6 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 1 request:
+    AccessWatchpoint@Test6:18 in thread main
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Výpis podrobnějších informací o watchpointu v&nbsp;metodě <strong>printAccessWatchpointInfo</strong></h2>
+
+<p>Samotné zjištění faktu, že se ve sledovaném virtuálním stroji Javy přečetl
+monitorovaný atribut, je sice možná zajímavé, ale ve skutečném debuggeru
+samozřejmě také potřebujeme znát podrobnější informace. Proto uživatelskou
+metodu <strong>printAccessWatchpointInfo()</strong> upravíme takovým způsobem,
+aby bylo možné tyto informace získat. Většinu funkcí použitých v&nbsp;této
+metodě již známe, protože jsme se s&nbsp;nimi setkali minule &ndash; jedná se o
+zjištění lokace ve zdrojovém textu, kde došlo ke čtení sledovaného atributu.
+Z&nbsp;objektu typu <strong>Location</strong> lze relativně snadno získat jméno
+třídy i jméno příslušné metody, jakož i číslo řádku a popř.&nbsp;i jméno
+zdrojového souboru. Dále pak budeme potřebovat přečíst aktuální hodnotu
+sledovaného atributu, což nám zajistí uživatelská metoda
+<strong>getFieldValue()</strong> popsaná v&nbsp;navazujících dvou
+kapitolách:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu AccessWatchpointEvent</i>
+<i>     * </i>
+<i>     * @param event</i>
+<i>     *            udalost typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static void <strong>printAccessWatchpointInfo</strong>(AccessWatchpointEvent event) {
+<i>        // ziskat aktualni hodnotu atributu</i>
+        int fieldValue = getFieldValue(event);
+<i>        // ziskat objekt typu Location, ktery obsahuje informaci o tom,</i>
+<i>        // ve kterem miste kodu se k atributu pristupovalo</i>
+        Location location = event.location();
+&nbsp;
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni jiz mame vsechny dulezite informace,</i>
+<i>        // lze je tedy vypsat</i>
+        System.out.format("    access to tested attribute with value %d in: %s.%s",
+                fieldValue, className, methodName);
+<i>        // po vypisu zakladnich informaci se jeste vypise jmeno zdrojoveho</i>
+<i>        // souboru a cislo radku metody, v niz se k atributu pristupuje</i>
+        System.out.format("   (%s:%s)\n", sourceName, lineNumber);
+    }
+</pre>
+
+<p>Uživatelské metody <strong>getClassName()</strong>,
+<strong>getMethodName()</strong>, <strong>getSourceName()</strong> a
+<strong>getLineNumber()</strong> si již podrobněji popisovat nebudeme, protože
+jsme se s&nbsp;nimi setkali minule i předminule.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Rozhraní <strong>ObjectReference</strong> a z&nbsp;něj odvozená hierarchie tříd a rozhraní</h2>
+
+<p>Nyní již máme poměrně přesné informace o kódu, v&nbsp;němž se provádí čtení
+sledovaného atributu, takže nám zbývá doplnit maličkost &ndash; zjistit a
+následně vypsat hodnotu tohoto atributu. K&nbsp;tomuto účelu lze využít metodu
+<strong>object()</strong> předepsanou v&nbsp;rozhraní
+<strong>com.sun.jdi.event.WatchpointEvent</strong> (toto rozhraní je předkem
+dnes používaného rozhraní
+<strong>com.sun.jdi.event.AccessWatchpointEvent</strong>). Metoda
+<strong>com.sun.jdi.event.WatchpointEvent.object()</strong> vrací informaci o
+sledovaném atributu, přičemž tato informace je typu
+<strong>com.sun.jdi.ObjectReference</strong>:</p>
+
+<pre>
+com.sun.jdi.ObjectReference com.sun.jdi.event.WatchpointEvent.object();
+</pre>
+
+<p>Ze samotného rozhraní <strong>ObjectReference</strong> jsou odvozena další
+rozhraní:</p>
+
+<pre>
+com.sun.jdi.ArrayReference
+com.sun.jdi.ClassLoaderReference
+com.sun.jdi.ClassObjectReference
+com.sun.jdi.StringReference
+com.sun.jdi.ThreadGroupReference
+com.sun.jdi.ThreadReference 
+</pre>
+
+<p>Nás dnes bude zajímat především metoda:</p>
+
+<pre>
+com.sun.jdi.Value getValue(com.sun.jdi.Field field)
+</pre>
+
+<p>vracející hodnotu uloženou do atributu, popř.&nbsp;do jiného sledovaného
+objektu. Samotné rozhraní <strong>com.sun.jdi.Value</strong> je opět rozšířeno
+v&nbsp;dalších rozhraních tvořících jednoduchou hierarchii:</p>
+
+<pre>
+PrimitiveValue
+    BooleanValue
+    ByteValue
+    CharValue
+    DoubleValue
+    FloatValue
+    IntegerValue
+    LongValue
+    ShortValue
+&nbsp;
+ObjectReference
+    ArrayReference
+    ClassLoaderReference
+    ClassObjectReference
+    StringReference
+    ThreadGroupReference
+    ThreadReference
+&nbsp;
+VoidValue 
+</pre>
+
+<p>Každé z&nbsp;těchto rozhraní obsahuje předpis metody
+<strong>value()</strong> s&nbsp;různým návratovým typem. Smysl této metody je
+zřejmý &ndash; zjistit hodnotu sledovaného objektu, v&nbsp;našem případě
+atributu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Získání hodnoty vybraného atributu v&nbsp;metodě <strong>getFieldValue</strong></h2>
+
+<p>Nyní je již zřejmé, jakým způsobem lze získat hodnotu sledovaného atributu.
+Naše situace je vlastně velmi jednoduchá (na rozdíl od obecného debuggeru),
+protože víme, že atribut <strong>Test6.testedField</strong> je primitivního
+typu <strong>int</strong>, takže můžeme obecnou hodnotu typu
+<strong>ObjectReference</strong> přetypovat na <strong>IntegerValue</strong>.
+Uživatelská metoda <strong>getFieldValue()</strong> vracející aktuální hodnotu
+sledovaného atributu <strong>Test6.testedField</strong> tedy bude vypadat
+následovně:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ziskani hodnoty vybraneho atributu.</i>
+<i>     *</i>
+<i>     * @param event</i>
+<i>     *            udalost typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static int <strong>getFieldValue</strong>(AccessWatchpointEvent event) {
+        ObjectReference objectReference = event.object();
+<i>        // dopredu zname typ atributu, tudiz lze provest pretypovani</i>
+        IntegerValue value = (IntegerValue)objectReference.getValue(event.field());
+        return value.intValue();
+    }
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Zdrojový kód druhého demonstračního příkladu <strong>JDIWatchpointDemo2</strong></h2>
+
+<p>Vylepšení popsaná v&nbsp;předchozích třech kapitolách jsou součástí dnešního
+druhého demonstračního příkladu nazvaného jednoduše
+<strong>JDIWatchpointDemo2</strong>. Jakmile ve sledované aplikaci dojde ke
+čtení atributu <strong>Test6.testedField</strong>, vypíše demonstrační příklad
+podrobné informace o místě (třída+metoda+číslo řádku+zdrojový soubor), kde ke
+čtení atributu došlo a navíc se vypíše i hodnota tohoto atributu:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.Field;
+import com.sun.jdi.IntegerValue;
+import com.sun.jdi.Location;
+import com.sun.jdi.ObjectReference;
+import com.sun.jdi.ReferenceType;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.AccessWatchpointEvent;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.AccessWatchpointRequest;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class JDIWatchpointDemo2 {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int <strong>EXIT_VALUE</strong> = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String <strong>SOCKET_ATTACH_CONNECTOR_NAME</strong> = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno testovane tridy.</i>
+<i>     */</i>
+    private static final String <strong>TEST_CLASS_NAME</strong> = "Test6";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno sledovaneho atributu v testovane tride.</i>
+<i>     */</i>
+    private static final String <strong>TESTED_FIELD_NAME</strong> = "testedField";
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // udalost volana pri pristupu k vybranemu atributu</i>
+        AccessWatchpointRequest accessWatchPointRequest = registerAccessWatchpointRequest(virtualMachine, eventRequestManager);
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, accessWatchPointRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu AccessWatchpointEvent</i>
+<i>     * @param virtualMachine </i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static AccessWatchpointRequest <strong>registerAccessWatchpointRequest</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+<i>        // ziskani objektu predstavujiciho vybrany atribut</i>
+        Field field = findField(virtualMachine);
+&nbsp;
+<i>        // registrace udalosti</i>
+        AccessWatchpointRequest accessWatchpointRequest = eventRequestManager.createAccessWatchpointRequest(field);
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        accessWatchpointRequest.enable();
+        return accessWatchpointRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani objektu predstavujiciho vybrany atribut ve sledovane VM.</i>
+<i>     *</i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @return nalezeny atribut</i>
+<i>     */</i>
+    private static Field <strong>findField</strong>(VirtualMachine virtualMachine) {
+<i>        // mela by se vratit jedina trida</i>
+        List&lt;ReferenceType&gt; allClasses = virtualMachine.classesByName(TEST_CLASS_NAME);
+        System.out.println("Number of classes with name '" + TEST_CLASS_NAME + "': " + allClasses.size());
+&nbsp;
+<i>        // vratila se jedina trida, takze ji precteme</i>
+        ReferenceType class1 = allClasses.get(0);
+&nbsp;
+<i>        // ziskani atributu z teto tridy</i>
+        return class1.fieldByName(TESTED_FIELD_NAME);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * @param accessWatchPointRequest</i>
+<i>     *            objekt pro rizeni udalosti typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest, AccessWatchpointRequest accessWatchPointRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu AccessWatchpointEvent</i>
+<i>     * </i>
+<i>     * @param event</i>
+<i>     *            udalost typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof AccessWatchpointEvent) {
+<i>                    // podrobnejsi vypis o pristupu k atributu</i>
+                    printAccessWatchpointInfo((AccessWatchpointEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+    private static void <strong>printAccessWatchpointInfo</strong>(AccessWatchpointEvent event) {
+<i>        // ziskat aktualni hodnotu atributu</i>
+        int fieldValue = getFieldValue(event);
+<i>        // ziskat objekt typu Location, ktery obsahuje informaci o tom,</i>
+<i>        // ve kterem miste kodu se k atributu pristupovalo</i>
+        Location location = event.location();
+&nbsp;
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni jiz mame vsechny dulezite informace,</i>
+<i>        // lze je tedy vypsat</i>
+        System.out.format("    access to tested attribute with value %d in: %s.%s",
+                fieldValue, className, methodName);
+<i>        // po vypisu zakladnich informaci se jeste vypise jmeno zdrojoveho</i>
+<i>        // souboru a cislo radku metody, v niz se k atributu pristupuje</i>
+        System.out.format("   (%s:%s)\n", sourceName, lineNumber);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani hodnoty vybraneho atributu.</i>
+<i>     *</i>
+<i>     * @param event</i>
+<i>     *            udalost typu AccessWatchpointEvent</i>
+<i>     */</i>
+    private static int <strong>getFieldValue</strong>(AccessWatchpointEvent event) {
+        ObjectReference objectReference = event.object();
+<i>        // dopredu zname typ atributu, tudiz lze provest pretypovani</i>
+        IntegerValue value = (IntegerValue)objectReference.getValue(event.field());
+        return value.intValue();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno tridy, jejiz metoda byla zavolana.</i>
+<i>     */</i>
+    private static String <strong>getClassName</strong>(Location location) {
+        return location.method().declaringType().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno volane metody.</i>
+<i>     */</i>
+    private static String <strong>getMethodName</strong>(Location location) {
+        return location.method().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani informaci o jmene zdrojoveho souboru pro danou lokaci.</i>
+<i>     */</i>
+    private static String <strong>getSourceName</strong>(Location location) {
+        try {
+            return location.sourceName();
+        }
+        catch (AbsentInformationException e) {
+            return "unknown";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod cisla radku na retezec, pokud je to mozne.</i>
+<i>     */</i>
+    private static String <strong>getLineNumber</strong>(Location location) {
+        int lineNumber = location.lineNumber();
+<i>        // u nativnich metod nelze zjistit cisla radku</i>
+        return lineNumber &gt;= 0 ? "" + lineNumber : "&lt;native method&gt;";
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Výstup generovaný druhým demonstračním příkladem</h2>
+
+<p>Dnešní druhý demonstrační příklad se překládá stejným způsobem jako příklad
+první:</p>
+
+<pre>
+javac -classpath /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIWatchpointDemo1.java
+</pre>
+
+<p>Pro jistotu si zopakujeme i spuštění sledované aplikace
+<strong>Test6</strong>:</p>
+
+<pre>
+java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Test6
+</pre>
+
+<p>Spuštění druhého demonstračního příkladu zajistí následující příkaz:</p>
+
+<pre>
+java -cp /usr/lib/jvm/java-6-openjdk/lib/tools.jar:. JDIWatchpointDemo1
+</pre>
+
+<p>Jak je z&nbsp;následujícího výpisu zpráv patrné, vypisuje druhý demonstrační
+příklad informace mnohem podrobnější, než příklad první:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Number of classes with name 'Test6': 1
+Got 1 request:
+    access to tested attribute with value 1 in: Test6.run   (Test6.java:6)
+Got 1 request:
+    access to tested attribute with value 1 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 2 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 4 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 8 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 16 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 32 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 64 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 128 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 256 in: Test6.bar   (Test6.java:18)
+Got 1 request:
+    access to tested attribute with value 512 in: Test6.bar   (Test6.java:18)
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Zdrojový kód testovací třídy <strong>Test6</strong></h2>
+
+<p>Oba demonstrační příklady popsané v&nbsp;dnešním článku jsou odzkoušeny na
+testovací třídě nazvané <strong>Test6</strong>, která je spuštěna
+v&nbsp;monitorovaném virtuálním stroji Javy. Po spuštění této testovací třídy
+se nejdříve čeká na stisk libovolné klávesy a posléze se v&nbsp;metodách
+<strong>Test6.run</strong>, <strong>Test6.foo</strong> a
+<strong>Test6.bar</strong> přistupuje k&nbsp;hodnotě atributu
+<strong>Test6.testedField</strong>, což je detekováno oběma demonstračními
+příklady:</p>
+
+<pre>
+public class <strong>Test6</strong> {
+&nbsp;
+    int testedField = 1;
+&nbsp;
+    public void <strong>run</strong>(int value) {
+        this.testedField *= value;
+        foo();
+    }
+&nbsp;
+    public void <strong>foo</strong>() {
+        for (int i = 1; i &lt; 1000; i *= 2) {
+            this.testedField = i;
+            bar();
+        }
+    }
+&nbsp;
+    public void <strong>bar</strong>() {
+        System.out.println(this.testedField);
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("Press any key");
+        try {
+            System.in.read();
+        }
+        catch (java.io.IOException e) {
+            <i>// . //</i>
+        }
+        new Test6().run(42);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář se zdrojovými kódy obou demonstračních příkladů</h2>
+
+<p>Zdrojové kódy obou dnes popsaných demonstračních příkladů byly uloženy
+(podobně jako tomu bylo i v&nbsp;předešlých částech tohoto seriálu) do
+Mercurial repositáře dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze zmíněných zdrojových souborů můžete najít na
+adresách:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>JDIWatchpointDemo1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/JDIWatchpointDemo1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/JDIWatchpointDemo1.java</a></td></tr>
+<tr><td>2</td><td>JDIWatchpointDemo2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/JDIWatchpointDemo2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/JDIWatchpointDemo2.java</a></td></tr>
+<tr><td>3</td><td>compile_JDIWatchpointDemo1.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/compile_JDIWatchpointDemo1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/compile_JDIWatchpointDemo1.sh</a></td></tr>
+<tr><td>4</td><td>compile_JDIWatchpointDemo2.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/compile_JDIWatchpointDemo2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/compile_JDIWatchpointDemo2.sh</a></td></tr>
+<tr><td>5</td><td>Test6.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/Test6.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/Test6.java</a></td></tr>
+<tr><td>6</td><td>Test6.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/Test6.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/64baaf2ff0df/jdi/Test6.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Class com.sun.jdi.Bootstrap<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html</a>
+</li>
+
+<li>Interface com.sun.jdi.VirtualMachine<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Field<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html</a>
+</li>
+
+<li>Interface com.sun.jdi.ReferenceType<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html</a>
+</li>
+
+<li>Interface com.sun.jdi.TypeComponent<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Accessible<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html</a>
+</li>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
