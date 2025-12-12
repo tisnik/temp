@@ -1,0 +1,1886 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - detekce vstupu do metod s využitím rozhraní JDI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - detekce vstupu do metod s využitím rozhraní JDI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Java i o virtuálním stroji Javy si ukážeme způsob detekce vstupu do metod s využitím rozhraní JDI (Java Debugger Interface). Pro zjištění, jaké metody jsou ve sledovaném virtuálním stroji Javy volány, se při využití JDI používá systém událostí, s nímž jsme se seznámili minule.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - detekce vstupu do metod s využitím rozhraní JDI</a></p>
+<p><a href="#k02">2. Registrace události vyvolané při vstupu do libovolné metody</a></p>
+<p><a href="#k03">3. Výpis základních informací o volané metodě</a></p>
+<p><a href="#k04">4. Zdrojový kód demonstračního příkladu <strong>JDIMethodEntryDetection1</strong></a></p>
+<p><a href="#k05">5. Filtrace tříd, pro jejichž metody se vyvolá událost <strong>MethodEntryEvent</strong></a></p>
+<p><a href="#k06">6. Zjištění podrobnějších informací o volané metodě</a></p>
+<p><a href="#k07">7. Zdrojový kód demonstračního příkladu <strong>JDIMethodEntryDetection2</strong></a></p>
+<p><a href="#k08">8. Zjištění modifikátorů, parametrů a návratových typů volaných metod</a></p>
+<p><a href="#k09">9. Zdrojový kód demonstračního příkladu <strong>JDIMethodEntryDetection3</strong></a></p>
+<p><a href="#k10">10. Zdrojový kód testovací třídy <strong>Test5</strong></a></p>
+<p><a href="#k11">11. Repositář se zdrojovými kódy všech tří demonstračních příkladů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - detekce vstupu do metod s využitím rozhraní JDI</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> jsme si řekli základní
+informace o tom, jakým způsobem se v&nbsp;rozhraní <i>JDI (Java Debugger
+Interface)</i> registrují a následně zpracovávají takzvané
+&bdquo;události&ldquo; (<i>events</i>), které jsou automaticky generovány ve
+chvíli, kdy dojde ke změně stavu sledovaného (monitorovaného) virtuálního
+stroje Javy. Připomeňme si, že každá událost se na straně debuggeru projeví
+vytvořením objektu typu <strong>com.sun.jdi.event.Event</strong>, který je
+ihned po svém vytvoření vložen do takzvané fronty událostí (<i>event
+queue</i>). Debugger může (resp.&nbsp;přesněji řečeno dokonce musí) události
+postupně z&nbsp;této fronty číst a nějakým způsobem na tyto události reagovat.
+Postupné čtení událostí je většinou implementováno formou programové smyčky
+(<i>event loop</i>), na jejímž začátku se přečte nová událost z&nbsp;fronty
+událostí a posléze se provede rozeskok na základě typu přečtené události.</p>
+
+<p>Registrovat a zpracovávat lze následující typy událostí:</p>
+
+<ol>
+<li>Start sledovaného virtuálního stroje</li>
+<li>Ukončení práce sledovaného virtuálního stroje</li>
+<li>Vytvoření a spuštění nového vlákna</li>
+<li>Ukončení činnosti vlákna</li>
+<li>Vstup vlákna do stavu čekání na jiné vlákno (<i>monitor</i>)</li>
+<li>Vstup na breakpoint v&nbsp;nějakém vlákně běžícím ve sledované JVM</li>
+<li>Čtení či zápis do sledovaného atributu (<i>watchpoint</i>)</li>
+<li>Provedení jednoho kroku při krokování programu ve sledované JVM</li>
+<li>Vznik výjimky</li>
+<li>Vstup do metody</li>
+<li>Výskok z&nbsp;metody</li>
+</ol>
+
+<p>Debugger většinou musí umět zareagovat minimálně na událost typu
+<strong>VMDeathEvent</strong>, která nastane ve chvíli, kdy je činnost
+sledovaného virtuálního stroje ukončována. Zpracování události tohoto typu jsme
+si ukázali minule v&nbsp;demonstračním příkladu <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b4d636160962/jdi/JDIEventRequestManager.java">JDIEventRequestManager.java</a>.
+Dnes si řekneme, jak může debugger jednoduše sledovat volání jednotlivých metod
+v&nbsp;monitorovaném virtuálním stroji Javy; posléze si také ukážeme možnosti
+filtrace událostí na základě jména třídy, popř.&nbsp;jednoduchého regulárního
+výrazu popisujícího větší množinu jmen.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Registrace události vyvolané při vstupu do libovolné metody</h2>
+
+<p>Žádost o registraci události se provádí s&nbsp;využitím tříd
+implementujících rozhraní <strong>com.sun.jdi.request.EventRequest</strong>,
+které je předkem dalších rozhraní vypsaných v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Rozhraní</th><th>Popis</th></tr>
+<tr><td> 1</td><td>com.sun.jdi.request.BreakpointRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.BreakpointEvent</td></tr>
+<tr><td> 2</td><td>com.sun.jdi.request.ClassPrepareRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.ClassPrepareEvent</td></tr>
+<tr><td> 3</td><td>com.sun.jdi.request.ClassUnloadRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.ClassUnloadEvent</td></tr>
+<tr><td> 4</td><td>com.sun.jdi.request.ExceptionRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.ExceptionEvent</td></tr>
+<tr><td> 5</td><td>com.sun.jdi.request.MethodEntryRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.MethodEntryEvent</td></tr>
+<tr><td> 6</td><td>com.sun.jdi.request.MethodExitRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.MethodExitEvent</td></tr>
+<tr><td> 7</td><td>com.sun.jdi.request.MonitorContendedEnteredRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.MonitorContendedEnteredEvent</td></tr>
+<tr><td> 8</td><td>com.sun.jdi.request.MonitorContendedEnterRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.MonitorContendedEnterEvent</td></tr>
+<tr><td> 9</td><td>com.sun.jdi.request.MonitorWaitedRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.MonitorWaitedEvent</td></tr>
+<tr><td>10</td><td>com.sun.jdi.request.MonitorWaitRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.MonitorWaitEvent</td></tr>
+<tr><td>11</td><td>com.sun.jdi.request.StepRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.StepEvent</td></tr>
+<tr><td>12</td><td>com.sun.jdi.request.ThreadDeathRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.ThreadDeathEvent</td></tr>
+<tr><td>13</td><td>com.sun.jdi.request.ThreadStartRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.ThreadStartEvent</td></tr>
+<tr><td>14</td><td>com.sun.jdi.request.VMDeathRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.VMDeathEvent</td></tr>
+<tr><td>15</td><td>com.sun.jdi.request.WatchpointRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.WatchpointEvent</td></tr>
+<tr><td>16</td><td>com.sun.jdi.request.AccessWatchpointRequest</td><td>Žádost o generování událostí typu com.sun.jdi.AccessWatchpointEvent</td></tr>
+<tr><td>17</td><td>com.sun.jdi.request.ModificationWatchpointRequest</td><td>Žádost o generování událostí typu com.sun.jdi.event.ModificationWatchpointEvent</td></tr>
+</table>
+
+<p>V&nbsp;dnešních demonstračních příkladech využijeme pouze rozhraní
+<strong>VMDeathRequest</strong> a <strong>MethodEntryRequest</strong>.
+Registrace příslušných typů událostí se provádí v&nbsp;uživatelské metodě
+<strong>acquireAndUseEventRequestManager()</strong>, která nejprve zaregistruje
+oba typy událostí a posléze zavolá smyčku událostí implementovanou
+v&nbsp;samostatné metodě:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+        MethodEntryRequest methodEntryRequest = <strong>registerMethodEntryRequest</strong>(eventRequestManager);
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, methodEntryRequest);
+    }
+</pre>
+
+<p>V&nbsp;metodě <strong>registerMethodEntryRequest()</strong> se vyžádá
+generování událostí typu <strong>MethodEntryEvent</strong> a posléze se
+generování těchto typů událostí ještě musí explicitně povolit:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Registrace udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static MethodEntryRequest <strong>registerMethodEntryRequest</strong>(EventRequestManager eventRequestManager) {
+        MethodEntryRequest methodEntryRequest = eventRequestManager.createMethodEntryRequest();
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        methodEntryRequest.enable();
+        return methodEntryRequest;
+    }
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Výpis základních informací o volané metodě</h2>
+
+<p>Vlastní implementace smyčky událostí je, stejně jako v&nbsp;demonstračním
+příkladu popsaném minule, rozdělená do dvou uživatelských metod. V&nbsp;metodě
+nazvané příznačně <strong>eventLoop()</strong> se nejprve získá objekt typu
+<strong>EventQueue</strong> a následně se v&nbsp;programové smyčce opakovaně
+volá uživatelská metoda <strong>processEvents()</strong> vracející pravdivostní
+hodnotu <strong>true</strong> v&nbsp;případě, že se má pokračovat ve čtení a
+zpracování dalších událostí a hodnotu <strong>false</strong> ve chvíli, kdy
+přišla událost typu <strong>VMDeathEvent</strong> a kdy má tedy debugger
+ukončit svoji činnost. Metodu <strong>eventLoop()</strong> si dnes popisovat
+nebudeme, protože ji známe již z&nbsp;minula, ovšem v&nbsp;metodě
+<strong>processEvents()</strong> došlo k&nbsp;rozšíření &bdquo;rozeskoku&ldquo;
+o další typ události:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     *</i>
+<i>     * @param eventQueue fronta udalosti</i>
+<i>     * @param vmDeathRequest objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     *</i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti</i>
+<i>     *         false pokud se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof MethodEntryEvent) {
+                    <strong>printMethodEntryInfo</strong>((MethodEntryEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+</pre>
+
+<p>Při přečtení události typu <strong>MethodEntryEvent</strong> se zavolá
+uživatelská metoda <strong>printMethodEntryInfo()</strong>, která ve své první
+verzi pouze vytiskne jméno zavolané metody:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>printMethodEntryInfo</strong>(MethodEntryEvent event) {
+        String methodName = event.method().name();
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("    entry into method: %s\n", methodName);
+    }
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Zdrojový kód demonstračního příkladu <strong>JDIMethodEntryDetection1</strong></h2>
+
+<p>Metody popsané v&nbsp;předchozích dvou kapitolách jsou součástí dnešního
+demonstračního příkladu nazvaného <strong>JDIMethodEntryDetection1</strong>.
+Tento příklad po svém spuštění vytiskne jména všech volaných metod, a to
+nezávisle na tom, ve kterém vláknu jsou tyto metody volány či ke které třídě
+metody náleží:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodEntryEvent;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.MethodEntryRequest;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIMethodEntryDetection1</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+        MethodEntryRequest methodEntryRequest = registerMethodEntryRequest(eventRequestManager);
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, methodEntryRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static MethodEntryRequest <strong>registerMethodEntryRequest</strong>(EventRequestManager eventRequestManager) {
+        MethodEntryRequest methodEntryRequest = eventRequestManager.createMethodEntryRequest();
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        methodEntryRequest.enable();
+        return methodEntryRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     * @param vmDeathRequest objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * @param methodEntryRequest objekt pro rizeni udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest, MethodEntryRequest methodEntryRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     *</i>
+<i>     * @param eventQueue fronta udalosti</i>
+<i>     * @param vmDeathRequest objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     *</i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti</i>
+<i>     *         false pokud se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof MethodEntryEvent) {
+                    printMethodEntryInfo((MethodEntryEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>printMethodEntryInfo</strong>(MethodEntryEvent event) {
+        String methodName = event.method().name();
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("    entry into method: %s\n", methodName);
+    }
+&nbsp;
+}
+</pre>
+
+<p>Příklad výstupu generovaného tímto demonstračním příkladem (výstup je
+zkrácen):</p>
+
+<pre>
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: getClassSignature
+...
+...
+...
+Got 1 request:
+    entry into method: hook
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: run
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: toArray
+Got 1 request:
+    entry into method: size
+Got 1 request:
+    entry into method: size
+Got 1 request:
+    entry into method: iterator
+Got 1 request:
+    entry into method: keySet
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: iterator
+Got 1 request:
+    entry into method: newKeyIterator
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: access$100
+Got 1 request:
+    entry into method: hasNext
+Got 1 request:
+    entry into method: access$100
+Got 1 request:
+    entry into method: getClass
+Got 1 request:
+    entry into method: reverse
+Got 1 request:
+    entry into method: size
+Got 1 request:
+    entry into method: iterator
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: hasNext
+Got 1 request:
+    entry into method: size
+Got 1 request:
+    entry into method: hasNext
+Got 1 request:
+    entry into method: size
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Filtrace tříd, pro jejichž metody se vyvolá událost <strong>MethodEntryEvent</strong></h2>
+
+<p>Pokud jste si vyzkoušeli přeložit a spustit debugger z&nbsp;předchozí
+kapitoly, zajisté jste si všimli, že počet událostí generovaných při vstupu do
+metod, je značný, a to i pro jednoduché aplikace typu &bdquo;Hello
+world!&ldquo;. Většinou však nepotřebujeme detekovat vstup do všech metod, ale
+jen do metod náležejících nějaké třídě nebo několika vybraným třídám.
+Samozřejmě je možné pro každou událost typu <strong>MethodEntryEvent</strong>
+zjistit jméno třídy příslušné volané metody, to je však poměrně náročné
+z&nbsp;hlediska zpracování &ndash; filtrace se totiž provádí v&nbsp;poměrně
+pozdním zpracování události (po vytvoření události a jejím vložení do fronty
+událostí).</p>
+
+<p>Namísto toho je možné pro události typu <strong>MethodEntryEvent</strong>
+definovat filtr, který povolí vytvoření událostí pouze pro metody tříd, jejichž
+jména odpovídají zadanému regulárnímu výrazu. Pro tento účel lze využít
+<strong>com.sun.jdi.request.MethodEntryRequest.addClassFilter(java.lang.String)</strong>
+popř.&nbsp;<strong>com.sun.jdi.request.MethodEntryRequest.addClassFilter(com.sun.jdi.ReferenceType)</strong>
+(zde se již regulární výraz samozřejmě nepoužívá). Kromě
+&bdquo;pozitivního&ldquo; filtru, je možné použít i filtr
+&bdquo;negativní&ldquo;, který se zadává s&nbsp;využitím
+<strong>com.sun.jdi.request.MethodEntryRequest.addClassExclusionFilter(java.lang.String)</strong>.
+Upravme nyní uživatelskou metodu <strong>registerMethodEntryRequest()</strong>
+takovým způsobem, aby se zjišťovaly vstupy do metod třídy
+&bdquo;Test5&ldquo;:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Registrace udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static MethodEntryRequest <strong>registerMethodEntryRequest</strong>(EventRequestManager eventRequestManager) {
+        MethodEntryRequest methodEntryRequest = eventRequestManager.createMethodEntryRequest();
+&nbsp;
+<i>        // pridame jeste filtr</i>
+        methodEntryRequest.addClassFilter("Test5");
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        methodEntryRequest.enable();
+        return methodEntryRequest;
+    }
+</pre>
+
+<p>Po přidání filtru se výstup debuggeru výrazným způsobem zkrátí:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Got 1 request:
+    VMStartEvent
+Got 1 request:
+    entry into method: main
+Got 1 request:
+    entry into method: &lt;init&gt;
+Got 1 request:
+    entry into method: run
+Got 1 request:
+    entry into method: foo
+Got 1 request:
+    entry into method: bar
+Got 1 request:
+    entry into method: baz
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zjištění podrobnějších informací o volané metodě</h2>
+
+<p>Uživatelskou metodu <strong>printMethodEntryInfo()</strong> je samozřejmě
+možné různými způsoby rozšiřovat. Kromě jména metody (což je zcela základní
+informace) lze zjistit i jméno příslušné třídy a dokonce i pozici volané metody
+v&nbsp;rámci zdrojového souboru příslušné třídy. První úprava metody
+<strong>printMethodEntryInfo()</strong> využívá objekt typu
+<strong>Location</strong>, s&nbsp;nímž jsme se již v&nbsp;tomto seriálu
+setkali:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>printMethodEntryInfo</strong>(MethodEntryEvent event) {
+        Location location = event.location();
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("    entry into method: %s.%s (%s:%s)\n", className, methodName, sourceName, lineNumber);
+    }
+</pre>
+
+<p>Pro získání jména třídy, ve které je volaná metoda deklarována, se používá
+volání <strong>com.sun.jdi.Method.declaringType()</strong> (přesněji řečeno
+<strong>com.sun.jdi.TypeComponent.declaringType()</strong>) vracející objekt
+typu <strong>ReferenceType</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Jmeno tridy, jejiz metoda byla zavolana.</i>
+<i>     */</i>
+    private static String <strong>getClassName</strong>(Location location) {
+        return location.method().declaringType().name();
+    }
+</pre>
+
+<p>Jako ukázku toho, že jméno volané metody je možné získat více způsoby, je
+zde ukázáno použití <strong>Location.method()</strong> namísto
+<strong>MethodEntryEvent.method()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Jmeno volane metody.</i>
+<i>     */</i>
+    private static String <strong>getMethodName</strong>(Location location) {
+        return location.method().name();
+    }
+</pre>
+
+<p>Zjištění jména zdrojového kódu, v&nbsp;němž je volaná metoda a samozřejmě i
+příslušná třída deklarována, je velmi jednoduché, protože pro tento účel lze
+použít volání <strong>com.sun.jdi.Location.sourceName()</strong>.
+V&nbsp;případě potřeby je možné zjistit i cestu k&nbsp;tomuto souboru
+s&nbsp;využitím <strong>com.sun.jdi.Location.sourcePath()</strong> (tuto
+informaci jsme v&nbsp;rozhraní <i>JVM TI</i> zjišťovali jen velmi složitým
+způsobem):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ziskani informaci o jmene zdrojoveho souboru pro danou lokaci.</i>
+<i>     */</i>
+    private static String <strong>getSourceName</strong>(Location location) {
+        try {
+            return location.sourceName();
+        }
+        catch (AbsentInformationException e) {
+            return "unknown";
+        }
+    }
+</pre>
+
+<p>Informaci o čísle řádku v&nbsp;rámci zdrojového souboru (pokud je ovšem tato
+informace vůbec dostupná) získáme s&nbsp;využitím
+<strong>com.sun.jdi.Location.lineNumber()</strong>, která vrátí kladné číslo
+v&nbsp;případě, že je číslo řádku známé a zápornou či nulovou hodnotu ve
+chvíli, kdy číslo řádku není možné z&nbsp;nějakého důvodu zjistit (typicky se
+jedná o nativní metody).</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Prevod cisla radku na retezec, pokud je to mozne.</i>
+<i>     */</i>
+    private static String <strong>getLineNumber</strong>(Location location) {
+        int lineNumber = location.lineNumber();
+<i>        // u nativnich metod nelze zjistit cisla radku</i>
+        return lineNumber &gt;= 0 ? "" + lineNumber : "&lt;native method&gt;";
+    }
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zdrojový kód demonstračního příkladu <strong>JDIMethodEntryDetection2</strong></h2>
+
+<p>Vylepšení popsaná <a href="#k05">v&nbsp;páté</a> a <a href="#k06">šesté
+kapitole</a> jsou součástí dnešního druhého demonstračního příkladu nazvaného
+<strong>JDIMethodEntryDetection2</strong>, jehož zdrojový kód je zobrazen pod
+tímto odstavcem:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.Location;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodEntryEvent;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.MethodEntryRequest;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIMethodEntryDetection2</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+        MethodEntryRequest methodEntryRequest = registerMethodEntryRequest(eventRequestManager);
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, methodEntryRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static MethodEntryRequest <strong>registerMethodEntryRequest</strong>(EventRequestManager eventRequestManager) {
+        MethodEntryRequest methodEntryRequest = eventRequestManager.createMethodEntryRequest();
+&nbsp;
+<i>        // pridame filtr na jmeno tridy</i>
+        methodEntryRequest.addClassFilter("Test5");
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        methodEntryRequest.enable();
+        return methodEntryRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     * @param vmDeathRequest objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * @param methodEntryRequest objekt pro rizeni udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest, MethodEntryRequest methodEntryRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     *</i>
+<i>     * @param eventQueue fronta udalosti</i>
+<i>     * @param vmDeathRequest objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     *</i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti</i>
+<i>     *         false pokud se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof MethodEntryEvent) {
+                    printMethodEntryInfo((MethodEntryEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>printMethodEntryInfo</strong>(MethodEntryEvent event) {
+        Location location = event.location();
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("    entry into method: %s.%s (%s:%s)\n", className, methodName, sourceName, lineNumber);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno tridy, jejiz metoda byla zavolana.</i>
+<i>     */</i>
+    private static String <strong>getClassName</strong>(Location location) {
+        return location.method().declaringType().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno volane metody.</i>
+<i>     */</i>
+    private static String <strong>getMethodName</strong>(Location location) {
+        return location.method().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani informaci o jmene zdrojoveho souboru pro danou lokaci.</i>
+<i>     */</i>
+    private static String <strong>getSourceName</strong>(Location location) {
+        try {
+            return location.sourceName();
+        }
+        catch (AbsentInformationException e) {
+            return "unknown";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod cisla radku na retezec, pokud je to mozne.</i>
+<i>     */</i>
+    private static String <strong>getLineNumber</strong>(Location location) {
+        int lineNumber = location.lineNumber();
+<i>        // u nativnich metod nelze zjistit cisla radku</i>
+        return lineNumber &gt;= 0 ? "" + lineNumber : "&lt;native method&gt;";
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po spuštění tohoto příkladu již získáme zajímavější výstup:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Got 1 request:
+    VMStartEvent
+Got 1 request:
+    entry into method: Test5.&lt;init&gt; (Test5.java:1)
+Got 1 request:
+    entry into method: Test5.run (Test5.java:4)
+Got 1 request:
+    entry into method: Test5.foo (Test5.java:10)
+Got 1 request:
+    entry into method: Test5.bar (Test5.java:15)
+Got 1 request:
+    entry into method: Test5.baz (Test5.java:19)
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Zjištění modifikátorů, parametrů a návratových typů volaných metod</h2>
+
+<p>Pro zajímavost ještě debugger rozšíříme o výpis prakticky všech informací,
+které lze zjistit pro volané metody. Již jsme si ukázali, jak se zjistí a
+zobrazí jméno třídy, jméno metody, jméno zdrojového souboru s&nbsp;třídou a
+popř.&nbsp;i číslo řádku, na němž metodu nalezneme. Tyto informace lze doplnit
+o plnou hlavičku metody, včetně jejích modifikátorů, návratového typu i typů
+argumentů metody. Uživatelská metoda <strong>printMethodEntryInfo()</strong> je
+tedy náležitým způsobem rozšířena:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu MethodEntry</i>
+<i>     * </i>
+<i>     * @param event</i>
+<i>     *            udalost typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>printMethodEntryInfo</strong>(MethodEntryEvent event) {
+        Method method = event.method();
+        Location location = event.location();
+&nbsp;
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // typ navratove hodnoty reprezentovany jako retezec</i>
+        String type = method.returnTypeName();
+<i>        // priznaky pristupovych prav</i>
+        String accessibilityStr = getAccessibility(method);
+        String staticStr = method.isStatic() ? "static " : "";
+        String finalStr = method.isFinal() ? "final " : "";
+        String nativeStr = method.isNative() ? "native " : "";
+        String synchronizedStr = method.isSynchronized() ? "synchronized " : "";
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("    entry into method: %s%s%s%s%s%s %s.%s",
+                accessibilityStr, staticStr, finalStr,
+                nativeStr, synchronizedStr, type,
+                className, methodName);
+        printMethodArguments(method);
+<i>        // po vypisu argumentu se jeste vypise jmeno zdrojoveho</i>
+<i>        // souboru a cislo radku</i>
+        System.out.format("   (%s:%s)\n", sourceName, lineNumber);
+    }
+</pre>
+
+<p>U volaných metod je možné zjistit a vypsat další důležitou informaci. Jedná
+se o seznam argumentů metody. V&nbsp;závislosti na tom, zda byl bajtkód
+zkoumané třídy přeložen s&nbsp;přepínačem <strong>-g</strong> či bez tohoto
+modifikátoru, lze o argumentech zjistit buď pouze informaci o typech
+jednotlivých argumentů, popř.&nbsp;i jména argumentů &ndash; v&nbsp;tomto
+případě je však nutné provést překlad s&nbsp;přepínačem <strong>-g</strong>,
+jinak se tato informace do bajtkódu neuloží, protože ji virtuální stroj Javy ve
+skutečnosti pro spuštění metody nepotřebuje. S&nbsp;využitím rozhraní
+<i>JDI</i> nelze snadno zjistit, které informace o argumentech metod jsou
+k&nbsp;dispozici, proto je kód metody nazvané
+<strong>printMethodArguments()</strong> rozdělen na dvě části. V&nbsp;první
+části umístěné v&nbsp;bloku <strong>try {}</strong> se zjišťují jak jména, tak
+i typy argumentů, v&nbsp;části umístěné v&nbsp;bloku <strong>catch {}</strong>
+pak pouze typy argumentů metody, neboť tyto informace má JVM k&nbsp;dispozici
+vždy. Výjimka, která rozhodne o použití prvního či druhého bloku, je vyhozena
+z&nbsp;metody <strong>Method.arguments()</strong> umístěné jako první příkaz
+v&nbsp;bloku <strong>try{}</strong> (tuto část kódu již vlastně známe
+z&nbsp;předchozích částí tohoto seriálu):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis argumentu metody.</i>
+<i>     *</i>
+<i>     * @param method metoda ve sledovanem virtualnim stroji</i>
+<i>     */</i>
+    private static void <strong>printMethodArguments</strong>(Method method) {
+        System.out.print("(");
+        boolean first = true;
+&nbsp;
+        try {
+<i>            // idealni je zjistit jmena i typy argumentu</i>
+<i>            // pokud je to samozrejme mozne</i>
+            List&lt;LocalVariable&gt; arguments = method.arguments();
+<i>            // vypsat typy a jmena vsech argumentu metody</i>
+            for (LocalVariable argument : arguments) {
+                if (first) {
+                    first = false;
+                }
+                else {
+                    System.out.print(", ");
+                }
+                System.out.print(argument.typeName() + " " + argument.name());
+            }
+        }
+        catch (AbsentInformationException e) {
+<i>            // pokud jmena argumentu nelze zjistit,</i>
+<i>            // alespon typy jsou vzdy k dispozici</i>
+            List&lt;String&gt; arguments = method.argumentTypeNames();
+<i>            // vypsat typy vsech argumentu metody</i>
+            for (String argument : arguments) {
+                if (first) {
+                    first = false;
+                }
+                else {
+                    System.out.print(", ");
+                }
+                System.out.print(argument);
+            }
+        }
+        System.out.print(");");
+    }
+</pre>
+
+<p>Poslední důležitou informací o volané metodě jsou její přístupová práva,
+která lze zjistit velmi snadno:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Pristupova prava k atributu ci k metode (my zde tuto metodu</i>
+<i>     * vyuzijeme pouze pro ziskani pristupovych prav k volanym metodam)</i>
+<i>     */</i>
+    private static String <strong>getAccessibility</strong>(Accessible methodOrField) {
+        if (methodOrField.isPublic()) {
+            return "public ";
+        }
+        if (methodOrField.isProtected()) {
+            return "protected ";
+        }
+        if (methodOrField.isPrivate()) {
+            return "private ";
+        }
+        return "";
+    }
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Zdrojový kód demonstračního příkladu <strong>JDIMethodEntryDetection3</strong></h2>
+
+<p>Konečně se dostáváme ke zdrojovému kódu dnešního posledního demonstračního
+příkladu nazvaného <strong>JDIMethodEntryDetection3</strong>. Tento příklad
+&ndash; debugger &ndash; dokáže vypsat všechny dostupné informace o volaných
+metodách náležejících do třídy <strong>Test5</strong>. Kromě jmen metod se
+vypíšou i jejich modifikátory, návratový typ a argumenty (včetně jmen
+argumentů, pokud je ovšem tato informace dostupná):</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Accessible;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.LocalVariable;
+import com.sun.jdi.Location;
+import com.sun.jdi.Method;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodEntryEvent;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.MethodEntryRequest;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy,</i>
+<i> * ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> * Detekce vstupu do metod deklarovanych ve tride Test5.</i>
+<i> * U kazde metody se vypise jeji typ, jmeno i typy parametru, popr.</i>
+<i> * i jmena parametru, pokud je ovsem lze zjistit.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIMethodEntryDetection3</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * @throws InterruptedException </i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani spojeni.</i>
+<i>     *</i>
+<i>     * @param connector konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     *</i>
+<i>     * @param connector konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     *</i>
+<i>     * @throws IOException vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(AttachingConnector connector, Map&lt;String, Connector.Argument&gt; arguments)
+        throws IOException, IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     *</i>
+<i>     * @param virtualMachine sledovany virtualni stroj, k nemuz je debugger vzdalene pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+        MethodEntryRequest methodEntryRequest = registerMethodEntryRequest(eventRequestManager);
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest, methodEntryRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static MethodEntryRequest <strong>registerMethodEntryRequest</strong>(EventRequestManager eventRequestManager) {
+        MethodEntryRequest methodEntryRequest = eventRequestManager.createMethodEntryRequest();
+&nbsp;
+<i>        // pridame filtr na jmeno tridy</i>
+        methodEntryRequest.addClassFilter("Test5");
+&nbsp;
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        methodEntryRequest.enable();
+        return methodEntryRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * @param methodEntryRequest</i>
+<i>     *            objekt pro rizeni udalosti typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest, MethodEntryRequest methodEntryRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof MethodEntryEvent) {
+                    printMethodEntryInfo((MethodEntryEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zavolano pri vyskytu udalosti typu MethodEntry</i>
+<i>     * </i>
+<i>     * @param event</i>
+<i>     *            udalost typu MethodEntry</i>
+<i>     */</i>
+    private static void <strong>printMethodEntryInfo</strong>(MethodEntryEvent event) {
+        Method method = event.method();
+        Location location = event.location();
+&nbsp;
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // typ navratove hodnoty reprezentovany jako retezec</i>
+        String type = method.returnTypeName();
+<i>        // priznaky pristupovych prav</i>
+        String accessibilityStr = getAccessibility(method);
+        String staticStr = method.isStatic() ? "static " : "";
+        String finalStr = method.isFinal() ? "final " : "";
+        String nativeStr = method.isNative() ? "native " : "";
+        String synchronizedStr = method.isSynchronized() ? "synchronized " : "";
+&nbsp;
+<i>        // nyni mame vsechny informace, lze je tedy vypsat</i>
+        System.out.format("    entry into method: %s%s%s%s%s%s %s.%s",
+                accessibilityStr, staticStr, finalStr,
+                nativeStr, synchronizedStr, type,
+                className, methodName);
+        printMethodArguments(method);
+<i>        // po vypisu argumentu se jeste vypise jmeno zdrojoveho</i>
+<i>        // souboru a cislo radku</i>
+        System.out.format("   (%s:%s)\n", sourceName, lineNumber);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno tridy, jejiz metoda byla zavolana.</i>
+<i>     */</i>
+    private static String <strong>getClassName</strong>(Location location) {
+        return location.method().declaringType().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno volane metody.</i>
+<i>     */</i>
+    private static String <strong>getMethodName</strong>(Location location) {
+        return location.method().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani informaci o jmene zdrojoveho souboru pro danou lokaci.</i>
+<i>     */</i>
+    private static String <strong>getSourceName</strong>(Location location) {
+        try {
+            return location.sourceName();
+        }
+        catch (AbsentInformationException e) {
+            return "unknown";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod cisla radku na retezec, pokud je to mozne.</i>
+<i>     */</i>
+    private static String <strong>getLineNumber</strong>(Location location) {
+        int lineNumber = location.lineNumber();
+<i>        // u nativnich metod nelze zjistit cisla radku</i>
+        return lineNumber &gt;= 0 ? "" + lineNumber : "&lt;native method&gt;";
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis argumentu metody.</i>
+<i>     *</i>
+<i>     * @param method metoda ve sledovanem virtualnim stroji</i>
+<i>     */</i>
+    private static void <strong>printMethodArguments</strong>(Method method) {
+        System.out.print("(");
+        boolean first = true;
+&nbsp;
+        try {
+<i>            // idealni je zjistit jmena i typy argumentu</i>
+<i>            // pokud je to samozrejme mozne</i>
+            List&lt;LocalVariable&gt; arguments = method.arguments();
+<i>            // vypsat typy a jmena vsech argumentu metody</i>
+            for (LocalVariable argument : arguments) {
+                if (first) {
+                    first = false;
+                }
+                else {
+                    System.out.print(", ");
+                }
+                System.out.print(argument.typeName() + " " + argument.name());
+            }
+        }
+        catch (AbsentInformationException e) {
+<i>            // pokud jmena argumentu nelze zjistit,</i>
+<i>            // alespon typy jsou vzdy k dispozici</i>
+            List&lt;String&gt; arguments = method.argumentTypeNames();
+<i>            // vypsat typy vsech argumentu metody</i>
+            for (String argument : arguments) {
+                if (first) {
+                    first = false;
+                }
+                else {
+                    System.out.print(", ");
+                }
+                System.out.print(argument);
+            }
+        }
+        System.out.print(");");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pristupova prava k atributu ci k metode (my zde tuto metodu</i>
+<i>     * vyuzijeme pouze pro ziskani pristupovych prav k volanym metodam)</i>
+<i>     */</i>
+    private static String <strong>getAccessibility</strong>(Accessible methodOrField) {
+        if (methodOrField.isPublic()) {
+            return "public ";
+        }
+        if (methodOrField.isProtected()) {
+            return "protected ";
+        }
+        if (methodOrField.isPrivate()) {
+            return "private ";
+        }
+        return "";
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po spuštění tohoto demonstračního debuggeru získáme podrobnou informaci o
+všech volaných metodách třídy <strong>Test5</strong> (tato třída musela být
+přeložena s&nbsp;volbou -g):</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Got 1 request:
+    VMStartEvent
+Got 1 request:
+    entry into method: public static void Test5.main(java.lang.String[] args);   (Test5.java:23)
+Got 1 request:
+    entry into method: public void Test5.&lt;init&gt;();   (Test5.java:1)
+Got 1 request:
+    entry into method: public void Test5.run(int value, char znak);   (Test5.java:4)
+Got 1 request:
+    entry into method: public void Test5.foo(float value);   (Test5.java:10)
+Got 1 request:
+    entry into method: public void Test5.bar(float value, float[] array, java.lang.String message);   (Test5.java:15)
+Got 1 request:
+    entry into method: public void Test5.baz();   (Test5.java:19)
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Zdrojový kód testovací třídy <strong>Test5</strong></h2>
+
+<pre>
+public class <strong>Test5</strong> {
+&nbsp;
+    public void <strong>run</strong>(int value, char znak) {
+        int int_value = 10;
+        Object object_value = null;
+        foo(1.0f/value);
+    }
+&nbsp;
+    public void <strong>foo</strong>(float value) {
+        Object object_value = this;
+        bar(value, new float[] {value, value}, "Hello world!");
+    }
+&nbsp;
+    public void <strong>bar</strong>(float value, float[] array, String message) {
+        baz();
+    }
+&nbsp;
+    public void <strong>baz</strong>() {
+        System.out.println("baz");
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("Press any key");
+        try {
+            System.in.read();
+        }
+        catch (java.io.IOException e) {
+        }
+        new Test5().run(42, 'a');
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými kódy všech tří demonstračních příkladů</h2>
+
+<p>Zdrojové kódy všech třech demonstračních příkladů popsaných
+v&nbsp;předchozích kapitolách byly uloženy (podobně jako tomu bylo i
+v&nbsp;předešlých částech tohoto seriálu) do Mercurial repositáře dostupného na
+adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+Prozatím nejnovější verze zmíněných zdrojových souborů můžete najít na
+adresách:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>JDIMethodEntryDetection1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/JDIMethodEntryDetection1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/JDIMethodEntryDetection1.java</a></td></tr>
+<tr><td>2</td><td>JDIMethodEntryDetection2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/JDIMethodEntryDetection2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/JDIMethodEntryDetection2.java</a></td></tr>
+<tr><td>3</td><td>JDIMethodEntryDetection3.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/JDIMethodEntryDetection3.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/JDIMethodEntryDetection3.java</a></td></tr>
+<tr><td>4</td><td>Test5.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/Test5.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/8c1c55bcd7d5/jdi/Test5.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Class com.sun.jdi.Bootstrap<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html</a>
+</li>
+
+<li>Interface com.sun.jdi.VirtualMachine<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Field<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html</a>
+</li>
+
+<li>Interface com.sun.jdi.ReferenceType<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html</a>
+</li>
+
+<li>Interface com.sun.jdi.TypeComponent<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Accessible<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html</a>
+</li>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
