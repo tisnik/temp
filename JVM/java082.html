@@ -1,0 +1,1584 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - práce s breakpointy s využitím rozhraní JDI</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - práce s breakpointy s využitím rozhraní JDI</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Java i o virtuálním stroji Javy si vysvětlíme způsob práce s breakpointy s využitím rozhraní JDI (Java Debugger Interface). Řekneme si, jak se breakpointy nastavují i jaké informace lze získat ve chvíli, kdy nějaké vlákno na breakpoint vstoupí.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - práce s breakpointy s využitím rozhraní JDI</a></p>
+<p><a href="#k02">2. Registrace události vyvolané při dosažení breakpointu</a></p>
+<p><a href="#k03">3. Zjištění přesné lokace, na níž má být breakpoint umístěn</a></p>
+<p><a href="#k04">4. Upravená smyčka událostí (<i>event loop</i>)</a></p>
+<p><a href="#k05">5. Výpis základních informací při dosažení breakpointu</a></p>
+<p><a href="#k06">6. Zdrojový kód prvního demonstračního příkladu <strong>JDIBreakpointDemo1</strong></a></p>
+<p><a href="#k07">7. Zdrojový kód testovací třídy <strong>Test8</strong></a></p>
+<p><a href="#k08">8. Výstup generovaný demonstračním příkladem <strong>JDIBreakpointDemo1</strong></a></p>
+<p><a href="#k09">9. Přečtení podrobnějších informací o vláknu při vstupu na breakpoint</a></p>
+<p><a href="#k10">10. Hodnoty parametrů metod i lokálních proměnných</a></p>
+<p><a href="#k11">11. Zdrojový kód druhého demonstračního příkladu <strong>JDIBreakpointDemo2</strong></a></p>
+<p><a href="#k12">12. Výstup generovaný demonstračním příkladem <strong>JDIBreakpointDemo2</strong></a></p>
+<p><a href="#k13">13. Repositář se zdrojovými kódy demonstračních příkladů</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - práce s breakpointy s využitím rozhraní JDI</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> si vysvětlíme práci
+s&nbsp;breakpointy s&nbsp;využitím rozhraní <i>JDI (Java Debugger
+Interface)</i>. Breakpointy, které jsou nedílnou součástí prakticky všech
+univerzálních debuggerů, určují místo v&nbsp;programovém kódu, po jehož
+dosažení většinou dojde k&nbsp;pozastavení vlákna, které na breakpoint
+vstoupilo a následně k&nbsp;získání dalších informací souvisejících
+s&nbsp;breakpointem &ndash; například je možné si nechat zobrazit seznam
+lokálních proměnných apod. Díky rozhraní <i>JDI</i> je práce s&nbsp;breakpointy
+poměrně jednoduchá, což si ostatně ukážeme i na dvojici demonstračních
+příkladů. Jejich jedinou funkcí bude zobrazení informací o dosažení breakpointu
+a v&nbsp;případě druhého demonstračního příkladu se navíc zobrazí i informace o
+jménech a hodnotách všech viditelných lokálních proměnných, včetně argumentů
+metody, v&nbsp;níž došlo k&nbsp;zastavení na breakpointu.</p>
+
+<p>Pro přehled si nejprve uveďme některé třídy, rozhraní a metody
+z&nbsp;<i>JDI</i>, s&nbsp;nimiž se setkáme v&nbsp;následujících kapitolách:</p>
+
+<table>
+<tr><th>#</th><th>Balíček</th><th>Třída/rozhraní</th><th>Metoda</th><th>Popis</th></tr>
+<tr><td>1</td><td>com.sun.jdi.request</td><td>EventRequestManager</td><td>createBreakpointRequest()</td><td>registrace breakpointu na zadané lokaci</td></tr>
+<tr><td>2</td><td>com.sun.jdi.request</td><td>EventRequest</td><td>setSuspendPolicy()</td><td>určuje, která vlákna se mají zastavit, když dojde k&nbsp;zaregistrované události (zde vstupu na breakpoint)</td></tr>
+<tr><td>3</td><td>com.sun.jdi</td><td>Location</td><td>lineNumber()</td><td>vrátí číslo řádku pro danou lokaci</td></tr>
+<tr><td>4</td><td>com.sun.jdi</td><td>ReferenceType</td><td>allLineLocations()</td><td>vrátí seznam všech lokací pro danou třídu</td></tr>
+<tr><td>5</td><td>com.sun.jdi</td><td>VirtualMachine</td><td>classesByName()</td><td>vrátí všechny třídy s&nbsp;odpovídajícím jménem</td></tr>
+<tr><td>6</td><td>com.sun.jdi.event</td><td>LocatableEvent</td><td>thread()</td><td>vrátí thread, v&nbsp;němž došlo k&nbsp;události</td></tr>
+<tr><td>7</td><td>com.sun.jdi</td><td>ThreadReference</td><td>frame()</td><td>získá n-tý zásobníkový rámec vlákna</td></tr>
+<tr><td>8</td><td>com.sun.jdi</td><td>StackFrame</td><td>visibleVariables()</td><td>vrátí seznam všech viditelných proměnných</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Registrace události vyvolané při dosažení breakpointu</h2>
+
+<p>První věcí, kterou je nutné při práci s&nbsp;breakpointy s&nbsp;využitím
+rozhraní <i>JDI</i> udělat, je zaregistrovat a taktéž povolit vytváření
+událostí typu <strong>BreakpointEvent</strong>. Tyto události jsou do fronty
+událostí (<i>event queue</i>) vloženy ve chvíli, kdy nějaké vlákno skutečně
+breakpointu dosáhne. Událost tohoto typu se registruje opět přes objekt typu
+<strong>EventRequestManager</strong> s&nbsp;využitím dalšího objektu, který je
+typu <strong>BreakpointRequest</strong>. Kromě události
+<strong>BreakpointEvent</strong> zaregistrujeme i událost typu
+<strong>VMDeathRequest</strong>, protože náš demonstrační debugger musí
+korektně ukončit svoji činnost ve chvíli, kdy je monitorovaný (sledovaný)
+virtuální stroj Javy zastaven. Jak se registrace obou zmíněných typů událostí
+provádí, zjistíme při pohledu na zdrojový kód uživatelské metody
+<strong>acquireAndUseEventRequestManager()</strong>, který je vypsán pod tímto
+odstavcem:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // zadost o generovani udalosti vytvorenych pri pristupu na breakpoint</i>
+        BreakpointRequest breakpointRequest = registerBreakpointEvent(virtualMachine, eventRequestManager);
+<i>        //System.out.println("Breakpoint set: " + breakpointRequest.toString());</i>
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest);
+    }
+</pre>
+
+<p>O vlastní registraci a povolení generování událostí typu
+<strong>BreakpointEvent</strong> se stará další uživatelská metoda nazvaná
+<strong>registerBreakpointEvent()</strong>. U registrovaného breakpointu musíme
+znát přesnou lokaci v&nbsp;kódu, kam má být breakpoint vložen. Tato lokace je
+představována objektem typu <strong>Location</strong>, jenž je získán
+v&nbsp;metodě <strong>computeBreakpointLocation()</strong>, jejíž popis bude
+uveden <a href="#k03">v&nbsp;navazující kapitole</a>. Zajímavá je taktéž
+specifikace chování sledované JVM ve chvíli dosažení breakpointu &ndash; my zde
+vyžadujeme pozastavení všech vláken sledované aplikace, což je zajištěno
+zavolání metody
+<strong>breakpointRequest.setSuspendPolicy(EventRequest.SUSPEND_ALL)</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Registrace udalosti typu BreakpointRequest.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu BreakpointRequest</i>
+<i>     */</i>
+    private static BreakpointRequest <strong>registerBreakpointEvent</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+        Location breakpointLocation;
+        try {
+<i>            // potrebujeme zjistit lokaci, kde se ma breakpoint nastavit</i>
+            breakpointLocation = computeBreakpointLocation(virtualMachine, TEST_CLASS_NAME, BREAKPOINT_LINE_NUMBER);
+<i>            // ne vzdy se muze podarit zjistit lokaci</i>
+            if (breakpointLocation == null) {
+                System.err.println("Can not find location to set breakpoint!");
+                return null;
+            }
+<i>            // registrace breakpointu</i>
+            BreakpointRequest breakpointRequest = eventRequestManager.createBreakpointRequest(breakpointLocation);
+<i>            // pri vstupu na breakpoint se zastavi vsechna vlakna</i>
+<i>            // ve sledovanem virtualnim stroji Javy</i>
+            breakpointRequest.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            breakpointRequest.enable();
+            return breakpointRequest;
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Zjištění přesné lokace, na níž má být breakpoint umístěn</h2>
+
+<p>Pokud se breakpoint nastavuje v&nbsp;nějakém skutečném debuggeru, ať již se
+jedná o standardní <i>jdb</i> ovládaný z&nbsp;příkazové řádky, nebo některý
+debugger zabudovaný do integrovaného vývojového prostředí (Eclipse, IDEA,
+Netbeans), může uživatel specifikovat, na kterém řádku se má breakpoint
+nacházet. Musí se tedy zadat dvojice Jméno_třídy:číslo_řádku; přičemž u
+vizuálních debuggerů, které jsou součástí IDE, se jméno třídy odvodí od pozice
+breakpointu v&nbsp;rámci zdrojového souboru (ten může obsahovat více tříd
+&ndash; neveřejných tříd, anonymních tříd, vnitřních tříd atd.). Získání přesné
+lokace v&nbsp;rozhraní <i>JDI</i> je poněkud složitější, protože číslo řádku je
+nutné vyhledat v&nbsp;seznamu obsahujícím objekty typu
+<strong>Location</strong>. Těmito objekty je nutné projít a vyhledat objekt,
+jehož číslo řádku se shoduje s&nbsp;číslem řádku zadaným uživatelem:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zjisteni lokace, kde se ma breakpoint nastavit.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param className</i>
+<i>     *            jmeno tridy, v jejimz ramci se pracuje s breakpointem</i>
+<i>     * @param breakpointLineNumber</i>
+<i>     *            cislo radku, na nemz ma byt breakpoint nastaven</i>
+<i>     * @return lokace, kde se ma breakpoint nastavit nebo null</i>
+<i>     * @throws AbsentInformationException</i>
+<i>     */</i>
+    private static Location <strong>computeBreakpointLocation</strong>(VirtualMachine virtualMachine, String className, int breakpointLineNumber) throws AbsentInformationException {
+        ReferenceType class1 = getClassInMonitoredVM(virtualMachine, className);
+&nbsp;
+<i>        // precist vsechny lokace ve zjistene tride</i>
+        List&lt;Location&gt; locations = class1.allLineLocations();
+&nbsp;
+<i>        // projit vsemi lokacemi</i>
+<i>        // pro kazdou lokaci se pokusime zjistit cislo radku</i>
+<i>        // a porovnat ji se zadanym cislem radku</i>
+        for (Location location : locations) {
+<i>            // pokud dojde ke shode cisel radku,</i>
+<i>            // lze na teto lokaci nastavit breakpoint</i>
+            if (location.lineNumber() == breakpointLineNumber) {
+                return location;
+            }
+        }
+<i>        // nepovedlo se najit lokaci pro dane cislo radku</i>
+        return null;
+    }
+</pre>
+
+<p>V&nbsp;předchozí metodě se nejprve získala reference třídy nějakého jména
+(v&nbsp;našem případě je jméno nastaveno na &bdquo;Test8&ldquo;). Získání této
+třídy je relativně jednoduché, o čemž se můžete přesvědčit z&nbsp;následujícího
+úryvku kódu. Nejdříve se přes <strong>VirtualMachine.classesByName()</strong>
+získá seznam všech tříd, jejichž jméno odpovídá řetězci &bdquo;Test6&ldquo;.
+Vzhledem k&nbsp;tomu, že tato třída existuje pouze jedna, můžeme
+z&nbsp;vráceného seznamu následně jednoduše přečíst první prvek a vrátit ho
+volající metodě:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Precteni tridy zadaneho jmena v monitorovanem virtualnim stroji.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param className</i>
+<i>     *            jmeno tridy, v jejimz ramci se pracuje s breakpointem</i>
+<i>     * @return reference tridy v monitorovanem virtualnim stroji</i>
+<i>     */</i>
+    private static ReferenceType <strong>getClassInMonitoredVM</strong>(VirtualMachine virtualMachine, String className) {
+<i>        // mela by se vratit jedina trida</i>
+        List&lt;ReferenceType&gt; allClasses = virtualMachine.classesByName(className);
+        System.out.println("Number of classes with name '" + TEST_CLASS_NAME + "': " + allClasses.size());
+&nbsp;
+<i>        // vratila se pravdepodobne jedina trida, takze ji precteme</i>
+        ReferenceType class1 = allClasses.get(0);
+        return class1;
+    }
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Upravená smyčka událostí (<i>event loop</i>)</h2>
+
+<p>Implementace smyčky událostí je zcela stejná, jako smyčka použitá
+v&nbsp;demonstračních příkladech popsaných minule a předminule:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+</pre>
+
+<p>Změnil se však kód další uživatelské metody nazvané
+<strong>processEvents()</strong>, protože v&nbsp;této metodě je nutné reagovat
+na výskyt dvou typů událostí. První událost typu <strong>VMDeathEvent</strong>
+je vygenerována ve chvíli ukončování práce sledovaného virtuálního stroje Javy
+a událost typu <strong>BreakpointEvent</strong> vznikne ve chvíli, kdy nějaké
+vlákno vstoupí na nastavený breakpoint. Povšimněte si toho, že se všechna
+vlákna sledovaného virtuálního stroje opět spustí příkazem
+<strong>eventSet.resume()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof BreakpointEvent) {
+<i>                    // nejake vlakno se zastavilo na breakpointu</i>
+                    printInfoAboutBreakpoint((BreakpointEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Výpis základních informací při dosažení breakpointu</h2>
+
+<p>Pokud je ve smyčce událostí popsané <a href="#k04">v&nbsp;předchozí
+kapitole</a> přečtena z&nbsp;fronty událostí (<i>event queue</i>) událost typu
+<strong>BreakpointEvent</strong>, je zavolána uživatelská metoda nazvaná
+<strong>printInfoAboutBreakpoint()</strong>, jejímž úkolem je informovat
+uživatele formou zprávy vypsané na standardní výstup. První verze této metody
+je velmi jednoduchá, protože se zde pouze vypíše, na jakém řádku bylo dosaženo
+breakpointu (breakpointů lze totiž samozřejmě zaregistrovat větší množství).
+Dopředu si řekněme, že značně vylepšená varianta uživatelské metody
+<strong>printInfoAboutBreakpoint()</strong> bude popsána <a
+href="#k09">v&nbsp;deváté</a> a taktéž <a href="#k10">v&nbsp;desáté
+kapitole</a>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci o tom, ze se nejake vlakno zastavilo na breakpointu.</i>
+<i>     * </i>
+<i>     * @param event udalost s informacemi o dosazenem breakpointu</i>
+<i>     */</i>
+    private static void <strong>printInfoAboutBreakpoint</strong>(BreakpointEvent event) {
+<i>        // precist cislo radku, na kterem doslo k zastaveni vlakna</i>
+        int lineNumber = event.location().lineNumber();
+        System.out.println("Breakpoint at line " + lineNumber + ": ");
+    }
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zdrojový kód prvního demonstračního příkladu <strong>JDIBreakpointDemo1</strong></h2>
+
+<p>Celý dnešní první demonstrační příklad nazvaný
+<strong>JDIBreakpointDemo1</strong> pracuje tak, že se nejdříve zaregistrují
+oba výše zmíněné typy zpracovávaných událostí (včetně nastavení breakpointu) a
+posléze se spustí smyčka událostí (<i>event loop</i>). Jakmile nějaké vlákno
+dosáhne breakpointu, vypíše se na standardní výstup informace o řádku (ve
+zdrojovém kódu), kde se breakpoint nacházel a posléze se vlákno (resp.&nbsp;i
+všechna ostatní vlákna) ve sledované JVM opět spustí:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.Location;
+import com.sun.jdi.ReferenceType;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.BreakpointEvent;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.BreakpointRequest;
+import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy, ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> * </i>
+<i> * Po pripojeni se nastavi breakpoint a pri jeho dosazeni se vypisou zakladni</i>
+<i> * informace o sledovane aplikaci.</i>
+<i> * </i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIBreakpointDemo1</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno testovane tridy.</i>
+<i>     */</i>
+    private static final String TEST_CLASS_NAME = "Test8";
+&nbsp;
+<i>    /**</i>
+<i>     * Cislo radku, na kterem bude nastaveny breakpoint.</i>
+<i>     */</i>
+    private static int BREAKPOINT_LINE_NUMBER = 6;
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda tohoto demonstracniho debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     * </i>
+<i>     * @param connectors</i>
+<i>     *            seznam vsech dostupnych konektoru pro pripojeni</i>
+<i>     * @return konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor pouzivajici pro pripojeni sockety</i>
+<i>     * @throws InterruptedException</i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani</i>
+<i>     * spojeni.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments</i>
+<i>     *            mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *         pripojen</i>
+<i>     * </i>
+<i>     * @throws IOException</i>
+<i>     *             vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException</i>
+<i>     *             vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(
+            AttachingConnector connector,
+            Map&lt;String, Connector.Argument&gt; arguments) throws IOException,
+            IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // zadost o generovani udalosti vytvorenych pri pristupu na breakpoint</i>
+        BreakpointRequest breakpointRequest = registerBreakpointEvent(virtualMachine, eventRequestManager);
+<i>        //System.out.println("Breakpoint set: " + breakpointRequest.toString());</i>
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent.</i>
+<i>     * </i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu VMDeathRequest</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu BreakpointRequest.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu BreakpointRequest</i>
+<i>     */</i>
+    private static BreakpointRequest <strong>registerBreakpointEvent</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+        Location breakpointLocation;
+        try {
+<i>            // potrebujeme zjistit lokaci, kde se ma breakpoint nastavit</i>
+            breakpointLocation = computeBreakpointLocation(virtualMachine, TEST_CLASS_NAME, BREAKPOINT_LINE_NUMBER);
+<i>            // ne vzdy se muze podarit zjistit lokaci</i>
+            if (breakpointLocation == null) {
+                System.err.println("Can not find location to set breakpoint!");
+                return null;
+            }
+<i>            // registrace breakpointu</i>
+            BreakpointRequest breakpointRequest = eventRequestManager.createBreakpointRequest(breakpointLocation);
+<i>            // pri vstupu na breakpoint se zastavi vsechna vlakna</i>
+<i>            // ve sledovanem virtualnim stroji Javy</i>
+            breakpointRequest.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            breakpointRequest.enable();
+            return breakpointRequest;
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zjisteni lokace, kde se ma breakpoint nastavit.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param className</i>
+<i>     *            jmeno tridy, v jejimz ramci se pracuje s breakpointem</i>
+<i>     * @param breakpointLineNumber</i>
+<i>     *            cislo radku, na nemz ma byt breakpoint nastaven</i>
+<i>     * @return lokace, kde se ma breakpoint nastavit nebo null</i>
+<i>     * @throws AbsentInformationException</i>
+<i>     */</i>
+    private static Location <strong>computeBreakpointLocation</strong>(VirtualMachine virtualMachine, String className, int breakpointLineNumber) throws AbsentInformationException {
+        ReferenceType class1 = getClassInMonitoredVM(virtualMachine, className);
+&nbsp;
+<i>        // precist vsechny lokace ve zjistene tride</i>
+        List&lt;Location&gt; locations = class1.allLineLocations();
+&nbsp;
+<i>        // projit vsemi lokacemi</i>
+<i>        // pro kazdou lokaci se pokusime zjistit cislo radku</i>
+<i>        // a porovnat ji se zadanym cislem radku</i>
+        for (Location location : locations) {
+<i>            // pokud dojde ke shode cisel radku,</i>
+<i>            // lze na teto lokaci nastavit breakpoint</i>
+            if (location.lineNumber() == breakpointLineNumber) {
+                return location;
+            }
+        }
+<i>        // nepovedlo se najit lokaci pro dane cislo radku</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni tridy zadaneho jmena v monitorovanem virtualnim stroji.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param className</i>
+<i>     *            jmeno tridy, v jejimz ramci se pracuje s breakpointem</i>
+<i>     * @return reference tridy v monitorovanem virtualnim stroji</i>
+<i>     */</i>
+    private static ReferenceType <strong>getClassInMonitoredVM</strong>(VirtualMachine virtualMachine, String className) {
+<i>        // mela by se vratit jedina trida</i>
+        List&lt;ReferenceType&gt; allClasses = virtualMachine.classesByName(className);
+        System.out.println("Number of classes with name '" + TEST_CLASS_NAME + "': " + allClasses.size());
+&nbsp;
+<i>        // vratila se pravdepodobne jedina trida, takze ji precteme</i>
+        ReferenceType class1 = allClasses.get(0);
+        return class1;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof BreakpointEvent) {
+<i>                    // nejake vlakno se zastavilo na breakpointu</i>
+                    printInfoAboutBreakpoint((BreakpointEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o tom, ze se nejake vlakno zastavilo na breakpointu.</i>
+<i>     * </i>
+<i>     * @param event udalost s informacemi o dosazenem breakpointu</i>
+<i>     */</i>
+    private static void <strong>printInfoAboutBreakpoint</strong>(BreakpointEvent event) {
+<i>        // precist cislo radku, na kterem doslo k zastaveni vlakna</i>
+        int lineNumber = event.location().lineNumber();
+        System.out.println("Breakpoint at line " + lineNumber + ": ");
+    }
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zdrojový kód testovací třídy <strong>Test8</strong></h2>
+
+<p>Oba dva dnešní demonstrační příklady budeme testovat proti sledovanému
+virtuálnímu stroji Javy, v&nbsp;němž bude spuštěna velmi jednoduchá aplikace
+představovaná třídou <strong>Test8</strong>. V&nbsp;této třídě se
+mj.&nbsp;nachází i metoda <strong>run()</strong> s&nbsp;programovou smyčkou.
+Pokud se podíváte na hodnotu konstant <strong>TEST_CLASS_NAME</strong> a
+<strong>BREAKPOINT_LINE_NUMBER</strong> uvedených <a href="#k06">ve zdrojovém
+kódu prvního demonstračního příkladu</a>, snadno zjistíte, že breakpoint bude
+nastaven na příkaz <strong>y+=x;</strong> tvořícího tělo zmíněné programové
+smyčky:</p>
+
+<pre>
+public class <strong>Test8</strong> {
+&nbsp;
+    public void <strong>run</strong>(int x) {
+        int y = 0;
+        for (int i = 1; i &lt; 10; i++) {
+            y += x;
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("Press any key");
+        try {
+            System.in.read();
+        }
+        catch (java.io.IOException e) {
+<i>            // . //</i>
+        }
+        new Test8().run(10);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výstup generovaný demonstračním příkladem <strong>JDIBreakpointDemo1</strong></h2>
+
+<p>Podívejme se nyní na to, jak vypadá výstup demonstračního příkladu
+<strong>JDIBreakpointDemo1</strong> ve chvíli, kdy je tento jednoduchý debugger
+spuštěn oproti <a href="#k07">výše popsané</a> třídě <strong>Test8</strong>
+v&nbsp;monitorovaném virtuálním stroji Javy:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Number of classes with name 'Test8': 1
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 1 request:
+Breakpoint at line 6: 
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+<p>Vidíme, že na registrovaný breakpoint se přistoupilo celkem devětkrát, což
+velmi dobře koresponduje s&nbsp;programovou smyčkou implementovanou
+v&nbsp;testovací metodě <strong>Test8.run()</strong>:</p>
+
+<pre>
+        for (int i = 1; i &lt; 10; i++) {
+            y += x;
+        }
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Přečtení podrobnějších informací o vláknu při vstupu na breakpoint</h2>
+
+<p><a href="#k08">V&nbsp;předchozí kapitole</a> byly vypsány zprávy vytvořené
+dnešním prvním demonstračním příkladem. Zajisté uznáte, že informace o tom, že
+nějaké vlákno vstoupilo na breakpoint, mohou sice být velmi zajímavé (například
+při trasování), ovšem většinou od debuggerů vyžadujeme mnohem větší množství
+informací. Zejména se jedná o informace vztažené k&nbsp;vláknu, které na
+breakpoint vstoupilo: hodnoty lokálních proměnných a parametrů aktuální metody,
+popř.&nbsp;i obsah všech zásobníkových rámců. Tyto informace je samozřejmě
+možné s&nbsp;využitím rozhraní <i>JDI</i> relativně snadné získat, musí se však
+dodržet jedna podmínka &ndash; testované Javovské třídy musí být přeloženy
+společně s&nbsp;ladicími informacemi, tj.&nbsp;při překladu je nutné použít
+přepínač <strong>-g</strong>. Pokud by ladicí informace nebyly součástí
+bajtkódu, tedy souborů s&nbsp;koncovkou <strong>.class</strong>, nebylo by
+možné namapovat hodnoty lokálních proměnných a argumentů na jejich jména. <a
+href="#k09">V&nbsp;další kapitole</a> bude ukázáno, jakým způsobem lze získat
+již zmíněné informace o argumentech a lokálních proměnných metody, v&nbsp;níž
+byl breakpoint zaregistrován.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Hodnoty parametrů metod i lokálních proměnných</h2>
+
+<p>Ve vylepšené variantě uživatelské metody nazvané
+<strong>printInfoAboutBreakpoint()</strong> se nejprve vypíše číslo řádku, na
+němž nějaké vlákno vstoupilo na breakpoint (tuto část kódu již známe). Následně
+se s&nbsp;využitím metody <strong>Event.thread()</strong> získá reference
+vlákna a z&nbsp;něho posléze i objekt typu <strong>StackFrame</strong>
+představující jeden zásobníkový rámec. Povšimněte si, že lze získat libovolný
+zásobníkový rámec, protože jednotlivé rámce jsou zpětně číslovány on nuly
+(nejvyšší rámec) směrem ke kladným hodnotám. Důležité je, že zásobníkový rámec
+je možné získat pouze pro zastavená vlákna, což je však v&nbsp;našem případě
+splněno. Následně se z&nbsp;objektu typu <strong>StackFrame</strong> načte
+seznam všech viditelných lokálních proměnných a argumentů (nejedná se tedy o
+všechny lokální proměnné, nemusí se například vrátit lokální počitadla smyček).
+U každé proměnné se přečte a následně i vypíše její jméno a hodnota převedená
+na řetězec:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci o tom, ze se nejake vlakno zastavilo na breakpointu.</i>
+<i>     * </i>
+<i>     * @param event udalost s informacemi o dosazenem breakpointu</i>
+<i>     */</i>
+    private static void <strong>printInfoAboutBreakpoint</strong>(BreakpointEvent event) {
+<i>        // precist cislo radku, na kterem doslo k zastaveni vlakna</i>
+        int lineNumber = event.location().lineNumber();
+        System.out.println("Breakpoint at line " + lineNumber + ": ");
+&nbsp;
+<i>        // ziskat referenci na vlakno </i>
+        ThreadReference threadRef = event.thread();
+        try {
+<i>            // ziskat posledni zasobnikovy ramec vlakna</i>
+            StackFrame stackFrame = threadRef.frame(0);
+<i>            // a projit vsemi viditelnymi promennymi</i>
+            List&lt;LocalVariable&gt; visibleVars = stackFrame.visibleVariables();
+            for (LocalVariable visibleVar : visibleVars) {
+                Value val = stackFrame.getValue(visibleVar);
+                System.out.println("    Local variable: " + visibleVar.name() + " = " + val);
+            }
+        }
+        catch (IncompatibleThreadStateException e) {
+            e.printStackTrace();
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+    }
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Zdrojový kód druhého demonstračního příkladu <strong>JDIBreakpointDemo2</strong></h2>
+
+<p>Upravená uživatelská metoda <strong>printInfoAboutBreakpoint()</strong> se
+stala součástí dnešního druhého demonstračního příkladu pojmenovaného
+<strong>JDIBreakpointDemo2</strong>. Celý zdrojový kód tohoto příkladu je
+vypsán pod tímto odstavcem:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.IncompatibleThreadStateException;
+import com.sun.jdi.LocalVariable;
+import com.sun.jdi.Location;
+import com.sun.jdi.ReferenceType;
+import com.sun.jdi.StackFrame;
+import com.sun.jdi.ThreadReference;
+import com.sun.jdi.Value;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.BreakpointEvent;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.BreakpointRequest;
+import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy, ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> * </i>
+<i> * Po pripojeni se nastavi breakpoint a pri jeho dosazeni se vypisou zakladni</i>
+<i> * informace o sledovane aplikaci.</i>
+<i> * </i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JDIBreakpointDemo2</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno testovane tridy.</i>
+<i>     */</i>
+    private static final String TEST_CLASS_NAME = "Test8";
+&nbsp;
+<i>    /**</i>
+<i>     * Cislo radku, na kterem bude nastaveny breakpoint.</i>
+<i>     */</i>
+    private static int BREAKPOINT_LINE_NUMBER = 6;
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda tohoto demonstracniho debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     * </i>
+<i>     * @param connectors</i>
+<i>     *            seznam vsech dostupnych konektoru pro pripojeni</i>
+<i>     * @return konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor pouzivajici pro pripojeni sockety</i>
+<i>     * @throws InterruptedException</i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani</i>
+<i>     * spojeni.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments</i>
+<i>     *            mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *         pripojen</i>
+<i>     * </i>
+<i>     * @throws IOException</i>
+<i>     *             vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException</i>
+<i>     *             vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(
+            AttachingConnector connector,
+            Map&lt;String, Connector.Argument&gt; arguments) throws IOException,
+            IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // zadost o generovani udalosti vytvorenych pri pristupu na breakpoint</i>
+        BreakpointRequest breakpointRequest = registerBreakpointEvent(virtualMachine, eventRequestManager);
+<i>        //System.out.println("Breakpoint set: " + breakpointRequest.toString());</i>
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent.</i>
+<i>     * </i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu VMDeathRequest</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu BreakpointRequest.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu BreakpointRequest</i>
+<i>     */</i>
+    private static BreakpointRequest <strong>registerBreakpointEvent</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+        Location breakpointLocation;
+        try {
+<i>            // potrebujeme zjistit lokaci, kde se ma breakpoint nastavit</i>
+            breakpointLocation = computeBreakpointLocation(virtualMachine, TEST_CLASS_NAME, BREAKPOINT_LINE_NUMBER);
+<i>            // ne vzdy se muze podarit zjistit lokaci</i>
+            if (breakpointLocation == null) {
+                System.err.println("Can not find location to set breakpoint!");
+                return null;
+            }
+<i>            // registrace breakpointu</i>
+            BreakpointRequest breakpointRequest = eventRequestManager.createBreakpointRequest(breakpointLocation);
+<i>            // pri vstupu na breakpoint se zastavi vsechna vlakna</i>
+<i>            // ve sledovanem virtualnim stroji Javy</i>
+            breakpointRequest.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            breakpointRequest.enable();
+            return breakpointRequest;
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zjisteni lokace, kde se ma breakpoint nastavit.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param className</i>
+<i>     *            jmeno tridy, v jejimz ramci se pracuje s breakpointem</i>
+<i>     * @param breakpointLineNumber</i>
+<i>     *            cislo radku, na nemz ma byt breakpoint nastaven</i>
+<i>     * @return lokace, kde se ma breakpoint nastavit nebo null</i>
+<i>     * @throws AbsentInformationException</i>
+<i>     */</i>
+    private static Location <strong>computeBreakpointLocation</strong>(VirtualMachine virtualMachine, String className, int breakpointLineNumber) throws AbsentInformationException {
+        ReferenceType class1 = getClassInMonitoredVM(virtualMachine, className);
+&nbsp;
+<i>        // precist vsechny lokace ve zjistene tride</i>
+        List&lt;Location&gt; locations = class1.allLineLocations();
+&nbsp;
+<i>        // projit vsemi lokacemi</i>
+<i>        // pro kazdou lokaci se pokusime zjistit cislo radku</i>
+<i>        // a porovnat ji se zadanym cislem radku</i>
+        for (Location location : locations) {
+<i>            // pokud dojde ke shode cisel radku,</i>
+<i>            // lze na teto lokaci nastavit breakpoint</i>
+            if (location.lineNumber() == breakpointLineNumber) {
+                return location;
+            }
+        }
+<i>        // nepovedlo se najit lokaci pro dane cislo radku</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni tridy zadaneho jmena v monitorovanem virtualnim stroji.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param className</i>
+<i>     *            jmeno tridy, v jejimz ramci se pracuje s breakpointem</i>
+<i>     * @return reference tridy v monitorovanem virtualnim stroji</i>
+<i>     */</i>
+    private static ReferenceType <strong>getClassInMonitoredVM</strong>(VirtualMachine virtualMachine, String className) {
+<i>        // mela by se vratit jedina trida</i>
+        List&lt;ReferenceType&gt; allClasses = virtualMachine.classesByName(className);
+        System.out.println("Number of classes with name '" + TEST_CLASS_NAME + "': " + allClasses.size());
+&nbsp;
+<i>        // vratila se pravdepodobne jedina trida, takze ji precteme</i>
+        ReferenceType class1 = allClasses.get(0);
+        return class1;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof BreakpointEvent) {
+<i>                    // nejake vlakno se zastavilo na breakpointu</i>
+                    printInfoAboutBreakpoint((BreakpointEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o tom, ze se nejake vlakno zastavilo na breakpointu.</i>
+<i>     * </i>
+<i>     * @param event udalost s informacemi o dosazenem breakpointu</i>
+<i>     */</i>
+    private static void <strong>printInfoAboutBreakpoint</strong>(BreakpointEvent event) {
+<i>        // precist cislo radku, na kterem doslo k zastaveni vlakna</i>
+        int lineNumber = event.location().lineNumber();
+        System.out.println("Breakpoint at line " + lineNumber + ": ");
+&nbsp;
+<i>        // ziskat referenci na vlakno </i>
+        ThreadReference threadRef = event.thread();
+        try {
+<i>            // ziskat posledni zasobnikovy ramec vlakna</i>
+            StackFrame stackFrame = threadRef.frame(0);
+<i>            // a projit vsemi viditelnymi promennymi</i>
+            List&lt;LocalVariable&gt; visibleVars = stackFrame.visibleVariables();
+            for (LocalVariable visibleVar : visibleVars) {
+                Value val = stackFrame.getValue(visibleVar);
+                System.out.println("    Local variable: " + visibleVar.name() + " = " + val);
+            }
+        }
+        catch (IncompatibleThreadStateException e) {
+            e.printStackTrace();
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Výstup generovaný demonstračním příkladem <strong>JDIBreakpointDemo2</strong></h2>
+
+<p>Při spuštění druhého demonstračního příkladu
+<strong>JDIBreakpointDemo2</strong> oproti virtuálnímu stroji Javy
+s&nbsp;běžící testovací aplikací <strong>Test8</strong> dostaneme už mnohem
+podrobnější informaci o vláknu, které vstoupilo na breakpoint. Vypíše se totiž
+nejenom číslo řádku, ale i hodnoty argumentů a lokálních proměnných funkce
+<strong>run()</strong>, takže můžeme snadno sledovat hodnotu počitadla
+programové smyčky (<strong>i</strong>) i postupnou změnu hodnoty lokální
+proměnné <strong>y</strong>:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+Number of classes with name 'Test8': 1
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+Breakpoint at line 6: 
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář se zdrojovými kódy demonstračních příkladů</h2>
+
+<p>Zdrojové kódy obou dnes popsaných demonstračních příkladů
+<strong>JDIBreakpointDemo1</strong> a <strong>JDIBreakpointDemo2</strong> jsou
+společně s&nbsp;dalšími pomocnými soubory uloženy do Mercurial repositáře
+dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verze těchto
+zdrojových kódů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>JDIBreakpointDemo1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/JDIBreakpointDemo1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/JDIBreakpointDemo1.java</a></td></tr>
+<tr><td>2</td><td>JDIBreakpointDemo2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/JDIBreakpointDemo2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/JDIBreakpointDemo2.java</a></td></tr>
+<tr><td>3</td><td>compile_JDIBreakpointDemo1.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/compile_JDIBreakpointDemo1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/compile_JDIBreakpointDemo1.sh</a></td></tr>
+<tr><td>4</td><td>compile_JDIBreakpointDemo2.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/compile_JDIBreakpointDemo2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/compile_JDIBreakpointDemo2.sh</a></td></tr>
+<tr><td>5</td><td>Test8.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.java</a></td></tr>
+<tr><td>6</td><td>Test8.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Class com.sun.jdi.Bootstrap<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html</a>
+</li>
+
+<li>Interface com.sun.jdi.VirtualMachine<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Field<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html</a>
+</li>
+
+<li>Interface com.sun.jdi.ReferenceType<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html</a>
+</li>
+
+<li>Interface com.sun.jdi.TypeComponent<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Accessible<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html</a>
+</li>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
