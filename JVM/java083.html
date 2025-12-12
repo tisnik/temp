@@ -1,0 +1,1686 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - dokončení popisu rozhraní JDI: krokování</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - dokončení popisu rozhraní JDI: krokování</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyku Java i o virtuálním stroji Javy se již naposledy budeme zabývat popisem rozhraní JDI (Java Debugger Interface). Ukážeme si využití tohoto rozhraní při krokování, popř.&nbsp;trasování aplikace spuštěné ve sledovaném virtuálním stroji Javy.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - dokončení popisu rozhraní JDI: krokování</a></p>
+<p><a href="#k02">2. Povolení a nastavení krokování v&nbsp;metodě <strong>registerStepEvent()</strong></a></p>
+<p><a href="#k03">3. Získání reference hlavního vlákna aplikace běžící v&nbsp;monitorovaném virtuálním stroji</a></p>
+<p><a href="#k04">4. Smyčka pro zpracování událostí</a></p>
+<p><a href="#k05">5. Výpis všech relevantních informací při každém kroku</a></p>
+<p><a href="#k06">6. Úplný zdrojový kód demonstračního příkladu <strong>JDIStepRequestDemo</strong></a></p>
+<p><a href="#k07">7. Zdrojový kód testovací třídy <strong>Test8</strong></a></p>
+<p><a href="#k08">8. Informace vypisované demonstračním příkladem po jeho spuštění: varianta se STEP_LINE</a></p>
+<p><a href="#k09">9. Informace vypisované demonstračním příkladem po jeho spuštění: varianta se STEP_MIN</a></p>
+<p><a href="#k10">10. Repositář se zdrojovými kódy demonstračních příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - dokončení popisu rozhraní JDI: krokování</h2>
+
+<p>V&nbsp;předchozích dvanácti dílech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> jsme si popsali
+většinu funkcí nabízených rozhraním <i>JDI (Java Debugger Interface)</i>. Dnes
+se popisem tohoto rozhraní budeme zabývat naposledy, protože další část tohoto
+seriálu bude věnována nástrojům určeným pro vytváření či modifikaci bajtkódu
+JVM. Minule jsme si na dvojici demonstračních příkladů ukázali způsob využití
+breakpointů, které je možné nastavit na konkrétní programové řádky. Ovšem
+naprostá většina debuggerů si nevystačí s&nbsp;běžnými breakpointy &ndash;
+debuggery totiž svým uživatelům nabízí i možnost aplikací krokovat, a to buď po
+jednotlivých programových řádcích, či po jednotlivých příkazech/výrazech.
+Možnost krokování programů je většinou spojena s&nbsp;nastavením breakpointů,
+ovšem to je pouze uživatelský pohled na celou problematiku &ndash; při
+implementaci debuggeru lze práci s&nbsp;breakpointy a s&nbsp;krokováním
+programů od sebe oddělit.</p>
+
+<p>K&nbsp;oddělení práce s&nbsp;breakpointy a s&nbsp;krokováním programů došlo
+i při návrhu rozhraní <i>JDI</i>. Připomeňme si, že breakpoint se registruje
+s&nbsp;využitím metody:</p>
+
+<pre>
+EventRequestManager.createBreakpointRequest(com.sun.jdi.Location)
+</pre>
+
+<p>To mj.&nbsp;znamená, že breakpoint je zaregistrován na určitou lokaci
+v&nbsp;kódu sledované aplikace a současně se jedná o breakpoint platný pro
+<i>všechna vlákna</i>. Naproti tomu se podpora pro krokování nastavuje pro
+<i>jedno vybrané vlákno</i> a přitom se neuvádí žádná lokace:</p>
+
+<pre>
+EventRequestManager.createStepRequest(ThreadReference thread, int size, int depth)
+</pre>
+
+<p>Význam argumentů <strong>size</strong> a <strong>depth</strong> si
+vysvětlíme <a href="#k02">v&nbsp;navazující kapitole</a>.</p>
+
+<p>Pokud je krokování povoleno, je při každém kroku vytvořena událost typu
+<strong>StepEvent</strong>, která je zapsána do fronty událostí (<i>event
+queue</i>), stejně jako je tomu i u všech dalších typů událostí.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Povolení a nastavení krokování v&nbsp;metodě <strong>registerStepEvent()</strong></h2>
+
+<p>Způsob krokování sledovanou (monitorovanou) aplikací si, podobně jako tomu
+bylo i v&nbsp;několika předchozích dílech tohoto seriálu, vysvětlíme na
+demonstračním debuggeru, který se bude jmenovat
+<strong>JDIStepRequestDemo</strong>. Tento debugger se bude ke sledovanému
+virtuálnímu stroji připojovat přes socket (port je stále nastaven na 6502) a po
+připojení se v&nbsp;uživatelské metodě
+<strong>acquireAndUseEventRequestManager()</strong> provede registrace dvou
+typů událostí &ndash; nám již známé události <strong>VMDeathEvent</strong> (na
+kterou musí debugger reagovat odpojením od sledované JVM) a taktéž události
+typu <strong>StepEvent</strong>. Zdrojový kód uživatelské metody
+<strong>acquireAndUseEventRequestManager()</strong> se tedy v&nbsp;mnoha
+ohledech podobá stejnojmenné metodě použité i v&nbsp;předchozích demonstračních
+příkladech:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // zadost o generovani udalosti vytvorenych pri pristupu na breakpoint</i>
+        StepRequest stepRequest = registerStepEvent(virtualMachine, eventRequestManager);
+        printInfoAboutStepEvent(stepRequest);
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest);
+    }
+</pre>
+
+<p>Vlastní registrace události typu <strong>StepEvent</strong> se provádí
+v&nbsp;další uživatelské metodě pojmenované
+<strong>registerStepEvent()</strong>. Tato metoda tvoří v&nbsp;určitém ohledu
+nejdůležitější část celého demonstračního debuggeru, takže si ji vysvětleme
+podrobněji. Při registraci podpory pro krokování se kromě reference na
+konkrétní vlákno ještě zadávají dva argumenty. První celočíselný argument může
+nabývat hodnoty <strong>StepRequest.STEP_LINE</strong> v&nbsp;případě, že se má
+krokování provádět po jednotlivých programových řádcích,
+popř.&nbsp;<strong>StepRequest.STEP_MIN</strong> pokud vyžadujeme krokování po
+co nejmenších celcích (například části výrazu &ndash; zde již záleží na
+vlastnostech konkrétní JVM i JITu, jak přesné krokování bude). Ve druhém
+celočíselném argumentu lze předat konstantu
+<strong>StepRequest.STEP_INTO</strong>, <strong>StepRequest.STEP_OVER</strong>
+či <strong>StepRequest.STEP_OUT</strong> v&nbsp;závislosti na tom, zda se má
+přeskočit volání metody jako jeden krok, zda se má provést krokování i volaných
+metod či zda se naopak má krokovat jen volající metoda. Navíc je možné omezit
+krokování pouze na určitou třídu přes metodu
+<strong>StepEvent.addClassFilter()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Registrace udalosti typu StepEvent.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu StepRequest</i>
+<i>     */</i>
+    private static StepRequest <strong>registerStepEvent</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+<i>        // ziskat hlavni vlakno aplikace bezici ve sledovanem virtualnim stroji</i>
+        ThreadReference mainThread = getMainThread(virtualMachine);
+        if (mainThread == null) {
+            return null;
+        }
+&nbsp;
+        StepRequest stepRequest = eventRequestManager.createStepRequest(mainThread, StepRequest.STEP_MIN, StepRequest.STEP_INTO);
+<i>        // krokovane vlakno se ma zastavit po kazdem kroku</i>
+        stepRequest.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
+<i>        // chceme krokovat pouze testovaci tridou</i>
+        stepRequest.addClassFilter(TEST_CLASS_NAME);
+        stepRequest.enable();
+        return stepRequest;
+    }
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Získání reference hlavního vlákna aplikace běžící v&nbsp;monitorovaném virtuálním stroji</h2>
+
+<p>V&nbsp;uživatelské metodě <strong>registerStepEvent()</strong> popsané <a
+href="#k02">v&nbsp;předchozí kapitole</a> se při volání
+<strong>EventRequestManager.createStepRequest()</strong> musela v&nbsp;prvním
+argumentu předat reference na vlákno, pro nějž se krokování povoluje (reference
+na vlákno je představována instancí třídy <strong>ThreadReference</strong>).
+V&nbsp;našem případě budeme chtít krokovat &bdquo;hlavní&ldquo; vlákno celé
+aplikace, které nese název "main". Jeden z&nbsp;nejjednodušších způsobů, jakým
+je možné referenci na toto vlákno získat, je implementován v&nbsp;uživatelské
+metodě nazvané příhodně <strong>getMainThread()</strong>. V&nbsp;této metodě se
+nejdříve přes volání:</p>
+
+<pre>
+List&lt;ThreadReference&gt; VirtualMachine.allThreads()  
+</pre>
+
+<p>získají všechna vlákna existující v&nbsp;monitorovaném virtuálním stroji
+Javy a posléze se najde to vlákno, které má nastaveno jméno na "main". Pokud by
+takové vlákno neexistovalo (což je u běžných typů aplikací nepravděpodobné),
+vrátí se namísto reference <strong>null</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Ziskani hlavniho vlakna aplikace bezici v monitorovanem virtualnim stroji.</i>
+<i>     *</i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @return</i>
+<i>     */</i>
+    private static ThreadReference <strong>getMainThread</strong>(VirtualMachine virtualMachine) {
+        List&lt;ThreadReference&gt; threads = virtualMachine.allThreads();
+&nbsp;
+<i>        // projit vsemi vlakny bezicimi ve sledovanem virtualnim stroji</i>
+        for (ThreadReference thread : threads) {
+<i>            // najit hlavni vlakno</i>
+            if (MAIN_THREAD_NAME.equals(thread.name())) {
+                return thread;
+            }
+        }
+&nbsp;
+<i>        // hlavni vlakno nebylo nalezeno, podivne</i>
+        return null;
+    }
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Smyčka pro zpracování událostí</h2>
+
+<p>Smyčku událostí implementovanou v&nbsp;uživatelské metodě
+<strong>eventLoop()</strong> si nemusíme podrobněji popisovat, neboť ji již
+známe z&nbsp;mnoha předchozích demonstračních příkladů:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+</pre>
+
+<p>Ke změně však došlo v&nbsp;další uživatelské metodě nazvané
+<strong>processEvents()</strong>, v&nbsp;níž se jednotlivé události postupně
+čtou z&nbsp;fronty událostí (<i>event queue</i>) a následně se zpracovávají.
+V&nbsp;dnešním demonstračním příkladu budeme reagovat na událost typu
+<strong>VMDeathEvent</strong> (to již známe) a taktéž na událost typu
+<strong>StepEvent</strong>. Za povšimnutí stojí i příkaz
+<strong>eventSet.resume()</strong>, který znovuspustí vlákno/vlákna sledované
+aplikace:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof StepEvent) {
+<i>                    // nejake vlakno se zastavilo pro "krokovani"</i>
+                    printStepInfo((StepEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Výpis všech relevantních informací při každém kroku</h2>
+
+<p>Ve smyčce událostí je při přečtení události typu <strong>StepEvent</strong>
+zavolána uživatelská metoda <strong>printStepInfo()</strong>, v&nbsp;níž dojde
+k&nbsp;výpisu základních informací o programovém řádku, v&nbsp;němž došlo
+k&nbsp;dalšímu kroku. Především se zjistí vlastní číslo programového řádku
+(pokud je k&nbsp;dispozici &ndash; je nutné překládat s&nbsp;parametrem -g),
+dále pak jméno třídy i jméno příslušné metody společně s&nbsp;informacemi o
+jménech a hodnotách lokálních proměnných i argumentů metody. Některé
+z&nbsp;těchto informací se zjišťují v&nbsp;dalších uživatelských metodách,
+které si však dnes již nebudeme popisovat, neboť jsme se s&nbsp;nimi seznámili
+v&nbsp;předchozích částech tohoto seriálu:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis informaci o kazdem kroku.</i>
+<i>     * </i>
+<i>     * @param event udalost</i>
+<i>     */</i>
+    private static void <strong>printStepInfo</strong>(StepEvent event) {
+<i>        // ziskat objekt typu Location, ktery obsahuje informaci o tom,</i>
+<i>        // ve kterem miste kodu se provedl krok</i>
+        Location location = event.location();
+&nbsp;
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni jiz mame vsechny dulezite informace,</i>
+<i>        // lze je tedy vypsat</i>
+        System.out.format("  at: %s.%s ", className, methodName);
+&nbsp;
+<i>        // po vypisu zakladnich informaci se jeste vypise jmeno zdrojoveho</i>
+<i>        // souboru a cislo radku metody</i>
+        System.out.format("(%s:%s)\n", sourceName, lineNumber);
+&nbsp;
+<i>        // ziskat referenci na vlakno </i>
+        ThreadReference threadRef = event.thread();
+        try {
+<i>            // ziskat posledni zasobnikovy ramec vlakna</i>
+            StackFrame stackFrame = threadRef.frame(0);
+<i>            // a projit vsemi viditelnymi promennymi</i>
+            List&lt;LocalVariable&gt; visibleVars = stackFrame.visibleVariables();
+            for (LocalVariable visibleVar : visibleVars) {
+                Value val = stackFrame.getValue(visibleVar);
+                System.out.println("    Local variable: " + visibleVar.name() + " = " + val);
+            }
+        }
+        catch (IncompatibleThreadStateException e) {
+            e.printStackTrace();
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+        
+    }
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Úplný zdrojový kód demonstračního příkladu <strong>JDIStepRequestDemo</strong></h2>
+
+<p>Nyní již máme dostatek informací k&nbsp;tomu, aby jsme si mohli ukázat celý
+zdrojový kód dnešního demonstračního debuggeru nazvaného
+<strong>JDIStepRequestDemo</strong>. Ten pracuje následovně: nejdříve se
+zaregistrují oba výše zmíněné typy zpracovávaných událostí
+(<strong>VMDeathEvent</strong>, <strong>StepEvent</strong>) a posléze se spustí
+smyčka událostí (<i>event loop</i>). Jakmile hlavní vlákno (vlákno se jménem
+"main") dojde na další programový řádek popř.&nbsp;na další dále nedělitelnou
+část příkazu, vypíše se na standardní výstup informace o řádku (ve zdrojovém
+kódu), jménu třídy i jménu metody. Pod těmito základními informacemi se vypíšou
+i hodnoty parametrů metody a hodnoty jejích lokálních proměnných. Posléze se
+hlavní vlákno opět spustí:</p>
+
+<pre>
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+&nbsp;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.Bootstrap;
+import com.sun.jdi.IncompatibleThreadStateException;
+import com.sun.jdi.LocalVariable;
+import com.sun.jdi.Location;
+import com.sun.jdi.StackFrame;
+import com.sun.jdi.ThreadReference;
+import com.sun.jdi.Value;
+import com.sun.jdi.VirtualMachine;
+import com.sun.jdi.VirtualMachineManager;
+import com.sun.jdi.connect.AttachingConnector;
+import com.sun.jdi.connect.Connector;
+import com.sun.jdi.connect.IllegalConnectorArgumentsException;
+import com.sun.jdi.event.Event;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.StepEvent;
+import com.sun.jdi.event.VMDeathEvent;
+import com.sun.jdi.event.VMStartEvent;
+import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.StepRequest;
+import com.sun.jdi.request.VMDeathRequest;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Pripojeni k bezicimu virtualnimu stroji Javy, ktery byl spusten s parametry:</i>
+<i> * java -agentlib:jdwp=transport=dt_socket,server=y,address=6502,suspend=y Trida</i>
+<i> *</i>
+<i> * Po pripojeni se zaregistruje udalost typu 'Step' a pri behu aplikace </i>
+<i> * se budou postupne vypisovat trasovaci informace pro hlavni vlakno.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class JDIStepRequestDemo {
+&nbsp;
+<i>    /**</i>
+<i>     * Navratovy kod pouzity pri ukoncovani sledovane JVM.</i>
+<i>     */</i>
+    private static final int EXIT_VALUE = 0;
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno konektoru, ktery pro pripojeni pouziva sockety.</i>
+<i>     */</i>
+    private static final String SOCKET_ATTACH_CONNECTOR_NAME = "com.sun.jdi.SocketAttach";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno testovane tridy.</i>
+<i>     */</i>
+    private static final String TEST_CLASS_NAME = "Test8";
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno hlavniho vlakna.</i>
+<i>     */</i>
+    private static final String MAIN_THREAD_NAME = "main";
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni metoda tohoto demonstracniho debuggeru.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat (jedinou) instanci tridy VirtualMachineManager</i>
+        VirtualMachineManager virtualMachineManager = Bootstrap.virtualMachineManager();
+&nbsp;
+<i>        // ziskat vsechny konektory pouzite pro pripojeni k bezici JVM</i>
+        List&lt;AttachingConnector&gt; connectors = virtualMachineManager.attachingConnectors();
+&nbsp;
+<i>        // potrebujeme ziskat konektor pouzivajici pro pripojeni sockety</i>
+        AttachingConnector connector = getSocketAttachConnector(connectors);
+&nbsp;
+        if (connector == null) {
+            System.out.println("Socket connector is not available");
+            return;
+        }
+&nbsp;
+<i>        // jsme pripojeni ke sledovane JVM, takze lze provadet ladeni</i>
+        debugVirtualMachineUsingSocket(connector);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskat konektor pouzivajici pro pripojeni sockety</i>
+<i>     * </i>
+<i>     * @param connectors</i>
+<i>     *            seznam vsech dostupnych konektoru pro pripojeni</i>
+<i>     * @return konektor pouzivajici pro pripojeni sockety</i>
+<i>     */</i>
+    private static AttachingConnector <strong>getSocketAttachConnector</strong>(List&lt;AttachingConnector&gt; connectors) {
+        for (AttachingConnector connector : connectors) {
+            if (SOCKET_ATTACH_CONNECTOR_NAME.equals(connector.name())) {
+                return connector;
+            }
+        }
+<i>        // nenasli jsme zadny vhodny konektor</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni k bezicimu virtualnimu stroji pres socket.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor pouzivajici pro pripojeni sockety</i>
+<i>     * @throws InterruptedException</i>
+<i>     */</i>
+    private static void <strong>debugVirtualMachineUsingSocket</strong>(AttachingConnector connector) {
+<i>        // nastaveni argumentu pouzivanych konektorem</i>
+        Map&lt;String, Connector.Argument&gt; arguments = prepareConnectorArguments(connector);
+&nbsp;
+        try {
+<i>            // pripojeni ke vzdalenemu bezicimu virtualnimu stroji Javy</i>
+            VirtualMachine virtualMachine = connectToVirtualMachine(connector, arguments);
+&nbsp;
+<i>            // spustit sledovany virtualni stroj Javy</i>
+            runVirtualMachine(virtualMachine);
+&nbsp;
+<i>            // ukazka pouziti EventRequestManageru</i>
+            acquireAndUseEventRequestManager(virtualMachine);
+&nbsp;
+<i>            // ukonceni behu vzdaleneho virtualniho stroje</i>
+            shutdownVirtualMachine(virtualMachine);
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalConnectorArgumentsException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni portu na cilove JVM, jenz debugger pouzije pro navazani</i>
+<i>     * spojeni.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor pouzity pro pripojeni</i>
+<i>     * @return mapa obsahujici parametry konektoru</i>
+<i>     */</i>
+    private static Map&lt;String, Connector.Argument&gt; <strong>prepareConnectorArguments</strong>(AttachingConnector connector) {
+        Map&lt;String, Connector.Argument&gt; arguments = connector.defaultArguments();
+        arguments.get("port").setValue("6502");
+        return arguments;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pripojeni debuggeru ke sledovanemu virtualnimu stroji.</i>
+<i>     * </i>
+<i>     * @param connector</i>
+<i>     *            konektor vyuzivajici pro spojeni sockety</i>
+<i>     * @param arguments</i>
+<i>     *            mapa obsahujici parametry pripojeni</i>
+<i>     * @return sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *         pripojen</i>
+<i>     * </i>
+<i>     * @throws IOException</i>
+<i>     *             vyvolane v pripade, ze se pripojeni k JVM nepodari</i>
+<i>     * @throws IllegalConnectorArgumentsException</i>
+<i>     *             vyvolane v pripade spatne zadanych parametru</i>
+<i>     */</i>
+    private static VirtualMachine <strong>connectToVirtualMachine</strong>(
+            AttachingConnector connector,
+            Map&lt;String, Connector.Argument&gt; arguments) throws IOException,
+            IllegalConnectorArgumentsException {
+        System.out.println("Connecting to virtual machine");
+        VirtualMachine virtualMachine = connector.attach(arguments);
+        System.out.println("Connected");
+        return virtualMachine;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spustit sledovany virtualni stroj.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>runVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        virtualMachine.resume();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukonceni prace beziciho sledovaneho virtualniho stroje.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>shutdownVirtualMachine</strong>(VirtualMachine virtualMachine) {
+        System.out.println("Calling exit");
+        virtualMachine.exit(EXIT_VALUE);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ukazka pouziti EventRequestManageru.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     */</i>
+    private static void <strong>acquireAndUseEventRequestManager</strong>(VirtualMachine virtualMachine) {
+        EventRequestManager eventRequestManager = virtualMachine.eventRequestManager();
+&nbsp;
+<i>        // tuto udalost potrebujeme zpracovavat pro korektni ukonceni debuggeru</i>
+        VMDeathRequest vmDeathRequest = registerVMDeathEvent(eventRequestManager);
+&nbsp;
+<i>        // zadost o generovani udalosti vytvorenych pri pristupu na breakpoint</i>
+        StepRequest stepRequest = registerStepEvent(virtualMachine, eventRequestManager);
+        printInfoAboutStepEvent(stepRequest);
+&nbsp;
+<i>        // klasicka smycka pro zpracovani udalosti</i>
+        eventLoop(virtualMachine, vmDeathRequest);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informace o registraci udalosti typu 'Step'</i>
+<i>     * </i>
+<i>     * @param stepRequest</i>
+<i>     *            instance tridy implementujici rozhrani StepRequest</i>
+<i>     */</i>
+    private static void <strong>printInfoAboutStepEvent</strong>(StepRequest stepRequest) {
+        if (stepRequest != null) {
+            System.out.println("'Step event' has been registered: " + stepRequest.toString());
+        }
+        else {
+            System.out.println("Unable to register 'Step event'");
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu VMDeathEvent.</i>
+<i>     * </i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu VMDeathRequest</i>
+<i>     */</i>
+    private static VMDeathRequest <strong>registerVMDeathEvent</strong>(EventRequestManager eventRequestManager) {
+        VMDeathRequest vmDeathRequest = eventRequestManager.createVMDeathRequest();
+<i>        // po registraci udalosti je jeste nutne tento typ udalosti povolit</i>
+        vmDeathRequest.enable();
+        return vmDeathRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Registrace udalosti typu StepEvent.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param eventRequestManager</i>
+<i>     *            objekt zajistujici praci s registraci udalosti</i>
+<i>     * @return objekt typu StepRequest</i>
+<i>     */</i>
+    private static StepRequest <strong>registerStepEvent</strong>(VirtualMachine virtualMachine, EventRequestManager eventRequestManager) {
+<i>        // ziskat hlavni vlakno aplikace bezici ve sledovanem virtualnim stroji</i>
+        ThreadReference mainThread = getMainThread(virtualMachine);
+        if (mainThread == null) {
+            return null;
+        }
+&nbsp;
+        StepRequest stepRequest = eventRequestManager.createStepRequest(mainThread, StepRequest.STEP_MIN, StepRequest.STEP_INTO);
+<i>        // krokovane vlakno se ma zastavit po kazdem kroku</i>
+        stepRequest.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
+<i>        // chceme krokovat pouze testovaci tridou</i>
+        stepRequest.addClassFilter(TEST_CLASS_NAME);
+        stepRequest.enable();
+        return stepRequest;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani hlavniho vlakna aplikace bezici v monitorovanem virtualnim stroji.</i>
+<i>     *</i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @return</i>
+<i>     */</i>
+    private static ThreadReference <strong>getMainThread</strong>(VirtualMachine virtualMachine) {
+        List&lt;ThreadReference&gt; threads = virtualMachine.allThreads();
+&nbsp;
+<i>        // projit vsemi vlakny bezicimi ve sledovanem virtualnim stroji</i>
+        for (ThreadReference thread : threads) {
+<i>            // najit hlavni vlakno</i>
+            if (MAIN_THREAD_NAME.equals(thread.name())) {
+                return thread;
+            }
+        }
+&nbsp;
+<i>        // hlavni vlakno nebylo nalezeno, podivne</i>
+        return null;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Klasicka smycka pro postupne zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param virtualMachine</i>
+<i>     *            sledovany virtualni stroj, k nemuz je debugger vzdalene</i>
+<i>     *            pripojen</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     */</i>
+    private static void <strong>eventLoop</strong>(VirtualMachine virtualMachine, VMDeathRequest vmDeathRequest) {
+        EventQueue eventQueue = virtualMachine.eventQueue();
+&nbsp;
+<i>        // precist a zpracovat udalosti</i>
+        while (processEvents(eventQueue, vmDeathRequest)) {
+<i>            // jojo tady skutecne nic neni :)</i>
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Precteni a zpracovani udalosti.</i>
+<i>     * </i>
+<i>     * @param eventQueue</i>
+<i>     *            fronta udalosti</i>
+<i>     * @param vmDeathRequest</i>
+<i>     *            objekt pro rizeni udalosti typu VMDeathEvent</i>
+<i>     * </i>
+<i>     * @return true pokud se ma pokracovat ve zpracovavani udalosti false pokud</i>
+<i>     *         se ma sledovana VM ukoncit</i>
+<i>     */</i>
+    private static boolean <strong>processEvents</strong>(EventQueue eventQueue, VMDeathRequest vmDeathRequest) {
+        EventSet eventSet;
+        try {
+<i>            // precist udalosti z fronty</i>
+            eventSet = eventQueue.remove();
+            int events = eventSet.size();
+            System.out.println("Got " + events + " request" + (events &gt; 1 ? "s:" : ":"));
+&nbsp;
+<i>            // projit vsemi udalostmi</i>
+            for (Event event : eventSet) {
+                if (event instanceof VMStartEvent) {
+                    System.out.println("    VMStartEvent");
+                }
+                else if (event instanceof VMDeathEvent) {
+                    System.out.println("    VMDeathEvent");
+<i>                    // zakazat dalsi generovani udalosti</i>
+<i>                    // (u VMDeathEvent je ve skutecnosti vzdy posledni udalost poslana) </i>
+                    vmDeathRequest.disable();
+<i>                    // posleze se zavola shutdownVirtualMachine()</i>
+                    return false;
+                }
+                else if (event instanceof StepEvent) {
+<i>                    // nejake vlakno se zastavilo pro "krokovani"</i>
+                    printStepInfo((StepEvent)event);
+                }
+                else {
+                    System.out.println("    other event");
+                }
+            }
+<i>            // znovu postit vsechna vlakna</i>
+            eventSet.resume();
+        }
+        catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informaci o kazdem kroku.</i>
+<i>     * </i>
+<i>     * @param event udalost</i>
+<i>     */</i>
+    private static void <strong>printStepInfo</strong>(StepEvent event) {
+<i>        // ziskat objekt typu Location, ktery obsahuje informaci o tom,</i>
+<i>        // ve kterem miste kodu se provedl krok</i>
+        Location location = event.location();
+&nbsp;
+<i>        // ziskat vsechny informace o pozici v pozastavenem vlaknu</i>
+        String className = getClassName(location);
+        String methodName = getMethodName(location);
+        String sourceName = getSourceName(location);
+        String lineNumber = getLineNumber(location);
+&nbsp;
+<i>        // nyni jiz mame vsechny dulezite informace,</i>
+<i>        // lze je tedy vypsat</i>
+        System.out.format("  at: %s.%s ", className, methodName);
+&nbsp;
+<i>        // po vypisu zakladnich informaci se jeste vypise jmeno zdrojoveho</i>
+<i>        // souboru a cislo radku metody</i>
+        System.out.format("(%s:%s)\n", sourceName, lineNumber);
+&nbsp;
+<i>        // ziskat referenci na vlakno </i>
+        ThreadReference threadRef = event.thread();
+        try {
+<i>            // ziskat posledni zasobnikovy ramec vlakna</i>
+            StackFrame stackFrame = threadRef.frame(0);
+<i>            // a projit vsemi viditelnymi promennymi</i>
+            List&lt;LocalVariable&gt; visibleVars = stackFrame.visibleVariables();
+            for (LocalVariable visibleVar : visibleVars) {
+                Value val = stackFrame.getValue(visibleVar);
+                System.out.println("    Local variable: " + visibleVar.name() + " = " + val);
+            }
+        }
+        catch (IncompatibleThreadStateException e) {
+            e.printStackTrace();
+        }
+        catch (AbsentInformationException e) {
+            e.printStackTrace();
+        }
+        
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno tridy, jejiz metoda byla zavolana.</i>
+<i>     */</i>
+    private static String <strong>getClassName</strong>(Location location) {
+        return location.method().declaringType().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno volane metody.</i>
+<i>     */</i>
+    private static String <strong>getMethodName</strong>(Location location) {
+        return location.method().name();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani informaci o jmene zdrojoveho souboru pro danou lokaci.</i>
+<i>     */</i>
+    private static String <strong>getSourceName</strong>(Location location) {
+        try {
+            return location.sourceName();
+        }
+        catch (AbsentInformationException e) {
+            return "unknown";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prevod cisla radku na retezec, pokud je to mozne.</i>
+<i>     */</i>
+    private static String <strong>getLineNumber</strong>(Location location) {
+        int lineNumber = location.lineNumber();
+<i>        // u nativnich metod nelze zjistit cisla radku</i>
+        return lineNumber &gt;= 0 ? "" + lineNumber : "&lt;native method&gt;";
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Zdrojový kód testovací třídy <strong>Test8</strong></h2>
+
+<p>Dnešní demonstrační debugger <strong>JDIStepRequestDemo</strong> budeme
+testovat proti sledovanému virtuálnímu stroji Javy, v&nbsp;němž bude spuštěna
+velmi jednoduchá aplikace představovaná třídou <strong>Test8</strong>. Tuto
+třídu jsme ostatně využili i minule, takže si již bez dalšího popisu uvedeme
+její zdrojový kód. Za zmínku stojí především tělo metody
+<strong>run()</strong>, neboť se v&nbsp;něm nachází programová smyčka měnící
+dvojici lokálních proměnných &ndash; počitadla smyčky <strong>i</strong> a
+druhé lokální proměnné <strong>y</strong>:</p>
+
+<pre>
+public class <strong>Test8</strong> {
+&nbsp;
+    public void <strong>run</strong>(int x) {
+        int y = 0;
+        for (int i = 1; i &lt; 10; i++) {
+            y += x;
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("Press any key");
+        try {
+            System.in.read();
+        }
+        catch (java.io.IOException e) {
+<i>            // . //</i>
+        }
+        new Test8().run(10);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Informace vypisované demonstračním příkladem po jeho spuštění: varianta se STEP_LINE</h2>
+
+<p><a href="#k02">Ve druhé kapitole</a> jsme si řekli, že při požadavku na
+krokování určitého vlákna je možné při konstrukci objektu typu
+<strong>StepRequest</strong> určit, zda se má krokování provádět po
+jednotlivých programových řádcích či naopak po (obecně) menších krocích
+představujících z&nbsp;hlediska běhu vlákna již dále nedělitelnou entitu.
+V&nbsp;případě, že je <a href="#07">testovací třída <strong>Test8</strong></a>
+přeložena s&nbsp;použitím parametru -g a v&nbsp;demonstračním debuggeru
+použijeme v&nbsp;metodě <strong>registerStepEvent()</strong> konstantu
+<strong>StepRequest.STEP_LINE</strong>, měl by debugger při svém spuštění
+vypsat následující zprávy, z&nbsp;nichž lze například vyčíst chování programové
+smyčky na řádcích <strong>Test8.java:5</strong> a
+<strong>Test8.java:6</strong>:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+'Step event' has been registered: step request instance of java.lang.Thread(name='main', id=1) (enabled)
+Got 1 request:
+  at: Test8.main (Test8.java:13)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:17)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.&lt;init&gt; (Test8.java:1)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.run (Test8.java:4)
+    Local variable: x = 10
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 0
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 90
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:8)
+    Local variable: x = 10
+    Local variable: y = 90
+Got 1 request:
+  at: Test8.main (Test8.java:19)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Informace vypisované demonstračním příkladem po jeho spuštění: varianta se STEP_MIN</h2>
+
+<p>V&nbsp;této kapitole si ukážeme, jak by mohly vypadat zprávy vypisované
+demonstračním debuggerem <strong>JDIStepRequestDemo</strong> tehdy, pokud je
+v&nbsp;uživatelské metodě <strong>createStepRequest()</strong> použita při
+konstrukci objektu typu <strong>StepRequest</strong> konstanta
+<strong>StepRequest.STEP_MIN</strong>. V&nbsp;tomto případě je totiž krokování
+hlavního vlákna prováděno po menších celcích, než jsou jednotlivé programové
+řádky. O jak velké (či možná přesněji řečeno malé) celky se jedná, je závislé
+na implementaci vlastního virtuálního stroje, popř.&nbsp;na parametrech JITu.
+Nicméně na testovací JVM je možné z&nbsp;následujícího výpisu vyčíst například
+zajímavé informace o již dvakrát zmiňované programové smyčce:</p>
+
+<pre>
+        for (int i = 1; i &lt; 10; i++) {
+            y += x;
+        }
+</pre>
+
+<p>První řádek programové smyčky je v&nbsp;každé iteraci rozdělen do pěti
+kroků, zatímco řádek druhý (tělo smyčky) je rozdělen do kroků čtyř. Částečně to
+souvisí s&nbsp;instrukcemi bajtkódu implementujícího tuto smyčku:</p>
+
+<pre>
+   4:   iload_3          // radek 1 - ridici blok smycky
+   5:   bipush  10       // radek 1 - ridici blok smycky
+   7:   if_icmpge 20     // radek 1 - ridici blok smycky
+   10:  iload_2              // radek 2 - telo smycky
+   11:  iload_1              // radek 2 - telo smycky
+   12:  iadd                 // radek 2 - telo smycky
+   13:  istore_2             // radek 2 - telo smycky
+   14:  iinc    3, 1     // radek 1 - ridici blok smycky
+   17:  goto    4        // radek 1 - ridici blok smycky
+</pre>
+
+<p>Nyní již následuje slíbený výpis zpráv generovaný demonstračním
+příkladem:</p>
+
+<pre>
+Connecting to virtual machine
+Connected
+'Step event' has been registered: step request instance of java.lang.Thread(name='main', id=1) (enabled)
+Got 1 request:
+  at: Test8.main (Test8.java:13)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:17)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.&lt;init&gt; (Test8.java:1)
+Got 1 request:
+  at: Test8.&lt;init&gt; (Test8.java:1)
+Got 1 request:
+  at: Test8.&lt;init&gt; (Test8.java:1)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.main (Test8.java:18)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 1 request:
+  at: Test8.run (Test8.java:4)
+    Local variable: x = 10
+Got 1 request:
+  at: Test8.run (Test8.java:4)
+    Local variable: x = 10
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 0
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 0
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 0
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 1
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 10
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 2
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 20
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 3
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 30
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 4
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 40
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 5
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 50
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 6
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 60
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 7
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 70
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 8
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:6)
+    Local variable: x = 10
+    Local variable: y = 80
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 90
+    Local variable: i = 9
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 90
+    Local variable: i = 10
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 90
+    Local variable: i = 10
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 90
+    Local variable: i = 10
+Got 1 request:
+  at: Test8.run (Test8.java:5)
+    Local variable: x = 10
+    Local variable: y = 90
+    Local variable: i = 10
+Got 1 request:
+  at: Test8.run (Test8.java:8)
+    Local variable: x = 10
+    Local variable: y = 90
+Got 1 request:
+  at: Test8.main (Test8.java:19)
+    Local variable: args = instance of java.lang.String[0] (id=8)
+Got 2 requests:
+    VMDeathEvent
+Calling exit
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář se zdrojovými kódy demonstračních příkladů</h2>
+
+<p>Zdrojové kódy dnes popsaného demonstračního příkladu
+<strong>JDIStepRequestDemo</strong>, testovací třídy <strong>Test8</strong> a
+pomocných skriptů jsou, jak se již v&nbsp;tomto seriálu stalo zvykem, uloženy
+do Mercurial repositáře dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verze těchto
+zdrojových kódů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>JDIStepRequestDemo.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/45f79a75eec0/jdi/JDIStepRequestDemo.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/45f79a75eec0/jdi/JDIStepRequestDemo.java</a></td></tr>
+<tr><td>2</td><td>compile_JDIStepRequestDemo.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/45f79a75eec0/jdi/compile_JDIStepRequestDemo.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/45f79a75eec0/jdi/compile_JDIStepRequestDemo.sh</a></td></tr>
+<tr><td>3</td><td>Test8.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.java</a></td></tr>
+<tr><td>4</td><td>Test8.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c118e83a0ee7/jdi/Test8.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Class com.sun.jdi.Bootstrap<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/package-tree.html</a>
+</li>
+
+<li>Interface com.sun.jdi.VirtualMachine<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/VirtualMachine.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Field<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Field.html</a>
+</li>
+
+<li>Interface com.sun.jdi.ReferenceType<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/ReferenceType.html</a>
+</li>
+
+<li>Interface com.sun.jdi.TypeComponent<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/TypeComponent.html</a>
+</li>
+
+<li>Interface com.sun.jdi.Accessible<br />
+<a href="http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html">http://docs.oracle.com/javase/6/docs/jdk/api/jpda/jdi/com/sun/jdi/Accessible.html</a>
+</li>
+
+<li>Breakpoint (Wikipedia)<br />
+<a href="http://cs.wikipedia.org/wiki/Breakpoint">http://cs.wikipedia.org/wiki/Breakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation<br />
+<a href="http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html">http://docs.oracle.com/javase/7/docs/platform/jvmti/jvmti.html</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; SetBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#SetBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; ClearBreakpoint<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#ClearBreakpoint</a>
+</li>
+
+<li>JVM Tool Interface Version 1.2 Documentation &ndash; Breakpoint (callback funkce)<br />
+<a href="http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint">http://docs.oracle.com/javase/6/docs/platform/jvmti/jvmti.html#Breakpoint</a>
+</li>
+
+<li>The JVM Tool Interface (JVM TI): How VM Agents Work<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html">http://www.oracle.com/technetwork/articles/javase/jvm-ti-141370.html</a>
+</li>
+
+<li>Creating a Debugging and Profiling Agent with JVMTI<br />
+<a href="http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html">http://www.oracle.com/technetwork/articles/javase/jvmti-136367.html</a>
+</li>
+
+<li>JVM TI (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/JVM_TI">http://en.wikipedia.org/wiki/JVM_TI</a>
+</li>
+
+<li>IBM JVMTI extensions<br />
+<a href="http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html">http://publib.boulder.ibm.com/infocenter/realtime/v2r0/index.jsp?topic=%2Fcom.ibm.softrt.doc%2Fdiag%2Ftools%2Fjvmti_extensions.html</a>
+</li>
+
+<li>An empirical study of Java bytecode programs<br />
+<a href="http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/">http://www.mendeley.com/research/an-empirical-study-of-java-bytecode-programs/</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>Control Flow in the Java Virtual Machine<br />
+<a href="http://www.artima.com/underthehood/flowP.html">http://www.artima.com/underthehood/flowP.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
