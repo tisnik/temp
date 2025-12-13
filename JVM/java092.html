@@ -1,0 +1,1467 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - úprava programových smyček s využitím nástroje Javassist</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - úprava programových smyček s využitím nástroje Javassist</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si ukážeme, jak je možné s využitím Javassistu změnit sekvenci instrukcí použitou pro implementaci programových smyček. Tuto znalost využijeme k dalšímu způsobu &bdquo;oháčkování&ldquo; třídy Login tak, aby se bylo možné přihlásit pomocí dvouznakového jména a hesla.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - úprava programových smyček s&nbsp;využitím nástroje Javassist</a></p>
+<p><a href="#k02">2. Instrukce používané pro implementaci programových smyček v&nbsp;bajtkódu JVM</a></p>
+<p><a href="#k03">3. Instrukce nepodmíněného skoku</a></p>
+<p><a href="#k04">4. Instrukce pro porovnání dvou operandů s&nbsp;podmíněným skokem</a></p>
+<p><a href="#k05">5. Demonstrační příklad &ndash; způsob překladu třech typů programových smyček</a></p>
+<p><a href="#k06">6. Třetí způsob změny bajtkódu třídy <strong>Login</strong> &ndash; úprava programové smyčky v&nbsp;metodě <strong>check()</strong></a></p>
+<p><a href="#k07">7. Výpis bajtkódu metody <strong>Login.check()</strong></a></p>
+<p><a href="#k08">8. Úprava bajtkódu těla metody <strong>Login.check()</strong></a></p>
+<p><a href="#k09">9. Nástroj pro nalezení jména a hesla na základě prvního bajtu jeho otisku (výsledku hešovací funkce SHA-512)</a></p>
+<p><a href="#k10">10. Úplný zdrojový kód demonstračního příkladu <strong>ClassModification5</strong></a></p>
+<p><a href="#k11">11. Výstup demonstračního příkladu <strong>ClassModification5</strong></a></p>
+<p><a href="#k12">12. Výpis bajtkódu změněné třídy <strong>Login</strong> a porovnání s&nbsp;původním bajtkódem</a></p>
+<p><a href="#k13">13. Repositář se zdrojovými kódy dnešního demonstračního příkladu</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - úprava programových smyček s&nbsp;využitím nástroje Javassist</h2>
+
+<p>V&nbsp;předchozích dvou částech <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> jsme si ukázali, jakým
+způsobem je možné změnit bajtkód metody <strong>Login.login()</strong> tak, aby
+se nezávisle na zadaném jménu a heslu vždy vrátila pravdivostní hodnota
+<strong>true</strong> indikující, že uživatel může být přihlášen do systému.
+Změny chování metody <strong>Login.login()</strong> jsme docílili velmi
+jednoduše &ndash; záměnou instrukce sloužící pro uložení návratové hodnoty na
+zásobník operandů těsně před tím, než se provedla instrukce
+<strong>ireturn</strong> zajišťující návrat z&nbsp;metody s&nbsp;vrácením
+hodnoty uložené na TOS zásobníku operandů. Dnes si ukážeme alternativní způsob
+změny chování třídy <strong>Login</strong>. Namísto modifikace metody
+<strong>Login.login</strong> se změní programová smyčka v&nbsp;metodě
+<strong>Login.check()</strong> takovým způsobem, že se nebude kontrolovat celý
+otisk (hešovací kód) zadaného jména a hesla, ale pouze první bajt tohoto
+otisku (jak uvidíme dále, je tato změna méně patrná a pozměněná třída
+<strong>Login</strong> by s&nbsp;poměrně velkou pravděpodobností prošla běžnými
+testy).</p>
+
+<p>Na první pohled se možná může zdát tato změna dosti nesmyslná, ovšem ve
+skutečnosti je mnohem jednodušší nalézt jméno a heslo, jehož první bajt otisku
+(hešovacího kódu) je shodný s&nbsp;celým otiskem uloženým ve třídě
+<strong>Login</strong> (viz též privátní pole <strong>NAME_SHA512_HASH</strong>
+a <strong>PASSWORD_SHA512_HASH</strong>), než se pokoušet hledat obecné jméno a
+heslo, pro nějž nastane kýžená kolize. Připomeňme si, že při použití algoritmu
+<strong>SHA-512</strong> je výsledný otisk jakýchkoli dat dlouhý 512 bitů,
+tj.&nbsp;64 bajtů a navíc je hešovací funkce velmi kvalitní (se změnou jediného
+bitu na vstupu dojde ke změně mnoha bitů v&nbsp;otisku), takže hledání kolize
+pro dostatečně dlouhé jméno a heslo je &ndash; nadneseně řečeno &ndash; časově
+poněkud náročnější :-). Aby bylo možné změnit v&nbsp;kódu metody
+<strong>Login.check()</strong> programovou smyčku, musíme si nejdříve
+připomenout, jakým způsobem překladač Javy překládá programové konstrukce
+<strong>do</strong>, <strong>while</strong> a <strong>for</strong>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Instrukce používané pro implementaci programových smyček v&nbsp;bajtkódu JVM</h2>
+
+<p>Programové smyčky, které lze v&nbsp;programovacím jazyku Java zapisovat
+s&nbsp;využitím klíčových slov <strong>do</strong>, <strong>while</strong> a
+<strong>for</strong>, se do bajtkódu překládají s&nbsp;využitím takzvaných
+řídicích instrukcí, zejména pomocí podmíněných a nepodmíněných skoků.
+K&nbsp;řídicím instrukcím můžeme připočíst i dvojici poměrně komplexních
+instrukcí nazvaných <strong>tableswitch</strong> a
+<strong>lookupswitch</strong>. Tato dvojice instrukcí se používá pro
+implementaci rozvětvení, které je v&nbsp;programovacím jazyku Java zapisováno
+s&nbsp;využitím konstrukce <strong>switch</strong>. My se však dnes budeme
+zabývat pouze nepodmíněnými a podmíněnými skoky. Připomeňme si, že
+v&nbsp;bajtkódu lze skoky provádět pouze v&nbsp;rámci jedné metody,
+tj.&nbsp;nelze provést přímý skok do jiné metody &ndash; další metodu lze pouze
+volat například instrukcí <strong>invokestatic</strong> či
+<strong>invokevirtual</strong>. Díky tomu se ve skokových instrukcích
+nepoužívají absolutní adresy, ale indexy instrukcí číslovaných v&nbsp;každé
+metodě od nuly. Tyto indexy jsou většinou reprezentovány šestnáctibitovým
+bezznaménkovým číslem, což je pro naprostou většinu metod dostačující.</p>
+
+<p>Podívejme se nyní na demonstrační příklad, při jehož překladu budou použity
+jak podmíněné, tak i nepodmíněné skoky (tento příklad jsme si uváděli již
+v&nbsp;dvacáté páté části tohoto seriálu):</p>
+
+<pre>
+class <strong>LoopTestMix</strong> {
+&nbsp;
+    static void <strong>cmpInstr</strong>() {
+        for (int y = 0; y &lt; 10; y++) {
+            if (y &lt; 5) continue;
+            for (int x = 0; x &lt; 10; x++) {
+                if (x == 5) break;
+            }
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Při překladu získáme následující bajktód, který je kvůli větší čitelnosti
+rozdělen do několika sekcí oddělených prázdným řádkem:</p>
+
+<pre>
+static void <strong>cmpInstr</strong>();
+  Code:
+   0:   iconst_0        <i>// inicializace počitadla vnější smyčky</i>
+   1:   istore_0        <i>// jedná se o první lokální proměnnou (s viditelností jen uvnitř smyčky)</i>
+&nbsp;
+   2:   iload_0         <i>// podmínka ukončení vnější smyčky</i>
+   3:   bipush  10      <i>// konstanta představující hodnotu počitadla, při jejímž dosažení se smyčka ukončí</i>
+   5:   if_icmpge   44  <i>// počitadlo dosáhlo mezní hodnoty - skok ZA konec vnější smyčky</i>
+&nbsp;
+   8:   iload_0         <i>// implementace podmínky "if (y &lt; 5) continue;"</i>
+   9:   iconst_5        <i>// konstanta, s níž je hodnota počitadla srovnávána</i>
+   10:  if_icmpge   16
+   13:  goto    38      <i>// skok ZA konec vnitřní smyčky</i>
+&nbsp;
+   16:  iconst_0        <i>// inicializace počitadla vnitřní smyčky</i>
+   17:  istore_1        <i>// jedná se o druhou lokální proměnnou (s viditelností jen uvnitř smyčky)</i>
+&nbsp;
+   18:  iload_1         <i>// podmínka ukončení vnitřní smyčky</i>
+   19:  bipush  10      <i>// konstanta představující hodnotu počitadla, při jejímž dosažení se smyčka ukončí</i>
+   21:  if_icmpge   38  <i>// počitadlo dosáhlo mezní hodnoty - skok ZA konec vnitřní smyčky </i>
+&nbsp;
+   24:  iload_1         <i>// implementace podmínky "if (x == 5) break;"</i>
+   25:  iconst_5        <i>// konstanta, s níž je hodnota počitadla srovnávána</i>
+   26:  if_icmpne   32
+   29:  goto    38      <i>// skok ZA konec vnitřní smyčky</i>
+&nbsp;
+   32:  iinc    1, 1    <i>// zvýšení počitadla vnitřní smyčky</i>
+   35:  goto    18      <i>// další iterace vnitřní smyčky</i>
+&nbsp;
+   38:  iinc    0, 1    <i>// zvýšení počitadla vnější smyčky</i>
+   41:  goto    2       <i>// další iterace vnější smyčky</i>
+&nbsp;
+   44:  return
+</pre>
+
+<p>Při pohledu na bajtkód je patrné, že se v&nbsp;něm využilo hned několik typů
+podmíněných skoků a několikrát zde nalezneme i instrukci <strong>goto</strong>
+pro nepodmíněný skok. Pro samotnou implementaci počítané smyčky
+<strong>for</strong> je nutné použít dva skoky &ndash; podmíněný skok
+<strong>if_icmpge</strong>, který zajišťuje test na koncovou podmínku a
+nepodmíněný skok <strong>goto</strong>, jenž na konci smyčky zajistí skok na
+její začátek. Další dvojice <strong>if_icmpge+goto</strong> je použita pro
+implementaci konstrukcí <strong>break</strong> a <strong>continue</strong>.</p>
+
+<p>Vše bude možná přehlednější při doplnění výpisu bajtkódu o šipky s&nbsp;cíli
+skoků:</p>
+
+<pre>
+static void cmpInstr();
+             Code:
+              0:   iconst_0
+              1:   istore_0
++-----------&gt; 2:   iload_0
+|             3:   bipush  10
+|             5:   if_icmpge   44 ------------+
+|             8:   iload_0                    |
+|             9:   iconst_5                   |
+|             10:  if_icmpge   16 ----+       |
+|   +-------- 13:  goto    38         |       |
+|   |         16:  iconst_0      &lt;----+       |
+|   |         17:  istore_1                   |
+|   |         18:  iload_1       &lt;............|.....
+|   |         19:  bipush  10                 |    :
+|   |         21:  if_icmpge   38 --------+   |    :
+|   |         24:  iload_1                |   |    :
+|   |         25:  iconst_5               |   |    :
+|   |         26:  if_icmpne   32 ----+   |   |    :
+|   |   +---- 29:  goto    38         |   |   |    :
+|   |   |     32:  iinc    1, 1  &lt;----+   |   |    :
+|   |   |     35:  goto    18    .........|...|....:
+|   +---\===&gt; 38:  iinc    0, 1  &lt;--------+   |
++------------ 41:  goto    2                  |
+              44:  return        &lt;------------+
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Instrukce nepodmíněného skoku</h2>
+
+<p>V&nbsp;této kapitole se budeme zabývat pouze jedinou instrukcí. Jedná se o
+instrukci nepodmíněného skoku na jinou instrukci, jejíž jméno je
+<strong>goto</strong>. Podobně jako podmíněné skoky popsané
+v&nbsp;následujících kapitolách, má i instrukce <strong>goto</strong> několik
+podstatných omezení &ndash; skok lze totiž provést pouze v&nbsp;rámci těla
+jedné metody, není tedy možné skočit na libovolné místo v&nbsp;bajtkódu. Toto
+omezení bylo zavedeno ze dvou důvodů &ndash; zajišťuje se tím mnohem větší
+bezpečnost (při kontrole bajtkódu se výrazně omezuje stavový prostor) a taktéž
+se tím zjednodušuje práce JIT překladače, který při optimalizacích generovaného
+nativního binárního kódu může pracovat s&nbsp;izolovaným stavovým prostorem (má
+totiž jistotu, že když danou metodu celou přeloží, není nutné vyhledávat,
+z&nbsp;jakých dalších metod jsou do právě přeložené metody prováděny skoky
+&ndash; jednoduše to není možné, což je zajištěno výše zmíněnou kontrolou
+bajtkódu).</p>
+
+<p>Instrukce <strong>goto</strong> existuje ve dvou variantách &ndash;
+&bdquo;krátké&ldquo; a &bdquo;dlouhé&ldquo;. Tyto varianty se od sebe odlišují
+pouze počtem bajtů, které se v&nbsp;bajtkódu použijí pro uložení adresy cíle
+skoku. Buď je možné použít 16bitovou adresu (vyhovuje prakticky všem rozumně
+dlouhým metodám) nebo adresu 32bitovou (to se obecně příliš často nepoužívá,
+protože existují další omezení na maximální počet 65536 instrukcí v&nbsp;jedné
+metodě):</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>goto</td><td>0xA7</td><td>highbyte, lowbyte</td><td>přímý skok na adresu uloženou v&nbsp;dvojici operandů: highbyte*256+lowbyte</td></tr>
+<tr><td>2</td><td>goto_w</td><td>0xC8</td><td>byte1,byte2,byte3 byte4</td><td>přímý skok na adresu uloženou ve čtveřici operandů: byte1*2<sup>24</sup>+byte2*2<sup>16</sup>+byte3*2<sup>8</sup>+byte4</td></tr>
+</table>
+
+<p>Podívejme se na velmi jednoduchý demonstrační příklad s&nbsp;trojicí
+statických metod, v&nbsp;nichž je použita nekonečná smyčka:</p>
+
+<pre>
+public class <strong>LoopTest_Goto</strong> {
+&nbsp;
+    static void <strong>loop1</strong>() {
+        while (true) {
+        }
+    }
+&nbsp;
+    static void <strong>loop2</strong>(int x) {
+        while (true) {
+            x++;
+        }
+    }
+&nbsp;
+    static void <strong>loop3</strong>(float x) {
+        do {
+            x++;
+        } while (true);
+    }
+&nbsp;
+}
+</pre>
+
+<p>Ve všech třech případech se nekonečná smyčka v&nbsp;těle demonstračních
+metod přeloží s&nbsp;využitím instrukce <strong>goto</strong> (povšimněte si,
+že adresa skoku je skutečně lokální v&nbsp;rámci dané metody):</p>
+
+<pre>
+static void <strong>loop1</strong>();
+  Code:
+   0:   goto    0      <i>// nekonečná smyčka bez těla - je pouze proveden skok na tu samou instrukci</i>
+</pre>
+
+<pre>
+static void <strong>loop2</strong>(int);
+  Code:
+   0:   iinc    0, 1   <i>// tělo nekonečné smyčky</i>
+   3:   goto    0      <i>// skok na začátek nekonečné smyčky</i>
+</pre>
+
+<pre>
+static void <strong>loop3</strong>(float);
+  Code:
+   0:   fload_0        <i>// začátek těla nekonečné smyčky</i>
+   1:   fconst_1
+   2:   fadd
+   3:   fstore_0
+   4:   goto    0      <i>// skok na začátek nekonečné smyčky</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Instrukce pro porovnání dvou operandů s&nbsp;podmíněným skokem</h2>
+
+<p>V&nbsp;instrukčním souboru virtuálního stroje Javy existuje hned několik
+typů skoků s&nbsp;podmínkou. Zejména se jedná o instrukce
+<strong>ifeq</strong>, <strong>ifne</strong>, <strong>iflt</strong>,
+<strong>ifge</strong>, <strong>ifgt</strong> a <strong>ifle</strong>, které
+provedou popř.&nbsp;naopak neprovedou skok na základě porovnání jednoho
+operandu typu <strong>int</strong> s&nbsp;konstantou nula (označení TOS
+v&nbsp;následující tabulce znamená hodnotu uloženou na vrcholu zásobníku
+operandů):</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Podmínka</th><th>Operace</th></tr>
+<tr><td>1</td><td>ifeq</td><td>0x99</td><td>highbyte, lowbyte</td><td>TOS=0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>2</td><td>ifne</td><td>0x9A</td><td>highbyte, lowbyte</td><td>TOS&ne;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>3</td><td>iflt</td><td>0x9B</td><td>highbyte, lowbyte</td><td>TOS&lt;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>4</td><td>ifge</td><td>0x9C</td><td>highbyte, lowbyte</td><td>TOS&ge;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>5</td><td>ifgt</td><td>0x9D</td><td>highbyte, lowbyte</td><td>TOS&gt;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>6</td><td>ifle</td><td>0x9E</td><td>highbyte, lowbyte</td><td>TOS&le;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+</table>
+
+<p>My se však dnes budeme zabývat instrukcemi pro porovnání dvou operandů
+s&nbsp;následným skokem na základě splněné podmínky. V&nbsp;praxi &ndash;
+zejména při implementaci počítaných programových smyček (což je téma, které nás
+dnes nejvíc zajímá) &ndash; je totiž vhodné umět efektivně provést podmíněný
+skok na základě porovnání <strong>dvou</strong> operandů, nikoli na základě
+porovnání jednoho operandu vůči nule. Samozřejmě je možné nejdříve oba operandy
+od sebe odečíst a poté provést skok na základě výsledku tohoto rozdílu (což se
+podobá systému používanému u mnohých typů mikroprocesorů), to však vyžaduje
+zbytečně dlouhou sekvenci instrukcí a tím i nárůst velikosti bajtkódu.
+Z&nbsp;tohoto důvodu se v&nbsp;instrukčním souboru JVM nachází i instrukce,
+které porovnají dvojici operandů typu <i>int</i> uloženou na nejvrchnějších
+dvou pozicích zásobníku operandů a skok vykonají na základě toho, zda je první
+operand větší, menší či roven operandu druhému (oba operandy jsou navíc ze
+zásobníku odstraněny, nezávisle na tom, zda se skok provede či nikoli):</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Podmínka</th><th>Operace</th></tr>
+<tr><td>1</td><td>if_icmpeq</td><td>0x9F</td><td>highbyte, lowbyte</td><td>value1=value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>2</td><td>if_icmpne</td><td>0xA0</td><td>highbyte, lowbyte</td><td>value1&ne;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>3</td><td>if_icmplt</td><td>0xA1</td><td>highbyte, lowbyte</td><td>value1&lt;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>4</td><td>if_icmpge</td><td>0xA2</td><td>highbyte, lowbyte</td><td>value1&ge;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>5</td><td>if_icmpgt</td><td>0xA3</td><td>highbyte, lowbyte</td><td>value1&gt;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>6</td><td>if_icmple</td><td>0xA4</td><td>highbyte, lowbyte</td><td>value1&le;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+</table>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Demonstrační příklad &ndash; způsob překladu třech typů programových smyček</h2>
+
+<p>Nyní se podívejme na to, jakým způsobem dokáže překladač Javy vygenerovat
+bajtkód pro trojici programových smyček, v&nbsp;nichž se postupně zvyšuje
+hodnota počitadla (lokální proměnné) od nuly do desíti. Pro tento účel lze
+využít všechny tři typy programových smyček Javy, tj.&nbsp;smyčku
+<strong>while</strong>, <strong>do-while</strong> i smyčku
+<strong>for</strong>. Důležité je, že se překladač Javy nesnaží provádět žádné
+složité optimalizace; maximálně může celou smyčku z&nbsp;bajtkódu odstranit ve
+chvíli, kdy je jasné, že se neprovede ani jedna iterace:</p>
+
+<pre>
+<i>/**</i>
+<i> * Testovaci trida ukazujici zpusob prekladu tri typu programovych smycek.</i>
+<i> */</i>
+public class <strong>LoopTest</strong> {
+&nbsp;
+    private static void <strong>printMessage1</strong>() {
+        System.out.println("loopTest1");
+    }
+&nbsp;
+    private static void <strong>printMessage2</strong>() {
+        System.out.println("loopTest2");
+    }
+&nbsp;
+    private static void <strong>printMessage3</strong>() {
+        System.out.println("loopTest3");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Prvni typ programove smycky</i>
+<i>     */</i>
+    private static void <strong>loopTest1</strong>() {
+        int i = 0;
+        while (i &lt; 10) {
+            printMessage1();
+            i++;
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Druhy typ programove smycky</i>
+<i>     */</i>
+    private static void <strong>loopTest2</strong>() {
+        int i = 0;
+        do {
+            printMessage2();
+            i++;
+        } while (i &lt; 10);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Treti typ programove smycky</i>
+<i>     */</i>
+    private static void <strong>loopTest3</strong>() {
+        for (int i = 0; i &lt; 10; i++) {
+            printMessage3();
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Test funkcnosti tridy.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        loopTest1();
+        loopTest2();
+        loopTest3();
+    }
+&nbsp;
+}
+</pre>
+
+<p>Překlad první metody <strong>loopTest1</strong>. Z&nbsp;výpisu je patrné, že
+se nejdříve provede skok na konec smyčky, kde je implementována podmínka jejího
+ukončení:</p>
+
+<pre>
+private static void <strong>loopTest1</strong>();
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           goto            11   <i>// ukoncujici podminka smycky se testuje ihned jeste pred zacatkem tela smycky</i>
+   5:           invokestatic    #36; <i>// Method printMessage1:()V</i>
+   8:           iinc            0, 1 <i>// zvyseni pocitadla - lokalni promenne "i"</i>
+   11:          iload_0              <i>// ulozeni pocitadla na zasobnik kvuli porovnani</i>
+   12:          bipush          10   <i>// hodnota pocitadla se bude porovnavat s konstantou 10</i>
+   14:          if_icmplt       5    <i>// porovnani a podmineny zpetny skok na index 5</i>
+   17:          return
+</pre>
+
+<p>Překlad druhé metody <strong>loopTest2</strong>. Zde se nepoužil nepodmíněný
+skok, který je u smyčky s&nbsp;podmínkou na konci zbytečný:</p>
+
+<pre>
+private static void <strong>loopTest2</strong>();
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           invokestatic    #40; <i>// Method printMessage2:()V</i>
+   5:           iinc            0, 1 <i>// zvyseni pocitadla - lokalni promenne "i"</i>
+   8:           iload_0              <i>// ulozeni pocitadla na zasobnik kvuli porovnani</i>
+   9:           bipush          10   <i>// hodnota pocitadla se bude porovnavat s konstantou 10</i>
+   11:          if_icmplt       2    <i>// porovnani a podmineny zpetny skok na index 2</i>
+   14:          return
+</pre>
+
+<p>Třetí metoda <strong>loopTest3</strong> se přeložila stejně, jako metoda
+<strong>loopTest1</strong>:</p>
+
+<pre>
+private static void <strong>loopTest3</strong>();
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           goto            11   <i>// ukoncujici podminka smycky se testuje ihned jeste pred zacatkem tela smycky</i>
+   5:           invokestatic    #42; <i>// Method printMessage3:()V</i>
+   8:           iinc            0, 1 <i>// zvyseni pocitadla - lokalni promenne "i"</i>
+   11:          iload_0              <i>// ulozeni pocitadla na zasobnik kvuli porovnani</i>
+   12:          bipush          10   <i>// hodnota pocitadla se bude porovnavat s konstantou 10</i>
+   14:          if_icmplt       5    <i>// porovnani a podmineny zpetny skok na index 5</i>
+   17:          return
+</pre>
+
+<p>Pro nás je v&nbsp;tuto chvíli důležitý fakt, že se hodnota počitadla testuje
+na dosažení koncové hodnoty takovým způsobem, že se na zásobník operandů uloží
+instrukcí <strong>bipush</strong> celé malé číslo (bajt), s&nbsp;nímž se
+hodnota počitadla následně porovná. Přesně tuto instrukci budeme v&nbsp;dalších
+krocích měnit: pokud totiž změníme operand této instrukce, efektivně se změní i
+počet iterací programové smyčky!</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Třetí způsob změny bajtkódu třídy <strong>Login</strong> &ndash; úprava programové smyčky v&nbsp;metodě <strong>check()</strong></h2>
+
+<p>Jak jsme si již řekli <a href="#k01">v&nbsp;úvodní kapitole</a>, bude náš
+dnešní úkol následující &ndash; změnit chování metody
+<strong>Login.check()</strong> tak, aby se v&nbsp;ní neporovnávalo všech 64
+bajtů otisku uloženého v&nbsp;poli <strong>NAME_SHA512_HASH</strong> či
+<strong>PASSWORD_SHA512_HASH</strong> s&nbsp;vypočteným otiskem, ale aby se
+namísto toho kontroloval jen první bajt otisku. To s&nbsp;sebou přináší hned
+několik předností, především to, že změna není tak viditelná, protože původní
+jméno a heslo bude stále fungovat a náhodně zvolené jméno a heslo velmi
+pravděpodobně k&nbsp;přihlášení nepovede. S&nbsp;poměrně velkou
+pravděpodobností by tedy i změněná třída <strong>Login</strong> prošla běžným
+testováním :-)</p>
+
+<p>Připomeňme si, jak vlastně metoda <strong>Login.check()</strong> vypadá. Je
+vlastně velmi jednoduchá &ndash; nejprve se vypočte otisk (hešovací kód)
+zadaného řetězce a následně se otisk porovná (bajt po bajtu) s&nbsp;předaným
+polem obsahujícím šedesát čtyři konstant:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Kontrola jmena a/nebo hesla na zaklade jeho hashe.</i>
+<i>     */</i>
+    private static boolean <strong>check</strong>(String str, short[]hash) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-512");
+            md.update(str.getBytes());
+            byte[] digest = md.digest();
+<i>            // pro SHA-512 se kontroluje 512/8 = 64 bajtu</i>
+            <strong>for (int i = 0; i &lt; 64; i++) </strong>{
+                if (digest[i] != (byte)hash[i]) {
+                    return false;
+                }
+            }
+        }
+        catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+        return true;
+    }
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Výpis bajtkódu metody <strong>Login.check()</strong></h2>
+
+<p>Z&nbsp;výpisu bajtkódu metody <strong>Login.check()</strong>, který lze
+získat příkazem <strong>javap -c -private Login</strong> je patrné, jakým
+způsobem je implementována podmínka pro ukončení programové smyčky použité pro
+porovnání všech 64 bajtů otisku (hešovací hodnoty). Nejprve se zvýší hodnota
+počitadla instrukcí <strong>iinc</strong>, posléze se počitadlo uloží na
+zásobník operandů a porovná se s&nbsp;hodnotou 64, která je taktéž uložena na
+zásobník operandů instrukcí <strong>bipush</strong>. Skok na začátek smyčky je
+proveden jedině tehdy, pokud je aktuální hodnota počitadla menší než 64:</p>
+
+<pre>
+private static boolean <strong>check</strong>(java.lang.String, short[]);
+  Code:
+   0:           ldc             #25; <i>//String SHA-512</i>
+   2:           invokestatic    #31; <i>//Method java/security/MessageDigest.getInstance:(Ljava/lang/String;)Ljava/security/MessageDigest;</i>
+   5:           astore_2
+   6:           aload_2
+   7:           aload_0
+   8:           invokevirtual   #37; <i>//Method java/lang/String.getBytes:()[B</i>
+   11:          invokevirtual   #41; <i>//Method java/security/MessageDigest.update:([B)V</i>
+   14:          aload_2
+   15:          invokevirtual   #44; <i>//Method java/security/MessageDigest.digest:()[B</i>
+   18:          astore_3
+   19:          iconst_0
+   20:          istore          4
+   22:          goto            42
+   25:          aload_3              <i>// začátek těla programové smyčky</i>
+   26:          iload           4
+   28:          baload
+   29:          aload_1
+   30:          iload           4
+   32:          saload
+   33:          i2b
+   34:          if_icmpeq       39
+   37:          iconst_0
+   38:          ireturn
+   39:          <strong>iinc            4, 1</strong> <i>// zvýšení hodnoty počitadla o jedničku</i>
+   42:          <strong>iload           4</strong>    <i>// uloženi počitadla na zásobník</i>
+   44:          <strong>bipush          64</strong>   <i>// hodnota počitadla se bude porovnávat s touto konstantou</i>
+   46:          <strong>if_icmplt       25</strong>   <i>// porovnání a zpětný skok na začátek těla smyčky</i>
+   49:          goto            57
+   52:          astore_2
+   53:          aload_2
+   54:          invokevirtual   #49; <i>//Method java/security/NoSuchAlgorithmException.printStackTrace:()V</i>
+   57:          iconst_1
+   58:          ireturn
+  Exception table:
+   from   to  target type
+     0    52    52   Class java/security/NoSuchAlgorithmException
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Úprava bajtkódu těla metody <strong>Login.check()</strong></h2>
+
+<p>Změna bajtkódu metody <strong>Login.check()</strong> se provede
+v&nbsp;uživatelské metodě nazvané <strong>modifyMethodCheck()</strong>. Budeme
+postupovat stejným způsobem, jako v&nbsp;případě modifikace bajtkódu metody
+<strong>Login.login()</strong>, tj.&nbsp;postupně budeme procházet jednotlivými
+instrukcemi a budeme kontrolovat, zda dvojice za sebou jdoucích instrukcí
+neobsahuje operační kódy <strong>bipush+if_icmplt</strong>. Pokud na tuto
+dvojici instrukcí narazíme, provede se ještě další kontrola na operand
+instrukce <strong>bipush</strong>. V&nbsp;případě, že je tento operand roven
+konstantě 64, je tato konstanta nahrazena číslem 1, tj.&nbsp;novým kýženým
+počtem iterací. To je vše &ndash; žádné další modifikace bajtkódu ve
+skutečnosti není zapotřebí provádět.</p>
+
+<p>Současně je však nutné kontrolovat, zda následující instrukce skutečně
+existuje, tj.&nbsp;zdali nám metoda <strong>lookAhead()</strong> nevrátila
+index neexistující instrukce. Kontrola je jednoduchá, protože přes metodu
+<strong>getCodeLength()</strong> lze přečíst celkovou velikost bajtkódu zvolené
+metody:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Modifikace metody Login.check() - zmena tela metody takovym zpusobem,</i>
+<i>     * aby se smycka zredukovala na pouhou jednu iteraci.</i>
+<i>     *</i>
+<i>     * @param testClass</i>
+<i>     *            testovaci (modifikovana) trida.</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyvolana v pripade, ze metoda neni nalezena.</i>
+<i>     * @throws CannotCompileException </i>
+<i>     * @throws BadBytecode </i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>modifyMethodCheck</strong>(CtClass testClass) throws NotFoundException, CannotCompileException, BadBytecode {
+        CtMethod method = testClass.getDeclaredMethod("check");
+        MethodInfo methodInfo = method.getMethodInfo();
+&nbsp;
+<i>        // ziskat atribut "CODE" prirazeny k metode</i>
+        CodeAttribute ca = methodInfo.getCodeAttribute();
+&nbsp;
+<i>        // ziskat iterator pouzity pro prochazeni bajtkodem</i>
+        CodeIterator iterator = ca.iterator();
+&nbsp;
+<i>        // projit vsemi instrukcemi</i>
+        while (iterator.hasNext()) {
+<i>            // precist instrukci</i>
+            int currentIndex = iterator.next();
+            int currentOpcode = iterator.byteAt(currentIndex);
+&nbsp;
+<i>            // precist NASLEDUJICI instrukci</i>
+            int nextIndex = iterator.lookAhead();
+<i>            // kontrola, zda se nepokousime cist ZA posledni instrukci</i>
+            if (nextIndex &gt;= iterator.getCodeLength()) {
+                break;
+            }
+            int nextOpcode = iterator.byteAt(nextIndex);
+&nbsp;
+<i>            // nahrada instrukce BIPUSH 64 za instrukci BIPUSH 1</i>
+<i>            // v pripade, ze se tato instrukce nachazi tesne pred</i>
+<i>            // instrukci IF_ICMPLT</i>
+            if (currentOpcode == Opcode.BIPUSH &amp;&amp; nextOpcode == Opcode.IF_ICMPLT) {
+<i>                // nyni jsme v situaci, kdy po sobe nasleduji instrukce</i>
+<i>                // BIPUSH xxx</i>
+<i>                // IF_CMPLT</i>
+<i>                // zbyva tedy otestovat, zda xxx == 64 a provest nahradu</i>
+                int dataByte = iterator.byteAt(currentIndex + 1);
+                if (dataByte == 64) {
+                    iterator.writeByte(1, currentIndex + 1);
+                }
+            }
+        }
+&nbsp;
+<i>        // zmena atributu "CODE" prirazeneho k metode</i>
+        methodInfo.setCodeAttribute(ca);
+    }
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Nástroj pro nalezení jména a hesla na základě prvního bajtu jeho otisku (výsledku hešovací funkce SHA-512)</h2>
+
+<p>Ve chvíli, kdy máme metodu <strong>Login.check()</strong> úspěšně
+&bdquo;oháčkovanou&ldquo;, nám již vlastně zbývá jediný úkol. Musíme nalézt
+takové jméno a takové heslo, jehož první bajt otisku bude odpovídat prvnímu
+bajtu v&nbsp;poli <strong>NAME_SHA512_HASH</strong> a
+<strong>PASSWORD_SHA512_HASH</strong>. Pro jednoduchost budeme hledat
+dvouznaková jména a hesla, přičemž množinu znaků omezíme pouze na písmena malé
+abecedy. Pomocí dvou písmen 'a' až 'z' lze vyjádřit 26&times;26=676 kombinací,
+takže skutečně při procházení všemi kombinacemi dokážeme nalézt vhodný otisk. O
+nalezení prvního vhodného jména a hesla se postará následující velmi jednoduchý
+program, který však nemusí být příliš efektivní ve chvíli, kdybychom hledali
+delší hesla (skládání znaků do řetězce je velmi náročné):</p>
+
+<pre>
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Jednoduchy nastroj, ktery se pokusi najit takovy dvouznakovy retezec, jehoz</i>
+<i> * SHA-512 otisk zacina zadanym bajtem. Tento nalezeny dvouznakovy retezec bude</i>
+<i> * pouzit jako jmeno a heslo predavane do "ohackovane" tridy Login.</i>
+<i> * </i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>HashFinder</strong> {
+&nbsp;
+<i>    /** Otisky, pro ktere hledame vzor. */</i>
+    private static final byte <strong>NAME_SHA512_FIRST_HASH_BYTE</strong> = 0x53;
+    private static final byte <strong>PASSWORD_SHA512_FIRST_HASH_BYTE</strong> = 0x46;
+&nbsp;
+<i>    /**</i>
+<i>     * Vypocet prvniho bajtu SHA-512 otisku pro zadany vstup.</i>
+<i>     */</i>
+    private static byte <strong>computeFirstHashByte</strong>(String str) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-512");
+            md.update(str.getBytes());
+            byte[] digest = md.digest();
+            <i>// ziskame prvni z 518/8 = 64 bajtu</i>
+            return digest[0];
+        }
+        catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+        return -1;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Najde dvouznakovy text, jehoz otisk zacina zadanym bajtem.</i>
+<i>     */</i>
+    private static void <strong>findOrigForGivenHashByte</strong>(byte firstHashByte) {
+        <i>// vyzkousime vsechny kombinace dvou malych pismen</i>
+        for (char c1 = 'a'; c1 &lt;= 'z'; c1++) {
+            for (char c2 = 'a'; c2 &lt;= 'z'; c2++) {
+                <i>// neefektivni - pri hledani delsich kombinaci nutno optimalizovat!</i>
+                String orig = "" + c1 + c2;
+                if (computeFirstHashByte(orig) == firstHashByte) {
+                    System.out.println(orig);
+                    return;
+                }
+            }
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni bod nastroje.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.out.print("Name: ");
+        findOrigForGivenHashByte(HashFinder.NAME_SHA512_FIRST_HASH_BYTE);
+        System.out.print("Password: ");
+        findOrigForGivenHashByte(HashFinder.PASSWORD_SHA512_FIRST_HASH_BYTE);
+    }
+}
+</pre>
+
+<p>A jaké jméno a heslo bylo tímto jednoduchým nástrojem nalezeno?</p>
+
+<ol>
+<li>Jméno: "ko"</li>
+<li>Heslo: "aq"</li>
+</ol>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Úplný zdrojový kód demonstračního příkladu <strong>ClassModification5</strong></h2>
+
+<p>V&nbsp;této kapitole bude uveden výpis úplného zdrojového kódu
+demonstračního příkladu pojmenovaného <strong>ClassModification5</strong>,
+který je založen na minule a předminule popsaných příkladech
+<strong>ClassModification3</strong> a <strong>ClassModification4</strong>.
+Tento příklad načte původní bajtkód třídy <strong>Login</strong>, vypíše
+strukturu této třídy, provede jednoduchou modifikaci těla metody
+<strong>Login.check()</strong>, opět vypíše strukturu třídy a následně
+otestuje, zda nová metoda <strong>Login.check()</strong> skutečně vrací
+pravdivostní hodnotu <strong>true</strong> pro zadané dvouznakové jméno a
+heslo:</p>
+
+<pre>
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+&nbsp;
+import javassist.CannotCompileException;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtMethod;
+import javassist.Modifier;
+import javassist.NotFoundException;
+import javassist.bytecode.BadBytecode;
+import javassist.bytecode.CodeAttribute;
+import javassist.bytecode.CodeIterator;
+import javassist.bytecode.MethodInfo;
+import javassist.bytecode.Mnemonic;
+import javassist.bytecode.Opcode;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Test moznosti nastroje Javassist - zmena tela jedne metody</i>
+<i> * ve tride Login tak, aby tato metoda vzdy vratila hodnotu true</i>
+<i> * nezavisle na zadanem jmenu a heslu.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>ClassModification5</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno testovaci tridy.</i>
+<i>     */</i>
+    private static final String <strong>TEST_CLASS_NAME</strong> = "Login";
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis struktury vybrane metody.</i>
+<i>     * </i>
+<i>     * @param modifiedClass</i>
+<i>     *            predstavuje vytvarenou ci modifikovanou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno metody, jejiz struktura se ma vypsat</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodStructure</strong>(CtClass modifiedClass, String methodName) throws NotFoundException, BadBytecode {
+        System.out.println("Method '" + methodName + "' structure:");
+        CtMethod method = modifiedClass.getDeclaredMethod(methodName);
+        if (method == null) {
+            System.out.println("   not found!");
+            return;
+        }
+        MethodInfo methodInfo = method.getMethodInfo();
+        System.out.println("    real name:    " + methodInfo.getName());
+        System.out.println("    descriptor:   " + methodInfo.getDescriptor());
+        System.out.println("    access flags: " + Modifier.toString(methodInfo.getAccessFlags()));
+        System.out.println("    method body:");
+        printMethodBody(methodInfo);
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis instrukci tvoricich telo vybrane metody.</i>
+<i>     *</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodBody</strong>(MethodInfo methodInfo) throws BadBytecode {
+        CodeAttribute ca = methodInfo.getCodeAttribute();
+        CodeIterator iterator = ca.iterator();
+        while (iterator.hasNext()) {
+            int index = iterator.next();
+            int opcode = iterator.byteAt(index);
+            System.out.println("        " + Mnemonic.OPCODE[opcode]);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis struktury vybranych metod z modifikovane tridy.</i>
+<i>     * </i>
+<i>     * @param modifiedClass</i>
+<i>     *            predstavuje vytvarenou ci modifikovanou tridu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode </i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodStructures</strong>(CtClass modifiedClass) throws NotFoundException, BadBytecode {
+        printMethodStructure(modifiedClass, "check");
+        printMethodStructure(modifiedClass, "login");
+        printMethodStructure(modifiedClass, "main");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Modifikace metody Login.check() - zmena tela metody takovym zpusobem,</i>
+<i>     * aby se smycka zredukovala na pouhou jednu iteraci.</i>
+<i>     *</i>
+<i>     * @param testClass</i>
+<i>     *            testovaci (modifikovana) trida.</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyvolana v pripade, ze metoda neni nalezena.</i>
+<i>     * @throws CannotCompileException </i>
+<i>     * @throws BadBytecode </i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>modifyMethodCheck</strong>(CtClass testClass) throws NotFoundException, CannotCompileException, BadBytecode {
+        CtMethod method = testClass.getDeclaredMethod("check");
+        MethodInfo methodInfo = method.getMethodInfo();
+&nbsp;
+<i>        // ziskat atribut "CODE" prirazeny k metode</i>
+        CodeAttribute ca = methodInfo.getCodeAttribute();
+&nbsp;
+<i>        // ziskat iterator pouzity pro prochazeni bajtkodem</i>
+        CodeIterator iterator = ca.iterator();
+&nbsp;
+<i>        // projit vsemi instrukcemi</i>
+        while (iterator.hasNext()) {
+<i>            // precist instrukci</i>
+            int currentIndex = iterator.next();
+            int currentOpcode = iterator.byteAt(currentIndex);
+&nbsp;
+<i>            // precist NASLEDUJICI instrukci</i>
+            int nextIndex = iterator.lookAhead();
+<i>            // kontrola, zda se nepokousime cist ZA posledni instrukci</i>
+            if (nextIndex &gt;= iterator.getCodeLength()) {
+                break;
+            }
+            int nextOpcode = iterator.byteAt(nextIndex);
+&nbsp;
+<i>            // nahrada instrukce BIPUSH 64 za instrukci BIPUSH 1</i>
+<i>            // v pripade, ze se tato instrukce nachazi tesne pred</i>
+<i>            // instrukci IF_ICMPLT</i>
+            if (currentOpcode == Opcode.BIPUSH &amp;&amp; nextOpcode == Opcode.IF_ICMPLT) {
+<i>                // nyni jsme v situaci, kdy po sobe nasleduji instrukce</i>
+<i>                // BIPUSH xxx</i>
+<i>                // IF_CMPLT</i>
+<i>                // zbyva tedy otestovat, zda xxx == 64 a provest nahradu</i>
+                int dataByte = iterator.byteAt(currentIndex + 1);
+                if (dataByte == 64) {
+                    iterator.writeByte(1, currentIndex + 1);
+                }
+            }
+        }
+&nbsp;
+<i>        // zmena atributu "CODE" prirazeneho k metode</i>
+        methodInfo.setCodeAttribute(ca);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zjisteni funkcnosti metody Login.login().</i>
+<i>     * </i>
+<i>     * @param testClass</i>
+<i>     *            testovaci (modifikovana) trida.</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             muze byt vyhozena v prubehu prevodu CtClass na Class</i>
+<i>     */</i>
+    @SuppressWarnings("unchecked")
+    private static void <strong>checkMethodLogin</strong>(CtClass testClass) throws CannotCompileException {
+        Class testClassKlass = testClass.toClass();
+&nbsp;
+<i>        // otestovani metody Login.login()</i>
+        System.out.println(invokeStaticMethod(testClassKlass, "login", "x", "y"));
+        System.out.println(invokeStaticMethod(testClassKlass, "login", "fakt", "nevim"));
+        System.out.println(invokeStaticMethod(testClassKlass, "login", "administrator", "nbusr123"));
+        System.out.println(invokeStaticMethod(testClassKlass, "login", "ko", "aq"));
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zavolani vybrane staticke metody Login.login().</i>
+<i>     * </i>
+<i>     * @param anyClass</i>
+<i>     *            trida, v niz je staticka metoda deklarovana</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno staticke metody, ktera se ma spustit</i>
+<i>     * @param name</i>
+<i>     *            jmeno predavane do metody Login.login()</i>
+<i>     * @param password</i>
+<i>     *            heslo predavane do metody Login.login()</i>
+<i>     */</i>
+    @SuppressWarnings("unchecked")
+    private static boolean <strong>invokeStaticMethod</strong>(Class anyClass, String methodName, String name, String password) {
+        try {
+            Method method = anyClass.getMethod(methodName, String.class, String.class);
+            Object result = method.invoke(null, name, password);
+            return (Boolean)result;
+        }
+        catch (SecurityException e) {
+            e.printStackTrace();
+        }
+        catch (NoSuchMethodException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalArgumentException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalAccessException e) {
+            e.printStackTrace();
+        }
+        catch (InvocationTargetException e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni modifikatoru tridy.</i>
+<i>     *</i>
+<i>     * @param args nevyuzito</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // objekt predstavujici menenou tridu</i>
+        CtClass testClass;
+&nbsp;
+        try {
+<i>            // ziskat objekt predstavujici tridu Test</i>
+            testClass = pool.get(TEST_CLASS_NAME);
+&nbsp;
+<i>            // vypis puvodni struktury tridy Test</i>
+            System.out.println("Original class structure:\n");
+            printMethodStructures(testClass);
+&nbsp;
+<i>            // modifikace tela metody check()</i>
+            modifyMethodCheck(testClass);
+&nbsp;
+<i>            // vypis zmenene struktury tridy Test</i>
+            System.out.println("Modified class structure:\n");
+            printMethodStructures(testClass);
+&nbsp;
+<i>            // ulozeni bajtkodu tridy na disk</i>
+            testClass.writeFile();
+&nbsp;
+<i>            // a otestovani, zda mame skutecne pristup ke vsem atributum</i>
+            checkMethodLogin(testClass);
+        }
+        catch (NotFoundException e) {
+            e.printStackTrace();
+        }
+        catch (BadBytecode e) {
+            e.printStackTrace();
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (CannotCompileException e) {
+            e.printStackTrace();
+        }
+        catch (SecurityException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalArgumentException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Výstup demonstračního příkladu <strong>ClassModification5</strong></h2>
+
+<p>Podívejme se nyní na výstup dnešního demonstračního příkladu
+<strong>ClassModification5</strong>, z&nbsp;něhož poznáme původní i novou
+strukturu třídy <strong>Login</strong>. Posledních osm řádků obsahujících
+informace ze čtyř pokusů o přihlášení vzniklo v&nbsp;metodě
+<strong>checkMethodLogin()</strong> jako důkaz toho, že tato metoda byla
+skutečně úspěšně &bdquo;oháčkována&ldquo;. Pro jméno "ko" a heslo "aq" se totiž
+přihlášení skutečně podařilo, i když se nejedná o správné jméno a heslo:</p>
+
+<pre>
+<strong>Original class structure:</strong>
+&nbsp;
+Method 'check' structure:
+    real name:    check
+    descriptor:   (Ljava/lang/String;[S)Z
+    access flags: private static
+    method body:
+        ldc
+        invokestatic
+        astore_2
+        aload_2
+        aload_0
+        invokevirtual
+        invokevirtual
+        aload_2
+        invokevirtual
+        astore_3
+        iconst_0
+        istore
+        goto
+        aload_3
+        iload
+        baload
+        aload_1
+        iload
+        saload
+        i2b
+        if_icmpeq
+        iconst_0
+        ireturn
+        iinc
+        iload
+        bipush
+        if_icmplt
+        goto
+        astore_2
+        aload_2
+        invokevirtual
+        iconst_1
+        ireturn
+&nbsp;
+Method 'login' structure:
+    real name:    login
+    descriptor:   (Ljava/lang/String;Ljava/lang/String;)Z
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        iconst_1
+        anewarray
+        dup
+        iconst_0
+        aload_0
+        aastore
+        invokevirtual
+        pop
+        aload_0
+        getstatic
+        invokestatic
+        istore_2
+        aload_1
+        getstatic
+        invokestatic
+        istore_3
+        iload_2
+        ifeq
+        iload_3
+        ifeq
+        iconst_1
+        ireturn
+        iconst_0
+        ireturn
+&nbsp;
+Method 'main' structure:
+    real name:    main
+    descriptor:   ([Ljava/lang/String;)V
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        return
+&nbsp;
+<strong>Modified class structure:</strong>
+&nbsp;
+Method 'check' structure:
+    real name:    check
+    descriptor:   (Ljava/lang/String;[S)Z
+    access flags: private static
+    method body:
+        ldc
+        invokestatic
+        astore_2
+        aload_2
+        aload_0
+        invokevirtual
+        invokevirtual
+        aload_2
+        invokevirtual
+        astore_3
+        iconst_0
+        istore
+        goto
+        aload_3
+        iload
+        baload
+        aload_1
+        iload
+        saload
+        i2b
+        if_icmpeq
+        iconst_0
+        ireturn
+        iinc
+        iload
+        bipush
+        if_icmplt
+        goto
+        astore_2
+        aload_2
+        invokevirtual
+        iconst_1
+        ireturn
+&nbsp;
+Method 'login' structure:
+    real name:    login
+    descriptor:   (Ljava/lang/String;Ljava/lang/String;)Z
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        iconst_1
+        anewarray
+        dup
+        iconst_0
+        aload_0
+        aastore
+        invokevirtual
+        pop
+        aload_0
+        getstatic
+        invokestatic
+        istore_2
+        aload_1
+        getstatic
+        invokestatic
+        istore_3
+        iload_2
+        ifeq
+        iload_3
+        ifeq
+        iconst_1
+        ireturn
+        iconst_0
+        ireturn
+&nbsp;
+Method 'main' structure:
+    real name:    main
+    descriptor:   ([Ljava/lang/String;)V
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        getstatic
+        ldc
+        ldc
+        invokestatic
+        invokevirtual
+        return
+&nbsp;
+<strong>Trying to log in user: x</strong>
+false
+<strong>Trying to log in user: fakt</strong>
+false
+<strong>Trying to log in user: administrator</strong>
+false
+<strong>Trying to log in user: ko</strong>
+true
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Výpis bajtkódu změněné třídy <strong>Login</strong> a porovnání s&nbsp;původním bajtkódem</h2>
+
+<p>Pro jistotu ještě zkontrolujeme, zda je bajtkód třídy
+<strong>Login</strong>, resp.&nbsp;přesněji řečeno bajtkód metody
+<strong>Login.check()</strong> skutečně změněn korektně. Podobu bajtkódu
+získáme nám již známým příkazem <strong>javap -c -private Login</strong>
+(přepínač -private je důležitý pro výpis bajtkódu privátních metod), přičemž
+pod tímto odstavcem je ukázána pouze nejzajímavější část bajtkódu &ndash;
+metoda <strong>Login.check()</strong>:</p>
+
+<pre>
+private static boolean <strong>check</strong>(java.lang.String, short[]);
+  Code:
+   0:           ldc             #25; <i>//String SHA-512</i>
+   2:           invokestatic    #31; <i>//Method java/security/MessageDigest.getInstance:(Ljava/lang/String;)Ljava/security/MessageDigest;</i>
+   5:           astore_2
+   6:           aload_2
+   7:           aload_0
+   8:           invokevirtual   #37; <i>//Method java/lang/String.getBytes:()[B</i>
+   11:          invokevirtual   #41; <i>//Method java/security/MessageDigest.update:([B)V</i>
+   14:          aload_2
+   15:          invokevirtual   #44; <i>//Method java/security/MessageDigest.digest:()[B</i>
+   18:          astore_3
+   19:          iconst_0
+   20:          istore          4
+   22:          goto            42
+   25:          aload_3              <i>// začátek těla programové smyčky</i>
+   26:          iload           4
+   28:          baload
+   29:          aload_1
+   30:          iload           4
+   32:          saload
+   33:          i2b
+   34:          if_icmpeq       39
+   37:          iconst_0
+   38:          ireturn
+   39:          <strong>iinc            4, 1</strong> <i>// zvýšení hodnoty počitadla o jedničku</i>
+   42:          <strong>iload           4</strong>    <i>// uloženi počitadla na zásobník</i>
+   44:          <strong>bipush          1</strong>    <i>// hodnota počitadla se bude porovnávat s touto konstantou</i>
+   46:          <strong>if_icmplt       25</strong>   <i>// porovnání a zpětný skok na začátek těla smyčky</i>
+   49:          goto            57
+   52:          astore_2
+   53:          aload_2
+   54:          invokevirtual   #49; <i>//Method java/security/NoSuchAlgorithmException.printStackTrace:()V</i>
+   57:          iconst_1
+   58:          ireturn
+  Exception table:
+   from   to  target type
+     0    52    52   Class java/security/NoSuchAlgorithmException
+</pre>
+
+<p>Rozdíl mezi původním bajtkódem metody <strong>Login.check()</strong> a
+bajtkódem modifikovaným si opět můžeme znázornit vizuálně, podobně jako
+v&nbsp;předchozích dvou částech tohoto seriálu:</p>
+
+<a href="http://i.iinfo.cz/images/87/diffx.png"><img src="http://i.iinfo.cz/images/87/diffx-prev.png" class="image-142381" width="370" height="221" alt="&#160;" /></a>
+
+<p>Z&nbsp;tohoto obrázku je patrné, že se změnila jen jediná instrukce, a to
+konkrétně operand instrukce <strong>bipush</strong> na indexu 44.</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář se zdrojovými kódy dnešního demonstračního příkladu</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. Dnes popsaný demonstrační příklad
+<strong>ClassModification5</strong> je společně s&nbsp;nástrojem
+<strong>HashFinder</strong> a testovací třídou <strong>LoopTest</strong> uložen
+do Mercurial repositáře dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verze těchto
+zdrojových kódů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ClassModification5.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d0981157da08/javassist/ClassModification5/ClassModification5.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d0981157da08/javassist/ClassModification5/ClassModification5.java</a></td></tr>
+<tr><td>2</td><td>LoopTest.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d0981157da08/javassist/ClassModification5/LoopTest.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d0981157da08/javassist/ClassModification5/LoopTest.java</a></td></tr>
+<tr><td>3</td><td>HashFinder.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d0981157da08/javassist/ClassModification5/HashFinder.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d0981157da08/javassist/ClassModification5/HashFinder.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
