@@ -1,0 +1,658 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy se seznámíme se základními technikami optimalizace aplikací naprogramovaných v Javě. Postupně se seznámíme jak s vysokoúrovňovými optimalizacemi, tak i s nastavováním a laděním samotného virtuálního stroje Javy (což se týká především GC a JITu).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě</a></p>
+<p><a href="#k02">2. Optimalizace na úrovni implementovaných algoritmů</a></p>
+<p><a href="#k03">3. Vliv JRE a JVM na chování aplikací naprogramovaných v Javě</a></p>
+<p><a href="#k04">4. JIT překladač typu client a server</a></p>
+<p><a href="#k05">5. Použití vhodných typů kolekcí</a></p>
+<p><a href="#k06">6. Pole a další možnosti náhrady kolekcí</a></p>
+<p><a href="#k07">7. Nízkoúrovňové optimalizace &ndash; mají vůbec v&nbsp;Javě smysl?</a></p>
+<p><a href="#k08">8. Ladění parametrů JVM (aneb JIT ani GC nejsou samospasitelné)</a></p>
+<p><a href="#k09">9. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě</h2>
+
+<p><a href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">Seriál o
+programovacím jazyku Java i o virtuálním stroji Javy</a> již dosáhl své
+devadesáté páté části, přičemž jsme si v&nbsp;předchozích dílech
+mj.&nbsp;vysvětlili i problematiku monitorování JVM, základy fungování správců
+paměti i vlastnosti bajtkódu JVM. Prozatím jsme se však hlouběji a
+systematičtěji nezabývali způsoby optimalizace aplikací naprogramovaných
+v&nbsp;Javě, i když právě optimalizace na základě různých hledisek by měla být
+(alespoň v&nbsp;ideálním světě :-) součástí vývoje a testování. Poměrně velké
+množství vývojářů se testováním výkonnosti a optimalizací svých aplikací příliš
+nezabývá, a to z&nbsp;mnoha důvodů &ndash; ať již se jedná o nedostatek času či
+o pocit, že vyššího výkonu lze snadno dosáhnout výkonnějším hardwarem (což si
+ukážeme, že nemusí být vždy pravda) či že se o &bdquo;vyladění&ldquo; aplikace
+nějak postará překladač a/nebo samotný virtuální stroj Javy (to je také mnohdy
+dosti vzdáleno od skutečnosti).</p>
+
+<p>Při pohledu do různých diskuzních fór je patrné, že pohled na JVM a Javovské
+aplikace běžně osciluje mezi dvěma názorovými extrémy. Na jedné straně stojí
+názor (bohužel někdy potvrzený špatně naprogramovanou aplikací či mizernou
+JVM), že Javovské aplikace vyžadují neúměrné množství operační paměti a že
+jejich rychlost daleko zaostává za aplikacemi napsanými v&nbsp;C/C++/D či
+v&nbsp;dalších kompilovaných programovacích jazycích. Na druhé straně
+názorového spektra se tvrdí, že díky existenci JIT (Just-In-Time) překladače
+Javovské aplikace dosahují stejného výkonu, jako aplikace nativní. Pravda ve
+skutečnosti leží někde uprostřed; my si především v&nbsp;dalších dílech tohoto
+seriálu řekneme podrobnosti o práci JIT překladače, protože teprve
+s&nbsp;pochopením jeho funkcionality je možné si uvědomit, za jakých okolností
+vlastně JIT začíná provádět překlad a jaké programové konstrukce mu mohou
+pomoci či naopak znesnadnit jeho práci.</p>
+
+<p>Upozornění: dnešní článek sice nebude obsahovat mnoho konkrétních informací
+o JIT překladačích ani o GC, to se však v&nbsp;dalších částech napraví.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Optimalizace na úrovni implementovaných algoritmů</h2>
+
+<p>Způsoby optimalizace (nejenom) Javovských aplikací lze rozdělit na několik
+úrovní. Na úrovni nejvyšší a většinou také nejdůležitější stojí dobrá
+implementace algoritmu, který má řešit daný problém. Typickým školním :-)
+příkladem bývá předvedení algoritmů pro setřídění prvků nějaké kolekce či pole.
+Naivní algoritmy typu <i>Bubble Sort</i> mají složitost O(n<sup>2</sup>), ovšem
+lze použít také algoritmy typu <i>Merge Sort</i> se složitostí O(n*log(n))
+&ndash; tento algoritmus mimochodem není nutné implementovat, protože ho
+najdeme (dokonce v&nbsp;několika různých modifikacích)
+v&nbsp;<strong>java.util.Arrays.sort()</strong> a
+<strong>java.util.Collections.sort()</strong>. Dalším příkladem, tentokrát
+odpozorovaným z&nbsp;reálných aplikací, byla nevhodně navržená struktura
+programů takovým způsobem, že se několikrát načítal a zbytečně zpracovával
+stejný soubor &ndash; konkrétně se jednalo o XML soubor obsahující konfiguraci
+programu, jenž byl v&nbsp;jedné aplikaci načítán a zpracováván hned několikrát,
+pokaždé se přitom získávala odlišná informace (uložená v&nbsp;jiném uzlu).</p>
+
+<p>Do této úrovně optimalizace je taktéž možné zařadit implementaci daného
+algoritmu takovým způsobem, aby se dobře využily možnosti mikroprocesorů
+s&nbsp;více jádry. Samotný překladač ani virtuální stroj Javy totiž nejsou
+v&nbsp;současnosti na takové úrovni, aby dokázaly výpočty dobře a automaticky
+paralelizovat &ndash; přitom právě zde by mohl vysokoúrovňový jazyk
+s&nbsp;vlastní VM excelovat a překonat tak tradiční kompilované jazyky, jak je
+to ostatně dobře patrné na příkladu <a
+href="http://www.root.cz/clanky/clojure-aneb-jazyk-umoznujici-tvorbu-bezpecnych-vicevlaknovych-aplikaci-pro-jvm/">Clojure</a>.
+Paralelizace výpočtů je tak většinou nutné řešit přímo při tvorbě zdrojového
+kódu programu, což je v&nbsp;Javě složité a může vést k&nbsp;mnoha těžko
+odhalitelným chybám (typické deadlocky či naopak nesynchronizovaný přístup
+k&nbsp;nějakému objektu). Určité vylepšení v&nbsp;této oblasti přinesla až Java
+8, což je však problematika, které se budeme podrobněji věnovat v&nbsp;další
+části tohoto seriálu.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Vliv JRE a JVM na chování aplikací naprogramovaných v Javě</h2>
+
+<p>Na běh aplikací naprogramovaných v&nbsp;Javě má výrazný vliv i vybrané JRE a
+JVM (samotný virtuální stroj). Připomeňme si, že virtuální stroj Javy se skládá
+ze tří hlavních subsystémů. Jedná se o <strong>JIT překladač</strong>,
+<strong>správce paměti</strong> a <strong>běhové prostředí</strong> (runtime
+&ndash; interpret, standardní class loader, synchronizační mechanismy, správce
+vláken). Nejprve se budeme zabývat JIT překladači, kvůli jejich velkému vlivu
+na výkon aplikací. V&nbsp;současnosti se můžeme setkat s&nbsp;dvěma typy JIT
+překladačů &ndash; <i>client</i> a <i>server</i>, které se v&nbsp;nových JVM
+kombinují do takzvaného vícevrstvého překladače <i>tiered compiler</i>
+(principem jeho práce se opět budeme zabývat později).</p>
+
+<p>Velký vliv na výkon javovských aplikací má i použitý správce paměti. Podobně
+jako existují dva typy JIT překladačů, máme dnes k&nbsp;dispozici i větší
+množství správců paměti, z&nbsp;nichž každý je vhodný pouze pro určitý účel a
+pro určitou velikost haldy, na níž jsou ukládány všechny objekty. Správce
+paměti (<i>garbage collector</i>) je spouštěn v&nbsp;samostatném vláknu či více
+vláknech, takže pracuje paralelně s&nbsp;běžící aplikací. Operace prováděné
+správcem paměti samozřejmě nemohou probíhat zcela nezávisle na aplikaci,
+protože se například provádí defragmentace haldy (heapu), s&nbsp;čímž souvisí
+potřeba některé objekty uzamykat &ndash; právě v&nbsp;těchto chvílích může být
+běh aplikace pozastavován, a to i na systémech, které jsou vybaveny
+mikroprocesory s&nbsp;více jádry (u některých správců paměti se proto setkáme
+s&nbsp;termínem <i>stop-the-world</i>).</p>
+
+<p>Nesmíme zapomínat ani na běhové prostředí (<i>runtime</i>). Vliv interpretru
+si částečně osvětlíme <a href="#k04">v&nbsp;navazující kapitole</a>, důležitý
+je však i systém synchronizace. V&nbsp;současnosti je v&nbsp;JVM implementován
+takzvaný optimistický mechanismus zámků, který předpokládá, že je velmi
+pravděpodobné, že o zámek bude žádat vždy stále to stejné vlákno, které tento
+zámek ihned získá. Pokud tomu tak není (objekt je zamčen jiným vláknem, ...),
+je synchronizace obecně časově náročnější, s&nbsp;čímž je zapotřebí počítat i
+při návrhu či optimalizacích aplikace.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. JIT překladač typu client a server</h2>
+
+<p>V&nbsp;předchozí kapitole jsme si řekli, že v&nbsp;současných JVM se setkáme
+s&nbsp;dvojicí JIT překladačů &ndash; client a server.</p>
+
+<p>Oba typy překladačů se spouští <i>až na základě požadavku interpretru</i>
+&ndash; bajtkód každé metody je tedy nejdříve relativně pomalu interpretován a
+teprve poté, pokud se daná metoda volá často nebo pokud se některá smyčka
+v&nbsp;metodě opakuje po zadanou mez, se metoda či jen její často opakovaná
+smyčka přeloží. Přitom platí, že překladač typu <i>client</i> je navržen
+takovým způsobem, že velmi jednoduše a tudíž i rychle danou sekvenci instrukcí
+bajtkódu přeloží na základě &bdquo;šablony&ldquo; obsahující (velmi
+zjednodušeně řečeno) sekvenci strojových instrukcí pro každou instrukci
+bajtkódu. Provádí se přitom je minimální množství optimalizací, takže od tohoto
+typu překladače nelze čekat žádné zázraky.</p>
+
+<p>Naproti tomu překladač typu <i>server</i> již dokáže provádět různé lokální
+i globální optimalizace a taktéž stráví větší množství času s&nbsp;alokací
+registrů mikroprocesoru pro potřeby uložení lokálních proměnných, mezivýsledků
+výpočtů atd. atd. Ovšem aby tento typ překladače pracoval skutečně efektivně,
+musí mít k&nbsp;dispozici větší množství informací o dynamických vlastnostech
+metody/smyčky &ndash; a tyto informace získá opět z&nbsp;interpretru.
+Zjednodušeně řečeno to znamená, že čím vícekrát je metoda/smyčka zpracována
+pomalým interpretrem, tím lepší informace má k&nbsp;dispozici optimalizující
+JIT překladač, takže se dostáváme do poněkud paradoxní situace, že pro
+dlouhotrvající aplikace je výhodnější, když jsou nějaký čas provozovány jen
+v&nbsp;režimu interpretru (jak to přesně funguje a jak je možné nastavit
+příslušné parametry JVM si řekneme příště).</p>
+
+<p>Z&nbsp;výše uvedeného taktéž vyplývá, že JIT překladače typu <i>server</i>
+nemusí být vždy výhodnější a pro aplikace běžící jen krátkou dobu může být JIT
+překladač typu <i>client</i> lepší volbou. Výkon JIT překladačů se taktéž
+postupně vylepšuje, což je patrné i z&nbsp;následující tabulky porovnávající
+dobu běhu jednoho benchmarku (zmíněného příště) na dvou různých JVM
+v&nbsp;režimu interpretru, JIT překladače typu <i>client</i> i JIT překladače
+typu <i>server</i>:</p>
+
+<table>
+<tr><th>Překladač/interpret</th><th>Java 1.6.0</th><th>Java 1.7.0_25</th></tr>
+<tr><td>-Xint  </td><td>5018676954 ns</td><td>5016002314 ns</td></tr>
+<tr><td>-client</td><td>&nbsp;407990681 ns</td><td>&nbsp;409226033 ns</td></tr>
+<tr><td>-server</td><td>&nbsp;512994248 ns</td><td>&nbsp;334564030 ns</td></tr>
+</table>
+
+<p>Povšimněte si toho, že interpret je více než 10&times; pomalejší
+v&nbsp;porovnání s&nbsp;JIT i toho, jak se vylepšily vlastnosti JIT typu
+<i>server</i>.</p>
+
+<p>Poznámka: pokud se spoléháte na to, že na počítačích klientů bude vždy
+použit JIT překladač typu <i>server</i>, je nutné zde upozornit na fakt, že pro
+32bitové systémy se již Oracle JRE 7 dodává jen a pouze ve verzi <i>client</i>.
+Kdo potřebuje i JIT <i>server</i>, musí si nainstalovat celé JVM (nebo použít
+OpenJDK, což je většinou lepší volba).</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Použití vhodných typů kolekcí</h2>
+
+<p>Jen pro úplnost je nutné v&nbsp;tomto článku zmínit i nutnost použití
+vhodného typu kolekcí, popř.&nbsp;zvážit, zda použití klasických polí nepovede
+k&nbsp;nárůstu výkonu aplikace. Následující tabulka se čtyřmi typy kolekcí a
+jejich základními implementacemi je velmi pravděpodobně čtenářům tohoto článku
+dobře známá:</p>
+
+<table>
+<tr><th>Rozhraní</th><th>Implementace<br />polem</th><th>Implementace<br />stromem</th><th>Implementace<br />seznamem</th><th>Implementace<br />hash mapou</th></tr>
+<tr><td>Set  </td><td>&nbsp;    </td><td>TreeSet</td><td>&nbsp;    </td><td>HashSet, LinkedHashSet</td></tr>
+<tr><td>Map  </td><td>&nbsp;    </td><td>TreeMap</td><td>&nbsp;    </td><td>HashMap, LinkedHashMap</td></tr>
+<tr><td>List </td><td>ArrayList </td><td>&nbsp; </td><td>LinkedList</td><td>&nbsp;</td></tr>
+<tr><td>Deque</td><td>ArrayDeque</td><td>&nbsp; </td><td>LinkedList</td><td>&nbsp;</td></tr>
+</table>
+
+<p>Z&nbsp;této tabulky je patrné, že každé rozhraní je implementováno minimálně
+dvakrát, někdy i třikrát. To má samozřejmě svůj význam, protože každá
+implementace má odlišné chování. Nás bude nejvíce zajímat časová složitost,
+kterou lze poměrně snadno zjistit pohledem do zdrojových kódů (ty jsou
+v&nbsp;JDK k&nbsp;dispozici). Pro ilustraci si uveďme časovou složitost
+některých operací prováděných nad kolekcí typu <i>List</i>:</p>
+
+<table>
+<tr><th>Operace</th><th>ArrayList</th><th>LinkedList</th></tr>
+<tr><td>set(index,E) </td><td>O(1)  </td><td>O(n)</td></tr>
+<tr><td>get(index)   </td><td>O(1)  </td><td>O(n)</td></tr>
+<tr><td>add(index,E) </td><td>O(n)  </td><td>O(n)</td></tr>
+<tr><td>remove(index)</td><td>O(n)  </td><td>O(n)</td></tr>
+<tr><td>toArray()    </td><td>O(n) *</td><td>O(n) **</td></tr>
+</table>
+
+<p>* - provádí se kopie celého pole, ** - provádí se postupné kopírování prvků do pole</p>
+
+<p>Podobně lze zjistit časovou složitost kolekce typu <i>Deque</i> (což je
+kolekce sdružující vlastnosti obousměrné fronty a seznamu):</p>
+
+<table>
+<tr><th>Operace</th><th>ArrayDeque</th><th>LinkedList</th></tr>
+<tr><td>addFirst()   </td><td>O(1) nebo O(n)</td><td>O(1)</td></tr>
+<tr><td>addLast()    </td><td>O(1) nebo O(n)</td><td>O(1)</td></tr>
+<tr><td>removeFirst()</td><td>O(1)          </td><td>O(1)</td></tr>
+<tr><td>removeLast() </td><td>O(1)          </td><td>O(1)</td></tr>
+<tr><td>getFirst()   </td><td>O(1)          </td><td>O(1)</td></tr>
+<tr><td>getLast()    </td><td>O(1)          </td><td>O(1)</td></tr>
+<tr><td>toArray()    </td><td>O(n) *        </td><td>O(n) **</td></tr>
+</table>
+
+<p>* - provádí se kopie celého pole, ** - provádí se postupné kopírování prvků do pole</p>
+
+<p>Podobně je možné snadno zjistit vlastnosti a rozdíly mezi dvojicí
+<i>HashSet/TreeSet</i> a <i>HashMap/TreeMap</i>. Další alternativou je použití
+<i>ConcurrentHashMap</i>, která v&nbsp;některých případech nabízí vyšší výkonnost
+(tu je ovšem nutné otestovat pomocí profileru).</p>
+
+<p>Ovšem implementace kolekcí, která je dodávaná přímo s&nbsp;JRE, není
+v&nbsp;žádném případě jediná existující implementace. K&nbsp;dispozici jsou
+totiž i mnohé další implementace, které se liší jak použitými algoritmy, tak i
+způsobem uložení kolekce na haldě.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Pole a další možnosti náhrady kolekcí</h2>
+
+<p>Kolekce se v&nbsp;Javě používají velmi jednoduše, což však může znamenat, že
+je programátor někdy bezmyšlenkovitě využije i tam, kde to není vhodné.
+Existuje totiž poměrně velké množství situací, v&nbsp;nichž jsou běžná pole
+mnohem efektivnější, a to jak z&nbsp;hlediska obsazené paměti, tak i
+z&nbsp;hlediska rychlosti přístupu k&nbsp;prvkům. Typickým příkladem je nutnost
+ukládat prvky primitivních datových typů, což není u kolekcí možné &ndash; zde
+je nutné aplikovat autoboxing, který je časově náročný a navíc i objekt
+obalující hodnotu primitivního datového typu obsadí velké množství paměti na
+haldě (tu navíc prochází správce paměti, čímž výkonnostní problémy ještě
+narůstají). Navíc jsou všechny operace s&nbsp;polem překládány do k&nbsp;tomu
+určených instrukcí bajtkódu, zatímco při práci s&nbsp;kolekcemi libovolného
+typu je nutné stále volat příslušné metody (add, remove, get, set, ...).</p>
+
+<p>Sice by se mohlo zdát, že JIT překladače si s&nbsp;tímto problémem poradí,
+ale jak již bylo naznačeno <a href="#k04">ve čtvrté kapitole</a>, není vhodné
+se slepě spoléhat na magické schopnosti JITu, už jen z&nbsp;toho důvodu, že se
+v&nbsp;mnoha případech ve skutečnosti bude kód pouze interpretovat. Ostatně
+ukažme si jednoduchý odstrašující příklad:</p>
+
+<pre>
+import java.util.*;
+&nbsp;
+public class Test {
+&nbsp;
+    private static final int LIST_SIZE = 5000;
+&nbsp;
+    public static void main(String[] args) {
+        List&lt;Integer&gt; x = new ArrayList&lt;Integer&gt;(LIST_SIZE);
+        for (int i = 0; i &lt; LIST_SIZE; i++) {
+            x.add(i);
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>V&nbsp;tomto příkladu je seznam celých čísel uložen velmi neefektivně (kvůli
+autoboxingu), samotné vložení jednoho prvku znamená volání několika metod a
+navíc je velikost seznamu (5000 prvků) tak malá, že se ani nespustí JIT
+překladač typu <i>server</i>! Můžeme se o tom sami přesvědčit:</p>
+
+<pre>
+javac Test.java
+java -server -XX:+UnlockDiagnosticVMOptions -XX:+PrintCompilation Test
+</pre>
+
+<p>(tyto přepínače budou podrobně vysvětleny příště).</p>
+
+<p>Naproti tomu je práce s&nbsp;poli podporována přímo v&nbsp;bajtkódu, a to
+konkrétně následujícími instrukcemi:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>newarray</td><td>0xBC</td><td>arraytype</td><td>Vytvoří nové pole s prvky primitivního datového typu</td></tr>
+<tr><td>2</td><td>anewarray</td><td>0xBD</td><td>highbyte, lowbyte</td><td>Vytvoří nové pole objektů</td></tr>
+<tr><td>3</td><td>multianewarray</td><td>0xC5</td><td>highbyte, lowbyte, dimensions</td><td>Vytvoří vícedimenzionální pole o <i>dimensions</i> dimenzích</td></tr>
+<tr><td>4</td><td>iaload</td><td>0x2E</td><td>&times;</td><td>přečtení prvku z pole typu int[]</td></tr>
+<tr><td>5</td><td>laload</td><td>0x2F</td><td>&times;</td><td>přečtení prvku z pole typu long[]</td></tr>
+<tr><td>6</td><td>faload</td><td>0x30</td><td>&times;</td><td>přečtení prvku z pole typu float[]</td></tr>
+<tr><td>7</td><td>daload</td><td>0x31</td><td>&times;</td><td>přečtení prvku z pole typu double[]</td></tr>
+<tr><td>8</td><td>aaload</td><td>0x32</td><td>&times;</td><td>přečtení prvku z pole typu reference[]</td></tr>
+<tr><td>9</td><td>baload</td><td>0x33</td><td>&times;</td><td>přečtení prvku z pole typu byte[] nebo boolean[]</td></tr>
+<tr><td>10</td><td>caload</td><td>0x34</td><td>&times;</td><td>přečtení prvku z pole typu char[]</td></tr>
+<tr><td>11</td><td>saload</td><td>0x35</td><td>&times;</td><td>přečtení prvku z pole typu short[]</td></tr>
+<tr><td>12</td><td>iastore</td><td>0x4F</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu int[]</td></tr>
+<tr><td>13</td><td>lastore</td><td>0x50</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu long[]</td></tr>
+<tr><td>14</td><td>fastore</td><td>0x51</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu float[]</td></tr>
+<tr><td>15</td><td>dastore</td><td>0x52</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu double[]</td></tr>
+<tr><td>16</td><td>aastore</td><td>0x53</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu reference[]</td></tr>
+<tr><td>17</td><td>bastore</td><td>0x54</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu byte[] nebo boolean[]</td></tr>
+<tr><td>18</td><td>castore</td><td>0x55</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu char[]</td></tr>
+<tr><td>19</td><td>sastore</td><td>0x56</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu short[]</td></tr>
+<tr><td>20</td><td>arraylength</td><td>0xBE</td><td>&times;</td><td>zjištění délky pole</td></tr>
+</table>
+
+<p>Přístup k&nbsp;prvkům pole se většinou překládá do tří kroků (viz též
+například zdrojový soubor
+<i>hotspot/src/cpu/x86/vm/templateTable_x86_32.cpp</i> ve zdrojových kódech
+OpenJDK):</p>
+
+<ol>
+<li>Kontrola, zda objekt představující pole není <strong>null</strong></li>
+<li>Kontrola, zda index je menší než mez pole</li>
+<li>Vlastní čtení/zápis (1-2 instrukce)</li>
+</ol>
+
+<p>Optimalizační překladač může první dva kroky zcela eliminovat a dosáhnout
+tak rychlosti srovnatelné s&nbsp;přeloženým céčkem.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Nízkoúrovňové optimalizace &ndash; mají vůbec v&nbsp;Javě smysl?</h2>
+
+<p>Poněkud překvapující může být fakt, že i některé &bdquo;nízkoúrovňové&ldquo;
+zásahy do zdrojového kódu mohou vylepšit čas běhu aplikace. Podívejme se na
+velmi jednoduchý (i když trošku umělý) příklad aplikace, v&nbsp;níž se vyplňuje
+pole sekvencí celých čísel. Jsou použity dva typy smyček, přičemž v&nbsp;první
+smyčce se neustále (v&nbsp;každé iteraci) čte atribut
+<strong>array.length</strong>, zatímco ve druhé smyčce je tato hodnota uložena
+do pomocné lokální konstanty. Každá smyčka proběhne dvakrát, první kolo je
+zahřívací:</p>
+
+<pre>
+public class ArrayTest1 {
+    public static final int ARRAY_SIZE = 20000;
+&nbsp;
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(System.getProperty("java.version"));
+&nbsp;
+        for (int i=0; i&lt;2; i++) {
+            long t1, t2;
+&nbsp;
+            System.gc();
+            Thread.sleep(1000);
+            t1 = System.nanoTime();
+            test1();
+            t2 = System.nanoTime();
+            System.out.println("Method #1: " + (t2 - t1) + " ns");
+&nbsp;
+            System.gc();
+            Thread.sleep(1000);
+            t1 = System.nanoTime();
+            test2();
+            t2 = System.nanoTime();
+            System.out.println("Method #2: " + (t2 - t1) + " ns");
+        }
+
+    }
+&nbsp;
+    private static void test1() {
+        int[] array = new int[ARRAY_SIZE];
+        for (int i = 0; i &lt; ARRAY_SIZE; i++) {
+            for (int j = 0; j &lt; array.length; j++) {
+                array[j] = j;
+            }
+        }
+    }
+&nbsp;
+    private static void test2() {
+        int[] array = new int[ARRAY_SIZE];
+        final int length = array.length;
+        for (int i = 0; i &lt; ARRAY_SIZE; i++) {
+            for (int j = 0; j &lt; length; j++) {
+                array[j] = j;
+            }
+        }
+    }
+</pre>
+
+<p>Jak dopadnou časy běhu obou typů smyček lze snadno zjistit:</p>
+
+<pre>
+java -Xint ArrayTest1
+1.7.0_25
+Method #1: 21546434533 ns
+Method #2: 20551668997 ns
+Method #1: 21568800224 ns
+Method #2: 20092864038 ns
+&nbsp;
+java -client ArrayTest1
+1.7.0_25
+Method #1: 2066722727 ns
+Method #2: 1711408014 ns
+Method #1: 2065038433 ns
+Method #2: 1719504295 ns
+&nbsp;
+java -server ArrayTest1
+1.7.0_25
+Method #1: 1401953601 ns
+Method #2: 1361821964 ns
+Method #1: 1393230703 ns
+Method #2: 1360679360 ns
+</pre>
+
+<p>Nejzajímavější jsou rozdíly v&nbsp;časech běhu obou smyček při použití JIT
+překladače typu <i>client</i>, kdy se časy liší o zhruba 16%, takže uvedená
+&bdquo;optimalizace&ldquo; má kupodivu smysl. K&nbsp;tomu je nutno brát
+v&nbsp;úvahu již zmíněný fakt, že novější JRE 7 jsou společností Oracle na
+32bitové systémy dodávány jen s&nbsp;JIT překladačem typu <i>client</i>, takže
+se spoléhat na to, že <i>JIT server</i> vše přeloží stejně (viz též třetí běh)
+nemusí být vždy na místě.</p>
+
+<p>Proč je však JIT typu <i>client</i> pomalejší v&nbsp;prvním případě? Je tomu
+tak z&nbsp;toho důvodu, že &bdquo;šablona&ldquo; instrukce
+<strong>arraylength</strong> (volaná před každou iterací!) obsahuje i kontrolu
+na to, zda není předaný objekt roven <strong>null</strong>. JIT typu
+<i>server</i> již dopředu ví (dozví se to z&nbsp;interpretru), že objekt není
+roven <strong>null</strong> a může tuto kontrolu zcela vynechat, rozbalit
+smyčku, rozdělit ji na tři části (viz též další díl) atd.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Ladění parametrů JVM (aneb JIT ani GC nejsou samospasitelné)</h2>
+
+<p>Při snaze o optimalizaci javovských aplikací je vhodné mít neustále na
+paměti, že i když JIT překladače a správci paměti (GC), které najdeme
+v&nbsp;dostupných virtuálních strojích Javy, patří mezi ty nejlepší
+technologie, které jsou v&nbsp;současnosti dostupné, nejsou a ani nemohou být
+samospasitelné. To je sice pochopitelné, poněkud hůře se však akceptuje fakt,
+že současné JIT a GC nedokážou dobře automaticky měnit své chování
+v&nbsp;závislosti na vlastnostech běžící aplikace. Asi nejvíce je tento problém
+palčivý při nastavování haldy a správců paměti, kdy je mnohdy nutné nejenom
+zvolit konkrétního správce paměti, ale i nastavit, kolik vláken má tento
+správce paměti využít (to se navíc odlišuje při takzvaném FullGC a rychlém
+běhu), v&nbsp;jakém poměru má být halda rozdělena na části <i>young</i> a
+<i>tenured</i>, jak má být část <i>young</i> rozdělena na další bloky (eden,
+survivor space1, survivor space2) atd. Podobné nastavování nás čeká při
+optimalizacích běhu JIT překladače.</p>
+
+<p>Aby si vážený čtenář sám udělal přehled, kolika volbami lze vlastně JVM
+ovlivnit, stačí napsat příkaz:</p>
+
+<pre>
+java -XX:+PrintFlagsFinal -version
+</pre>
+
+<p>V&nbsp;případě JDK 1.7.0_25 se vypíše více než 600 parametrů!</p>
+
+<pre>
+[Global flags]
+    uintx AdaptivePermSizeWeight                    = 20              {product}           
+    uintx AdaptiveSizeDecrementScaleFactor          = 4               {product}           
+    uintx AdaptiveSizeMajorGCDecayTimeScale         = 10              {product}           
+    uintx AdaptiveSizePausePolicy                   = 0               {product}           
+    uintx AdaptiveSizePolicyCollectionCostMargin    = 50              {product}           
+    uintx AdaptiveSizePolicyInitializingSteps       = 20              {product}           
+    uintx AdaptiveSizePolicyOutputInterval          = 0               {product}           
+    uintx AdaptiveSizePolicyWeight                  = 10              {product}           
+    uintx AdaptiveSizeThroughPutPolicy              = 0               {product}           
+    uintx AdaptiveTimeWeight                        = 25              {product}           
+     bool AdjustConcurrency                         = false           {product}           
+     bool AggressiveOpts                            = false           {product}           
+...
+...
+...
+    uintx YoungGenerationSizeIncrement              = 20              {product}           
+    uintx YoungGenerationSizeSupplement             = 80              {product}           
+    uintx YoungGenerationSizeSupplementDecay        = 8               {product}           
+    uintx YoungPLABSize                             = 4096            {product}           
+     bool ZeroTLAB                                  = false           {product}           
+     intx hashCode                                  = 0               {product
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
