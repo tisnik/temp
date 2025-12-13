@@ -1,0 +1,1660 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - přímé generování instrukcí bajtkódu s využitím nástroje Javassist (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - přímé generování instrukcí bajtkódu s využitím nástroje Javassist (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si řekneme, jak se s využitím nástroje Javassist dají tvořit i složitější metody (resp. jejich bajtkód). Dále si ukážeme jednu velmi užitečnou funkcionalitu Javassistu - jeho schopnost načíst právě vytvořenou či modifikovanou třídu do JVM a ihned ji začít používat.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - přímé generování instrukcí bajtkódu s využitím nástroje Javassist (2)</a></p>
+<p><a href="#k02">2. Sekvence instrukcí pro vypsání řetězce "Hello world!"</a></p>
+<p><a href="#k03">3. Základ demonstračního příkladu: metoda <strong>constructMethodHello()</strong></a></p>
+<p><a href="#k04">4. Metody <strong>prepareMethod()</strong> a <strong>setCodeAttributeForMethod()</strong></a></p>
+<p><a href="#k05">5. Další součást demonstračního příkladu: abstraktní třída <strong>BytecodeGenerator</strong></a></p>
+<p><a href="#k06">6. První způsob výpisu řetězce &ndash; využití <strong>Bytecode.addPrintln()</strong></a></p>
+<p><a href="#k07">7. Druhý způsob výpisu řetězce &ndash; využití <strong>Bytecode.addGetstatic()</strong>, <strong>Bytecode.addLdc()</strong> a <strong>Bytecode.addInvokevirtual()</strong></a></p>
+<p><a href="#k08">8. Třetí způsob výpisu řetězce &ndash; použití třídy <strong>CtClass</strong> namísto signatur tříd a metod</a></p>
+<p><a href="#k09">9. Čtvrtý způsob výpisu řetězce &ndash; převod instance třídy <strong>Class</strong> na <strong>CtClass</strong></a></p>
+<p><a href="#k10">10. Spuštění metod právě vytvořené třídy ve stejném virtuálním stroji</a></p>
+<p><a href="#k11">11. Zdrojový kód demonstračního příkladu <strong>ClassGenerationTest8</strong></a></p>
+<p><a href="#k12">12. Výpis bajtkódu vygenerovaného demonstračním příkladem <strong>ClassGenerationTest8</strong></a></p>
+<p><a href="#k13">13. Repositář se zdrojovými kódy dnešního demonstračního příkladu</a></p>
+<p><a href="#k14">14. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - přímé generování instrukcí bajtkódu s využitím nástroje Javassist (2)</h2>
+
+<p>V&nbsp;předchozí části seriálu o programovacím jazyce Java i o virtuálním
+stroji Javy jsme si vysvětlili základní způsob tvorby bajtkódu metod
+s&nbsp;využitím tříd <strong>javassist.bytecode.Bytecode</strong> a
+<strong>javassist.bytecode.Opcode</strong>. Připomeňme si, že v&nbsp;první
+třídě se nachází mnoho metod určených pro přidávání nových instrukcí do
+bajtkódu zvolené metody (přesněji řečeno do bytového pole tvořícího hodnotu
+atributu &bdquo;Code&ldquo;). Jednotlivé instrukční kódy se samozřejmě nemusí
+zadávat ručně, protože jsou uloženy jako konstanty v&nbsp;již zmíněné třídě
+<strong>javassist.bytecode.Opcode</strong>. Minule jsme si ukázali, jak lze
+s&nbsp;využitím této dvojice tříd vytvořit jednoduchou metodu, která buď vrátí
+celočíselnou konstantu nebo nejprve sečte hodnotu svých dvou parametrů a vrátí
+výsledek tohoto součtu. Podobným způsobem lze zkonstruovat i metody se
+složitějšími výpočty, které mohou využívat hodnoty libovolného primitivního
+datového typu (byte, short, int, long, float, double, boolean či char).<p>
+
+<p>Dnes si ukážeme způsob volání nestatické metody, přesněji řečeno způsob
+konstrukce sekvence instrukcí použitých pro volání metody. To je již poněkud
+komplikovanější činnost, neboť vzhledem k&nbsp;vlastnostem virtuálního stroje
+Javy je při volání metody vždy použito plně kvalifikované jméno třídy i
+signatura metody &ndash; nepoužívají se tedy adresy, ať již v&nbsp;absolutní či
+relativní podobě. I když se může nepřímý způsob volání metod s&nbsp;využitím
+jména třídy a signatury metody znát poněkud komplikovaný či zdlouhavý, umožňuje
+relativně snadnou implementaci záměny tříd (různé verze třídy od jiného
+dodavatele, třída upravená pomocí <i>Javassistu</i>), různé manipulace
+s&nbsp;classloadery atd. Komplikovanost volání je tedy vyvážena většími
+možnostmi v&nbsp;porovnání s&nbsp;pouhým skokem na určenou adresu (druhým
+neméně důležitým důvodem je fakt, že většina metod je považována za metody
+virtuální).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Sekvence instrukcí pro vypsání řetězce "Hello world!"</h2>
+
+<p>V&nbsp;demonstračním příkladu, který bude postupně popsán
+v&nbsp;navazujících kapitolách, se bude tvořit bajtkód metod, jejichž jediným
+úkolem je vypsání řetězce na standardní či chybový výstup. Nejjednodušeji je
+tisk řetězce realizován (přetíženými) metodami
+<strong>System.out.println()</strong> a <strong>System.err.println()</strong>,
+přičemž první metoda slouží pro tisk na standardní výstup a metoda druhá pro
+tisk na výstup chybový. Podívejme se nyní, jakým způsobem se vlastně přeloží
+volání těchto dvou zmíněných metod. Po přeložení následující testovací
+třídy:</p>
+
+<pre>
+public class <strong>Test</strong> {
+    static {
+        System.out.println("Hello world!");
+        System.err.println("Hello world!");
+        System.exit(0);
+    }
+}
+</pre>
+
+<p>příkazem:</p>
+
+<pre>
+javac Test
+</pre>
+
+<p>vznikne, jak zajisté čtenáři tohoto článku vědí, soubor
+<strong>Test.class</strong> obsahující mj.&nbsp;i bajtkód s&nbsp;instrukcemi
+tvořícími tělo statického bloku (ten se &bdquo;spustí&ldquo; po načtení třídy
+do JVM). Obsah souboru <strong>Test.class</strong> můžeme snadno dekompilovat
+příkazem:</p>
+
+<pre>
+javap -c -v Test
+</pre>
+
+<p>Podívejme se nyní na výstup získaný tímto příkazem:</p>
+
+<pre>
+Compiled from "Test.java"
+public class Test extends java.lang.Object
+  SourceFile: "Test.java"
+  minor version: 0
+  major version: 50
+  Constant pool:
+const #1 = Method   #8.#16;            <i>//  java/lang/Object."&lt;init&gt;":()V</i>
+const #2 = Field    #17.#18;           <i>//  java/lang/System.out:Ljava/io/PrintStream;</i>
+const #3 = String   #19;               <i>//  Hello world!</i>
+const #4 = Method   #20.#21;           <i>//  java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+const #5 = Field    #17.#22;           <i>//  java/lang/System.err:Ljava/io/PrintStream;</i>
+const #6 = Method   #17.#23;           <i>//  java/lang/System.exit:(I)V</i>
+const #7 = class    #24;               <i>//  Test</i>
+const #8 = class    #25;               <i>//  java/lang/Object</i>
+const #9 = Asciz    &lt;init&gt;;
+const #10 = Asciz   ()V;
+const #11 = Asciz   Code;
+const #12 = Asciz   LineNumberTable;
+const #13 = Asciz   &lt;clinit&gt;
+const #14 = Asciz   SourceFile;
+const #15 = Asciz   Test.java;
+const #16 = NameAndType #9:#10;        <i>//  "&lt;init&gt;":()V</i>
+const #17 = class   #26;               <i>//  java/lang/System</i>
+const #18 = NameAndType #27:#28;       <i>//  out:Ljava/io/PrintStream;</i>
+const #19 = Asciz   Hello world!;
+const #20 = class   #29;               <i>//  java/io/PrintStream</i>
+const #21 = NameAndType #30:#31;       <i>//  println:(Ljava/lang/String;)V</i>
+const #22 = NameAndType #32:#28;       <i>//  err:Ljava/io/PrintStream;</i>
+const #23 = NameAndType #33:#34;       <i>//  exit:(I)V</i>
+const #24 = Asciz   Test;
+const #25 = Asciz   java/lang/Object;
+const #26 = Asciz   java/lang/System;
+const #27 = Asciz   out;
+const #28 = Asciz   Ljava/io/PrintStream;;
+const #29 = Asciz   java/io/PrintStream;
+const #30 = Asciz   println;
+const #31 = Asciz   (Ljava/lang/String;)V;
+const #32 = Asciz   err;
+const #33 = Asciz   exit;
+const #34 = Asciz   (I)V;
+&nbsp;
+{
+public <strong>Test</strong>();
+  Code:
+   Stack=1, Locals=1, Args_size=1
+   0:   aload_0
+   1:   invokespecial   #1;            <i>//Method java/lang/Object."&lt;init&gt;":()V</i>
+   4:   return
+  LineNumberTable: 
+   line 1: 0
+&nbsp;
+&nbsp;
+static {};
+  Code:
+   Stack=2, Locals=0, Args_size=0
+&nbsp;
+   0:   getstatic     #2;              <i>//Field java/lang/System.out:Ljava/io/PrintStream;</i>
+   3:   ldc           #3;              <i>//String Hello world!</i>
+   5:   invokevirtual #4;              <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+&nbsp;
+   8:   getstatic     #5;              <i>//Field java/lang/System.err:Ljava/io/PrintStream;</i>
+   11:  ldc           #3;              <i>//String Hello world!</i>
+   13:  invokevirtual #4;              <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+&nbsp;
+   16:  iconst_0
+   17:  invokestatic  #6;              <i>//Method java/lang/System.exit:(I)V</i>
+   20:  return
+  LineNumberTable: 
+   line 3: 0
+   line 4: 8
+   line 5: 16
+   line 6: 20
+&nbsp;
+&nbsp;
+}
+</pre>
+
+<p>Nejzajímavější je v&nbsp;tuto chvíli zjištění, jak je realizováno volání
+metody <strong>System.out.println()</strong>. Jedná se o nestatickou metodu se
+signaturou &bdquo;(Ljava/lang/String;)V&ldquo; ze třídy
+<strong>java.io.PrintStream</strong>. V&nbsp;bajtkódu je nejdříve nutné
+s&nbsp;využitím instrukce <strong>getstatic</strong> získat statický atribut
+nazvaný &bdquo;out&ldquo; ze třídy <strong>java.lang.System</strong> (což je
+instance <strong>java.io.PrintStream</strong>) a uložit tuto referenci na
+zásobník. Následně je nutné uložit na zásobník odkaz (referenci) na řetězec a
+poslední (třetí) instrukcí je zavolání příslušné metody &ndash; jedná se o
+instrukci <strong>invokevirtual</strong>. Řetězec (reference) je přitom použit
+jako parametr metody. Všechny tři instrukce přitom používají index do constant
+poolu:</p>
+
+<pre>
+const #2 = Field    #17.#18;   <i>// java/lang/System.out:Ljava/io/PrintStream;</i>
+const #3 = String   #19;       <i>// Hello world!</i>
+const #4 = Method   #20.#21;   <i>// java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+&nbsp;
+getstatic     #2;              <i>// Field java/lang/System.out:Ljava/io/PrintStream;</i>
+ldc           #3;              <i>// String Hello world!</i>
+invokevirtual #4;              <i>// Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+</pre>
+
+<p>Zcela stejným způsobem je realizováno volání metody
+<strong>System.err.println()</strong>:</p>
+
+<pre>
+const #5 = Field    #17.#22;   <i>// java/lang/System.err:Ljava/io/PrintStream;</i>
+const #3 = String   #19;       <i>// Hello world!</i>
+const #4 = Method   #20.#21;   <i>// java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+&nbsp;
+getstatic     #5;              <i>// Field java/lang/System.err:Ljava/io/PrintStream;</i>
+ldc           #3;              <i>// String Hello world!</i>
+invokevirtual #4;              <i>// Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Základ demonstračního příkladu: metoda <strong>constructMethodHello()</strong></h2>
+
+<p>V&nbsp;následujících kapitolách si popíšeme čtyři varianty konstrukce
+bajtkódu, jehož úkolem bude vypsat řetězec na standardní či na chybový výstup.
+Vzhledem k&nbsp;tomu, že základ konstrukce nové metody je vždy stejný, můžeme
+kvůli zjednodušení zdrojového kódu dnešního demonstračního příkladu provést
+(oproti příkladům popsaným minule) několik změn. První změna se týká toho, že
+metody v&nbsp;nově vytvářené třídě se budou konstruovat v&nbsp;jediné společné
+metodě s&nbsp;názvem <strong>constructMethodHello</strong>. Této metodě se
+předá odkaz na právě vytvářenou třídu (je typu <strong>CtClass</strong>), dále
+pak jméno vytvářené metody a konečně třetím parametrem této metody je třída
+představující vlastní generátor bajtkódu (viz též <a href="#k05">kapitolu číslo
+5</a> s&nbsp;podrobnějším vysvětlením). Z&nbsp;následujícího výpisu je patrné,
+že se nejdříve vytvoří kostra nové prázdné metody
+(<strong>prepareMethod</strong>) a následně se k&nbsp;této metodě přiřadí
+atribut &bdquo;Code&ldquo; obsahující bajtkód představující tělo této
+metody:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vytvoreni metody public static void hello*().</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno vytvarene metody</i>
+<i>     * @param generator</i>
+<i>     *            generator bajtkodu vytvarene metody</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu nebo strukturalni chyby v bajtkodu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena v pripade, ze nebyla nalezena nektera pomocna trida</i>
+<i>     */</i>
+    private static void <strong>constructMethodHello</strong>(CtClass generatedClass, String methodName, BytecodeGenerator generator) throws CannotCompileException, NotFoundException {
+        MethodInfo methodInfo = prepareMethod(generatedClass, methodName);
+        ConstPool constPool = methodInfo.getConstPool();
+        Bytecode bytecode = generator.generateBytecode(constPool);
+        setCodeAttributeForMethod(methodInfo, bytecode);
+    }
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Metody <strong>prepareMethod()</strong> a <strong>setCodeAttributeForMethod()</strong></h2>
+
+<p>Vytvoření metody bez přiřazeného atributu &bdquo;Code&ldquo; je
+v&nbsp;případě nástroje <i>Javassist</i> velmi jednoduché. Kostra metody se
+vytvoří konstruktorem <strong>new CtMethod()</strong>, kterému se předá
+návratový typ metody, jméno metody, typy všech parametrů metody i třída, do níž
+bude metoda vložena. Následně se metodě přiřadí příslušné příznaky, zde
+konkrétně příznak statické metody a příznak pro metodu veřejnou. Posledním
+úkonem je vložení metody do její třídy s&nbsp;využitím volání
+<strong>CtClass.addMethod()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vytvoreni kostry metody a vraceni objektu typu MethodInfo.</i>
+<i>     *</i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno vytvarene metody</i>
+<i>     * @return</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu nebo strukturalni chyby v bajtkodu</i>
+<i>     */</i>
+    private static MethodInfo <strong>prepareMethod</strong>(CtClass generatedClass, String methodName) throws CannotCompileException {
+        CtClass returnType = CtClass.voidType;
+        CtClass[] parameterTypes = {};
+&nbsp;
+<i>        // u metody je nutne znat jeji jmeno, navratovou hodnotu i typy parametru</i>
+        CtMethod helloMethod = new CtMethod(returnType, methodName, parameterTypes, generatedClass);
+&nbsp;
+<i>        // zmena modifikatoru</i>
+        helloMethod.setModifiers(Modifier.STATIC | Modifier.PUBLIC);
+&nbsp;
+<i>        // pridani metody do tridy</i>
+        generatedClass.addMethod(helloMethod);
+&nbsp;
+<i>        // ziskani informace o metoda</i>
+        MethodInfo methodInfo = helloMethod.getMethodInfo();
+        return methodInfo;
+    }
+</pre>
+
+<p>Pokud již máme k&nbsp;dispozici bajtkód nové metody (to je úkol představený
+v&nbsp;dalších kapitolách), je přiřazení tohoto bajtkódu k&nbsp;metodě taktéž
+velmi jednoduché, což snadno zjistíme při pohledu na kód další uživatelské
+metody nazvané příznačně <strong>setCodeAttributeForMethod()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Nastaveni atributu "Code" s bajktodem pro vybranou metodu.</i>
+<i>     * </i>
+<i>     * @param methodInfo</i>
+<i>     *            objekt typu MethodInfo</i>
+<i>     * @param bytecode</i>
+<i>     *            bajtkod vytvarene metody.</i>
+<i>     */</i>
+    private static void <strong>setCodeAttributeForMethod</strong>(MethodInfo methodInfo, Bytecode bytecode) {
+        CodeAttribute codeAttribute = bytecode.toCodeAttribute();
+        methodInfo.setCodeAttribute(codeAttribute);
+    }
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Další součást demonstračního příkladu: abstraktní třída <strong>BytecodeGenerator</strong></h2>
+
+<p><a href="#k03">Ve třetí kapitole</a> jsme si řekli, že se všechny čtyři
+varianty metody typu <strong>void helloWorld()</strong> budou tvořit prakticky
+stejným způsobem, bude se lišit pouze způsob generování jejich bajtkódu. Aby
+bylo možné tuto funkcionalitu zaručit, předává se ve třetím parametru
+uživatelské metody <strong>constructMethodHello()</strong> (uvedené právě <a
+href="#k03">ve třetí kapitole</a>) odkaz na instanci třídy
+<strong>BytecodeGenerator</strong>, resp.&nbsp;přesněji řečeno odkaz na
+instanci některého potomka této třídy, protože ve skutečnosti je
+<strong>BytecodeGenerator</strong> třídou čistě abstraktní (mohlo by se jednat
+i o rozhraní, nenapadl mě však žádný vhodný název pro toto rozhraní, proto jsem
+zůstal u abstraktní třídy :-). Ve třídě <strong>BytecodeGenerator</strong> je
+předepsána pouze jediná metoda nazvaná <strong>generateBytecode()</strong>,
+které se předá odkaz na constant pool a návratovou hodnotou je bajtkód některé
+z&nbsp;variant metody <strong>void helloWorld()</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Abstraktni trida, kterou mohou rozsirit vsechny tridy urcenyme pro generovani bajtkodu.</i>
+<i> */</i>
+abstract class <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro libovolnou</i>
+<i>     * metodu.</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyvolana v pripade, ze se nenaleznou nektere pomocne tridy</i>
+<i>     */</i>
+    abstract public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) throws NotFoundException;
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. První způsob výpisu řetězce &ndash; využití <strong>Bytecode.addPrintln()</strong></h2>
+
+<p>První způsob konstrukce bajtkódu metody, jejímž úkolem bude výpis řetězce,
+je velmi jednoduchý, protože zde využijeme volání
+<strong>Bytecode.addPrintln()</strong>. Výpis řetězce je totiž tak často
+prováděnou funkcí, že se autoři nástroje <i>Javassist</i> rozhodli nám
+zjednodušit práci a vytvořit všechny tři potřebné instrukce s&nbsp;využitím
+volání této jediné metody. Z&nbsp;tohoto důvodu je možné první verzi generátoru
+bajtkódu napsat velmi snadno, ovšem povšimněte si, že nesmíme zapomenout na
+konec bajtkódu vložit instrukci <strong>return</strong> zajišťující korektní
+návrat z&nbsp;metody. Ve skutečnosti nás však <i>Javassist</i> nijak při tvorbě
+bajtkódu nekontroluje, takže se můžeme pokusit tuto instrukci odstranit a
+sledovat, jak bude s&nbsp;takto vytvořeným bajtkódem &bdquo;spokojen&ldquo;
+virtuální stroj Javy:</p>
+
+<pre>
+<i>/**</i>
+<i> * Generator bajtkodu prvni verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator1</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello1().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // instrukce pro tisk retezce lze vygenerovat (pridat do bajtkodu)</i>
+<i>        // velmi jednoduse s vyuzitim metody Bytecode.addPrintln()</i>
+        bytecode.addPrintln("Hello world #1!");
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Druhý způsob výpisu řetězce &ndash; využití <strong>Bytecode.addGetstatic()</strong>, <strong>Bytecode.addLdc()</strong> a <strong>Bytecode.addInvokevirtual()</strong></h2>
+
+<p>Druhý způsob konstrukce bajtkódu metody, jejímž úkolem bude výpis řetězce,
+je již poněkud komplikovanější, jelikož zde již budeme zapisovat všechny tři
+instrukce explicitně. Nejprve je však nutné do constant poolu vložit nový
+řetězec, což zajišťuje volání <strong>ConstPool.addStringInfo()</strong>.
+Návratovou hodnotou tohoto volání je index nové položky uložené do constant
+poolu; tento index je nutné si zapamatovat, neboť ho využijeme dále. Další
+postup je již poměrně přímočarý, neboť nástroj <i>Javassist</i> nabízí metody
+<strong>Bytecode.addGetstatic()</strong>, <strong>Bytecode.addLdc()</strong> a
+<strong>Bytecode.addInvokevirtual()</strong>. Tyto tři metody jsou přetížené a
+my zde využijeme varianty, v&nbsp;níž jsou plná jména tříd a signatury metod
+reprezentovány řetězci. Interně musí <i>Javassist</i> tyto řetězce taktéž
+uložit do constant poolu, což jsme ostatně již viděli <a href="#k02">ve druhé
+kapitole</a>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Generator bajtkodu druhe verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator2</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello2().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // pridat do konstant poolu novy retezec</i>
+        final int stringConstant = constPool.addStringInfo("Hello world #2!");
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // vygenerovani trojice instrukci:</i>
+<i>        // getstatic</i>
+<i>        // ldc</i>
+<i>        // invokevirtual</i>
+        bytecode.addGetstatic("java.lang.System", "err", "Ljava/io/PrintStream;");
+        bytecode.addLdc(stringConstant);
+        bytecode.addInvokevirtual("java.io.PrintStream", "println", "(Ljava/lang/String;)V");
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Třetí způsob výpisu řetězce &ndash; použití třídy <strong>CtClass</strong> namísto signatur tříd a metod</h2>
+
+<p>V&nbsp;předchozí kapitole jsme si uvedli jeden ze způsobů využití metod
+<strong>Bytecode.addGetstatic()</strong>, <strong>Bytecode.addLdc()</strong> a
+<strong>Bytecode.addInvokevirtual()</strong>. Povšimněte si, že metodě
+<strong>Bytecode.addGetstatic()</strong> bylo nutné předat jméno třídy se
+statickým atributem, jméno atributu i jeho typ (ve formě signatury). Podobně
+bylo nutné metodě <strong>Bytecode.addInvokevirtual()</strong> předat jméno
+třídy, jméno volané metody a její plnou signaturu (návratový typ i typy
+parametrů). Existují situace, kdy je předávání těchto řetězců vhodné &ndash;
+může se například jednat o specializované překladače &ndash; ovšem někdy je
+výhodnější použít typově bezpečnější přístup. Ve skutečnosti je totiž možné
+použít i alternativní podobu metod <strong>Bytecode.addGetstatic()</strong> a
+<strong>Bytecode.addInvokevirtual()</strong>. Těmto metodám se předají
+příslušné instance třídy typu <strong>CtClass</strong> (ty lze vytvořit různým
+způsobem) a parametry či návratový typ u <strong>addInvokevirtual()</strong>
+může být taktéž reprezentován instancemi třídy <strong>CtClass</strong>.
+Základní způsob využití je vidět ze třetí verze generátoru metody typu
+&bdquo;Hello world&ldquo;:</p>
+
+<pre>
+<i>/**</i>
+<i> * Generator bajtkodu treti verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator3</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello3().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) throws NotFoundException {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // pridat do konstant poolu novy retezec</i>
+        final int stringConstant = constPool.addStringInfo("Hello world #3!");
+&nbsp;
+<i>        // ziskat vychozi class pool</i>
+        final ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // pripravit obrazy trid, s nimiz se bude dale pracovat</i>
+        final CtClass classJavaLangSystem = pool.get("java.lang.System");
+        final CtClass classJavaIoPrintStream = pool.get("java.io.PrintStream");
+        final CtClass classString = pool.get("java.lang.String");
+&nbsp;
+<i>        // parametry vytvorene metody</i>
+        final CtClass params[] = {classString};
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // vygenerovani trojice instrukci:</i>
+<i>        // getstatic</i>
+<i>        // ldc</i>
+<i>        // invokevirtual</i>
+        bytecode.addGetstatic(classJavaLangSystem, "err", "Ljava/io/PrintStream;");
+        bytecode.addLdc(stringConstant);
+        bytecode.addInvokevirtual(classJavaIoPrintStream, "println", CtClass.voidType, params);
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Čtvrtý způsob výpisu řetězce &ndash; převod instance třídy <strong>Class</strong> na <strong>CtClass</strong></h2>
+
+<p>Existuje dokonce ještě jednodušší způsob, jak získat instance třídy
+<strong>CtClass</strong> představující obrazy tříd <strong>System</strong>,
+<strong>PrintStream</strong> či <strong>String</strong>. Jeden
+z&nbsp;konstruktorů třídy <strong>CtClass</strong> totiž jako svůj argument
+akceptuje i třídu <strong>java.lang.Class</strong>, jejíž instanci lze získat
+pro každou třídu či pro každé rozhraní v&nbsp;běžícím virtuálním stroji Javy.
+Pro instanci libovolné třídy stačí použít volání
+<strong>Object.getClass()</strong>, pro třídu samotnou (tedy pro datový typ)
+pak existuje literál .class (Foo.class, X.class, String.class). To tedy
+znamená, že vůbec nemusíme v&nbsp;našem kódu explicitně používat řetězcovou
+podobu jmen tříd &bdquo;java.lang.System&ldquo;,
+&bdquo;java.io.PrintStream&ldquo; či &bdquo;java.lang.String&ldquo;, protože
+lze snadno získat objety typu <strong>Class</strong> a z&nbsp;nich pak vytvořit
+objekty typu <strong>CtClass</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Generator bajtkodu ctvrte verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator4</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello4().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) throws NotFoundException {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // pridat do konstant poolu novy retezec</i>
+        final int stringConstant = constPool.addStringInfo("Hello world #4!");
+&nbsp;
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // pripravit obrazy trid, s nimiz se bude dale pracovat</i>
+&nbsp;
+<i>        // java.lang.System</i>
+        String classJavaLangSystemName = System.class.getName();
+        CtClass classJavaLangSystem = pool.get(classJavaLangSystemName);
+&nbsp;
+<i>        // java.lang.System.err</i>
+        String classJavaIoPrintStreamName = System.err.getClass().getName();
+        CtClass classJavaIoPrintStream = pool.get(classJavaIoPrintStreamName);
+&nbsp;
+<i>        // java.lang.String</i>
+        String classStringName = "foo".getClass().getName();
+        CtClass classString = pool.get(classStringName);
+&nbsp;
+<i>        // parametry vytvorene metody</i>
+        CtClass params[] = {classString};
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // vygenerovani trojice instrukci:</i>
+<i>        // getstatic</i>
+<i>        // ldc</i>
+<i>        // invokevirtual</i>
+        bytecode.addGetstatic(classJavaLangSystem, "err", "Ljava/io/PrintStream;");
+        bytecode.addLdc(stringConstant);
+        bytecode.addInvokevirtual(classJavaIoPrintStream, "println", CtClass.voidType, params);
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Spuštění metod právě vytvořené třídy ve stejném virtuálním stroji</h2>
+
+<p>Prozatím všechny třídy (a jejich metody), které jsme generovali
+s&nbsp;využitím nástroje <i>Javassist</i>, byly spouštěny mimo virtuální stroj
+Javy, v&nbsp;němž byl spuštěn tento nástroj. To je sice v&nbsp;mnoha případech
+v&nbsp;pořádku, zejména tehdy, pokud potřebujeme nějakou třídu vytvořit či
+modifikovat pouze jednou, ovšem ve chvíli, kdy je nutné
+vytvořenou/modifikovanou třídu ihned použít by bylo vhodnější, aby se třída
+načetla a inicializovala ve stejném virtuálním stroji. I tuto možnost nástroj
+<i>Javassist</i> programátorům nabízí, takže je ho možné využít například u
+aspektově orientovaného programování atd. Podívejme se nyní na základní způsob
+inicializace vytvořené třídy a spuštění jejich metod. Použijeme přitom dvě
+techniky &ndash; převod instance <strong>CtClass</strong> na
+<strong>java.lang.Class</strong>, což zajišťuje metoda
+<strong>CtClass.toClass()</strong> (toto není tak jednoduché, jak by se mohlo
+na první pohled zdát, protože <i>Javassist+JVM</i> zde musí provést velké
+množství inicializačních operací):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Spusteni vsech metod typu "hello*()"</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            Trida vygenerovana nastrojem Javassist.</i>
+<i>     * </i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             muze byt vyhozena v prubehu prevodu CtClass na Class</i>
+<i>     * @throws InstantiationException</i>
+<i>     *             muze byt vyhozena v prubehu prevodu CtClass na Class</i>
+<i>     * @throws IllegalAccessException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws NoSuchMethodException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws InvocationTargetException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     */</i>
+    private static void <strong>runMethodsFromNewClass</strong>(CtClass generatedClass) throws CannotCompileException, InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
+        Class c = generatedClass.toClass();
+        for (int i = 1; i &lt;= 4; i++) {
+            invokeStaticMethod(c, "hello" + i);
+        }
+    }
+</pre>
+
+<p>Druhou zde použitou technikou je zavolání metody s&nbsp;využitím
+<i>reflection API</i>. Vzhledem k&nbsp;tomu, že všechny čtyři spouštěné metody
+jsou statické a současně i bezparametrické, nepředává se ve volání
+<strong>Method.invoke()</strong> žádná hodnota (ono <strong>null</strong> pouze
+nahrazuje hodnotu <strong>this</strong> použitou u nestatických metod):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zavolani vybrane staticke metody</i>
+<i>     * </i>
+<i>     * @param anyClass</i>
+<i>     *            trida, v niz je staticka metoda deklarovana</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno staticke metody</i>
+<i>     * @throws IllegalAccessException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws NoSuchMethodException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws InvocationTargetException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     */</i>
+    @SuppressWarnings("unchecked")
+    private static void <strong>invokeStaticMethod</strong>(Class anyClass, String methodName) throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
+        Method hello = anyClass.getMethod(methodName);
+        hello.invoke(null);
+    }
+</pre>
+
+<p>Existují ale i lepší způsoby spuštění metod vytvořené třídy, v&nbsp;ideálním
+případě lze nadeklarovat rozhraní či abstraktní rodičovskou třídu a provést
+spuštění přímo, tj.&nbsp;bez použití <i>reflection API</i>.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Zdrojový kód demonstračního příkladu <strong>ClassGenerationTest8</strong></h2>
+
+<p>Veškeré uživatelské metody i pětice pomocných tříd je součástí dnešního
+prvního a současně i jediného demonstračního příkladu nazvaného
+<strong>ClassGenerationTest8</strong>. V&nbsp;tomto příkladu se provede trojice
+operací. Nejdříve se vytvoří nová třída nazvaná
+<strong>GeneratedClass8</strong> s&nbsp;pěticí vygenerovaných metod
+<strong>main()</strong>, <strong>hello1()</strong> až <strong>hello4()</strong>
+a následně se struktura celé této třídy vypíše na standardní výstup
+s&nbsp;využitím stejného postupu, s&nbsp;jakým jsme se seznámili již
+v&nbsp;předchozí části tohoto seriálu &ndash; zpětným přečtením kódu každé
+metody s&nbsp;následnou iterací přes získaný kód a výpisem symbolických jmen
+jednotlivých instrukcí. Posléze se nově vytvořená třída
+<strong>GeneratedClass8</strong> načte do JVM a všechny čtyři statické metody
+<strong>hello1()</strong> až <strong>hello4()</strong> se spustí. Následuje
+výpis celého zdrojového kódu tohoto demonstračního příkladu:</p>
+
+<pre>
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+&nbsp;
+import javassist.CannotCompileException;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtMethod;
+import javassist.Modifier;
+import javassist.NotFoundException;
+import javassist.bytecode.BadBytecode;
+import javassist.bytecode.Bytecode;
+import javassist.bytecode.CodeAttribute;
+import javassist.bytecode.CodeIterator;
+import javassist.bytecode.ConstPool;
+import javassist.bytecode.MethodInfo;
+import javassist.bytecode.Mnemonic;
+import javassist.bytecode.Opcode;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Abstraktni trida, kterou mohou rozsirit vsechny tridy urcenyme pro generovani bajtkodu.</i>
+<i> */</i>
+abstract class <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro libovolnou</i>
+<i>     * metodu.</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyvolana v pripade, ze se nenaleznou nektere pomocne tridy</i>
+<i>     */</i>
+    abstract public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) throws NotFoundException;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Generator bajtkodu prvni verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator1</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello1().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // instrukce pro tisk retezce lze vygenerovat (pridat do bajtkodu)</i>
+<i>        // velmi jednoduse s vyuzitim metody Bytecode.addPrintln()</i>
+        bytecode.addPrintln("Hello world #1!");
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Generator bajtkodu druhe verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator2</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello2().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // pridat do konstant poolu novy retezec</i>
+        final int stringConstant = constPool.addStringInfo("Hello world #2!");
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // vygenerovani trojice instrukci:</i>
+<i>        // getstatic</i>
+<i>        // ldc</i>
+<i>        // invokevirtual</i>
+        bytecode.addGetstatic("java.lang.System", "err", "Ljava/io/PrintStream;");
+        bytecode.addLdc(stringConstant);
+        bytecode.addInvokevirtual("java.io.PrintStream", "println", "(Ljava/lang/String;)V");
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Generator bajtkodu treti verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator3</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello3().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) throws NotFoundException {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // pridat do konstant poolu novy retezec</i>
+        final int stringConstant = constPool.addStringInfo("Hello world #3!");
+&nbsp;
+<i>        // ziskat vychozi class pool</i>
+        final ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // pripravit obrazy trid, s nimiz se bude dale pracovat</i>
+        final CtClass classJavaLangSystem = pool.get("java.lang.System");
+        final CtClass classJavaIoPrintStream = pool.get("java.io.PrintStream");
+        final CtClass classString = pool.get("java.lang.String");
+&nbsp;
+<i>        // parametry vytvorene metody</i>
+        final CtClass params[] = {classString};
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // vygenerovani trojice instrukci:</i>
+<i>        // getstatic</i>
+<i>        // ldc</i>
+<i>        // invokevirtual</i>
+        bytecode.addGetstatic(classJavaLangSystem, "err", "Ljava/io/PrintStream;");
+        bytecode.addLdc(stringConstant);
+        bytecode.addInvokevirtual(classJavaIoPrintStream, "println", CtClass.voidType, params);
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Generator bajtkodu ctvrte verze metody hello().</i>
+<i> */</i>
+class <strong>HelloMethodGenerator4</strong> extends <strong>BytecodeGenerator</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu</i>
+<i>     * void hello4().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro vytvorenou metodu</i>
+<i>     */</i>
+    @Override
+    public Bytecode <strong>generateBytecode</strong>(ConstPool constPool) throws NotFoundException {
+        final int stackSize = 1;
+        final int localVars = 0;
+&nbsp;
+<i>        // pridat do konstant poolu novy retezec</i>
+        final int stringConstant = constPool.addStringInfo("Hello world #4!");
+&nbsp;
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // pripravit obrazy trid, s nimiz se bude dale pracovat</i>
+&nbsp;
+<i>        // java.lang.System</i>
+        String classJavaLangSystemName = System.class.getName();
+        CtClass classJavaLangSystem = pool.get(classJavaLangSystemName);
+&nbsp;
+<i>        // java.lang.System.err</i>
+        String classJavaIoPrintStreamName = System.err.getClass().getName();
+        CtClass classJavaIoPrintStream = pool.get(classJavaIoPrintStreamName);
+&nbsp;
+<i>        // java.lang.String</i>
+        String classStringName = "foo".getClass().getName();
+        CtClass classString = pool.get(classStringName);
+&nbsp;
+<i>        // parametry vytvorene metody</i>
+        CtClass params[] = {classString};
+&nbsp;
+<i>        // vygenerovat bajtkod</i>
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+&nbsp;
+<i>        // vygenerovani trojice instrukci:</i>
+<i>        // getstatic</i>
+<i>        // ldc</i>
+<i>        // invokevirtual</i>
+        bytecode.addGetstatic(classJavaLangSystem, "err", "Ljava/io/PrintStream;");
+        bytecode.addLdc(stringConstant);
+        bytecode.addInvokevirtual(classJavaIoPrintStream, "println", CtClass.voidType, params);
+&nbsp;
+<i>        // dulezite je taktez spravne ukoncit volani metody a zabezpecit</i>
+<i>        // navrat do metody volajici</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+<i>        // vratit prave vytvoreny bajtkod</i>
+        return bytecode;
+    }
+&nbsp;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Test moznosti nastroje Javassist - vygenerovani jednoduche tridy</i>
+<i> * s metodou main a nekolika dalsimi statickymi bezparametrickymi metodami</i>
+<i> * "hello*()"</i>
+<i> * Jakmile je trida vytvorena, je nactena do JVM a jeji staticke metody jsou</i>
+<i> * spusteny. </i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>ClassGenerationTest8</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno vygenerovane tridy.</i>
+<i>     */</i>
+    private static final String <strong>GENERATED_CLASS_NAME</strong> = "GeneratedClass8";
+&nbsp;
+<i>    /**</i>
+<i>     * Zdrojovy kod metody main(), ktery bude nasledne zkompilovan</i>
+<i>     * do bajtkodu a zakomponovan do vytvorene tridy.</i>
+<i>     */</i>
+    private static final String <strong>MAIN_METHOD_SOURCE_TEXT</strong> =
+        "public static void main(String[] args)" +
+        "{" +
+        "    hello1();" +
+        "    hello2();" +
+        "    hello3();" +
+        "    hello4();" +
+        "}";
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni metody main() z jejiho zdrojoveho kodu.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static void <strong>addMethodMain</strong>(CtClass generatedClass) throws CannotCompileException {
+        CtMethod methodMain = CtMethod.make(MAIN_METHOD_SOURCE_TEXT, generatedClass);
+        generatedClass.addMethod(methodMain);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni metody public static void hello*().</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno vytvarene metody</i>
+<i>     * @param generator</i>
+<i>     *            generator bajtkodu vytvarene metody</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu nebo strukturalni chyby v bajtkodu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena v pripade, ze nebyla nalezena nektera pomocna trida</i>
+<i>     */</i>
+    private static void <strong>constructMethodHello</strong>(CtClass generatedClass, String methodName, BytecodeGenerator generator) throws CannotCompileException, NotFoundException {
+        MethodInfo methodInfo = prepareMethod(generatedClass, methodName);
+        ConstPool constPool = methodInfo.getConstPool();
+        Bytecode bytecode = generator.generateBytecode(constPool);
+        setCodeAttributeForMethod(methodInfo, bytecode);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni kostry metody a vraceni objektu typu MethodInfo.</i>
+<i>     *</i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno vytvarene metody</i>
+<i>     * @return</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu nebo strukturalni chyby v bajtkodu</i>
+<i>     */</i>
+    private static MethodInfo <strong>prepareMethod</strong>(CtClass generatedClass, String methodName) throws CannotCompileException {
+        CtClass returnType = CtClass.voidType;
+        CtClass[] parameterTypes = {};
+&nbsp;
+<i>        // u metody je nutne znat jeji jmeno, navratovou hodnotu i typy parametru</i>
+        CtMethod helloMethod = new CtMethod(returnType, methodName, parameterTypes, generatedClass);
+&nbsp;
+<i>        // zmena modifikatoru</i>
+        helloMethod.setModifiers(Modifier.STATIC | Modifier.PUBLIC);
+&nbsp;
+<i>        // pridani metody do tridy</i>
+        generatedClass.addMethod(helloMethod);
+&nbsp;
+<i>        // ziskani informace o metoda</i>
+        MethodInfo methodInfo = helloMethod.getMethodInfo();
+        return methodInfo;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nastaveni atributu "Code" s bajktodem pro vybranou metodu.</i>
+<i>     * </i>
+<i>     * @param methodInfo</i>
+<i>     *            objekt typu MethodInfo</i>
+<i>     * @param bytecode</i>
+<i>     *            bajtkod vytvarene metody.</i>
+<i>     */</i>
+    private static void <strong>setCodeAttributeForMethod</strong>(MethodInfo methodInfo, Bytecode bytecode) {
+        CodeAttribute codeAttribute = bytecode.toCodeAttribute();
+        methodInfo.setCodeAttribute(codeAttribute);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni tridy s metodou main().</i>
+<i>     * </i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu metody main()</i>
+<i>     *             nebo pri strukturalni chybe bajtkodu metod hello1()-hello4().</i>
+<i>     * @throws IOException</i>
+<i>     *             pokud dojde k chybe pri zapisu bajtkodu na disk</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             pokud dojde k chybe pri zapisu bajtkodu na disk</i>
+<i>     */</i>
+    private static CtClass <strong>generateClass</strong>() throws CannotCompileException, NotFoundException, IOException {
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // vytvoreni nove verejne tridy</i>
+        CtClass generatedClass = pool.makeClass(GENERATED_CLASS_NAME);
+&nbsp;
+<i>        // konstrukce nove metody void hello1()</i>
+        constructMethodHello(generatedClass, "hello1", new HelloMethodGenerator1());
+&nbsp;
+<i>        // konstrukce nove metody void hello2()</i>
+        constructMethodHello(generatedClass, "hello2", new HelloMethodGenerator2());
+&nbsp;
+<i>        // konstrukce nove metody void hello3()</i>
+        constructMethodHello(generatedClass, "hello3", new HelloMethodGenerator3());
+&nbsp;
+<i>        // konstrukce nove metody void hello4()</i>
+        constructMethodHello(generatedClass, "hello4", new HelloMethodGenerator4());
+&nbsp;
+<i>        // pridani metody do teto tridy</i>
+        addMethodMain(generatedClass);
+&nbsp;
+<i>        // ulozeni bajtkodu na disk</i>
+        generatedClass.writeFile();
+&nbsp;
+        return generatedClass;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis struktury vybrane metody.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno metody, jejiz struktura se ma vypsat</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodStructure</strong>(CtClass generatedClass, String methodName) throws NotFoundException, BadBytecode {
+        System.out.println("Method '" + methodName + "' structure:");
+        CtMethod method = generatedClass.getDeclaredMethod(methodName);
+        if (method == null) {
+            System.out.println("   not found!");
+            return;
+        }
+        MethodInfo methodInfo = method.getMethodInfo();
+        System.out.println("    real name:    " + methodInfo.getName());
+        System.out.println("    descriptor:   " + methodInfo.getDescriptor());
+        System.out.println("    access flags: " + Modifier.toString(methodInfo.getAccessFlags()));
+        System.out.println("    method body:");
+        printMethodBody(methodInfo);
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis instrukci tvoricich telo vybrane metody.</i>
+<i>     *</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodBody</strong>(MethodInfo methodInfo) throws BadBytecode {
+        CodeAttribute ca = methodInfo.getCodeAttribute();
+        CodeIterator iterator = ca.iterator();
+        while (iterator.hasNext()) {
+            int index = iterator.next();
+            int opcode = iterator.byteAt(index);
+            System.out.println("        " + Mnemonic.OPCODE[opcode]);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis struktury vybranych metod z generovane tridy.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode </i>
+<i>     */</i>
+    private static void <strong>printMethodStructures</strong>(CtClass generatedClass) throws NotFoundException, BadBytecode {
+        printMethodStructure(generatedClass, "main");
+        printMethodStructure(generatedClass, "hello1");
+        printMethodStructure(generatedClass, "hello2");
+        printMethodStructure(generatedClass, "hello3");
+        printMethodStructure(generatedClass, "hello4");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni vsech metod typu "hello*()"</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            Trida vygenerovana nastrojem Javassist.</i>
+<i>     * </i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             muze byt vyhozena v prubehu prevodu CtClass na Class</i>
+<i>     * @throws InstantiationException</i>
+<i>     *             muze byt vyhozena v prubehu prevodu CtClass na Class</i>
+<i>     * @throws IllegalAccessException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws NoSuchMethodException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws InvocationTargetException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     */</i>
+    private static void <strong>runMethodsFromNewClass</strong>(CtClass generatedClass) throws CannotCompileException, InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
+        Class c = generatedClass.toClass();
+        for (int i = 1; i &lt;= 4; i++) {
+            invokeStaticMethod(c, "hello" + i);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zavolani vybrane staticke metody</i>
+<i>     * </i>
+<i>     * @param anyClass</i>
+<i>     *            trida, v niz je staticka metoda deklarovana</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno staticke metody</i>
+<i>     * @throws IllegalAccessException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws NoSuchMethodException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     * @throws InvocationTargetException</i>
+<i>     *             muze byt vyhozena v prubehu spusteni vybrane metody</i>
+<i>     */</i>
+    @SuppressWarnings("unchecked")
+    private static void <strong>invokeStaticMethod</strong>(Class anyClass, String methodName) throws NoSuchMethodException, IllegalAccessException, InvocationTargetException {
+        Method hello = anyClass.getMethod(methodName);
+        hello.invoke(null);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni generatoru tridy.</i>
+<i>     *</i>
+<i>     * @param args nevyuzito</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("class generation begin: " + GENERATED_CLASS_NAME);
+        try {
+            CtClass generatedClass = generateClass();
+<i>            // dulezite - generovana trida nesmi byt "zmrazena"</i>
+            generatedClass.defrost();
+<i>            // vypis struktury bajtkodu vsech metod</i>
+            printMethodStructures(generatedClass);
+<i>            // spusteni metod</i>
+            runMethodsFromNewClass(generatedClass);
+        }
+        catch (CannotCompileException e) {
+            e.printStackTrace();
+        }
+        catch (NotFoundException e) {
+            e.printStackTrace();
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (BadBytecode e) {
+            e.printStackTrace();
+        }
+        catch (InstantiationException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalAccessException e) {
+            e.printStackTrace();
+        }
+        catch (SecurityException e) {
+            e.printStackTrace();
+        }
+        catch (NoSuchMethodException e) {
+            e.printStackTrace();
+        }
+        catch (IllegalArgumentException e) {
+            e.printStackTrace();
+        }
+        catch (InvocationTargetException e) {
+            e.printStackTrace();
+        }
+        System.out.println("class generation end: " + GENERATED_CLASS_NAME);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Výpis bajtkódu vygenerovaného demonstračním příkladem <strong>ClassGenerationTest8</strong></h2>
+
+<p>Demonstrační příklad <strong>ClassGenerationTest8</strong> po svém spuštění
+vytvoří třídu <strong>GeneratedClass8</strong> a navíc na standardní výstup
+vypíše základní strukturu této třídy. Na závěr jsou spuštěny všechny čtyři
+metody <strong>hello*()</strong>, které provedou výpis na chybový výstup:</p>
+
+<pre>
+class generation begin: <strong>GeneratedClass8</strong>
+Method 'main' structure:
+    real name:    <strong>main</strong>
+    descriptor:   ([Ljava/lang/String;)V
+    access flags: public static
+    method body:
+        invokestatic
+        invokestatic
+        invokestatic
+        invokestatic
+        return
+&nbsp;
+Method 'hello1' structure:
+    real name:    <strong>hello1</strong>
+    descriptor:   ()V
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        invokevirtual
+        return
+&nbsp;
+Method 'hello2' structure:
+    real name:    <strong>hello2</strong>
+    descriptor:   ()V
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        invokevirtual
+        return
+&nbsp;
+Method 'hello3' structure:
+    real name:    <strong>hello3</strong>
+    descriptor:   ()V
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        invokevirtual
+        return
+&nbsp;
+Method 'hello4' structure:
+    real name:    <strong>hello4</strong>
+    descriptor:   ()V
+    access flags: public static
+    method body:
+        getstatic
+        ldc
+        invokevirtual
+        return
+&nbsp;
+class generation end: GeneratedClass8
+&nbsp;
+Hello world #1!
+Hello world #2!
+Hello world #3!
+Hello world #4!
+</pre>
+
+<p>Bude jistě zajímavé podívat se i na strukturu bajtkódu třídy
+<strong>GeneratedClass8</strong> vygenerované dnešním druhým demonstračním
+příkladem <strong>ClassGenerationTest8</strong>. Pro výpis struktury bajtkódu
+opět využijeme standardní nástroj <strong>javap</strong>:</p>
+
+<pre>
+javap -c -private GeneratedClass8
+</pre>
+
+<p>Z&nbsp;výpisu vypsaného disassemblerem je patrné, že všechny čtyři metody
+jsou tvořeny stejnou sekvencí instrukcí, nezávisle na tom, jakým způsobem byly
+tyto metody ve skutečnosti zkonstruovány. Dále je patrné, že nástroj
+<i>Javassist</i> automaticky vytvořil všechny potřebné záznamy v&nbsp;constant
+poolu. Jedná se o všechny záznamy typu <strong>NameAndType</strong>,
+<strong>Method</strong>, <strong>Class</strong> a s&nbsp;nimi související
+záznamy typu <strong>Asciz</strong>:</p>
+
+<pre>
+Compiled from "GeneratedClass8.java"
+<strong>public class GeneratedClass8 extends java.lang.Object</strong>
+  SourceFile: "GeneratedClass8.java"
+  minor version: 0
+  major version: 50
+  Constant pool:
+const #1 = Asciz        GeneratedClass8;
+const #2 = class        #1;            <i>//  GeneratedClass8</i>
+const #3 = Asciz        java/lang/Object;
+const #4 = class        #3;            <i>//  java/lang/Object</i>
+const #5 = Asciz        SourceFile;
+const #6 = Asciz        GeneratedClass8.java;
+const #7 = Asciz        hello1;
+const #8 = Asciz        ()V;
+const #9 = Asciz        java/lang/System;
+const #10 = class       #9;            <i>//  java/lang/System</i>
+const #11 = Asciz       err;
+const #12 = Asciz       Ljava/io/PrintStream;;
+const #13 = NameAndType #11:#12;       <i>//  err:Ljava/io/PrintStream;</i>
+const #14 = Field       #10.#13;       <i>//  java/lang/System.err:Ljava/io/PrintStream;</i>
+const #15 = Asciz       Hello world #1!;
+const #16 = String      #15;           <i>//  Hello world #1!</i>
+const #17 = Asciz       java/io/PrintStream;
+const #18 = class       #17;           <i>//  java/io/PrintStream</i>
+const #19 = Asciz       println;
+const #20 = Asciz       (Ljava/lang/String;)V;
+const #21 = NameAndType #19:#20;       <i>//  println:(Ljava/lang/String;)V</i>
+const #22 = Method      #18.#21;       <i>//  java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+const #23 = Asciz       Code;
+const #24 = Asciz       hello2;
+const #25 = Asciz       Hello world #2!;
+const #26 = String      #25;           <i>//  Hello world #2!</i>
+const #27 = Asciz       hello3;
+const #28 = Asciz       Hello world #3!;
+const #29 = String      #28;           <i>//  Hello world #3!</i>
+const #30 = Asciz       hello4;
+const #31 = Asciz       Hello world #4!;
+const #32 = String      #31;           <i>//  Hello world #4!</i>
+const #33 = Asciz       main;
+const #34 = Asciz       ([Ljava/lang/String;)V;
+const #35 = NameAndType #7:#8;         <i>//  hello1:()V</i>
+const #36 = Method      #2.#35;        <i>//  GeneratedClass8.hello1:()V</i>
+const #37 = NameAndType #24:#8;        <i>//  hello2:()V</i>
+const #38 = Method      #2.#37;        <i>//  GeneratedClass8.hello2:()V</i>
+const #39 = NameAndType #27:#8;        <i>//  hello3:()V</i>
+const #40 = Method      #2.#39;        <i>//  GeneratedClass8.hello3:()V</i>
+const #41 = NameAndType #30:#8;        <i>//  hello4:()V</i>
+const #42 = Method      #2.#41;        <i>//  GeneratedClass8.hello4:()V</i>
+const #43 = Asciz       &lt;init&gt;;
+const #44 = NameAndType #43:#8;        <i>//  "&lt;init&gt;":()V</i>
+const #45 = Method      #4.#44;        <i>//  java/lang/Object."&lt;init&gt;":()V</i>
+&nbsp;
+{
+<strong>public static void hello1();</strong>
+  Code:
+   Stack=2, Locals=0, Args_size=0
+   0:   getstatic       #14;           <i>//Field java/lang/System.err:Ljava/io/PrintStream;</i>
+   3:   ldc             #16;           <i>//String Hello world #1!</i>
+   5:   invokevirtual   #22;           <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   8:   return
+&nbsp;
+<strong>public static void hello2();</strong>
+  Code:
+   Stack=2, Locals=0, Args_size=0
+   0:   getstatic       #14;           <i>//Field java/lang/System.err:Ljava/io/PrintStream;</i>
+   3:   ldc             #26;           <i>//String Hello world #2!</i>
+   5:   invokevirtual   #22;           <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   8:   return
+&nbsp;
+<strong>public static void hello3();</strong>
+  Code:
+   Stack=2, Locals=0, Args_size=0
+   0:   getstatic       #14;           <i>//Field java/lang/System.err:Ljava/io/PrintStream;</i>
+   3:   ldc             #29;           <i>//String Hello world #3!</i>
+   5:   invokevirtual   #22;           <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   8:   return
+&nbsp;
+<strong>public static void hello4();</strong>
+  Code:
+   Stack=2, Locals=0, Args_size=0
+   0:   getstatic       #14;           <i>//Field java/lang/System.err:Ljava/io/PrintStream;</i>
+   3:   ldc             #32;           <i>//String Hello world #4!</i>
+   5:   invokevirtual   #22;           <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   8:   return
+&nbsp;
+<strong>public static void main(java.lang.String[]);</strong>
+  Code:
+   Stack=0, Locals=1, Args_size=1
+   0:   invokestatic    #36;           <i>//Method hello1:()V</i>
+   3:   invokestatic    #38;           <i>//Method hello2:()V</i>
+   6:   invokestatic    #40;           <i>//Method hello3:()V</i>
+   9:   invokestatic    #42;           <i>//Method hello4:()V</i>
+   12:  return
+&nbsp;
+<strong>public GeneratedClass8();</strong>
+  Code:
+   Stack=1, Locals=1, Args_size=1
+   0:   aload_0
+   1:   invokespecial   #45;           <i>//Method java/lang/Object."&lt;init&gt;":()V</i>
+   4:   return
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Repositář se zdrojovými kódy dnešního demonstračního příkladu</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. Dnes popsaný demonstrační příklad je společně
+s&nbsp;dalšími pomocnými skripty uložen do Mercurial repositáře dostupného na
+adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verze těchto
+zdrojových kódů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ClassGenerationTest8.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/ClassGenerationTest8.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/ClassGenerationTest8.java</a></td></tr>
+<tr><td>2</td><td>buildClassGenerator8.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/buildClassGenerator8.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/buildClassGenerator8.sh</a></td></tr>
+<tr><td>3</td><td>runClassGenerator8.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/runClassGenerator8.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/runClassGenerator8.sh</a></td></tr>
+<tr><td>4</td><td>runGeneratedClass8.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/runGeneratedClass8.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/2588b1e9c0da/javassist/ClassGenerationTest8/runGeneratedClass8.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
