@@ -1,0 +1,1433 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - tvorba programových smyček s&nbsp;využitím nástroje Javassist</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - tvorba programových smyček s&nbsp;využitím nástroje Javassist</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si ukážeme, jak lze s využitím nástroje Javassist tvořit bajtkód metod obsahujících programové smyčky. Uvidíme, že nejproblematičtějším úkolem je v tomto případě výpočet cílů nepodmíněných i podmíněných skoků.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - tvorba programových smyček s&nbsp;využitím nástroje Javassist</a></p>
+<p><a href="#k02">2. Ukázky různých způsobů generování bajtkódu počítané programové smyčky <strong>for</strong></a></p>
+<p><a href="#k03">3. Generování metody s&nbsp;počítanou programovou smyčkou <strong>for</strong> v&nbsp;Javassistu</a></p>
+<p><a href="#k04">4. Výpočet cílů podmíněných a nepodmíněných skoků</a></p>
+<p><a href="#k05">5. Tvorba bajtkódu programové smyčky &ndash; složitější varianta</a></p>
+<p><a href="#k06">6. Tvorba bajtkódu programové smyčky &ndash; jednodušší varianta</a></p>
+<p><a href="#k07">7. Vylepšený výpis struktur bajtkódů obou testovacích metod <strong>loopTest1()</strong> a <strong>loopTest2()</strong></a></p>
+<p><a href="#k08">8. Úplný zdrojový kód demonstračního příkladu <strong>ClassGenerationTest9</strong></a></p>
+<p><a href="#k09">9. Výstup demonstračního příkladu <strong>ClassGenerationTest9</strong></a></p>
+<p><a href="#k10">10. Bajtkód třídy <strong>GeneratedClass9</strong></a></p>
+<p><a href="#k11">11. Repositář se zdrojovými kódy dnešního demonstračního příkladu <strong>ClassGenerationTest9</strong></a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - tvorba programových smyček s&nbsp;využitím nástroje Javassist</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> si ukážeme, jak je
+možné nástroj <i>Javassist</i> využít pro generování bajtkódu metod,
+v&nbsp;jejichž těle se nachází počítané programové smyčky či běžné smyčky
+s&nbsp;podmínkou testovanou na začátku či na konci každé iterace. Navážeme tak
+na předchozí část, v&nbsp;níž jsme &bdquo;pouze&ldquo; upravili již existující
+bajtkód metody s&nbsp;programovou smyčkou. V&nbsp;současné verzi
+<i>Javassistu</i> sice není tvorba programových smyček zcela jednoduchá, ovšem
+uvidíme, že i přes některá omezení spočívající v&nbsp;nutnosti použít
+nízkoúrovňové operace, je <i>Javassist</i> možné k&nbsp;této činnosti využít.
+Jen pro úplnost si připomeňme, jaké instrukce se v&nbsp;bajtkódu virtuálního
+stroje Javy používají v&nbsp;případě potřeby provést nepodmíněný či podmíněný
+skok. Tabulka zobrazená pod tímto odstavcem vznikla sloučením tabulek popsaných
+v&nbsp;předchozí části tohoto seriálu:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Popis</th></tr>
+<tr><td>1</td><td>goto</td><td>0xA7</td><td>highbyte, lowbyte</td><td>přímý skok na adresu uloženou v&nbsp;dvojici operandů: highbyte*256+lowbyte</td></tr>
+<tr><td>2</td><td>goto_w</td><td>0xC8</td><td>byte1,byte2,byte3 byte4</td><td>přímý skok na adresu uloženou ve čtveřici operandů: byte1*2<sup>24</sup>+byte2*2<sup>16</sup>+byte3*2<sup>8</sup>+byte4</td></tr>
+<tr><td>3</td><td>ifeq</td><td>0x99</td><td>highbyte, lowbyte</td><td>TOS=0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>4</td><td>ifne</td><td>0x9A</td><td>highbyte, lowbyte</td><td>TOS&ne;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>5</td><td>iflt</td><td>0x9B</td><td>highbyte, lowbyte</td><td>TOS&lt;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>6</td><td>ifge</td><td>0x9C</td><td>highbyte, lowbyte</td><td>TOS&ge;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>7</td><td>ifgt</td><td>0x9D</td><td>highbyte, lowbyte</td><td>TOS&gt;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>8</td><td>ifle</td><td>0x9E</td><td>highbyte, lowbyte</td><td>TOS&le;0</td><td>skok na lokální adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>9</td><td>if_icmpeq</td><td>0x9F</td><td>highbyte, lowbyte</td><td>value1=value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>10</td><td>if_icmpne</td><td>0xA0</td><td>highbyte, lowbyte</td><td>value1&ne;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>11</td><td>if_icmplt</td><td>0xA1</td><td>highbyte, lowbyte</td><td>value1&lt;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>12</td><td>if_icmpge</td><td>0xA2</td><td>highbyte, lowbyte</td><td>value1&ge;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>13</td><td>if_icmpgt</td><td>0xA3</td><td>highbyte, lowbyte</td><td>value1&gt;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+<tr><td>14</td><td>if_icmple</td><td>0xA4</td><td>highbyte, lowbyte</td><td>value1&le;value2</td><td>skok na adresu highbyte*256+lowbyte při splnění podmínky</td></tr>
+</table>
+
+<p>Jak si řekneme v&nbsp;navazujícím textu, jsou adresy cílů skoků uvedeny
+relativně vůči aktuálnímu indexu instrukce, což je velmi důležité při výpočtu
+cíle skoku.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Ukázky různých způsobů generování bajtkódu počítané programové smyčky <strong>for</strong></h2>
+
+<p>Nyní se dostáváme k&nbsp;poměrně důležité problematice týkající se způsobu
+překladu zdrojových kódů Javy do bajtkódu. Obecně je možné říci, že se
+překladače Javy nesnaží o provádění žádných zásadních optimalizací, protože
+výsledný bajtkód není ve většině případů interpretován, ale následně přeložen
+do nativního zdrojového kódu pomocí <i>JIT</i> překladače. I z&nbsp;tohoto
+důvodu je většinou generovaný bajtkód poměrně snadno čitelný a dobře odráží
+původní algoritmus napsaný přímo v&nbsp;Javě. Ovšem určitý problém spočívá
+v&nbsp;tom, že i přes přesnou definici syntaxe a sémantiky programovacího
+jazyka Java (<i>Java Language Specification &ndash; JLS</i>) i přesnou
+specifikaci bajtkódu a významu jednotlivých instrukcí není v&nbsp;žádné normě
+popsáno, jakým způsobem se mají jednotlivé bloky zdrojového kódu zkompilovat do
+sekvence instrukcí JVM. To jinými slovy znamená, že každý překladač Javy může
+generovat odlišné sekvence instrukcí a přitom bude stále splňovat jak
+<i>JLS</i>, tak i <i>JVM Specification</i> (na tuto vlastnost se nelze dívat
+jako na nedostatek, ale spíše na svobodu volby tvůrců překladačů).</p>
+
+<p>Ukažme si však konkrétní příklad, například jednoduchou počítanou smyčku
+<strong>for</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Testovaci trida.</i>
+<i> */</i>
+public class <strong>LoopTest</strong> {
+&nbsp;
+    private static void <strong>loopTest1</strong>() {
+        int i = 0;
+        while (i &lt; 10) {
+            System.out.println("Hello world!");
+            i++;
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Překladač <strong>javac</strong> vytvoří následující sekvenci instrukcí,
+v&nbsp;níž se test počitadla smyčky na koncovou hodnotu provádí
+v&nbsp;instrukcích 2, 3 a 5, zatímco na konci smyčky můžeme nalézt nepodmíněný
+skok <strong>goto</strong>:</p>
+
+<pre>
+private static void <strong>loopTest1()</strong>;
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           iload_0
+   3:           bipush          10
+   5:           <strong>if_icmpge       22</strong>
+   8:           getstatic       #2; //Field java/lang/System.out:Ljava/io/PrintStream;
+   11:          ldc             #3; //String Hello world!
+   13:          invokevirtual   #4; //Method java/io/PrintStream.println:(Ljava/lang/String;)V
+   16:          iinc            0, 1
+   19:          <strong>goto            2</strong>
+   22:          return
+</pre>
+
+<p>Naproti tomu <strong>ecj</strong> (záleží ovšem na verzi) vytvoří poněkud
+odlišný kód, v&nbsp;němž je test na hodnotu počitadla uveden na konci smyčky,
+což ale znamená, že ihned na počátku (před první iterací) je nutné se pomocí
+nepodmíněného skoku na tento test přesunout:</p>
+
+<pre>
+private static void <strong>loopTest1()</strong>;
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           <strong>goto            16</strong>
+   5:           getstatic       #20; //Field java/lang/System.out:Ljava/io/PrintStream;
+   8:           ldc             #22; //String Hello world!
+   10:          invokevirtual   #28; //Method java/io/PrintStream.println:(Ljava/lang/String;)V
+   13:          iinc            0, 1
+   16:          iload_0
+   17:          bipush          10
+   19:          <strong>if_icmplt       5</strong>
+   22:          return
+</pre>
+
+<p>Povšimněte si, že v&nbsp;obou případech má bajtkód délku 23 bajtů a obsahuje
+jeden nepodmíněný skok <strong>goto</strong> a jeden skok podmíněný, a to buď
+<strong>if_icmpge</strong> nebo k&nbsp;němu inverzní test
+<strong>if_icmplt</strong>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Generování metody s&nbsp;počítanou programovou smyčkou <strong>for</strong> v&nbsp;Javassistu</h2>
+
+<p>V&nbsp;této kapitole i v&nbsp;kapitolách následujících jsou popsány některé
+důležité metody, které jsou součástí demonstračního příkladu nazvaného
+<strong>ClassGenerationTest9</strong>. Tento příklad po svém spuštění vytvoří
+bajtkód nové třídy <strong>GeneratedClass9</strong> se statickými metodami
+<strong>main()</strong>, <strong>loopTest1()</strong> a
+<strong>loopTest2()</strong>. Obě zmíněné metody loopTest*() po svém zavolání
+vytisknou deset řádků obsahujících shodný textový řetězec. Bajtkódy těchto
+metod jsou ve skutečnosti prakticky shodné, ovšem pro jejich vytvoření
+použijeme nejdříve složitější postup s&nbsp;nízkoúrovňovými operacemi a u druhé
+metody pak postup, v&nbsp;němž se bude používat vyšší úroveň abstrakce.
+Bajtkódy metod jsou stále generovány stejným způsobem &ndash; nejprve se
+vytvoří vlastní záznam o metodě, včetně údajů o jejích příznacích, návratovém
+typu i typu jednotlivých parametrů a posléze se každé metodě přiřadí atribut
+"CODE" s&nbsp;vlastním bajtkódem.</p>
+
+<p>Vytvoření metody <strong>loopTest1()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vytvoreni staticke metody loopTest1() bez navratove hodnoty.</i>
+<i>     * Instrukce tvorici telo metody jsou vytvoreny s vyuzitim tridy Bytecode.</i>
+<i>     *</i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static void <strong>constructMethodLoopTest1</strong>(CtClass generatedClass) throws CannotCompileException {
+        MethodInfo methodInfo = prepareMethod(generatedClass, "loopTest1");
+&nbsp;
+        <i>// vytvoreni tela metody</i>
+        ConstPool constPool = methodInfo.getConstPool();
+        Bytecode bytecode = generateBytecodeForMethodLoopTest1(constPool);
+        addCodeAttributeToGeneratedMethod(methodInfo, bytecode);
+    }
+</pre>
+
+<p>Vytvoření metody <strong>loopTest2()</strong> je prakticky shodné:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vytvoreni staticke metody loopTest2() bez navratove hodnoty.</i>
+<i>     * Instrukce tvorici telo metody jsou vytvoreny s vyuzitim tridy Bytecode.</i>
+<i>     *</i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static void <strong>constructMethodLoopTest2</strong>(CtClass generatedClass) throws CannotCompileException {
+        MethodInfo methodInfo = prepareMethod(generatedClass, "loopTest2");
+&nbsp;
+        <i>// vytvoreni tela metody</i>
+        ConstPool constPool = methodInfo.getConstPool();
+        Bytecode bytecode = generateBytecodeForMethodLoopTest2(constPool);
+        addCodeAttributeToGeneratedMethod(methodInfo, bytecode);
+    }
+</pre>
+
+<p>Uživatelská metoda <strong>prepareMethod()</strong> je taktéž shodná pro
+vytvoření <strong>loopTest1()</strong> i <strong>loopTest2()</strong>, protože
+se v&nbsp;ní nastavují shodné modifikátory, stejný návratový typ (void) i
+stejné typy parametrů (nulový počet):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Priprava bajtkodu metody.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno vytvarene metody</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static MethodInfo <strong>prepareMethod</strong>(CtClass generatedClass, String methodName) throws CannotCompileException {
+        CtClass returnType = CtClass.voidType;
+        CtClass[] parameterTypes = {};
+&nbsp;
+        <i>// u metody je nutne znat jeji jmeno, navratovou hodnotu i typy parametru</i>
+        CtMethod loopTestMethod = new CtMethod(returnType, methodName, parameterTypes, generatedClass);
+&nbsp;
+        <i>// zmena modifikatoru</i>
+        loopTestMethod.setModifiers(Modifier.STATIC | Modifier.PUBLIC);
+&nbsp;
+        <i>// telo metody</i>
+        generatedClass.addMethod(loopTestMethod);
+&nbsp;
+        MethodInfo methodInfo = loopTestMethod.getMethodInfo();
+        return methodInfo;
+    }
+</pre>
+
+<p>Přiřazení atributu "CODE" k&nbsp;vygenerované metodě je velmi jednoduchý
+úkon:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Pridani atributu "CODE" k vygenerovane metode.</i>
+<i>     *</i>
+<i>     * @param methodInfo</i>
+<i>     * @param bytecode</i>
+<i>     */</i>
+    private static void <strong>addCodeAttributeToGeneratedMethod</strong>(MethodInfo methodInfo, Bytecode bytecode) {
+        CodeAttribute codeAttribute = bytecode.toCodeAttribute();
+&nbsp;
+        methodInfo.setCodeAttribute(codeAttribute);
+    }
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výpočet cílů podmíněných a nepodmíněných skoků</h2>
+
+<p>Jak jsme si již ukázali <a href="#k02">ve druhé kapitole</a>, nevyhneme se
+při implementaci počítaných programových smyček použití nepodmíněných i
+podmíněných skoků, u nichž je nutné vhodným způsobem vypočítat jejich cíl,
+tj.&nbsp;adresu, na kterou se má skok provést. Připomeňme si, že instrukce jsou
+adresovány v&nbsp;každé metodě od nuly, protože ve virtuálním stroji Javy
+neexistuje přímo adresovatelný globální adresový prostor. Navíc jsou cíle skoků
+zapsány ve formě <i>offsetů</i>, tj.&nbsp;relativních adres, které je nutné
+nejprve připočíst k&nbsp;adrese zpracovávané instrukce, abychom získali adresu
+absolutní (přesněji řečeno absolutní v&nbsp;rámci lokálního adresního prostoru
+metody). Jedním z&nbsp;problémů, které musíme vyřešit, je tedy výpočet již
+zmíněného <i>offsetu</i>. K&nbsp;tomu nám dopomůže metoda
+<strong>Bytecode.currentPc()</strong> vracející index právě zapsané instrukce.
+Tento index lze uložit do pomocné proměnné a následně ho na vhodném místě
+využít pro výpočet <i>offsetu</i>.</p>
+
+<p>Dále musíme využít dvě nové metody: <strong>Bytecode.addGap(počet)</strong>
+pro vložení neinicializovaných bajtů do bajtkódu a metodu
+<strong>Bytecode.write(index, data)</strong> pro zápis hodnoty bajtu do
+bajtkódu na adresu určenou indexem. Díky existenci této metody je možné se
+vrátit k&nbsp;oblasti vyplněné pomocí <strong>Bytecode.addGap()</strong> a
+uložit na toto místo vypočtenou adresu cíle skoku.</p>
+
+<p>Podívejme se nyní na způsob vložení instrukce <strong>GOTO</strong>
+provádějící dopředný skok. Při dopředném skoku ještě nemusíme přesně vědět
+hodnotu <i>offsetu</i>, to však není nutné. Nejprve vložíme operační kód
+instrukce <strong>GOTO</strong>, za níž ponecháme dva volné bajty. Současně si
+zapamatujeme index instrukce <strong>GOTO</strong> (to pro výpočet offsetu) i
+index prvního volného bajtu:</p>
+
+<pre>
+        <i>// za instrukci GOTO nasleduje 16bitovy cil skoku</i>
+        <i>// - tyto dva bajty prozatim preskocime</i>
+        <i>// - a zapamatujeme si jejich index pro pozdejsi inicializaci</i>
+        int gotoInstructionIndex = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.GOTO);
+        int gotoOperandIndex = bytecode.currentPc();
+        bytecode.addGap(2);
+</pre>
+
+<p>Na místě, kam má skok směřovat, opět získáme hodnotu indexu:</p>
+
+<pre>
+        <i>// ted jiz vime, ze sem bude smerovat cil skoku</i>
+        int gotoDestinationPC = bytecode.currentPc();
+</pre>
+
+<p>Na závěr generování bajtkódu již snadno vypočteme <i>offset</i> a zapíšeme
+jeho dva bajty do výplně za instrukcí <strong>GOTO</strong>. Připomeňme si, že
+<i>offset</i> může být jak kladný (dopředný skok), tak i záporný (skok
+zpět):</p>
+
+<pre>
+        <i>// nyni je jiz mozne vyplnit cilovou adresu skoku</i>
+        int offset = gotoDestinationPC - gotoInstructionIndex;
+        bytecode.write(gotoOperandIndex, offset &gt;&gt; 8);
+        bytecode.write(gotoOperandIndex+1, offset);
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Tvorba bajtkódu programové smyčky &ndash; složitější varianta</h2>
+
+<p>V&nbsp;této chvíli již máme všechny potřebné znalosti nutné pro vytvoření
+bajtkódu metod <strong>loopTest1()</strong> a <strong>loopTest2()</strong>.
+Metoda <strong>loopTest1()</strong> bude (zejména kvůli studijním účelům)
+vytvořena složitějším způsobem, v&nbsp;němž jsou použity především
+nízkoúrovňové operace, které přímo odpovídají jedenácti instrukcím bajtkódu,
+s&nbsp;jejichž pomocí má být metoda vytvořena:.</p>
+
+<pre>
+   0:           iconst_0
+   1:           istore_0
+   2:           goto            16
+   5:           getstatic       #14; <i>//Field java/lang/System.out:Ljava/io/PrintStream;</i>
+   8:           ldc             #16; <i>//String Hello</i>
+   10:          invokevirtual   #22; <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   13:          iinc            0, 1
+   16:          iload_0
+   17:          bipush          10
+   19:          if_icmplt       5
+   22:          return
+</pre>
+
+<p>Povšimněte si, jakým způsobem je uvedených jedenáct instrukcí generováno.
+Jedinou problematičtější část tvoří výpočet cílů skoků:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu int</i>
+<i>     * loopTest1().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro metodu int foo()</i>
+<i>     */</i>
+    private static Bytecode <strong>generateBytecodeForMethodLoopTest1</strong>(ConstPool constPool)
+    {
+        <i>// bajtkod by mel odpovidat nasledujicimu kodu</i>
+        <i>//         for (int i = 0; i &lt; 10; i++) {</i>
+        <i>//             System.out.println("Hello");</i>
+        <i>//         }</i>
+&nbsp;
+        <i>// coz zhruba odpovida sekvenci instrukci</i>
+        <i>//        0:   iconst_0</i>
+        <i>//        1:   istore_0</i>
+        <i>//        2:   goto    16</i>
+        <i>//        5:   getstatic       #20; //Field java/lang/System.out:Ljava/io/PrintStream;</i>
+        <i>//        8:   ldc             #42; //String Hello world!</i>
+        <i>//        10:  invokevirtual   #28; //Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+        <i>//        13:  iinc    0, 1</i>
+        <i>//        16:  iload_0</i>
+        <i>//        17:  bipush  10</i>
+        <i>//        19:  if_icmplt       5</i>
+        <i>//        22:  return</i>
+&nbsp;
+        final int stackSize = 1;
+        final int localVars = 1;
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+        bytecode.addOpcode(Opcode.ICONST_0);
+        bytecode.addOpcode(Opcode.ISTORE_0);
+&nbsp;
+        <i>// za instrukci GOTO nasleduje 16bitovy cil skoku</i>
+        <i>// - tyto dva bajty prozatim preskocime</i>
+        <i>// - a zapamatujeme si jejich index pro pozdejsi inicializaci</i>
+        int gotoInstructionIndex = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.GOTO);
+        int gotoOperandIndex = bytecode.currentPc();
+        bytecode.addGap(2);
+&nbsp;
+        <i>// v teto promenne bude ulozen index prvni instrukce smycky</i>
+        int loopStartIndex = bytecode.currentPc();
+        bytecode.addGetstatic("java.lang.System", "out", "Ljava/io/PrintStream;");
+        bytecode.addLdc("Hello");
+        bytecode.addInvokevirtual("java.io.PrintStream", "println", "(Ljava/lang/String;)V");
+&nbsp;
+        <i>// zvyseni hodnoty pocitadla o jednicku</i>
+        bytecode.addOpcode(Opcode.IINC);
+        bytecode.add(0, 1);
+        <i>// ted jiz vime, ze sem bude smerovat cil skoku</i>
+        int gotoDestinationPC = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.ILOAD_0);
+        bytecode.addOpcode(Opcode.BIPUSH);
+        bytecode.addOpcode(10);
+        int currentPC = bytecode.currentPc();
+&nbsp;
+        <i>// na konci smycky je umisten podmineny skok</i>
+        bytecode.addOpcode(Opcode.IF_ICMPLT);
+        <i>// vypocet cile podmineneho skoku -> zacatek smycky</i>
+        bytecode.addIndex(loopStartIndex - currentPC);
+&nbsp;
+        <i>// instrukce Return</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+        <i>// nyni je jiz mozne vyplnit cilovou adresu skoku</i>
+        int offset = gotoDestinationPC - gotoInstructionIndex;
+        bytecode.write(gotoOperandIndex, offset &gt;&gt; 8);
+        bytecode.write(gotoOperandIndex+1, offset);
+&nbsp;
+        <i>// finito</i>
+        return bytecode;
+    }
+</pre>
+
+<p>Podmíněný skok <strong>if_icmplt</strong> je prováděn směrem vzad, tudíž
+není nutné pro cíl skoku rezervovat žádné bajty ani do nich zpětně zapisovat
+pomocí <strong>Bytecode.write()</strong>. Namísto toho je možné využít
+praktičtější metodu <strong>Bytecode.addIndex()</strong> akceptující
+šestnáctibitový index.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Tvorba bajtkódu programové smyčky &ndash; jednodušší varianta</h2>
+
+<p>Jak jsme si již naznačili v&nbsp;předchozích kapitolách, je bajtkód metody
+<strong>loopTest2()</strong> sice shodný s&nbsp;bajtkódem metody
+<strong>loopTest1()</strong>, ovšem při jeho generování jsou využity poněkud
+abstraktnější operace. Týká se to zejména náhrady volání
+<strong>Bytecode.addOpcode(Opcode.ICONST_0)</strong> apod. za obecnější
+<strong>Bytecode.addIconst(0)</strong>. Nástroj <i>Javassist</i> sám na základě
+parametru rozhodne, jaká instrukce se použije, což platí i pro
+<strong>Bytecode.addIconst(10)</strong>, což se přeloží na instrukci
+<strong>BIPUSH 10</strong>. Podobně je zjednodušena tvorba bajtkódu pro volání
+metody <strong>System.out.println()</strong> či pro návrat z&nbsp;metody
+instrukcí <strong>RETURN</strong>. Výpočet cílů skoků však není zjednodušen a
+stále je nutné používat pomocné proměnné s&nbsp;uloženými indexy instrukcí
+a/nebo jejich operandů:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu int</i>
+<i>     * loopTest1().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro metodu int foo()</i>
+<i>     */</i>
+    private static Bytecode <strong>generateBytecodeForMethodLoopTest2</strong>(ConstPool constPool)
+    {
+        <i>// bajtkod by mel odpovidat nasledujicimu kodu</i>
+        <i>//         for (int i = 0; i &lt; 10; i++) {</i>
+        <i>//             System.out.println("world!");</i>
+        <i>//         }</i>
+&nbsp;
+        <i>// coz zhruba odpovida sekvenci instrukci</i>
+        <i>//        0:   iconst_0</i>
+        <i>//        1:   istore_0</i>
+        <i>//        2:   goto    16</i>
+        <i>//        5:   getstatic       #20; //Field java/lang/System.out:Ljava/io/PrintStream;</i>
+        <i>//        8:   ldc             #42; //String Hello world!</i>
+        <i>//        10:  invokevirtual   #28; //Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+        <i>//        13:  iinc    0, 1</i>
+        <i>//        16:  iload_0</i>
+        <i>//        17:  bipush  10</i>
+        <i>//        19:  if_icmplt       5</i>
+        <i>//        22:  return</i>
+&nbsp;
+        final int stackSize = 1;
+        final int localVars = 1;
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+        bytecode.addIconst(0);
+        bytecode.addIstore(0);
+&nbsp;
+        <i>// za instrukci GOTO nasleduje 16bitovy cil skoku</i>
+        <i>// - tyto dva bajty prozatim preskocime</i>
+        <i>// - a zapamatujeme si jejich index pro pozdejsi inicializaci</i>
+        int gotoInstructionIndex = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.GOTO);
+        int gotoOperandIndex = bytecode.currentPc();
+        bytecode.addGap(2);
+&nbsp;
+        <i>// v teto promenne bude ulozen index prvni instrukce smycky</i>
+        int loopStartIndex = bytecode.currentPc();
+        bytecode.addPrintln("world!");
+&nbsp;
+        <i>// zvyseni hodnoty pocitadla o jednicku</i>
+        bytecode.addOpcode(Opcode.IINC);
+        bytecode.add(0, 1);
+        <i>// ted jiz vime, ze sem bude smerovat cil skoku</i>
+        int gotoDestinationPC = bytecode.currentPc();
+        bytecode.addIload(0);
+        <i>// pro hodnotu 10 se vygeneruje instrukce BIPUSH 10</i>
+        bytecode.addIconst(10);
+&nbsp;
+        <i>// tuto hodnotu potrebujeme pro vypocet cile podmineneho skoku</i>
+        <i>// (pocita se relativne vuci teto instrukci)</i>
+        int currentPC = bytecode.currentPc();
+&nbsp;
+        <i>// na konci smycky je umisten podmineny skok</i>
+        bytecode.addOpcode(Opcode.IF_ICMPLT);
+        <i>// vypocet cile podmineneho skoku -> zacatek smycky</i>
+        bytecode.addIndex(loopStartIndex - currentPC);
+&nbsp;
+        <i>// instrukce Return</i>
+        bytecode.addReturn(CtClass.voidType);
+&nbsp;
+        <i>// nyni je jiz mozne vyplnit cilovou adresu skoku</i>
+        int offset = gotoDestinationPC - gotoInstructionIndex;
+        bytecode.write(gotoOperandIndex, offset &gt;&gt; 8);
+        bytecode.write(gotoOperandIndex+1, offset);
+&nbsp;
+        <i>// finito</i>
+        return bytecode;
+    }
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Vylepšený výpis struktur bajtkódů obou testovacích metod <strong>loopTest1()</strong> a <strong>loopTest2()</strong></h2>
+
+<p>Součástí dnešního demonstračního příkladu bude i výpis bajtkódu všech
+vygenerovaných metod. Na rozdíl od nástroje <strong>javap</strong> však budeme
+pro větší názornost potřebovat, aby se kromě mnemotechnických kódů jednotlivých
+instrukcí zobrazily i hexadecimální hodnoty bajtů tvořících jak kód instrukce,
+tak i její operand či operandy. Díky tomu si budeme moci lépe ukázat, jak jsou
+zakódovány cíle nepodmíněných i podmíněných skoků, například:</p>
+
+<pre>
+03                      iconst_0
+3b                      istore_0
+a7 00 0e                goto
+b2 00 0e                getstatic
+12 10                   ldc
+b6 00 16                invokevirtual
+84 00 01                iinc
+1a                      iload_0
+10 0a                   bipush
+a1 ff f2                if_icmplt
+b1                      return
+</pre>
+
+<p>Uživatelská metoda <strong>printMethodStructures()</strong> je ve
+skutečnosti velmi jednoduchá, protože pro všechny tři zkoumané metody zavolá
+další uživatelskou metodu <strong>printMethodStructure()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis struktury vybranych metod z generovane tridy.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode </i>
+<i>     */</i>
+    private static void <strong>printMethodStructures</strong>(CtClass generatedClass) throws NotFoundException, BadBytecode {
+        printMethodStructure(generatedClass, "main");
+        printMethodStructure(generatedClass, "loopTest1");
+        printMethodStructure(generatedClass, "loopTest2");
+    }
+</pre>
+
+<p>V&nbsp;uživatelské metodě nazvané <strong>printMethodStructure()</strong> se
+nejprve získá instance třídy <strong>CtMethod</strong> představující obraz
+zkoumané metody. Následně se přes volání
+<strong>CtMethod.getMethodInfo()</strong> získá instance třídy
+<strong>MethodInfo</strong> obsahující, jak již název této třídy napovídá,
+informace o zkoumané metodě. My využijeme následující čtveřici getterů, které
+jsou ve třídě <strong>MethodInfo</strong> deklarovány:</p>
+
+<table>
+<tr><th>#</th><th>Metoda</th><th>Popis</th></tr>
+<tr><td>1</td><td>javassist.bytecode.MethodInfo.getName()</td><td>vrátí jméno metody</td></tr>
+<tr><td>2</td><td>javassist.bytecode.MethodInfo.getDescriptor()</td><td>vrátí deskriptor metody (část její signatury)</td></tr>
+<tr><td>3</td><td>javassist.bytecode.MethodInfo.getAccessFlags()</td><td>vrátí přístupová práva a další modifikátory metody (STATIC...)</td></tr>
+<tr><td>4</td><td>javassist.bytecode.MethodInfo.getCodeAttribute()</td><td>vrátí atribut metody reprezentující její tělo</td></tr>
+</table>
+
+<p>V&nbsp;následujícím úryvku zdrojového kódu si povšimněte, jak lze velmi
+snadno převést modifikátory metody na řetězec s&nbsp;využitím
+<strong>Modifier.toString()</strong>:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis struktury vybrane metody.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno metody, jejiz struktura se ma vypsat</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodStructure</strong>(CtClass generatedClass, String methodName) throws NotFoundException, BadBytecode {
+        System.out.println("Method '" + methodName + "' structure:");
+        CtMethod method = generatedClass.getDeclaredMethod(methodName);
+        if (method == null) {
+            System.out.println("   not found!");
+            return;
+        }
+        MethodInfo methodInfo = method.getMethodInfo();
+        System.out.println("    real name:    " + methodInfo.getName());
+        System.out.println("    descriptor:   " + methodInfo.getDescriptor());
+        System.out.println("    access flags: " + Modifier.toString(methodInfo.getAccessFlags()));
+        System.out.println("    method body:");
+        printMethodBody(methodInfo);
+        System.out.println();
+    }
+</pre>
+
+<p>Podívejme se nyní na další uživatelskou metodu nazvanou
+<strong>printMethodBody()</strong>, která vlastně představuje ústřední část
+našeho jednoduchého &bdquo;disassembleru&ldquo;. V&nbsp;této metodě se prochází
+přes jednotlivé instrukce bajtkódu (metoda <strong>CodeIterator.next()</strong>
+může přeskočit o více než jeden bajt) a následně jsou vypsány mnemotechnické
+zkratky všech přečtených instrukcí. My ovšem potřebujeme vypsat i hexadecimální
+hodnoty všech bajtů tvořících jednu instrukci. Kvůli tomu je vypočten index
+následující instrukce a následně se ve vložené programové smyčce prochází všemi
+indexy mezi současně zpracovávanou instrukcí a instrukcí následující. Hodnota
+každého bajtu uloženého na tomto indexu je vypsána a současně se i sníží
+hodnota pomocné proměnné <i>spaces</i> použité pro zarovnání názvů operačních
+kódů instrukcí:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Vypis instrukci tvoricich telo vybrane metody.</i>
+<i>     *</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodBody</strong>(MethodInfo methodInfo) throws BadBytecode {
+        CodeAttribute ca = methodInfo.getCodeAttribute();
+        CodeIterator iterator = ca.iterator();
+        while (iterator.hasNext()) {
+            int index = iterator.next();
+            int opcode = iterator.byteAt(index);
+            int nextIndex = iterator.lookAhead();
+            int spaces = 16;
+            for (int i = index; i &lt; nextIndex; i++) {
+                System.out.format("%02x ", iterator.byteAt(i));
+                spaces-=3;
+            }
+            for (int i = 0; i &lt; spaces; i++) {
+                System.out.print(' ');
+            }
+            System.out.println("        " + Mnemonic.OPCODE[opcode]);
+        }
+    }
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Úplný zdrojový kód demonstračního příkladu <strong>ClassGenerationTest9</strong></h2>
+
+<p>V&nbsp;této kapitole bude uveden výpis úplného zdrojového kódu dnešního
+demonstračního příkladu pojmenovaného <strong>ClassGenerationTest9</strong>. Po
+spuštění tohoto příkladu se nejdříve vytvoří bajtkód třídy
+<strong>GeneratedClass9</strong>, která bude obsahovat trojici statických metod
+<strong>main()</strong>, <strong>loopTest1()</strong> a
+<strong>loopTest2()</strong>, přičemž bajtkód metody
+<strong>loopTest1()</strong> je vytvořen na základě algoritmu uvedeného <a
+href="#k05">v&nbsp;páté kapitole</a> a bajtkód metody
+<strong>loopTest2()</strong> byl vytvořen algoritmem popsaným <a
+href="#k06">v&nbsp;kapitole šesté</a>. Po vytvoření celé třídy se následně
+vypíše i její struktura, a to včetně hexadecimálního výpisu bajtů tvořících
+operační kódy i operandy jednotlivých instrukcí bajtkódu (viz též <a
+href="#k07">předchozí kapitolu</a>):</p>
+
+<pre>
+import java.io.IOException;
+&nbsp;
+import javassist.CannotCompileException;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtMethod;
+import javassist.Modifier;
+import javassist.NotFoundException;
+import javassist.bytecode.BadBytecode;
+import javassist.bytecode.Bytecode;
+import javassist.bytecode.CodeAttribute;
+import javassist.bytecode.CodeIterator;
+import javassist.bytecode.ConstPool;
+import javassist.bytecode.MethodInfo;
+import javassist.bytecode.Mnemonic;
+import javassist.bytecode.Opcode;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Test moznosti nastroje Javassist - vygenerovani jednoduche tridy</i>
+<i> * s metodou main a nekolika dalsimi metodami obsahujicimi programove smycky.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>ClassGenerationTest9</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno vygenerovane tridy.</i>
+<i>     */</i>
+    private static final String <strong>GENERATED_CLASS_NAME</strong> = "GeneratedClass9";
+&nbsp;
+<i>    /**</i>
+<i>     * Zdrojovy kod metody main(), ktery bude nasledne zkompilovan</i>
+<i>     * do bajtkodu a zakomponovan do vytvorene tridy.</i>
+<i>     */</i>
+    private static final String <strong>MAIN_METHOD_SOURCE_TEXT</strong> =
+        "public static void main(String[] args)" +
+        "{" +
+        "    loopTest1();" +
+        "    loopTest2();" +
+        "}";
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni metody main() z jejiho zdrojoveho kodu.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static void <strong>addMethodMain</strong>(CtClass generatedClass) throws CannotCompileException {
+        CtMethod methodMain = CtMethod.make(MAIN_METHOD_SOURCE_TEXT, generatedClass);
+        generatedClass.addMethod(methodMain);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni staticke metody loopTest1() bez navratove hodnoty.</i>
+<i>     * Instrukce tvorici telo metody jsou vytvoreny s vyuzitim tridy Bytecode.</i>
+<i>     *</i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static void <strong>constructMethodLoopTest1</strong>(CtClass generatedClass) throws CannotCompileException {
+        MethodInfo methodInfo = prepareMethod(generatedClass, "loopTest1");
+&nbsp;
+        <i>// vytvoreni tela metody</i>
+        ConstPool constPool = methodInfo.getConstPool();
+        Bytecode bytecode = generateBytecodeForMethodLoopTest1(constPool);
+        addCodeAttributeToGeneratedMethod(methodInfo, bytecode);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni staticke metody loopTest2() bez navratove hodnoty.</i>
+<i>     * Instrukce tvorici telo metody jsou vytvoreny s vyuzitim tridy Bytecode.</i>
+<i>     *</i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static void <strong>constructMethodLoopTest2</strong>(CtClass generatedClass) throws CannotCompileException {
+        MethodInfo methodInfo = prepareMethod(generatedClass, "loopTest2");
+&nbsp;
+        <i>// vytvoreni tela metody</i>
+        ConstPool constPool = methodInfo.getConstPool();
+        Bytecode bytecode = generateBytecodeForMethodLoopTest2(constPool);
+        addCodeAttributeToGeneratedMethod(methodInfo, bytecode);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pridani atributu "CODE" k vygenerovane metode.</i>
+<i>     *</i>
+<i>     * @param methodInfo</i>
+<i>     * @param bytecode</i>
+<i>     */</i>
+    private static void <strong>addCodeAttributeToGeneratedMethod</strong>(MethodInfo methodInfo, Bytecode bytecode) {
+        CodeAttribute codeAttribute = bytecode.toCodeAttribute();
+&nbsp;
+        methodInfo.setCodeAttribute(codeAttribute);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Priprava bajtkodu metody.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno vytvarene metody</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu</i>
+<i>     */</i>
+    private static MethodInfo <strong>prepareMethod</strong>(CtClass generatedClass, String methodName) throws CannotCompileException {
+        CtClass returnType = CtClass.voidType;
+        CtClass[] parameterTypes = {};
+&nbsp;
+        <i>// u metody je nutne znat jeji jmeno, navratovou hodnotu i typy parametru</i>
+        CtMethod loopTestMethod = new CtMethod(returnType, methodName, parameterTypes, generatedClass);
+&nbsp;
+        <i>// zmena modifikatoru</i>
+        loopTestMethod.setModifiers(Modifier.STATIC | Modifier.PUBLIC);
+&nbsp;
+        <i>// telo metody</i>
+        generatedClass.addMethod(loopTestMethod);
+&nbsp;
+        MethodInfo methodInfo = loopTestMethod.getMethodInfo();
+        return methodInfo;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu int</i>
+<i>     * loopTest1().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro metodu int foo()</i>
+<i>     */</i>
+    private static Bytecode <strong>generateBytecodeForMethodLoopTest1</strong>(ConstPool constPool)
+    {
+        <i>// bajtkod by mel odpovidat nasledujicimu kodu</i>
+        <i>//         for (int i = 0; i &lt; 10; i++) {</i>
+        <i>//             System.out.println("Hello");</i>
+        <i>//         }</i>
+&nbsp;
+        <i>// coz zhruba odpovida sekvenci instrukci</i>
+        <i>//        0:   iconst_0</i>
+        <i>//        1:   istore_0</i>
+        <i>//        2:   goto    16</i>
+        <i>//        5:   getstatic       #20; //Field java/lang/System.out:Ljava/io/PrintStream;</i>
+        <i>//        8:   ldc     #42; //String Hello world!</i>
+        <i>//        10:  invokevirtual   #28; //Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+        <i>//        13:  iinc    0, 1</i>
+        <i>//        16:  iload_0</i>
+        <i>//        17:  bipush  10</i>
+        <i>//        19:  if_icmplt       5</i>
+        <i>//        22:  return</i>
+&nbsp;
+        final int stackSize = 1;
+        final int localVars = 1;
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+        bytecode.addOpcode(Opcode.ICONST_0);
+        bytecode.addOpcode(Opcode.ISTORE_0);
+&nbsp;
+        <i>// za instrukci GOTO nasleduje 16bitovy cil skoku</i>
+        <i>// - tyto dva bajty prozatim preskocime</i>
+        <i>// - a zapamatujeme si jejich index pro pozdejsi inicializaci</i>
+        int gotoInstructionIndex = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.GOTO);
+        int gotoOperandIndex = bytecode.currentPc();
+        bytecode.addGap(2);
+&nbsp;
+        <i>// v teto promenne bude ulozen index prvni instrukce smycky</i>
+        int loopStartIndex = bytecode.currentPc();
+        bytecode.addGetstatic("java.lang.System", "out", "Ljava/io/PrintStream;");
+        bytecode.addLdc("Hello");
+        bytecode.addInvokevirtual("java.io.PrintStream", "println", "(Ljava/lang/String;)V");
+&nbsp;
+        <i>// zvyseni hodnoty pocitadla o jednicku</i>
+        bytecode.addOpcode(Opcode.IINC);
+        bytecode.add(0, 1);
+        <i>// ted jiz vime, ze sem bude smerovat cil skoku</i>
+        int gotoDestinationPC = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.ILOAD_0);
+        bytecode.addOpcode(Opcode.BIPUSH);
+        bytecode.addOpcode(10);
+        int currentPC = bytecode.currentPc();
+&nbsp;
+        <i>// na konci smycky je umisten podmineny skok</i>
+        bytecode.addOpcode(Opcode.IF_ICMPLT);
+        <i>// vypocet cile podmineneho skoku -> zacatek smycky</i>
+        bytecode.addIndex(loopStartIndex - currentPC);
+&nbsp;
+        <i>// instrukce Return</i>
+        bytecode.addOpcode(Opcode.RETURN);
+&nbsp;
+        <i>// nyni je jiz mozne vyplnit cilovou adresu skoku</i>
+        int offset = gotoDestinationPC - gotoInstructionIndex;
+        bytecode.write(gotoOperandIndex, offset &gt;&gt; 8);
+        bytecode.write(gotoOperandIndex+1, offset);
+&nbsp;
+        <i>// finito</i>
+        return bytecode;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni bajtkodu predstavujiciho sekvenci instrukci pro metodu int</i>
+<i>     * loopTest1().</i>
+<i>     * </i>
+<i>     * @param constPool</i>
+<i>     *            tabulka konstant pouzivana metodou</i>
+<i>     * @return bajtkod predstavujici sekvenci instrukci pro metodu int foo()</i>
+<i>     */</i>
+    private static Bytecode <strong>generateBytecodeForMethodLoopTest2</strong>(ConstPool constPool)
+    {
+        <i>// bajtkod by mel odpovidat nasledujicimu kodu</i>
+        <i>//         for (int i = 0; i &lt; 10; i++) {</i>
+        <i>//             System.out.println("world!");</i>
+        <i>//         }</i>
+&nbsp;
+        <i>// coz zhruba odpovida sekvenci instrukci</i>
+        <i>//        0:   iconst_0</i>
+        <i>//        1:   istore_0</i>
+        <i>//        2:   goto    16</i>
+        <i>//        5:   getstatic       #20; //Field java/lang/System.out:Ljava/io/PrintStream;</i>
+        <i>//        8:   ldc     #42; //String Hello world!</i>
+        <i>//        10:  invokevirtual   #28; //Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+        <i>//        13:  iinc    0, 1</i>
+        <i>//        16:  iload_0</i>
+        <i>//        17:  bipush  10</i>
+        <i>//        19:  if_icmplt       5</i>
+        <i>//        22:  return</i>
+&nbsp;
+        final int stackSize = 1;
+        final int localVars = 1;
+        Bytecode bytecode = new Bytecode(constPool, stackSize, localVars);
+        bytecode.addIconst(0);
+        bytecode.addIstore(0);
+&nbsp;
+        <i>// za instrukci GOTO nasleduje 16bitovy cil skoku</i>
+        <i>// - tyto dva bajty prozatim preskocime</i>
+        <i>// - a zapamatujeme si jejich index pro pozdejsi inicializaci</i>
+        int gotoInstructionIndex = bytecode.currentPc();
+        bytecode.addOpcode(Opcode.GOTO);
+        int gotoOperandIndex = bytecode.currentPc();
+        bytecode.addGap(2);
+&nbsp;
+        <i>// v teto promenne bude ulozen index prvni instrukce smycky</i>
+        int loopStartIndex = bytecode.currentPc();
+        bytecode.addPrintln("world!");
+&nbsp;
+        <i>// zvyseni hodnoty pocitadla o jednicku</i>
+        bytecode.addOpcode(Opcode.IINC);
+        bytecode.add(0, 1);
+        <i>// ted jiz vime, ze sem bude smerovat cil skoku</i>
+        int gotoDestinationPC = bytecode.currentPc();
+        bytecode.addIload(0);
+        <i>// pro hodnotu 10 se vygeneruje instrukce BIPUSH 10</i>
+        bytecode.addIconst(10);
+&nbsp;
+        <i>// tuto hodnotu potrebujeme pro vypocet cile podmineneho skoku</i>
+        <i>// (pocita se relativne vuci teto instrukci)</i>
+        int currentPC = bytecode.currentPc();
+&nbsp;
+        <i>// na konci smycky je umisten podmineny skok</i>
+        bytecode.addOpcode(Opcode.IF_ICMPLT);
+        <i>// vypocet cile podmineneho skoku -> zacatek smycky</i>
+        bytecode.addIndex(loopStartIndex - currentPC);
+&nbsp;
+        <i>// instrukce Return</i>
+        bytecode.addReturn(CtClass.voidType);
+&nbsp;
+        <i>// nyni je jiz mozne vyplnit cilovou adresu skoku</i>
+        int offset = gotoDestinationPC - gotoInstructionIndex;
+        bytecode.write(gotoOperandIndex, offset &gt;&gt; 8);
+        bytecode.write(gotoOperandIndex+1, offset);
+&nbsp;
+        <i>// finito</i>
+        return bytecode;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni tridy s metodou main().</i>
+<i>     * </i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade chyby ve zdrojovem kodu metody main()</i>
+<i>     * @throws IOException</i>
+<i>     *             pokud dojde k chybe pri zapisu bajtkodu na disk</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             pokud dojde k chybe pri zapisu bajtkodu na disk</i>
+<i>     */</i>
+    private static CtClass <strong>generateClass</strong>() throws CannotCompileException, NotFoundException, IOException {
+        <i>// ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+        <i>// vytvoreni nove verejne tridy</i>
+        CtClass generatedClass = pool.makeClass(GENERATED_CLASS_NAME);
+&nbsp;
+        <i>// konstrukce nove metody loopTest1()</i>
+        constructMethodLoopTest1(generatedClass);
+&nbsp;
+        <i>// konstrukce nove metody loopTest2()</i>
+        constructMethodLoopTest2(generatedClass);
+&nbsp;
+        <i>// pridani metody do teto tridy</i>
+        addMethodMain(generatedClass);
+&nbsp;
+        <i>// ulozeni bajtkodu na disk</i>
+        generatedClass.writeFile();
+&nbsp;
+        return generatedClass;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis struktury vybrane metody.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @param methodName</i>
+<i>     *            jmeno metody, jejiz struktura se ma vypsat</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodStructure</strong>(CtClass generatedClass, String methodName) throws NotFoundException, BadBytecode {
+        System.out.println("Method '" + methodName + "' structure:");
+        CtMethod method = generatedClass.getDeclaredMethod(methodName);
+        if (method == null) {
+            System.out.println("   not found!");
+            return;
+        }
+        MethodInfo methodInfo = method.getMethodInfo();
+        System.out.println("    real name:    " + methodInfo.getName());
+        System.out.println("    descriptor:   " + methodInfo.getDescriptor());
+        System.out.println("    access flags: " + Modifier.toString(methodInfo.getAccessFlags()));
+        System.out.println("    method body:");
+        printMethodBody(methodInfo);
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis instrukci tvoricich telo vybrane metody.</i>
+<i>     *</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode</i>
+<i>     *             vyhozena, pokud se nalezne neplatna instrukce v bytekodu</i>
+<i>     */</i>
+    private static void <strong>printMethodBody</strong>(MethodInfo methodInfo) throws BadBytecode {
+        CodeAttribute ca = methodInfo.getCodeAttribute();
+        CodeIterator iterator = ca.iterator();
+        while (iterator.hasNext()) {
+            int index = iterator.next();
+            int opcode = iterator.byteAt(index);
+            int nextIndex = iterator.lookAhead();
+            int spaces = 16;
+            for (int i = index; i &lt; nextIndex; i++) {
+                System.out.format("%02x ", iterator.byteAt(i));
+                spaces-=3;
+            }
+            for (int i = 0; i &lt; spaces; i++) {
+                System.out.print(' ');
+            }
+            System.out.println("        " + Mnemonic.OPCODE[opcode]);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis struktury vybranych metod z generovane tridy.</i>
+<i>     * </i>
+<i>     * @param generatedClass</i>
+<i>     *            predstavuje vytvarenou tridu</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws BadBytecode </i>
+<i>     */</i>
+    private static void <strong>printMethodStructures</strong>(CtClass generatedClass) throws NotFoundException, BadBytecode {
+        printMethodStructure(generatedClass, "main");
+        printMethodStructure(generatedClass, "loopTest1");
+        printMethodStructure(generatedClass, "loopTest2");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni generatoru tridy.</i>
+<i>     *</i>
+<i>     * @param args nevyuzito</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.out.println("class generation begin: " + GENERATED_CLASS_NAME);
+        try {
+            CtClass generatedClass = generateClass();
+            <i>// dulezite - generovana trida nesmi byt "zmrazena"</i>
+            generatedClass.defrost();
+            printMethodStructures(generatedClass);
+        }
+        catch (CannotCompileException e) {
+            e.printStackTrace();
+        }
+        catch (NotFoundException e) {
+            e.printStackTrace();
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        catch (BadBytecode e) {
+            e.printStackTrace();
+        }
+        System.out.println("class generation end: " + GENERATED_CLASS_NAME);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Výstup demonstračního příkladu <strong>ClassGenerationTest9</strong></h2>
+
+<p>Podívejme se nyní na to, jak vypadá výstup dnešního demonstračního příkladu
+<strong>ClassGenerationTest9</strong>. Asi nejzajímavější informací je způsob
+uložení cílů skoků ihned za operačními kódy instrukcí <strong>goto</strong> a
+<strong>if_icmplt</strong>. Povšimněte si, že se skutečně jedná o dvoubajtovou
+celočíselnou hodnotu se znaménkem. To například znamená, že sekvence bajtů
+<strong>a7 00 0e</strong> značí nepodmíněný skok (<strong>goto</strong>) o
+čtrnáct bajtů směrem dopředu, zatímco sekvence bajtů <strong>a1 ff f2</strong>
+je podmíněný skok (konkrétně <strong>if_icmplt</strong>) o čtrnáct bajtů směrem
+dozadu (oba offsety jsou vypočteny od začátku příslušné instrukce):</p>
+
+<pre>
+class generation begin: GeneratedClass9
+Method 'main' structure:
+    real name:    main
+    descriptor:   ([Ljava/lang/String;)V
+    access flags: public static
+    method body:
+b8 00 21                invokestatic
+b8 00 23                invokestatic
+b1                      return
+&nbsp;
+Method 'loopTest1' structure:
+    real name:    loopTest1
+    descriptor:   ()V
+    access flags: public static
+    method body:
+03                      iconst_0
+3b                      istore_0
+a7 00 0e                goto
+b2 00 0e                getstatic
+12 10                   ldc
+b6 00 16                invokevirtual
+84 00 01                iinc
+1a                      iload_0
+10 0a                   bipush
+a1 ff f2                if_icmplt
+b1                      return
+&nbsp;
+Method 'loopTest2' structure:
+    real name:    loopTest2
+    descriptor:   ()V
+    access flags: public static
+    method body:
+03                      iconst_0
+3b                      istore_0
+a7 00 0e                goto
+b2 00 1b                getstatic
+12 1d                   ldc
+b6 00 16                invokevirtual
+84 00 01                iinc
+1a                      iload_0
+10 0a                   bipush
+a1 ff f2                if_icmplt
+b1                      return
+&nbsp;
+class generation end: GeneratedClass9
+&nbsp;
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Bajtkód třídy <strong>GeneratedClass9</strong></h2>
+
+<p>Podívejme se nyní na způsob, jakým je bajtkód třídy
+<strong>GeneratedClass9</strong> vypsán standardním nástrojem
+<strong>javap</strong>. Vzhledem k&nbsp;tomu, že budeme chtít vidět výpis
+bajtkódu jednotlivých metod, a to včetně metod soukromých, je nutné nástroj
+<strong>javap</strong> spustit následujícím způsobem:</p>
+
+<pre>
+javap -c -private GeneratedClass9
+</pre>
+
+<p>Nástroj <strong>javap</strong> nám však ve své současné verzi nedokáže
+vypsat i hexadecimální hodnoty bajtů tvořících operační kódy a operandy
+instrukcí, takže u skoků budeme vidět pouze absolutní adresy (samozřejmě platné
+v&nbsp;rámci těla metody):</p>
+
+<pre>
+Compiled from "GeneratedClass9.java"
+public class <strong>GeneratedClass9</strong> extends java.lang.Object{
+&nbsp;
+public static void <strong>loopTest1()</strong>;
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           goto            16
+   5:           getstatic       #14; <i>//Field java/lang/System.out:Ljava/io/PrintStream;</i>
+   8:           ldc             #16; <i>//String Hello</i>
+   10:          invokevirtual   #22; <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   13:          iinc            0, 1
+   16:          iload_0
+   17:          bipush          10
+   19:          if_icmplt       5
+   22:          return
+&nbsp;
+public static void <strong>loopTest2()</strong>;
+  Code:
+   0:           iconst_0
+   1:           istore_0
+   2:           goto            16
+   5:           getstatic       #27; <i>//Field java/lang/System.err:Ljava/io/PrintStream;</i>
+   8:           ldc             #29; <i>//String world!</i>
+   10:          invokevirtual   #22; <i>//Method java/io/PrintStream.println:(Ljava/lang/String;)V</i>
+   13:          iinc            0, 1
+   16:          iload_0
+   17:          bipush          10
+   19:          if_icmplt       5
+   22:          return
+&nbsp;
+public static void <strong>main</strong>(java.lang.String[]);
+  Code:
+   0:           invokestatic    #33; <i>//Method loopTest1:()V</i>
+   3:           invokestatic    #35; <i>//Method loopTest2:()V</i>
+   6:           return
+&nbsp;
+public GeneratedClass9();
+  Code:
+   0:           aload_0
+   1:           invokespecial   #38; <i>//Method java/lang/Object."<init>":()V</i>
+   4:           return
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými kódy dnešního demonstračního příkladu <strong>ClassGenerationTest9</strong></h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. Dnes popsaný demonstrační příklad
+<strong>ClassGenerationTest9</strong> je uložen do Mercurial repositáře
+dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verze tohoto
+zdrojového kódu:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ClassGenerationTest9.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c4872d13d7c1/javassist/ClassGenerationTest9/ClassGenerationTest9.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c4872d13d7c1/javassist/ClassGenerationTest9/ClassGenerationTest9.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>GOTO instruction<br />
+<a href="http://www.vmth.ucdavis.edu/incoming/Jasmin/ref-_goto.html">http://www.vmth.ucdavis.edu/incoming/Jasmin/ref-_goto.html</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>IF_ICMPLT instruction<br />
+<a href="http://www.vmth.ucdavis.edu/incoming/Jasmin/ref--29.html">http://www.vmth.ucdavis.edu/incoming/Jasmin/ref--29.html</a>
+</li>
+
+<li>IFEQ instruction<br />
+<a href="http://www.vmth.ucdavis.edu/incoming/Jasmin/ref-_ifeq.html">http://www.vmth.ucdavis.edu/incoming/Jasmin/ref-_ifeq.html</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
