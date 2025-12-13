@@ -1,0 +1,1091 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - změna systémových tříd s využitím nástroje Javassist</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - změna systémových tříd s využitím nástroje Javassist</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si na dvojici demonstračních příkladů ukážeme, jakým způsobem lze modifikovat bajtkód systémových tříd s využitím nástroje Javassist i to, jak je následně možné tyto třídy použít v nově spuštěné JVM. Taktéž si vysvětlíme činnost přepínače -Xbootclasspath.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - změna systémových tříd s&nbsp;využitím nástroje Javassist</a></p>
+<p><a href="#k02">2. Příklad testující chování metody <strong>java.util.Random.nextInt()</strong></a></p>
+<p><a href="#k03">3. Původní podoba bajtkódu metody <strong>java.util.Random.nextInt()</strong></a></p>
+<p><a href="#k04">4. Modifikace metody <strong>java.util.Random.nextInt()</strong> tak, aby se vracela konstanta</a></p>
+<p><a href="#k05">5. Podoba upraveného bajtkódu metody <strong>java.util.Random.nextInt()</strong></a></p>
+<p><a href="#k06">6. Parametr <strong>-Xbootclasspath</strong> použitý při spouštění JVM</a></p>
+<p><a href="#k07">7. Spuštění testu s&nbsp;načtením upravené třídy <strong>java.util.Random</strong></a></p>
+<p><a href="#k08">8. Modifikace metody <strong>java.util.Random.nextInt()</strong> tak, aby se vracela sekvence čísel (přidání skrytého atributu)</a></p>
+<p><a href="#k09">9. Podoba upraveného bajtkódu metody <strong>java.util.Random.nextInt()</strong></a></p>
+<p><a href="#k10">10. Spuštění testu s&nbsp;načtením upravené třídy <strong>java.util.Random</strong></a></p>
+<p><a href="#k11">11. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - změna systémových tříd s&nbsp;využitím nástroje Javassist</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyku Java i o virtuálním stroji Javy</a> si řekneme, jakým
+způsobem je možné využít nástroj <i>Javassist</i> pro modifikaci systémových
+tříd, tj.&nbsp;(zjednodušeně řečeno) takových tříd, které jsou načteny
+virtuálním strojem Javy ještě před tím, než je inicializována aplikace spuštěná
+v&nbsp;rámci JVM. Tyto třídy není možné s&nbsp;využitím nástroje
+<i>Javassist</i> jednoduše změnit v&nbsp;již běžící JVM, a to z&nbsp;toho
+důvodu, že samotný <i>Javassist</i> je na těchto třídách závislý. Jediný
+oficiálně dostupný způsob změny těchto tříd spočívá v&nbsp;implementaci <i>JVM
+TI</i> agenta, což je téma, kterému jsme se věnovali v&nbsp;předchozích částech
+tohoto seriálu. Ovšem nástroj <i>Javassist</i> samozřejmě dokáže modifikovat
+bajtkód systémových tříd a následně umožňuje jejich modifikovanou podobu uložit
+na disk (do nového souboru <strong>.class</strong>) a posléze načíst změněnou
+třídu či třídy při inicializaci nového virtuálního stroje Javy.</p>
+
+<p>Jen pro připomenutí si ukažme, jaké třídy jsou načteny v&nbsp;případě, že se
+z&nbsp;příkazového řádku zadá příkaz:</p>
+
+<pre>
+java -agentpath:./libjvmtiagent.so Test
+</pre>
+
+<p>kde se za <strong>libjvmtiagent.so</strong> doplní jméno jednoduchého <i>JVM
+TI</i> agenta, který na standardní výstup vypisuje všechny načítané třídy. Nás
+nyní budou zajímat ty třídy, které se do virtuálního stroje Javy načtou ještě
+před načtením testovací třídy <strong>Test</strong>. Následující výpis je sice
+závislý na konkrétní verzi JVM, nicméně základ zůstává na všech typech JVM
+shodný:</p>
+
+<pre>
+JVM TI agent: Agent_OnLoad
+JVM TI agent: JVM TI version is correct
+JVM TI agent: Got VM init event
+Class load:   java.lang.System;
+Class load:   java.nio.charset.Charset;
+Class load:   java.lang.String;
+Class prepare:java.lang.ClassNotFoundException;
+Class load:   java.net.URLClassLoader$1;
+Class prepare:java.net.URLClassLoader$1;
+Class load:   sun.misc.URLClassPath$3;
+Class prepare:sun.misc.URLClassPath$3;
+Class load:   sun.misc.URLClassPath$Loader;
+Class load:   sun.misc.URLClassPath$JarLoader;
+Class prepare:sun.misc.URLClassPath$Loader;
+Class prepare:sun.misc.URLClassPath$JarLoader;
+Class prepare:java.lang.StringBuffer;
+Class prepare:java.lang.Short;
+Class load:   sun.misc.URLClassPath$JarLoader$1;
+Class prepare:sun.misc.URLClassPath$JarLoader$1;
+Class load:   sun.misc.FileURLMapper;
+Class prepare:sun.misc.FileURLMapper;
+Class load:   java.util.zip.ZipConstants;
+Class load:   java.util.zip.ZipFile;
+Class load:   java.util.jar.JarFile;
+Class prepare:java.util.zip.ZipConstants;
+Class prepare:java.util.zip.ZipFile;
+Class prepare:java.util.jar.JarFile;
+Class load:   sun.misc.JavaUtilJarAccess;
+Class load:   java.util.jar.JavaUtilJarAccessImpl;
+Class prepare:sun.misc.JavaUtilJarAccess;
+Class prepare:java.util.jar.JavaUtilJarAccessImpl;
+Class load:   sun.misc.JarIndex;
+Class prepare:sun.misc.JarIndex;
+Class load:   sun.misc.ExtensionDependency;
+Class prepare:sun.misc.ExtensionDependency;
+Class load:   java.util.zip.ZipEntry;
+Class prepare:java.util.zip.ZipEntry;
+Class load:   java.util.jar.JarEntry;
+Class load:   java.util.jar.JarFile$JarFileEntry;
+Class prepare:java.util.jar.JarEntry;
+Class prepare:java.util.jar.JarFile$JarFileEntry;
+Class load:   java.io.DataInput;
+Class load:   java.io.DataInputStream;
+Class prepare:java.io.DataInput;
+Class prepare:java.io.DataInputStream;
+Class load:   java.util.zip.ZipFile$ZipFileInputStream;
+Class prepare:java.util.zip.ZipFile$ZipFileInputStream;
+Class load:   java.security.PrivilegedActionException;
+Class prepare:java.security.PrivilegedActionException;
+Class load:   sun.misc.URLClassPath$FileLoader;
+Class prepare:sun.misc.URLClassPath$FileLoader;
+Class load:   sun.misc.Resource;
+Class load:   sun.misc.URLClassPath$FileLoader$1;
+Class prepare:sun.misc.Resource;
+Class prepare:sun.misc.URLClassPath$FileLoader$1;
+Class load:   sun.nio.ByteBuffered;
+Class load:   java.security.CodeSource;
+Class prepare:java.security.CodeSource;
+Class load:   java.security.PermissionCollection;
+Class load:   java.security.Permissions;
+Class prepare:java.security.PermissionCollection;
+Class prepare:java.security.Permissions;
+Class load:   java.net.URLConnection;
+Class load:   sun.net.www.URLConnection;
+Class load:   sun.net.www.protocol.file.FileURLConnection;
+Class prepare:java.net.URLConnection;
+Class prepare:sun.net.www.URLConnection;
+Class prepare:sun.net.www.protocol.file.FileURLConnection;
+Class load:   java.net.ContentHandler;
+Class load:   java.net.UnknownContentHandler;
+Class prepare:java.net.ContentHandler;
+Class prepare:java.net.UnknownContentHandler;
+Class load:   sun.net.www.MessageHeader;
+Class prepare:sun.net.www.MessageHeader;
+Class load:   java.io.FilePermission;
+Class prepare:java.io.FilePermission;
+Class load:   java.io.FilePermission$1;
+Class prepare:java.io.FilePermission$1;
+Class load:   java.security.Policy;
+Class load:   sun.security.provider.PolicyFile;
+Class prepare:java.security.Policy;
+Class prepare:sun.security.provider.PolicyFile;
+Class load:   java.security.Policy$UnsupportedEmptyCollection;
+Class prepare:java.security.Policy$UnsupportedEmptyCollection;
+Class load:   java.io.FilePermissionCollection;
+Class prepare:java.io.FilePermissionCollection;
+Class load:   java.security.AllPermission;
+Class load:   java.security.UnresolvedPermission;
+Class load:   java.security.BasicPermissionCollection;
+Class prepare:java.security.BasicPermissionCollection;
+Class prepare:java.security.ProtectionDomain;
+Class load:   sun.misc.JavaSecurityProtectionDomainAccess;
+Class load:   java.security.ProtectionDomain$2;
+Class prepare:sun.misc.JavaSecurityProtectionDomainAccess;
+Class prepare:java.security.ProtectionDomain$2;
+Class load:   java.security.ProtectionDomain$Key;
+Class prepare:java.security.ProtectionDomain$Key;
+Class load:   java.security.Principal;
+Class load:   java.security.cert.Certificate;
+Class load:   java.lang.Object;
+<strong>Class load:   Test;</strong>
+<strong>Class prepare:Test;</strong>
+</pre>
+
+<p>Co se však stane v&nbsp;případě, že si v&nbsp;<i>Javassistu</i> vynutíme
+změnu nějaké systémové třídy? Není nic jednoduššího, než si to vyzkoušet:</p>
+
+<pre>
+        <i>// ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+        <i>// objekt predstavujici menenou (modifikovanou) tridu</i>
+        CtClass classToModify = pool.get("java.util.Random");
+&nbsp;
+        <i>// tridu nebude mozne dale menit</i>
+        classToModify.freeze();
+&nbsp;
+        <i>// pokus o nacteni zmenene tridy</i>
+        classToModify.toClass();
+</pre>
+
+<p>Spuštění tohoto kódu nedopadne nejlépe:</p>
+
+<pre>
+javassist.CannotCompileException: by java.lang.SecurityException: Prohibited package name: java.util
+        at javassist.ClassPool.toClass(ClassPool.java:1099)
+        at javassist.ClassPool.toClass(ClassPool.java:1042)
+        at javassist.ClassPool.toClass(ClassPool.java:1000)
+        at javassist.CtClass.toClass(CtClass.java:1140)
+        at SystemClassModificationTest2.modifyRandomClass(SystemClassModificationTest2.java:41)
+        at SystemClassModificationTest2.main(SystemClassModificationTest2.java:83)
+Caused by: java.lang.SecurityException: Prohibited package name: java.util
+        at java.lang.ClassLoader.preDefineClass(ClassLoader.java:479)
+        at java.lang.ClassLoader.defineClass(ClassLoader.java:614)
+        at java.lang.ClassLoader.defineClass(ClassLoader.java:465)
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+        at java.lang.reflect.Method.invoke(Method.java:597)
+        at javassist.ClassPool.toClass2(ClassPool.java:1112)
+        at javassist.ClassPool.toClass(ClassPool.java:1093)
+        ... 5 more
+</pre>
+
+<p>Vidíme, že tuto operaci nepovolil samotný virtuální stroj Javy.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Příklad testující chování metody <strong>java.util.Random.nextInt()</strong></h2>
+
+<p>Dnešní demonstrační příklady měnící bajtkódy systémových tříd
+(resp.&nbsp;jediné třídy) jsou založeny na reálném problému, který
+v&nbsp;minulosti vznikl při snaze o testování aplikace, v&nbsp;níž se používala
+řada pseudonáhodných čísel generovaných s&nbsp;využitím třídy
+<strong>java.util.Random</strong>. Aby se testy snáze psaly, bylo nutné třídu
+<strong>java.util.Random</strong> vhodně upravit takovým způsobem, aby se
+namísto sekvence pseudonáhodných hodnot vracela buď série konstant nebo
+jednoduchá aritmetická posloupnost.</p>
+
+<p>My si tento reálný problém trošku zjednodušíme a budeme vlastnosti třídy
+<strong>java.util.Random</strong> testovat následujícím příkladem, který po
+svém spuštění vytvoří monochromatický rastrový obrázek o velikosti
+256&times;256 pixelů, který je vyplněn &bdquo;šumem&ldquo;, jehož hodnoty jsou
+získány metodou <strong>java.util.Random.nextInt()</strong>. Obrázek je typu
+<strong>TYPE_BYTE_GRAY</strong>, což znamená, že každý pixel je představován
+celočíselnou hodnotou 0..255 udávající světlost pixelu od zcela černé až po
+bílou. Z&nbsp;tohoto důvodu je vyplnění bitmapy velmi jednoduše dosažitelné
+přes <strong>java.awt.image.DataBuffer</strong> a není tak zapotřebí používat
+mnohem pomalejší metodu <strong>java.awt.image.BufferedImage.setRGB(int, int,
+int) </strong>:</p>
+
+<pre>
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBuffer;
+import java.awt.image.Raster;
+import java.io.File;
+import java.io.IOException;
+import java.util.Random;
+&nbsp;
+import javax.imageio.ImageIO;
+&nbsp;
+<i>/**</i>
+<i> * Trida, v niz se otestuje funkce metody Random.nextInt().</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>TestRandom</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Jmeno souboru s vygenerovanou bitmapou.</i>
+<i>     */</i>
+    private static final String <strong>OUTPUT_FILE_NAME</strong> = "test.png";
+&nbsp;
+<i>    /**</i>
+<i>     * Horizontalni rozmer bitmapy.</i>
+<i>     */</i>
+    private static final int <strong>IMAGE_HEIGHT</strong> = 256;
+&nbsp;
+<i>    /**</i>
+<i>     * Vertikalni rozmer bitmapy.</i>
+<i>     */</i>
+    private static final int <strong>IMAGE_WIDTH</strong> = 256;
+&nbsp;
+<i>    /**</i>
+<i>     * Vytvoreni nove bitmapy se stupni sedi.</i>
+<i>     *</i>
+<i>     * @return nove vytvorena bitmapa</i>
+<i>     */</i>
+    private static BufferedImage <strong>createImage</strong>() {
+        return new BufferedImage(IMAGE_WIDTH, IMAGE_HEIGHT, BufferedImage.TYPE_BYTE_GRAY);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zapis bitmapy na disk ve formatu PNG.</i>
+<i>     * </i>
+<i>     * @param image</i>
+<i>     *            testovaci bitmapa</i>
+<i>     * @throws IOException</i>
+<i>     */</i>
+    private static void <strong>writeImage</strong>(BufferedImage image) throws IOException {
+        ImageIO.write(image, "png", new File(OUTPUT_FILE_NAME));
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziskani objektu typu DataBuffer obsahujiciho hodnoty jednotlivych pixelu.</i>
+<i>     * </i>
+<i>     * @param image</i>
+<i>     *            testovaci bitmapa</i>
+<i>     * @return objekt typu DatabBuffer pro predanou bitmapu</i>
+<i>     */</i>
+    private static DataBuffer <strong>getImageDataBuffer</strong>(BufferedImage image) {
+        Raster raster = image.getRaster();
+        return raster.getDataBuffer();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vyplneni bitmapy sumem ziskanym funkci Random.nextInt().</i>
+<i>     * </i>
+<i>     * @param image</i>
+<i>     *            testovaci bitmapa</i>
+<i>     * @param dataBuffer</i>
+<i>     *            objekt typu DatabBuffer pro predanou bitmapu</i>
+<i>     * @param random</i>
+<i>     *            instance tridy Random pouzita pro generovani sumu</i>
+<i>     */</i>
+    private static void <strong>fillImageByNoise</strong>(BufferedImage image, DataBuffer dataBuffer, Random random) {
+        int i=0;
+        for (int y = 0; y &lt; image.getHeight(); y++) {
+            for (int x = 0; x &lt; image.getWidth(); x++) {
+                dataBuffer.setElem(i, random.nextInt());
+                i++;
+            }
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni testu tridy java.util.Random.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) throws IOException {
+<i>        // vytvoreni bitmapy</i>
+        BufferedImage image = createImage();
+&nbsp;
+<i>        // ziskani objektu obsahujiciho hodnoty pixelu bitmapy</i>
+        DataBuffer dataBuffer = getImageDataBuffer(image);
+&nbsp;
+<i>        // vytvoreni instance tridy java.util.Random, kterou budeme</i>
+<i>        // pouzivat v testu</i>
+        Random random = new Random(42L);
+&nbsp;
+<i>        // vyplneni bitmapy sumem ziskanym funkci Random.nextInt()</i>
+        fillImageByNoise(image, dataBuffer, random);
+&nbsp;
+<i>        // zapis bitmapy na disk</i>
+        writeImage(image);
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po spuštění tohoto příkladu by se měl na disku vytvořit soubor se jménem
+"test.png":</p>
+
+<img src="http://i.iinfo.cz/images/88/java-image-1.png" class="image-143666" width="256" height="256" alt="&#160;" />
+<p><i>Obrázek 1: Obrázek vytvořený testovací třídou TestRandom v&nbsp;případě,
+že se použije standardní nezměněná třída java.util.Random.</i></p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Původní podoba bajtkódu metody <strong>java.util.Random.nextInt()</strong></h2>
+
+<p>Můžeme se podívat na to, jak je vlastně metoda
+<strong>java.util.Random.nextInt()</strong> implementována (a to kvůli tréninku
+bez sledování jejího zdrojového kódu :-). Vidíme, že
+<strong>Random.nextInt()</strong> interně volá další metodu
+<strong>Random.next(32)</strong>, přičemž konstanta 32 specifikuje počet bitů
+náhodného čísla:</p>
+
+<pre>
+Compiled from "Random.java"
+public class <strong>java.util.Random</strong> extends java.lang.Object implements java.io.Serializable{
+&nbsp;
+static final long serialVersionUID;
+&nbsp;
+public int <strong>nextInt</strong>();
+  Code:
+   0:           aload_0
+   1:           bipush          32
+   3:           invokevirtual   #225; <i>//Method next:(I)I</i>
+   6:           ireturn
+</pre>
+
+<p>Bajtkód metody <strong>Random.next(bits)</strong> sice může vypadat poněkud
+tajemně, ale jeho smysl je velmi dobře vysvětlen v&nbsp;dokumentaci. Provádí se
+totiž následující operace, a to atomicky (s&nbsp;využitím třídy
+<strong>AtomicLong</strong> zajišťující atomickou změnu své hodnoty):</p>
+
+<pre>
+(seed * 25214903917L + 11L) &amp; ((1L &lt;&lt; 48) - 1)
+return (int)(seed &gt;&gt;&gt; (48 - bits)).
+</pre>
+
+<pre>
+&nbsp;
+protected int <strong>next</strong>(int);
+  Code:
+   0:           aload_0
+   1:           getfield        #202; <i>//Field seed:Ljava/util/concurrent/atomic/AtomicLong;</i>
+   4:           astore          6
+   6:           aload           6
+   8:           invokevirtual   #229; <i>//Method java/util/concurrent/atomic/AtomicLong.get:()J</i>
+   11:          lstore_2
+   12:          lload_2
+   13:          ldc2_w          #103; <i>//long 25214903917l</i>
+   16:          lmul
+   17:          ldc2_w          #101; <i>//long 11l</i>
+   20:          ladd
+   21:          ldc2_w          #105; <i>//long 281474976710655l (==FFFFFFFFFFFF, maska)</i>
+   24:          land
+   25:          lstore          4
+   27:          aload           6
+   29:          lload_2
+   30:          lload           4
+   32:          invokevirtual   #232; <i>//Method java/util/concurrent/atomic/AtomicLong.compareAndSet:(JJ)Z</i>
+   35:          ifeq            6
+   38:          lload           4
+   40:          bipush          48
+   42:          iload_1
+   43:          isub
+   44:          lushr
+   45:          l2i
+   46:          ireturn
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Modifikace metody <strong>java.util.Random.nextInt()</strong> tak, aby se vracela konstanta</h2>
+
+<p>Našim prvním úkolem bude úprava metody
+<strong>java.util.Random.nextInt()</strong> takovým způsobem, aby se namísto
+sekvence pseudonáhodných hodnot vracela konstantní hodnota, dejme tomu pro
+jednoduchost nula. To je velmi snadné, protože pouze nahradíme původní bajtkód
+metody <strong>Random.nextInt()</strong> bajtkódem novým. Tento bajtkód vznikne
+překladem výrazu <strong>return 0;</strong>, což za nás provede nástroj
+<i>Javassist</i> automaticky:</p>
+
+<pre>
+import java.io.IOException;
+&nbsp;
+import javassist.CannotCompileException;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtMethod;
+import javassist.NotFoundException;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Test moznosti nastroje Javassist - zmena chovani standardni (systemove)</i>
+<i> * tridy java.util.Random.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>SystemClassModificationTest1</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Modifikace metody Random.nextInt().</i>
+<i>     *</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodaril preklad metody </i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud trida ci metoda nebyla nalezena</i>
+<i>     * @throws IOException </i>
+<i>     *             vyhozena v pripade, ze se nepodarilo ulozit vysledny bajtkod do souboru</i>
+<i>     */</i>
+    private static void <strong>modifyRandomClass</strong>() throws CannotCompileException, NotFoundException, IOException {
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // objekt predstavujici menenou (modifikovanou) tridu</i>
+        CtClass classToModify = pool.get("java.util.Random");
+&nbsp;
+<i>        // zmena tela metody nextInt()</i>
+        changeMethodNextInt(classToModify);
+&nbsp;
+<i>        // tridu nebude mozne dale menit</i>
+        classToModify.freeze();
+&nbsp;
+<i>        // ulozeni modifikovane tridy do souboru</i>
+        classToModify.writeFile(".");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zmena tela metody nextInt().</i>
+<i>     *</i>
+<i>     * @param classToModify</i>
+<i>     *            modifikovana trida</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodaril preklad metody</i>
+<i>     */</i>
+    private static void <strong>changeMethodNextInt</strong>(CtClass classToModify) throws NotFoundException, CannotCompileException {
+        CtMethod method = classToModify.getMethod("nextInt", "()I");
+        method.setBody("return 0;");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni modifikatoru tridy java.util.Random.</i>
+<i>     *</i>
+<i>     * @param args nevyuzito</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        try {
+            modifyRandomClass();
+        }
+        catch (CannotCompileException e) {
+            e.printStackTrace();
+        }
+        catch (NotFoundException e) {
+            e.printStackTrace();
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Povšimněte si, že třída, která se má modifikovat, se získá příkazy:</p>
+
+<pre>
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // objekt predstavujici menenou (modifikovanou) tridu</i>
+        CtClass classToModify = pool.get("java.util.Random");
+</pre>
+
+<p>a její zápis na disk se provede:</p>
+
+<pre>
+<i>        // tridu nebude mozne dale menit</i>
+        classToModify.freeze();
+&nbsp;
+<i>        // ulozeni modifikovane tridy do souboru</i>
+        classToModify.writeFile(".");
+</pre>
+
+<p>Význam tečky použité v&nbsp;posledním příkazu bude vysvětlen <a
+href="#k05">v&nbsp;navazující kapitole</a>.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Podoba upraveného bajtkódu metody <strong>java.util.Random.nextInt()</strong></h2>
+
+<p>Demonstrační příklad <strong>SystemClassModificationTest1</strong> popsaný
+<a href="#k04">ve čtvrté kapitole</a> je nutné přeložit následujícím způsobem,
+který předpokládá, že se v&nbsp;pracovním adresáři nachází i Java archiv
+<strong>javassist.jar</strong>:</p>
+
+<pre>
+javac -cp javassist.jar SystemClassModificationTest1.java
+</pre>
+
+<p>Spuštění příkladu na Linuxu:</p>
+
+<pre>
+java -cp .:javassist.jar SystemClassModificationTest1
+</pre>
+
+<p>Spuštění příkladu na MS Windows:</p>
+
+<pre>
+java -cp .;javassist.jar SystemClassModificationTest1
+</pre>
+
+<p>Nezávisle na tom, zda je příklad spuštěn na Linuxu či ve Windows by se měl
+v&nbsp;pracovním adresáři vytvořit podadresář <strong>java</strong> obsahující
+další podadresář <strong>util</strong> s&nbsp;novým bajtkódem třídy
+<strong>Random</strong>. Ona tečka, o které jsme se <a
+href="#k04">v&nbsp;předchozí kapitole</a> zmiňovali totiž určuje absolutní či
+relativní cestu do adresáře, který je považován za základ CP (tedy
+&bdquo;počátek&ldquo; hierarchie balíčků). A jelikož jsme modifikovali a
+uložili bajtkód třídy <strong>java.util.Random</strong>, je umístěn do
+<strong>./java/util/Random.class</strong>.</p>
+
+<p>Pohledem na vytvořený bajtkód (příkaz <strong>javap</strong>) se
+přesvědčíme, zda se modifikace třídy <strong>java.util.Random</strong> skutečně
+zdařila:</p>
+
+<pre>
+Compiled from "Random.java"
+public class <strong>java.util.Random</strong> extends java.lang.Object implements java.io.Serializable{
+&nbsp;
+static final long serialVersionUID;
+&nbsp;
+public int <strong>nextInt</strong>();
+  Code:
+   0:           iconst_0
+   1:           ireturn
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Parametr <strong>-Xbootclasspath</strong> použitý při spouštění JVM</h2>
+
+<p>Nyní se dostáváme k&nbsp;dalšímu problému &ndash; jakým způsobem máme
+virtuálnímu stroji Javy říci, že má načíst naši upravenou třídu
+<strong>java.util.Random</strong> a nikoli originální podobu této třídy uložené
+v&nbsp;souboru <strong>rt.jar</strong>? Zde nám nepomůže změna <i>classpath
+(CP)</i>, ale musíme použít (nestandardní) přepínač
+<strong>-Xbootclasspath</strong>, jehož tři možné podoby najdeme snadno po
+zápisu příkazu <strong>java -X</strong> do konzole:</p>
+
+<pre>
+~$ <strong>java -X</strong>
+    -Xmixed           mixed mode execution (default)
+    -Xint             interpreted mode execution only
+    -Xbootclasspath:&lt;directories and zip/jar files separated by ;&gt;
+                      set search path for bootstrap classes and resources
+    -Xbootclasspath/a:&lt;directories and zip/jar files separated by ;&gt;
+                      append to end of bootstrap class path
+    -Xbootclasspath/p:&lt;directories and zip/jar files separated by ;&gt;
+                      prepend in front of bootstrap class path
+    -Xnoclassgc       disable class garbage collection
+    -Xincgc           enable incremental garbage collection
+    -Xloggc:&lt;file&gt;    log GC status to a file with time stamps
+    -Xbatch           disable background compilation
+    -Xms&lt;size&gt;        set initial Java heap size
+    -Xmx&lt;size&gt;        set maximum Java heap size
+    -Xss&lt;size&gt;        set java thread stack size
+    -Xprof            output cpu profiling data
+    -Xfuture          enable strictest checks, anticipating future default
+    -Xrs              reduce use of OS signals by Java/VM (see documentation)
+    -Xcheck:jni       perform additional checks for JNI functions
+    -Xshare:off       do not attempt to use shared class data
+    -Xshare:auto      use shared class data if possible (default)
+    -Xshare:on        require using shared class data, otherwise fail.
+&nbsp;
+The -X options are non-standard and subject to change without notice.
+</pre>
+
+<p>Z&nbsp;předchozí nápovědy vyplývá, že použijeme volbu
+<strong>-Xbootclasspath/p:</strong>, jelikož potřebujeme, aby naše modifikovaná
+třída <strong>java.util.Random</strong> měla přednost před stejně pojmenovanou
+třídou z&nbsp;archivu <strong>rt.jar</strong>.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Spuštění testu s&nbsp;načtením upravené třídy <strong>java.util.Random</strong></h2>
+
+<p>Se znalostí funkce přepínače <strong>-Xbootclasspath</strong> je již nové
+spuštění demonstračního příkladu <strong>TestRandom</strong> snadné:</p>
+
+<pre>
+java -Xbootclasspath/p:. TestRandom
+</pre>
+
+<p>Jak to celé funguje? Specifikovali jsme, že před systémovými třídami
+uloženými v&nbsp;archivu <strong>rt.jar</strong> budou mít přednost třídy
+uložené v&nbsp;aktuálním adresáři (tečka). JVM samozřejmě opět hledá třídy
+v&nbsp;podadresářích v&nbsp;závislosti na balíčku, takže třídu
+<strong>java.util.Random</strong> bude nejprve hledat v&nbsp;adresáři
+<strong>./java/util/</strong> (kde je skutečně uložena) a teprve, kdyby ji zde
+nenašel, použije stejně pojmenovanou třídu z&nbsp;<strong>rt.jar</strong>.</p>
+
+<p>Příklad <strong>TestRandom</strong> by měl opět vytvořit rastrový obrázek
+"test.png", který by však měl být celý černý, protože se namísto
+pseudonáhodných hodnot vracely v&nbsp;metodě <strong>Random.nextInt()</strong>
+jen nuly:</p>
+
+<img src="http://i.iinfo.cz/images/88/java-image-2.png" class="image-143667" width="256" height="256" alt="&#160;" />
+<p><i>Obrázek 2: Obrázek vytvořený testovací třídou TestRandom v&nbsp;případě,
+že se použije pozměněná třída java.util.Random.</i></p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Modifikace metody <strong>java.util.Random.nextInt()</strong> tak, aby se vracela sekvence čísel (přidání skrytého atributu)</h2>
+
+<p>Nyní si ukažme, jak je nutné modifikovat třídu
+<strong>java.util.Random</strong> takovým způsobem, aby se namísto sekvence
+pseudonáhodných hodnot vracela v&nbsp;metodě <strong>Random.nextInt()</strong>
+aritmetická řada, konkrétně posloupnost celých čísel od 0 do Integer.MAX_VALUE
+(s&nbsp;přetečením na Integer.MIN_VALUE). Aby to bylo možné, je nejprve nutné
+do třídy přidat nový atribut, který si bude pamatovat následující hodnotu
+počitadla, pomocí něhož se bude sekvence čísel tvořit. Přidání nového atributu
+je jednoduché, jak je ostatně patrné z&nbsp;následujícího úryvku kódu:</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Pridani noveho privatniho atributu intCounter.</i>
+<i>     *</i>
+<i>     * @param classToModify</i>
+<i>     *            modifikovana trida</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodarilo pridani noveho atributu</i>
+<i>     */</i>
+    private static void <strong>createAndAddNewAttribute</strong>(CtClass classToModify) throws CannotCompileException {
+<i>        // vytvoreni a pridani noveho privatniho atributu do tridy</i>
+        CtField f = new CtField(CtClass.intType, "intCounter", classToModify);
+        f.setModifiers(Modifier.PRIVATE);
+        classToModify.addField(f);
+    }
+</pre>
+
+<p>Při modifikaci metody <strong>Random.nextInt()</strong> pro jednoduchost
+nebudeme brát v&nbsp;úvahu nutnost provádění zvyšování počitadla atomicky (sami
+se můžete zkusit zamyslet nad tím, co se může stát, když se tato metoda bude
+volat z&nbsp;více vláken):</p>
+
+<pre>
+<i>    /**</i>
+<i>     * Zmena tela metody nextInt().</i>
+<i>     *</i>
+<i>     * @param classToModify</i>
+<i>     *            modifikovana trida</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodaril preklad metody</i>
+<i>     */</i>
+    private static void <strong>changeMethodNextInt</strong>(CtClass classToModify) throws NotFoundException, CannotCompileException {
+        CtMethod method = classToModify.getMethod("nextInt", "()I");
+        method.setBody("return intCounter++;");
+    }
+</pre>
+
+<p>Celý demonstrační příklad, který provede modifikaci třídy
+<strong>java.util.Random</strong> vypadá takto:</p>
+
+<pre>
+import java.io.IOException;
+&nbsp;
+import javassist.CannotCompileException;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtField;
+import javassist.CtMethod;
+import javassist.Modifier;
+import javassist.NotFoundException;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Test moznosti nastroje Javassist - zmena chovani standardni (systemove)</i>
+<i> * tridy java.util.Random.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>SystemClassModificationTest2</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Modifikace metody Random.nextInt().</i>
+<i>     *</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodaril preklad metody </i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud trida ci metoda nebyla nalezena</i>
+<i>     * @throws IOException </i>
+<i>     *             vyhozena v pripade, ze se nepodarilo ulozit vysledny bajtkod do souboru</i>
+<i>     */</i>
+    private static void <strong>modifyRandomClass</strong>() throws CannotCompileException, NotFoundException, IOException {
+<i>        // ziskat vychozi class pool</i>
+        ClassPool pool = ClassPool.getDefault();
+&nbsp;
+<i>        // objekt predstavujici menenou (modifikovanou) tridu</i>
+        CtClass classToModify = pool.get("java.util.Random");
+&nbsp;
+<i>        // vytvoreni a pridani noveho atributu do tridy</i>
+        createAndAddNewAttribute(classToModify);
+&nbsp;
+<i>        // zmena tela metody nextInt()</i>
+        changeMethodNextInt(classToModify);
+&nbsp;
+<i>        // tridu nebude mozne dale menit</i>
+        classToModify.freeze();
+&nbsp;
+<i>        // ulozeni modifikovane tridy do souboru</i>
+        classToModify.writeFile(".");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zmena tela metody nextInt().</i>
+<i>     *</i>
+<i>     * @param classToModify</i>
+<i>     *            modifikovana trida</i>
+<i>     * @throws NotFoundException</i>
+<i>     *             vyhozena, pokud metoda nebyla nalezena</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodaril preklad metody</i>
+<i>     */</i>
+    private static void <strong>changeMethodNextInt</strong>(CtClass classToModify) throws NotFoundException, CannotCompileException {
+        CtMethod method = classToModify.getMethod("nextInt", "()I");
+        method.setBody("return intCounter++;");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Pridani noveho privatniho atributu intCounter.</i>
+<i>     *</i>
+<i>     * @param classToModify</i>
+<i>     *            modifikovana trida</i>
+<i>     * @throws CannotCompileException</i>
+<i>     *             vyhozena v pripade, ze se nepodarilo pridani noveho atributu</i>
+<i>     */</i>
+    private static void <strong>createAndAddNewAttribute</strong>(CtClass classToModify) throws CannotCompileException {
+<i>        // vytvoreni a pridani noveho privatniho atributu do tridy</i>
+        CtField f = new CtField(CtClass.intType, "intCounter", classToModify);
+        f.setModifiers(Modifier.PRIVATE);
+        classToModify.addField(f);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni modifikatoru tridy java.util.Random.</i>
+<i>     *</i>
+<i>     * @param args nevyuzito</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        try {
+            modifyRandomClass();
+        }
+        catch (CannotCompileException e) {
+            e.printStackTrace();
+        }
+        catch (NotFoundException e) {
+            e.printStackTrace();
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Podoba upraveného bajtkódu metody <strong>java.util.Random.nextInt()</strong></h2>
+
+<p>Druhý demonstrační příklad <strong>SystemClassModificationTest2</strong>
+popsaný <a href="#k08">v&nbsp;předchozí kapitole</a> přeložíme takto:</p>
+
+<pre>
+javac -cp javassist.jar SystemClassModificationTest2.java
+</pre>
+
+<p>Spuštění příkladu na Linuxu:</p>
+
+<pre>
+java -cp .:javassist.jar SystemClassModificationTest2
+</pre>
+
+<p>Spuštění příkladu na MS Windows:</p>
+
+<pre>
+java -cp .;javassist.jar SystemClassModificationTest2
+</pre>
+
+<p>Podívejme se nyní na podobu nového bajtkódu přiřazeného k&nbsp;metodě
+<strong>Random.nextInt()</strong>. Vidíme, že se skutečně pracuje
+s&nbsp;hodnotou nového privátního atributu <strong>Random.intCounter</strong>
+(a to bez zaručení atomičnosti prováděných operací):</p>
+
+<pre>
+Compiled from "Random.java"
+public class <strong>java.util.Random</strong> extends java.lang.Object implements java.io.Serializable{
+&nbsp;
+static final long serialVersionUID;
+&nbsp;
+public int <strong>nextInt</strong>();
+  Code:
+   0:           aload_0
+   1:           dup
+   2:           getfield        #73; <i>//Field intCounter:I</i>
+   5:           dup_x1
+   6:           iconst_1
+   7:           iadd
+   8:           putfield        #73; <i>//Field intCounter:I</i>
+   11:          ireturn
+&nbsp;
+}
+</pre>
+
+<p>Poznámka: instrukce <strong>dup_x1</strong> zduplikuje (zkopíruje) položku
+z&nbsp;<i>TOS</i> (vrcholu zásobníku operandů), ale vloží ji o dvě pozice níž
+do téhož zásobníku, tudíž jde o kombinaci operace
+<strong>swap+dup</strong>.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Spuštění testu s&nbsp;načtením upravené třídy <strong>java.util.Random</strong></h2>
+
+<p>Jakmile máme uloženou novou podobu bajtkódu třídy
+<strong>java.util.Random</strong>, můžeme si vyzkoušet znovu spustit
+demonstrační příklad <strong>TestRandom</strong>, a to opět s&nbsp;použitím
+nestandardní volby <strong>-Xbootclasspath</strong>:</p>
+
+<pre>
+java -Xbootclasspath/p:. TestRandom
+</pre>
+
+<p>Příklad <strong>TestRandom</strong> by měl opět vytvořit rastrový obrázek
+"test.png", který by však měl obsahovat gradientní přechod od černé do bílé,
+protože se namísto pseudonáhodných hodnot vracela v&nbsp;metodě
+<strong>Random.nextInt()</strong> aritmetická řada (která při převodu
+z&nbsp;<strong>int</strong> na <strong>byte</strong> přetéká přesně na hranici
+mezi jednotlivými řádky bitmapy):</p>
+
+<img src="http://i.iinfo.cz/images/88/java-image-3.png" class="image-143668" width="256" height="256" alt="&#160;" />
+<p><i>Obrázek 3: Obrázek vytvořený testovací třídou TestRandom v&nbsp;případě,
+že se použije pozměněná třída java.util.Random.</i></p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. Oba dnes popsané demonstrační příklady
+<strong>SystemClassModificationTest1</strong> i
+<strong>SystemClassModificationTest2</strong> jsou společně s&nbsp;testovacím
+příkladem <strong>TestRandom</strong> a pomocnými skripty uloženy do Mercurial
+repositáře dostupného na adrese <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/</a>.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verze všech
+zdrojových kódů i skriptů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td> 1</td><td>TestRandom.java                  </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/TestRandom.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/TestRandom.java</a></td></tr>
+<tr><td> 2</td><td>SystemClassModificationTest1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/SystemClassModificationTest1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/SystemClassModificationTest1.java</a></td></tr>
+<tr><td> 3</td><td>SystemClassModificationTest2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/SystemClassModificationTest2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/SystemClassModificationTest2.java</a></td></tr>
+<tr><td> 4</td><td>build.sh                         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/build.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/build.sh</a></td></tr>
+<tr><td> 5</td><td>build.bat                        </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/build.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/build.bat</a></td></tr>
+<tr><td> 6</td><td>modifyClass1.sh                  </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass1.sh</a></td></tr>
+<tr><td> 7</td><td>modifyClass1.bat                 </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass1.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass1.bat</a></td></tr>
+<tr><td> 8</td><td>modifyClass2.sh                  </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass2.sh</a></td></tr>
+<tr><td> 9</td><td>modifyClass2.bat                 </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass2.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/modifyClass2.bat</a></td></tr>
+<tr><td>10</td><td>runTestRandom.sh                 </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/runTestRandom.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/runTestRandom.sh</a></td></tr>
+<tr><td>11</td><td>runTestRandom.bat                </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/runTestRandom.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/4e8c878e4cb0/javassist/SystemClassModification/runTestRandom.bat</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
