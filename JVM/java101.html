@@ -1,0 +1,1459 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (záhadná funkce System.arraycopy)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (záhadná funkce System.arraycopy)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si řekneme, jakým způsobem je v Hotspotu implementována velmi důležitá a často využívaná funkce System.arraycopy(). Uvidíme, že konkrétní tvar této funkce se bude lišit v závislosti na zarovnání či na překryvu kopírovaných prvků polí.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (záhadná funkce System.arraycopy)</a></p>
+<p><a href="#k02">2. Testovací příklad <strong>ArrayCopyTest.java</strong></a></p>
+<p><a href="#k03">3. Bajtkód testovacího příkladu <strong>ArrayCopyTest.java</strong></a></p>
+<p><a href="#k04">4. Výpis informací o metodách přeložených JITem</a></p>
+<p><a href="#k05">5. Výpis přeložených metod s&nbsp;voláním intrinsic</a></p>
+<p><a href="#k06">6. Dvě varianty implementace metody <strong>System.arraycopy()</strong> při použití int[]</a></p>
+<p><a href="#k07">7. Benchmark <strong>ArrayCopyTest2.java</strong></a></p>
+<p><a href="#k08">8. Výsledky běhu benchmarku</a></p>
+<p><a href="#k09">9. Volby <strong>UseXMMForArrayCopy</strong> a <strong>UseUnalignedLoadStores</strong> a jejich vliv na <strong>System.arraycopy</strong></a></p>
+<p><a href="#k10">10. Obsah následující části seriálu</a></p>
+<p><a href="#k11">11. Repositář se všemi testovacími příklady</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (záhadná funkce System.arraycopy)</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> jsme si mj.&nbsp;řekli, že v&nbsp;Hotspotu i v&nbsp;dalších typech
+virtuálních strojů Javy se používá optimalizace založená na takzvaných
+<i>intrinsic</i>. Tato optimalizační technika vychází z&nbsp;myšlenky, že
+některé standardní metody jsou používané velmi často a současně se jedná o
+metody, v&nbsp;nichž jsou implementovány časově náročné činnosti, takže by bylo
+vhodné, aby byly tyto metody již dopředu implementovány a optimalizovány pro
+každou mikroprocesorovou architekturu, na které bude provozován virtuální stroj
+Javy. Typickými metodami a funkcemi, které je vhodné již dopředu optimalizovat,
+jsou některé goniometrické a logaritmické funkce, které můžeme najít ve třídě
+<strong>java.lang.Math</strong>. Implementace je v&nbsp;tomto případě většinou
+velmi jednoduchá, neboť se pouze zavolá příslušná instrukce matematického
+koprocesoru &ndash; což mj.&nbsp;znamená i automatický inlining. Jako příklad
+jsme si uvedli funkci sinus, kterou Hotspot &bdquo;přeloží&ldquo; následujícím
+způsobem:</p>
+
+<pre>
+void Assembler::fsin() {
+  emit_byte(0xD9);
+  emit_byte(0xFE);
+}
+</pre>
+
+<p>Bajt s&nbsp;hodnotou 0xD9 značí prefix <strong>ESC 1</strong> pro vyvolání
+instrukce matematického koprocesoru, druhý bajt s&nbsp;hodnotou 0xFE je již
+vlastní instrukce <strong>FSIN</strong> očekávající operand v&nbsp;registru
+ST(0).</p>
+
+<p>My se dnes budeme zabývat především funkcí
+<strong>System.arraycopy()</strong>, a to z&nbsp;toho důvodu, že je tato funkce
+často využívána jak v&nbsp;aplikacích, tak i přímo ve standardních knihovnách
+Javy. O tom se lze ostatně snadno přesvědčit jednoduchou analýzou souboru
+<strong>src.zip</strong>, který je uložený v&nbsp;adresáři
+<strong>/usr/lib/jvm/java-{verze}/</strong>:</p>
+
+<pre>
+unzip -c /usr/lib/jvm/java-1.7.0-openjdk/src.zip | grep System.arraycopy | wc -l
+</pre>
+
+<p>Mělo by se vrátit přibližně tisíc údajů.</p>
+
+<p>Poznámka: termín &bdquo;funkce&ldquo; zde používám záměrně, protože
+<strong>System.arraycopy()</strong> je statická a současně i veřejná metoda,
+tudíž má blíže ke klasicky pojatým funkcím, než k&nbsp;OOP metodám :-)</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Testovací příklad <strong>ArrayCopyTest.java</strong></h2>
+
+<p>Chování funkce <strong>System.arraycopy()</strong> dnes budeme studovat na
+několika demonstračních příkladech. První příklad je velmi jednoduchý. Funkce
+<strong>System.arraycopy()</strong> je zde použita pro kopii prvků polí celých
+čísel (int[]), a to jak mezi dvěma rozdílnými poli, tak i mezi stejným polem
+(což je dovoleno). Navíc se mění i offsety prvního zdrojového
+popř.&nbsp;prvního cílového prvku. Jak uvidíme dále, jsou tyto údaje
+zpracovávány JIT překladačem, který na základě těchto údajů správně zvolí
+vhodnou implementaci funkce <strong>System.arraycopy()</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Jednoduchy testovaci program volajici funkci</i>
+<i>  * @link System#arraycopy(java.lang.Object, int, java.lang.Object, int, int)</i>
+<i>  * Jako zdrojove a cilove pole jsou pouzita pole celych cisel int[].</i>
+<i>  * Pro volani se pouzivaji ruzne kombinace offsetu a referenci na zdrojove</i>
+<i>  * a cilove pole.</i>
+<i>  *</i>
+<i>  * @author Pavel Tisnovsky</i>
+<i>  */</i>
+public class <strong>ArrayCopyTest</strong> {
+    static int[] src = new int[50000];
+    static int[] dest = new int[50000];
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, oba offsety jsou nulove */</i>
+    public static void <strong>testArrayCopy1</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, nulovy je jen druhy offset */</i>
+    public static void <strong>testArrayCopy2</strong>(int offset, int length) {
+        System.arraycopy(src, offset, dest, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, nulovy je jen prvni offset */</i>
+    public static void <strong>testArrayCopy3</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, offset, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, oba offsety jsou nulove */</i>
+    public static void <strong>testArrayCopy4</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, nulovy je jen druhy offset */</i>
+    public static void <strong>testArrayCopy5</strong>(int offset, int length) {
+        System.arraycopy(src, offset, src, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, nulovy je jen prvni offset */</i>
+    public static void <strong>testArrayCopy6</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, offset, length);
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+<i>        // donutime JIT k prekladu, soucasne se vsak neprekroci</i>
+<i>        // meze poli</i>
+        for (int i = 0; i &lt; 20000; i++) {
+            testArrayCopy1(i, i);
+            testArrayCopy2(i, i);
+            testArrayCopy3(i, i);
+            testArrayCopy4(i, i);
+            testArrayCopy5(i, i);
+            testArrayCopy6(i, i);
+        }
+    }
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Bajtkód testovacího příkladu <strong>ArrayCopyTest.java</strong></h2>
+
+<p>V&nbsp;předchozích částech tohoto seriálu jsme si již několikrát řekli, že
+překladač Javy, tj.&nbsp;nástroj <strong>javac</strong> si s&nbsp;prakticky
+žádnými optimalizacemi hlavu neláme :-), takže pro nás již nebude takovým
+překvapením fakt, že se všech šest metod <strong>testArrayCopyX()</strong>
+přeloží prakticky stejným způsobem &ndash; přesněji řečeno budou bajtkódy metod
+<strong>testArrayCopy1()</strong> až <strong>testArrayCopy3()</strong> shodné,
+stejně jako budou identické bajtkódy metod <strong>testArrayCopy4()</strong> až
+<strong>testArrayCopy6()</strong>. Ve všech těchto metodách se nejprve na
+zásobník operandů uloží všech pět argumentů funkce
+<strong>System.arraycopy()</strong> a posléze dojde k&nbsp;zavolání této funkce
+přes instrukci <strong>invokestatic</strong>:</p>
+
+<pre>
+Compiled from "ArrayCopyTest.java"
+public class <strong>ArrayCopyTest</strong> {
+  static int[] src;
+&nbsp;
+  static int[] dest;
+&nbsp;
+  public <strong>ArrayCopyTest</strong>();
+    Code:
+       0: aload_0
+       1: invokespecial #1                  <i>// Method java/lang/Object."&lt;init&gt;":()V</i>
+       4: return
+&nbsp;
+  public static void <strong>testArrayCopy1</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[I</i>
+       3: iconst_0
+       4: getstatic     #3                  <i>// Field dest:[I</i>
+       7: iconst_0
+       8: iload_1
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return
+&nbsp;
+  public static void <strong>testArrayCopy2</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[I</i>
+       3: iload_0
+       4: getstatic     #3                  <i>// Field dest:[I</i>
+       7: iconst_0
+       8: iload_1
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return
+&nbsp;
+  public static void <strong>testArrayCopy3</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[I</i>
+       3: iconst_0
+       4: getstatic     #3                  <i>// Field dest:[I</i>
+       7: iload_0
+       8: iload_1
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return
+&nbsp;
+  public static void <strong>testArrayCopy4</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[I</i>
+       3: iconst_0
+       4: getstatic     #2                  <i>// Field src:[I</i>
+       7: iconst_0
+       8: iload_1
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return
+&nbsp;
+  public static void <strong>testArrayCopy5</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[I</i>
+       3: iload_0
+       4: getstatic     #2                  <i>// Field src:[I</i>
+       7: iconst_0
+       8: iload_1
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return
+&nbsp;
+  public static void <strong>testArrayCopy6</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[I</i>
+       3: iconst_0
+       4: getstatic     #2                  <i>// Field src:[I</i>
+       7: iload_0
+       8: iload_1
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return
+&nbsp;
+  public static void <strong>main</strong>(java.lang.String[]);
+    Code:
+       0: iconst_0
+       1: istore_1
+       2: iload_1
+       3: sipush        20000
+       6: if_icmpge     45
+       9: iload_1
+      10: iload_1
+      11: invokestatic  #5                  <i>// Method testArrayCopy1:(II)V</i>
+      14: iload_1
+      15: iload_1
+      16: invokestatic  #6                  <i>// Method testArrayCopy2:(II)V</i>
+      19: iload_1
+      20: iload_1
+      21: invokestatic  #7                  <i>// Method testArrayCopy3:(II)V</i>
+      24: iload_1
+      25: iload_1
+      26: invokestatic  #8                  <i>// Method testArrayCopy4:(II)V</i>
+      29: iload_1
+      30: iload_1
+      31: invokestatic  #9                  <i>// Method testArrayCopy5:(II)V</i>
+      34: iload_1
+      35: iload_1
+      36: invokestatic  #10                 <i>// Method testArrayCopy6:(II)V</i>
+      39: iinc          1, 1
+      42: goto          2
+      45: return
+&nbsp;
+  <strong>static {}</strong>;
+    Code:
+       0: ldc           #11                 <i>// int 50000</i>
+       2: newarray      int
+       4: putstatic     #2                  <i>// Field src:[I</i>
+       7: ldc           #11                 <i>// int 50000</i>
+       9: newarray      int
+      11: putstatic     #3                  <i>// Field dest:[I</i>
+      14: return
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výpis informací o metodách přeložených JITem</h2>
+
+<p>Informaci o &bdquo;statickém&ldquo; chování již tedy známe, nyní se ovšem
+musíme podívat na to, jakým způsobem bude funkce
+<strong>System.arraycopy()</strong> zpracována při běhu aplikace, což je mnohem
+zajímavější a současně i důležitější, než samotný obsah bajtkódu (ten se
+v&nbsp;ideálním případě nahradí JITovaným strojovým kódem). Pro informaci o
+tom, ve kterém okamžiku došlo k&nbsp;překladu nějaké funkce či metody můžeme
+použít nám již známý přepínač <strong>-XX:+PrintCompilation</strong>, který je
+nutno použít společně s&nbsp;přepínačem
+<strong>-XX:+UnlockDiagnosticVMOptions</strong>. Navíc ještě přepneme spouštěný
+virtuální stroj do režimu používání JIT překladače typu server a přesně
+nastavíme počet opakování smyčky/volání metod tak, aby byl překlad zahájen již
+po 10000 iteracích:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintCompilation ArrayCopyTest
+</pre>
+
+<pre>
+    206    1     n       java.lang.System::arraycopy (0 bytes)   (static)
+   1066    2             ArrayCopyTest::testArrayCopy1 (13 bytes)
+   1079    3             ArrayCopyTest::testArrayCopy2 (13 bytes)
+   1082    4             ArrayCopyTest::testArrayCopy3 (13 bytes)
+   1085    5             ArrayCopyTest::testArrayCopy4 (13 bytes)
+   1087    6             ArrayCopyTest::testArrayCopy5 (13 bytes)
+   1089    7             ArrayCopyTest::testArrayCopy6 (13 bytes)
+   1824    1 %           ArrayCopyTest::main @ 2 (46 bytes)
+</pre>
+
+<p>Kromě plných jmen přeložených metod a funkcí se ještě před těmito jmény
+objevují prapodivné znaky, které nám však mohou napomoci k&nbsp;pochopení,
+jakým způsobem je která metoda či funkce přeložena. Význam některých znaků je
+vypsán v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>Znak</th><th>Význam</th></tr>
+<tr><td>s</td><td>synchronizovaná metoda</td></tr>
+<tr><td>!</td><td>metoda s&nbsp;handlerem obsluhy výjimek</td></tr>
+<tr><td>n</td><td>nativní metoda, popř.&nbsp;<i>intrinsic</i></td></tr>
+<tr><td>%</td><td>probíhá on stack replacement, což znamená, že metoda byla zkompilována, ale ještě neukončena</td></tr>
+<tr><td>*</td><td>wrapper pro nativní kód</td></tr>
+</table>
+
+<p>Můžeme vidět, že u překládané funkce <strong>System.arraycopy()</strong> je
+uveden znak &bdquo;n&ldquo; značící nativní metodu a/nebo <i>intrinsic</i>. U
+metody <strong>main()</strong> je naproti tomu znak &bdquo;%&ldquo; značící on
+stack replacement (zde je to pochopitelné).</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Výpis přeložených metod s&nbsp;voláním intrinsic</h2>
+
+<p>Základní informaci o tom, které funkce a metody byly přeloženy tedy již
+máme, ovšem zatím vůbec nevíme, jak vypadá konkrétní volání
+<strong>System.arraycopy()</strong>. Zde již nezbývá nic jiného, než se podívat
+na generovaný strojový kód, a to opět s&nbsp;využitím přepínače
+<strong>-XX:+UnlockDiagnosticVMOptions</strong> tentokráte použitého společně
+s&nbsp;přepínačem <strong>-XX:+PrintAssembly</strong>. Spuštění virtuálního
+stroje bude vypadat následovně:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly ArrayCopyTest
+</pre>
+
+<p>Na architektuře i386 dostaneme následující výpis (rozdělím ho do šesti
+částí, pro každou testovací metodu jednu):</p>
+
+<h3>ArrayCopyTest.testArrayCopy1</h3>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'testArrayCopy1' '(II)V' in 'ArrayCopyTest'
+  # parm0:    ecx       = int
+  # parm1:    edx       = int
+  #           [sp+0x20]  (sp of caller)
+  0x009bad00: mov    %eax,0xffffc000(%esp)
+  0x009bad07: push   %ebp
+  0x009bad08: sub    $0x18,%esp         ;*synchronization entry
+                                        ; - ArrayCopyTest::testArrayCopy1@-1 (line 7)
+  0x009bad0b: mov    $0x3b812f8,%ebx    ;   {oop(a 'java/lang/Class' = 'ArrayCopyTest')}
+  0x009bad10: mov    0x70(%ebx),%ecx    ;*getstatic src
+                                        ; - ArrayCopyTest::testArrayCopy1@0 (line 7)
+  0x009bad13: mov    0x74(%ebx),%ebp    ;*getstatic dest
+                                        ; - ArrayCopyTest::testArrayCopy1@4 (line 7)
+  0x009bad16: mov    0x8(%ecx),%ebx     ; implicit exception: dispatches to 0x009bad70
+  0x009bad19: mov    0x8(%ebp),%edi     ; implicit exception: dispatches to 0x009bad81
+  0x009bad1c: cmp    %edx,%ebx
+  0x009bad1e: jb     0x009bad4b
+  0x009bad20: cmp    %edx,%edi
+  0x009bad22: jb     0x009bad4f
+  0x009bad24: mov    %edx,%edi
+  0x009bad26: test   %edx,%edx
+  0x009bad28: jle    0x009bad6a
+  0x009bad2a: lea    0xc(%ebp),%ebx
+  0x009bad2d: lea    0xc(%ecx),%ebp
+  0x009bad30: mov    %ebp,(%esp)
+  0x009bad33: mov    %ebx,0x4(%esp)
+  0x009bad37: mov    %edx,0x8(%esp)
+<strong>  0x009bad3b: call   Stub::jint_disjoint_arraycopy</strong>
+<strong>                                        ;   {runtime_call}</strong>
+  0x009bad40: add    $0x18,%esp
+  0x009bad43: pop    %ebp
+  0x009bad44: test   %eax,0x940000      ;   {poll_return}
+  0x009bad4a: ret
+  0x009bad4b: mov    %edx,%edi
+  0x009bad4d: jmp    0x009bad51
+  0x009bad4f: mov    %edx,%edi
+  0x009bad51: xor    %edx,%edx
+  0x009bad53: mov    %ebp,(%esp)
+  0x009bad56: xor    %ebp,%ebp
+  0x009bad58: mov    %ebp,0x4(%esp)
+  0x009bad5c: mov    %edi,0x8(%esp)
+  0x009bad60: xchg   %ax,%ax
+  0x009bad63: call   0x009baa40         ; OopMap{off=104}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy1@9 (line 7)
+                                        ;   {runtime_call}
+  0x009bad68: jmp    0x009bad40
+  0x009bad6a: test   %edx,%edx
+  0x009bad6c: jge    0x009bad40
+  0x009bad6e: jmp    0x009bad51
+  0x009bad70: mov    $0xfffffff6,%ecx
+  0x009bad75: mov    %edx,0xc(%esp)
+  0x009bad79: xchg   %ax,%ax
+  0x009bad7b: call   0x0099dd00         ; OopMap{ebp=Oop off=128}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy1@9 (line 7)
+                                        ;   {runtime_call}
+  0x009bad80: int3
+  0x009bad81: mov    %ecx,%ebp
+  0x009bad83: mov    %edx,0xc(%esp)
+  0x009bad87: mov    $0xfffffff6,%ecx
+  0x009bad8c: xchg   %ax,%ax
+  0x009bad8f: call   0x0099dd00         ; OopMap{ebp=Oop off=148}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy1@9 (line 7)
+                                        ;   {runtime_call}
+  0x009bad94: int3                      ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy1@9 (line 7)
+  0x009bad95: mov    %eax,%ecx
+  0x009bad97: add    $0x18,%esp
+  0x009bad9a: pop    %ebp
+  0x009bad9b: jmp    0x009ba940         ;   {runtime_call}
+[Exception Handler]
+[Stub Code]
+  0x009bada0: jmp    0x009b7500         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009bada5: push   $0x9bada5          ;   {section_word}
+  0x009badaa: jmp    0x0099e280         ;   {runtime_call}
+  0x009badaf: hlt
+</pre>
+
+<h3>ArrayCopyTest.testArrayCopy2</h3>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'testArrayCopy2' '(II)V' in 'ArrayCopyTest'
+  # parm0:    ecx       = int
+  # parm1:    edx       = int
+  #           [sp+0x30]  (sp of caller)
+  0x009b8b40: mov    %eax,0xffffc000(%esp)
+  0x009b8b47: push   %ebp
+  0x009b8b48: sub    $0x28,%esp         ;*synchronization entry
+                                        ; - ArrayCopyTest::testArrayCopy2@-1 (line 12)
+  0x009b8b4b: mov    %ecx,%ebx
+  0x009b8b4d: mov    $0x3b812f8,%edi    ;   {oop(a 'java/lang/Class' = 'ArrayCopyTest')}
+  0x009b8b52: mov    0x70(%edi),%ecx    ;*getstatic src
+                                        ; - ArrayCopyTest::testArrayCopy2@0 (line 12)
+  0x009b8b55: mov    0x74(%edi),%eax    ;*getstatic dest
+                                        ; - ArrayCopyTest::testArrayCopy2@4 (line 12)
+  0x009b8b58: mov    0x8(%ecx),%ebp     ; implicit exception: dispatches to 0x009b8bbc
+  0x009b8b5b: mov    0x8(%eax),%esi     ; implicit exception: dispatches to 0x009b8bd1
+  0x009b8b5e: mov    %ebx,%edi
+  0x009b8b60: test   %ebx,%ebx
+  0x009b8b62: jl     0x009b8b96
+  0x009b8b64: add    %edx,%ebx
+  0x009b8b66: cmp    %ebx,%ebp
+  0x009b8b68: jb     0x009b8b9a
+  0x009b8b6a: cmp    %edx,%esi
+  0x009b8b6c: jb     0x009b8b9e
+  0x009b8b6e: mov    %edx,%esi
+  0x009b8b70: test   %edx,%edx
+  0x009b8b72: jle    0x009b8bb6
+  0x009b8b74: lea    0xc(%ecx,%edi,4),%ebx
+  0x009b8b78: lea    0xc(%eax),%ecx
+  0x009b8b7b: mov    %ebx,(%esp)
+  0x009b8b7e: mov    %ecx,0x4(%esp)
+  0x009b8b82: mov    %edx,0x8(%esp)
+<strong>  0x009b8b86: call   Stub::jint_arraycopy  ;   {runtime_call}</strong>
+  0x009b8b8b: add    $0x28,%esp
+  0x009b8b8e: pop    %ebp
+  0x009b8b8f: test   %eax,0x940000      ;   {poll_return}
+  0x009b8b95: ret
+  0x009b8b96: mov    %edx,%esi
+  0x009b8b98: jmp    0x009b8ba0
+  0x009b8b9a: mov    %edx,%esi
+  0x009b8b9c: jmp    0x009b8ba0
+  0x009b8b9e: mov    %edx,%esi
+  0x009b8ba0: mov    %edi,%edx
+  0x009b8ba2: mov    %eax,(%esp)
+  0x009b8ba5: xor    %ebp,%ebp
+  0x009b8ba7: mov    %ebp,0x4(%esp)
+  0x009b8bab: mov    %esi,0x8(%esp)
+  0x009b8baf: call   0x009baa40         ; OopMap{off=116}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy2@9 (line 12)
+                                        ;   {runtime_call}
+  0x009b8bb4: jmp    0x009b8b8b
+  0x009b8bb6: test   %edx,%edx
+  0x009b8bb8: jge    0x009b8b8b
+  0x009b8bba: jmp    0x009b8ba0
+  0x009b8bbc: mov    $0xfffffff6,%ecx
+  0x009b8bc1: mov    %ebx,%ebp
+  0x009b8bc3: mov    %eax,0xc(%esp)
+  0x009b8bc7: mov    %edx,0x10(%esp)
+  0x009b8bcb: call   0x0099dd00         ; OopMap{[12]=Oop off=144}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy2@9 (line 12)
+                                        ;   {runtime_call}
+  0x009b8bd0: int3
+  0x009b8bd1: mov    %ecx,%ebp
+  0x009b8bd3: mov    %ebx,0xc(%esp)
+  0x009b8bd7: mov    %edx,0x10(%esp)
+  0x009b8bdb: mov    $0xfffffff6,%ecx
+  0x009b8be0: xchg   %ax,%ax
+  0x009b8be3: call   0x0099dd00         ; OopMap{ebp=Oop off=168}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy2@9 (line 12)
+                                        ;   {runtime_call}
+  0x009b8be8: int3                      ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy2@9 (line 12)
+  0x009b8be9: mov    %eax,%ecx
+  0x009b8beb: add    $0x28,%esp
+  0x009b8bee: pop    %ebp
+  0x009b8bef: jmp    0x009ba940         ;   {runtime_call}
+  0x009b8bf4: hlt
+  0x009b8bf5: hlt
+  0x009b8bf6: hlt
+  0x009b8bf7: hlt
+  0x009b8bf8: hlt
+  0x009b8bf9: hlt
+  0x009b8bfa: hlt
+  0x009b8bfb: hlt
+  0x009b8bfc: hlt
+  0x009b8bfd: hlt
+  0x009b8bfe: hlt
+  0x009b8bff: hlt
+[Exception Handler]
+[Stub Code]
+  0x009b8c00: jmp    0x009b7500         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b8c05: push   $0x9b8c05          ;   {section_word}
+  0x009b8c0a: jmp    0x0099e280         ;   {runtime_call}
+  0x009b8c0f: hlt
+</pre>
+
+<h3>ArrayCopyTest.testArrayCopy3</h3>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'testArrayCopy3' '(II)V' in 'ArrayCopyTest'
+  # parm0:    ecx       = int
+  # parm1:    edx       = int
+  #           [sp+0x30]  (sp of caller)
+  0x009b8840: mov    %eax,0xffffc000(%esp)
+  0x009b8847: push   %ebp
+  0x009b8848: sub    $0x28,%esp         ;*synchronization entry
+                                        ; - ArrayCopyTest::testArrayCopy3@-1 (line 17)
+  0x009b884b: mov    %ecx,%ebx
+  0x009b884d: mov    $0x3b812f8,%ebp    ;   {oop(a 'java/lang/Class' = 'ArrayCopyTest')}
+  0x009b8852: mov    0x70(%ebp),%ecx    ;*getstatic src
+                                        ; - ArrayCopyTest::testArrayCopy3@0 (line 17)
+  0x009b8855: mov    0x74(%ebp),%eax    ;*getstatic dest
+                                        ; - ArrayCopyTest::testArrayCopy3@4 (line 17)
+  0x009b8858: mov    0x8(%ecx),%ebp     ; implicit exception: dispatches to 0x009b88bc
+  0x009b885b: mov    0x8(%eax),%edi     ; implicit exception: dispatches to 0x009b88d1
+  0x009b885e: test   %ebx,%ebx
+  0x009b8860: jl     0x009b8896
+  0x009b8862: cmp    %edx,%ebp
+  0x009b8864: jb     0x009b889a
+  0x009b8866: mov    %ebx,%esi
+  0x009b8868: add    %edx,%esi
+  0x009b886a: cmp    %esi,%edi
+  0x009b886c: jb     0x009b889e
+  0x009b886e: mov    %edx,%edi
+  0x009b8870: test   %edx,%edx
+  0x009b8872: jle    0x009b88b6
+  0x009b8874: lea    0xc(%eax,%ebx,4),%ebx
+  0x009b8878: lea    0xc(%ecx),%ebp
+  0x009b887b: mov    %ebp,(%esp)
+  0x009b887e: mov    %ebx,0x4(%esp)
+  0x009b8882: mov    %edx,0x8(%esp)
+<strong>  0x009b8886: call   Stub::jint_arraycopy  ;   {runtime_call}</strong>
+  0x009b888b: add    $0x28,%esp
+  0x009b888e: pop    %ebp
+  0x009b888f: test   %eax,0x940000      ;   {poll_return}
+  0x009b8895: ret
+  0x009b8896: mov    %edx,%edi
+  0x009b8898: jmp    0x009b88a0
+  0x009b889a: mov    %edx,%edi
+  0x009b889c: jmp    0x009b88a0
+  0x009b889e: mov    %edx,%edi
+  0x009b88a0: xor    %edx,%edx
+  0x009b88a2: mov    %eax,(%esp)
+  0x009b88a5: mov    %ebx,0x4(%esp)
+  0x009b88a9: mov    %edi,0x8(%esp)
+  0x009b88ad: xchg   %ax,%ax
+  0x009b88af: call   0x009baa40         ; OopMap{off=116}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy3@9 (line 17)
+                                        ;   {runtime_call}
+  0x009b88b4: jmp    0x009b888b
+  0x009b88b6: test   %edx,%edx
+  0x009b88b8: jge    0x009b888b
+  0x009b88ba: jmp    0x009b88a0
+  0x009b88bc: mov    $0xfffffff6,%ecx
+  0x009b88c1: mov    %eax,%ebp
+  0x009b88c3: mov    %ebx,0xc(%esp)
+  0x009b88c7: mov    %edx,0x10(%esp)
+  0x009b88cb: call   0x0099dd00         ; OopMap{ebp=Oop off=144}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy3@9 (line 17)
+                                        ;   {runtime_call}
+  0x009b88d0: int3
+  0x009b88d1: mov    %ecx,%ebp
+  0x009b88d3: mov    %ebx,0xc(%esp)
+  0x009b88d7: mov    %edx,0x10(%esp)
+  0x009b88db: mov    $0xfffffff6,%ecx
+  0x009b88e0: xchg   %ax,%ax
+  0x009b88e3: call   0x0099dd00         ; OopMap{ebp=Oop off=168}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy3@9 (line 17)
+                                        ;   {runtime_call}
+  0x009b88e8: int3                      ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy3@9 (line 17)
+  0x009b88e9: mov    %eax,%ecx
+  0x009b88eb: add    $0x28,%esp
+  0x009b88ee: pop    %ebp
+  0x009b88ef: jmp    0x009ba940         ;   {runtime_call}
+  0x009b88f4: hlt
+  0x009b88f5: hlt
+  0x009b88f6: hlt
+  0x009b88f7: hlt
+  0x009b88f8: hlt
+  0x009b88f9: hlt
+  0x009b88fa: hlt
+  0x009b88fb: hlt
+  0x009b88fc: hlt
+  0x009b88fd: hlt
+  0x009b88fe: hlt
+  0x009b88ff: hlt
+[Exception Handler]
+[Stub Code]
+  0x009b8900: jmp    0x009b7500         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b8905: push   $0x9b8905          ;   {section_word}
+  0x009b890a: jmp    0x0099e280         ;   {runtime_call}
+  0x009b890f: hlt
+</pre>
+
+<h3>ArrayCopyTest.testArrayCopy4</h3>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'testArrayCopy4' '(II)V' in 'ArrayCopyTest'
+  # parm0:    ecx       = int
+  # parm1:    edx       = int
+  #           [sp+0x20]  (sp of caller)
+  0x009b85c0: mov    %eax,0xffffc000(%esp)
+  0x009b85c7: push   %ebp
+  0x009b85c8: sub    $0x18,%esp         ;*synchronization entry
+                                        ; - ArrayCopyTest::testArrayCopy4@-1 (line 22)
+  0x009b85cb: mov    $0x3b812f8,%ecx    ;   {oop(a 'java/lang/Class' = 'ArrayCopyTest')}
+  0x009b85d0: mov    0x70(%ecx),%ecx    ;*getstatic src
+                                        ; - ArrayCopyTest::testArrayCopy4@0 (line 22)
+  0x009b85d3: mov    0x8(%ecx),%ebx     ; implicit exception: dispatches to 0x009b861c
+  0x009b85d6: cmp    %edx,%ebx
+  0x009b85d8: jb     0x009b85fe
+  0x009b85da: mov    %edx,%ebx
+  0x009b85dc: test   %edx,%edx
+  0x009b85de: jle    0x009b8616
+  0x009b85e0: lea    0xc(%ecx),%ebp
+  0x009b85e3: mov    %ebp,(%esp)
+  0x009b85e6: mov    %ebp,0x4(%esp)
+  0x009b85ea: mov    %edx,0x8(%esp)
+<strong>  0x009b85ee: call   Stub::jint_disjoint_arraycopy</strong>
+<strong>                                        ;   {runtime_call}</strong>
+  0x009b85f3: add    $0x18,%esp
+  0x009b85f6: pop    %ebp
+  0x009b85f7: test   %eax,0x940000      ;   {poll_return}
+  0x009b85fd: ret
+  0x009b85fe: mov    %edx,%ebx
+  0x009b8600: xor    %edx,%edx
+  0x009b8602: mov    %ecx,(%esp)
+  0x009b8605: xor    %edi,%edi
+  0x009b8607: mov    %edi,0x4(%esp)
+  0x009b860b: mov    %ebx,0x8(%esp)
+  0x009b860f: call   0x009baa40         ; OopMap{off=84}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy4@9 (line 22)
+                                        ;   {runtime_call}
+  0x009b8614: jmp    0x009b85f3
+  0x009b8616: test   %edx,%edx
+  0x009b8618: jge    0x009b85f3
+  0x009b861a: jmp    0x009b8600
+  0x009b861c: mov    $0xfffffff6,%ecx
+  0x009b8621: mov    %edx,%ebp
+  0x009b8623: call   0x0099dd00         ; OopMap{off=104}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy4@9 (line 22)
+                                        ;   {runtime_call}
+  0x009b8628: int3                      ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy4@9 (line 22)
+  0x009b8629: mov    %eax,%ecx
+  0x009b862b: add    $0x18,%esp
+  0x009b862e: pop    %ebp
+  0x009b862f: jmp    0x009ba940         ;   {runtime_call}
+  0x009b8634: hlt
+  0x009b8635: hlt
+  0x009b8636: hlt
+  0x009b8637: hlt
+  0x009b8638: hlt
+  0x009b8639: hlt
+  0x009b863a: hlt
+  0x009b863b: hlt
+  0x009b863c: hlt
+  0x009b863d: hlt
+  0x009b863e: hlt
+  0x009b863f: hlt
+[Exception Handler]
+[Stub Code]
+  0x009b8640: jmp    0x009b7500         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b8645: push   $0x9b8645          ;   {section_word}
+  0x009b864a: jmp    0x0099e280         ;   {runtime_call}
+  0x009b864f: hlt
+</pre>
+
+<h3>ArrayCopyTest.testArrayCopy5</h3>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'testArrayCopy5' '(II)V' in 'ArrayCopyTest'
+  # parm0:    ecx       = int
+  # parm1:    edx       = int
+  #           [sp+0x20]  (sp of caller)
+  0x009b8340: mov    %eax,0xffffc000(%esp)
+  0x009b8347: push   %ebp
+  0x009b8348: sub    $0x18,%esp         ;*synchronization entry
+                                        ; - ArrayCopyTest::testArrayCopy5@-1 (line 27)
+  0x009b834b: mov    %ecx,%eax
+  0x009b834d: mov    $0x3b812f8,%ecx    ;   {oop(a 'java/lang/Class' = 'ArrayCopyTest')}
+  0x009b8352: mov    0x70(%ecx),%edi    ;*getstatic src
+                                        ; - ArrayCopyTest::testArrayCopy5@0 (line 27)
+  0x009b8355: mov    0x8(%edi),%ebx     ; implicit exception: dispatches to 0x009b83b8
+  0x009b8358: test   %eax,%eax
+  0x009b835a: jl     0x009b8390
+  0x009b835c: mov    %eax,%ebp
+  0x009b835e: add    %edx,%ebp
+  0x009b8360: cmp    %ebp,%ebx
+  0x009b8362: jb     0x009b8394
+  0x009b8364: cmp    %edx,%ebx
+  0x009b8366: jb     0x009b8398
+  0x009b8368: mov    %edx,%esi
+  0x009b836a: test   %edx,%edx
+  0x009b836c: jle    0x009b83b2
+  0x009b836e: lea    0xc(%edi,%eax,4),%ecx
+  0x009b8372: lea    0xc(%edi),%ebx
+  0x009b8375: mov    %ecx,(%esp)
+  0x009b8378: mov    %ebx,0x4(%esp)
+  0x009b837c: mov    %edx,0x8(%esp)
+<strong>  0x009b8380: call   Stub::jint_arraycopy  ;   {runtime_call}</strong>
+  0x009b8385: add    $0x18,%esp
+  0x009b8388: pop    %ebp
+  0x009b8389: test   %eax,0x940000      ;   {poll_return}
+  0x009b838f: ret
+  0x009b8390: mov    %edx,%esi
+  0x009b8392: jmp    0x009b839a
+  0x009b8394: mov    %edx,%esi
+  0x009b8396: jmp    0x009b839a
+  0x009b8398: mov    %edx,%esi
+  0x009b839a: mov    %edi,%ecx
+  0x009b839c: mov    %eax,%edx
+  0x009b839e: mov    %edi,(%esp)
+  0x009b83a1: xor    %ebp,%ebp
+  0x009b83a3: mov    %ebp,0x4(%esp)
+  0x009b83a7: mov    %esi,0x8(%esp)
+  0x009b83ab: call   0x009baa40         ; OopMap{off=112}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy5@9 (line 27)
+                                        ;   {runtime_call}
+  0x009b83b0: jmp    0x009b8385
+  0x009b83b2: test   %edx,%edx
+  0x009b83b4: jge    0x009b8385
+  0x009b83b6: jmp    0x009b839a
+  0x009b83b8: mov    $0xfffffff6,%ecx
+  0x009b83bd: mov    %eax,%ebp
+  0x009b83bf: mov    %edx,0xc(%esp)
+  0x009b83c3: call   0x0099dd00         ; OopMap{off=136}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy5@9 (line 27)
+                                        ;   {runtime_call}
+  0x009b83c8: int3                      ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy5@9 (line 27)
+  0x009b83c9: mov    %eax,%ecx
+  0x009b83cb: add    $0x18,%esp
+  0x009b83ce: pop    %ebp
+  0x009b83cf: jmp    0x009ba940         ;   {runtime_call}
+  0x009b83d4: hlt
+  0x009b83d5: hlt
+  0x009b83d6: hlt
+  0x009b83d7: hlt
+  0x009b83d8: hlt
+  0x009b83d9: hlt
+  0x009b83da: hlt
+  0x009b83db: hlt
+  0x009b83dc: hlt
+  0x009b83dd: hlt
+  0x009b83de: hlt
+  0x009b83df: hlt
+[Exception Handler]
+[Stub Code]
+  0x009b83e0: jmp    0x009b7500         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b83e5: push   $0x9b83e5          ;   {section_word}
+  0x009b83ea: jmp    0x0099e280         ;   {runtime_call}
+  0x009b83ef: hlt
+</pre>
+
+<h3>ArrayCopyTest.testArrayCopy6</h3>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'testArrayCopy6' '(II)V' in 'ArrayCopyTest'
+  # parm0:    ecx       = int
+  # parm1:    edx       = int
+  #           [sp+0x20]  (sp of caller)
+  0x009b80c0: mov    %eax,0xffffc000(%esp)
+  0x009b80c7: push   %ebp
+  0x009b80c8: sub    $0x18,%esp         ;*synchronization entry
+                                        ; - ArrayCopyTest::testArrayCopy6@-1 (line 32)
+  0x009b80cb: mov    %ecx,%ebp
+  0x009b80cd: mov    $0x3b812f8,%ebx    ;   {oop(a 'java/lang/Class' = 'ArrayCopyTest')}
+  0x009b80d2: mov    0x70(%ebx),%eax    ;*getstatic src
+                                        ; - ArrayCopyTest::testArrayCopy6@0 (line 32)
+  0x009b80d5: mov    0x8(%eax),%ecx     ; implicit exception: dispatches to 0x009b8138
+  0x009b80d8: mov    %ebp,%ebx
+  0x009b80da: test   %ebx,%ebx
+  0x009b80dc: jl     0x009b8110
+  0x009b80de: cmp    %edx,%ecx
+  0x009b80e0: jb     0x009b8114
+  0x009b80e2: add    %edx,%ebp
+  0x009b80e4: cmp    %ebp,%ecx
+  0x009b80e6: jb     0x009b8118
+  0x009b80e8: mov    %edx,%ebp
+  0x009b80ea: test   %edx,%edx
+  0x009b80ec: jle    0x009b8132
+  0x009b80ee: lea    0xc(%eax,%ebx,4),%ebx
+  0x009b80f2: lea    0xc(%eax),%ecx
+  0x009b80f5: mov    %ecx,(%esp)
+  0x009b80f8: mov    %ebx,0x4(%esp)
+  0x009b80fc: mov    %edx,0x8(%esp)
+<strong>  0x009b8100: call   Stub::jint_arraycopy  ;   {runtime_call}</strong>
+  0x009b8105: add    $0x18,%esp
+  0x009b8108: pop    %ebp
+  0x009b8109: test   %eax,0x940000      ;   {poll_return}
+  0x009b810f: ret
+  0x009b8110: mov    %edx,%ebp
+  0x009b8112: jmp    0x009b811a
+  0x009b8114: mov    %edx,%ebp
+  0x009b8116: jmp    0x009b811a
+  0x009b8118: mov    %edx,%ebp
+  0x009b811a: xor    %edx,%edx
+  0x009b811c: mov    %eax,%ecx
+  0x009b811e: mov    %eax,(%esp)
+  0x009b8121: mov    %ebx,0x4(%esp)
+  0x009b8125: mov    %ebp,0x8(%esp)
+  0x009b8129: xchg   %ax,%ax
+  0x009b812b: call   0x009baa40         ; OopMap{off=112}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy6@9 (line 32)
+                                        ;   {runtime_call}
+  0x009b8130: jmp    0x009b8105
+  0x009b8132: test   %edx,%edx
+  0x009b8134: jge    0x009b8105
+  0x009b8136: jmp    0x009b811a
+  0x009b8138: mov    $0xfffffff6,%ecx
+  0x009b813d: mov    %edx,0xc(%esp)
+  0x009b8141: xchg   %ax,%ax
+  0x009b8143: call   0x0099dd00         ; OopMap{off=136}
+                                        ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy6@9 (line 32)
+                                        ;   {runtime_call}
+  0x009b8148: int3                      ;*invokestatic arraycopy
+                                        ; - ArrayCopyTest::testArrayCopy6@9 (line 32)
+  0x009b8149: mov    %eax,%ecx
+  0x009b814b: add    $0x18,%esp
+  0x009b814e: pop    %ebp
+  0x009b814f: jmp    0x009ba940         ;   {runtime_call}
+  0x009b8154: hlt
+  0x009b8155: hlt
+  0x009b8156: hlt
+  0x009b8157: hlt
+  0x009b8158: hlt
+  0x009b8159: hlt
+  0x009b815a: hlt
+  0x009b815b: hlt
+  0x009b815c: hlt
+  0x009b815d: hlt
+  0x009b815e: hlt
+  0x009b815f: hlt
+[Exception Handler]
+[Stub Code]
+  0x009b8160: jmp    0x009b7500         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b8165: push   $0x9b8165          ;   {section_word}
+  0x009b816a: jmp    0x0099e280         ;   {runtime_call}
+  0x009b816f: hlt
+</pre>
+
+<p>uff...</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Dvě varianty implementace metody <strong>System.arraycopy()</strong> při použití int[]</h2>
+
+<p>Výpis assembleru uvedený v&nbsp;předchozí kapitole si zajisté všichni
+podrobně prozkoumali :-), takže si všimli jedné významné odlišnosti &ndash;
+v&nbsp;některých metodách se při jejich překladu použilo volání <strong>call
+Stub::jint_arraycopy</strong>, kdežto v&nbsp;jiných metodách JIT překladač
+zvolil <strong>call Stub::jint_disjoint_arraycopy</strong>. Jak je to však
+možné, když bajtkód všech šesti metod byl prakticky stejný? JIT překladače se
+totiž při volbě, jak přesně volat funkci <strong>System.arraycopy()</strong>
+dívají na konkrétní způsob volání a berou do úvahy především to, zda jsou prvky
+zarovnány (to u polí typu int[] na 32bitových platformách jsou) a zda a jak by
+mohlo dojít k&nbsp;překryvu kopírovaných polí. Důvod, proč tomu tak je, můžeme
+najít v&nbsp;JavaDocu:</p>
+
+<p><i>If the src and dest arguments refer to the same array object, then the
+copying is performed as if the components at positions srcPos through
+srcPos+length-1 were first copied to a temporary array with length components
+and then the contents of the temporary array were copied into positions destPos
+through destPos+length-1 of the destination array. </i></p>
+
+<p>JavaDoc samozřejmě neříká, že se kopie skutečně provede přes další pole, to
+by nebylo příliš vhodné. Kopie je provedena in-situ, ovšem jiným způsobem
+&ndash; může se například provádět kopie od posledního prvku a nikoli od prvku
+prvního atd.</p>
+
+<table>
+<tr><th>Volání</th><th>JIT překladač volá</th></tr>
+<tr><td>System.arraycopy(src, 0, dest, 0, length)     </td><td>Stub::jint_disjoint_arraycopy</td></tr>
+<tr><td>System.arraycopy(src, offset, dest, 0, length)</td><td>Stub::jint_arraycopy</td></tr>
+<tr><td>System.arraycopy(src, 0, dest, offset, length)</td><td>Stub::jint_arraycopy</td></tr>
+<tr><td>System.arraycopy(src, 0, src, 0, length)      </td><td>Stub::jint_disjoint_arraycopy</td></tr>
+<tr><td>System.arraycopy(src, offset, src, 0, length) </td><td>Stub::jint_arraycopy</td></tr>
+<tr><td>System.arraycopy(src, 0, src, offset, length) </td><td>Stub::jint_arraycopy</td></tr>
+</table>
+
+<p>V&nbsp;tomto případě JIT překladač rozhodl, že když jsou oba offsety stejné
+(konkrétně nulové, ale může se jednat i o jinou hodnotu), může se volat
+optimalizovaná funkce <strong>jint_disjoint_arraycopy</strong>, protože je
+zaručeno, že se při kopii budou prvky buď kopírovat do odlišného pole (tedy bez
+překryvu), popř.&nbsp;se bude jednat o stejné pole a prvky se budou kopírovat
+samy na sebe. Stejnou funkci by JIT překladač volal i v&nbsp;případě, že by se
+kopírovaly prvky stejného pole a současně by platilo dest_offset&lt;src_offset.
+Ovšem jak vidíme, tuto optimalizaci JIT překladač nezvolil v&nbsp;žádném
+případě, protože jsme nepoužili konstanty.</p>
+
+<p>Poučení pro praxi:</p>
+
+<ol>
+<li><strong>System.arraycopy</strong> dokáže kopírovat prvky v&nbsp;jednom poli.</li>
+<li><strong>System.arraycopy</strong> dokáže kopírovat prvky v&nbsp;jednom poli i pozpátku (viz například rozdíl mezi <strong>memcpy()</strong> a <strong>memmove()</strong> v&nbsp;céčku).</li>
+<li>Pokud je to možné, používejte pro offsety konstanty.</li>
+<li>V&nbsp;případě, že JIT zvolí volání <strong>jint_disjoint_arraycopy</strong>, lze předpokládat nepatrně vyšší výkon (viz další kapitoly)</li>
+</ol>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Benchmark <strong>ArrayCopyTest2.java</strong></h2>
+
+<p>Vzhledem k&nbsp;tomu, že se JIT překladač evidentně snaží při běhu aplikace
+rozlišovat mezi voláním <strong>jint_arraycopy</strong> a
+<strong>jint_disjoint_arraycopy</strong>, mělo by to (alespoň teoreticky)
+znamenat, že <strong>jint_disjoint_arraycopy</strong> bude při použití
+v&nbsp;aplikaci rychlejší. Zkusme si tedy tento předpoklad ověřit a to na
+benchmarku nazvaném <strong>ArrayCopyTest2</strong>, který je založený na výše
+popsaném demonstračním příkladu <strong>ArrayCopyTest</strong>. Při spuštění
+tohoto benchmarku se nejprve provede několik volání testovaných metod bez
+měření (ovšem právě v&nbsp;této chvíli dojde k&nbsp;JIT překladu) a posléze se
+spustí samotné měření:</p>
+
+<pre>
+<i>/**</i>
+<i> * Benchmark pro zjisteni intrinsic "funkci" implementujicich</i>
+<i> * @link System#arraycopy(java.lang.Object, int, java.lang.Object, int, int).</i>
+<i> * V tomto benchmarku se provadi kopie prvku typu int.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>ArrayCopyTest2</strong> {
+&nbsp;
+    private static final int ARRAYS_LENGTH = 50000;
+    private static final int WARMUP_ITERS = 20000;
+    private static final int BENCHMARK_ITERS = 20000;
+&nbsp;
+<i>    /** Pole pouzivana pro kopii prvku v benchmarku */</i>
+    static int[] src = new int[ARRAYS_LENGTH];
+    static int[] dest = new int[ARRAYS_LENGTH];
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, oba offsety jsou nulove */</i>
+    public static void <strong>testArrayCopy1</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, nulovy je jen druhy offset */</i>
+    public static void <strong>testArrayCopy2</strong>(int offset, int length) {
+        System.arraycopy(src, offset, dest, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, nulovy je jen prvni offset */</i>
+    public static void <strong>testArrayCopy3</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, offset, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, oba offsety jsou nulove */</i>
+    public static void <strong>testArrayCopy4</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, nulovy je jen druhy offset */</i>
+    public static void <strong>testArrayCopy5</strong>(int offset, int length) {
+        System.arraycopy(src, offset, src, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, nulovy je jen prvni offset */</i>
+    public static void <strong>testArrayCopy6</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, offset, length);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runSimpleBenchmark</strong>() {
+        warmup();
+        benchmark();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>() {
+        System.out.println("Warmup phase...");
+<i>        // donutime JIT k prekladu, soucasne se vsak neprekroci</i>
+<i>        // meze poli</i>
+        for (int j = 0; j &lt; 10; j++) {
+            System.out.print(j);
+            System.out.print(' ');
+            for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+                testArrayCopy1(i, i);
+                testArrayCopy2(i, i);
+                testArrayCopy3(i, i);
+                testArrayCopy4(i, i);
+                testArrayCopy5(i, i);
+                testArrayCopy6(i, i);
+            }
+        }
+        System.out.println("   done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vlastni benchmark.</i>
+<i>     */</i>
+    private static void <strong>benchmark</strong>() {
+        long t1, t2, delta_t;
+        for (int testNo = 1; testNo &lt;= 6; testNo++) {
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+<i>                // skarede, ale zde nelze pouzit reflexi</i>
+<i>                // (stale cekame na moznost pouziti referenci na metody!)</i>
+                switch (testNo) {
+                case 1: testArrayCopy1(i, i); break;
+                case 2: testArrayCopy2(i, i); break;
+                case 3: testArrayCopy3(i, i); break;
+                case 4: testArrayCopy4(i, i); break;
+                case 5: testArrayCopy5(i, i); break;
+                case 6: testArrayCopy6(i, i); break;
+                }
+            }
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+<i>            // vypis casu pro jeden test</i>
+            System.out.format("Method ArrayCopyTest2.testArrayCopy%d   time: %,12d ns\n", testNo, delta_t);
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        runSimpleBenchmark();
+    }
+&nbsp;
+}
+&nbsp;
+<i>// finito</i>
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výsledky běhu benchmarku</h2>
+
+<p>Podívejme se nyní, jaké výsledky dostaneme na reálném počítači
+s&nbsp;32bitovým mikroprocesorem architektury i386:</p>
+
+<pre>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Method ArrayCopyTest.testArrayCopy1   time:  442 289 732 ns
+Method ArrayCopyTest.testArrayCopy2   time:  471 646 536 ns
+Method ArrayCopyTest.testArrayCopy3   time:  470 064 492 ns
+Method ArrayCopyTest.testArrayCopy4   time:  295 876 432 ns
+Method ArrayCopyTest.testArrayCopy5   time:  468 205 318 ns
+Method ArrayCopyTest.testArrayCopy6   time:  460 168 822 ns
+</pre>
+
+<p>Výsledky si můžeme ukázat i na grafu:</p>
+
+<img src="http://i.iinfo.cz/images/426/graph1.png" class="image-149250" width="600" height="500" alt="&#160;" />
+
+<p>Výsledky benchmarku jsou skutečně zajímavé. Ukazuje se na nich především to,
+že <strong>jint_disjoint_arraycopy</strong> je skutečně rychlejší, než
+<strong>jint_arraycopy</strong>, ovšem míra urychlení je rozdílná podle toho,
+zda jsou kopírovány prvky z&nbsp;jednoho pole do pole jiného (zde je dosaženo
+urychlení o přibližně 6%, což není vůbec špatné), či zda je prováděna kopie
+v&nbsp;rámci jediného pole (zde vlastně
+<strong>jint_disjoint_arraycopy</strong> nemusí provést žádnou operaci).</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Volby <strong>UseXMMForArrayCopy</strong> a <strong>UseUnalignedLoadStores</strong> a jejich vliv na <strong>System.arraycopy</strong></h2>
+
+<p>Konkrétní způsob implementace funkcí
+<strong>jint_disjoint_arraycopy</strong> a <strong>jint_arraycopy</strong>
+závisí na dalších dvou volbách nazvaných <strong>UseXMMForArrayCopy</strong> a
+<strong>UseUnalignedLoadStores</strong>. Pokud je použita první volba, budou se
+při kopii využívat registry SSE2, což by teoreticky mělo vést k&nbsp;vyššímu
+výkonu v&nbsp;případě, že jsou prvky zarovnány na osm bajtů (pokud se nepoužijí
+registry SSE2, mohou se použít registry MMX, o čem je rozhodnuto automaticky
+při startu JVM). Další volba povoluje či zakazuje použití instrukce
+<strong>MOVDQU</strong> namísto instrukce <strong>MOVQ</strong> při čtení a
+zápisu prvků, které nejsou v&nbsp;paměti zarovnány.</p>
+
+<p>Obě volby jsou v&nbsp;základním nastavení Hotspotu zakázány, pojďme si tedy
+vyzkoušet, zda dojde k&nbsp;nějaké změně v&nbsp;chování benchmarku
+v&nbsp;případě, že obě volby budeme zapínat a vypínat:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest2
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Method ArrayCopyTest.testArrayCopy1   time:  443 521 732 ns
+Method ArrayCopyTest.testArrayCopy2   time:  474 578 752 ns
+Method ArrayCopyTest.testArrayCopy3   time:  445 409 682 ns
+Method ArrayCopyTest.testArrayCopy4   time:  286 016 520 ns
+Method ArrayCopyTest.testArrayCopy5   time:  447 544 590 ns
+Method ArrayCopyTest.testArrayCopy6   time:  447 518 888 ns
+</pre>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest2
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Method ArrayCopyTest.testArrayCopy1   time:  446 858 748 ns
+Method ArrayCopyTest.testArrayCopy2   time:  473 852 124 ns
+Method ArrayCopyTest.testArrayCopy3   time:  449 020 478 ns
+Method ArrayCopyTest.testArrayCopy4   time:  307 197 424 ns
+Method ArrayCopyTest.testArrayCopy5   time:  448 431 014 ns
+Method ArrayCopyTest.testArrayCopy6   time:  449 531 714 ns
+</pre>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest2
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Method ArrayCopyTest.testArrayCopy1   time:  577 163 018 ns
+Method ArrayCopyTest.testArrayCopy2   time:  537 454 342 ns
+Method ArrayCopyTest.testArrayCopy3   time:  526 903 558 ns
+Method ArrayCopyTest.testArrayCopy4   time:  691 708 862 ns
+Method ArrayCopyTest.testArrayCopy5   time:  515 320 520 ns
+Method ArrayCopyTest.testArrayCopy6   time:  529 278 162 ns
+</pre>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest2
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Method ArrayCopyTest.testArrayCopy1   time:  629 873 070 ns
+Method ArrayCopyTest.testArrayCopy2   time:  600 535 264 ns
+Method ArrayCopyTest.testArrayCopy3   time:  620 208 432 ns
+Method ArrayCopyTest.testArrayCopy4   time:  997 168 636 ns
+Method ArrayCopyTest.testArrayCopy5   time:  577 411 376 ns
+Method ArrayCopyTest.testArrayCopy6   time:  620 854 326 ns
+</pre>
+
+<p>Výsledky je nejlepší si porovnat na grafu:</p>
+
+<img src="http://i.iinfo.cz/images/624/graph2.png" class="image-149251" width="652" height="407" alt="&#160;" />
+
+<p>Můžeme vidět, že na testovaném mikroprocesoru nedošlo při použití obou voleb
+ke zlepšení, ale naopak ke zhoršení, což ovšem nemusí platit pro všechny
+případy! V&nbsp;praxi je tedy dobré vědět, že tyto volby existují a že je
+v&nbsp;případě potřeby možné je zapnout, ovšem až poté, co profiler ukáže
+skutečný nárůst výkonu aplikace!</p>
+
+<p>PS: bylo by jistě zajímavé vidět, jak se tyto volby budou chovat na starších
+popř.&nbsp;naopak na nejmodernějších mikroprocesorech, využití SSE2 bude
+pravděpodobně výhodnější pouze na novějších mikroprocesorech firmy Intel,
+nicméně praxe bývá od teoretických závěrů mnohdy značně vzdálená.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Obsah následující části seriálu</h2>
+
+<p>Při implementaci a především při optimalizaci funkce
+<strong>System.arraycopy()</strong> se museli programátoři potýkat ještě
+s&nbsp;dalšími dvěma problémy. První problém se týká kopií prvků
+v&nbsp;případě, že celkový počet přenesených bajtů není zarovnán na hodnotu 4
+či 8. Druhý problém spočívá v&nbsp;kopiích prvků, které již od začátku nejsou
+zarovnány. Tento problém nastává v&nbsp;praxi poměrně často, neboť si musíme
+uvědomit, že <strong>System.arraycopy()</strong> lze použít i pro pole typu
+byte[], short[] či char[], zatímco moderní mikroprocesory mají 32bitové či
+64bitové sběrnice upravené pro přenos dat zarovnaných na násobky 4, 8 či někdy
+i 16 bajtů, což u výše zmíněných polí nelze zaručit (přesněji řečeno je samotný
+začátek pole zarovnán správně, ovšem offset může být nastaven například na
+liché číslo). Touto problematikou i způsobem jejího řešení se budeme zabývat
+příště.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se všemi testovacími příklady</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitých demonstračních příkladů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ArrayCopyTest.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/427c1dcbe20c/jit/ArrayCopyTest.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/427c1dcbe20c/jit/ArrayCopyTest.java</a></td></tr>
+<tr><td>2</td><td>ArrayCopyTest2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/427c1dcbe20c/jit/ArrayCopyTest2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/427c1dcbe20c/jit/ArrayCopyTest2.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
