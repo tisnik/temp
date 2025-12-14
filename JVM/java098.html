@@ -1,0 +1,709 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (4)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (4)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy se budeme zabývat problematikou synchronizace a atomicity operací v javovských aplikacích. Mimo jiné si řekneme, jaké vážné problémy může způsobit použití atributů s modifikátorem "volatile" i způsob využití takzvaných safe-pointů.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v&nbsp;Javě (4)</a></p>
+<p><a href="#k02">2. Atributy s&nbsp;modifikátorem <strong>volatile</strong></a></p>
+<p><a href="#k03">3. Ukázkový příklad číslo 1 &ndash; použití atributů typu <strong>volatile int</strong></a></p>
+<p><a href="#k04">4. Výsledky běhu prvního demonstračního příkladu</a></p>
+<p><a href="#k05">5. Ukázkový příklad číslo 2 &ndash; použití atributů typu <strong>volatile long</strong></a></p>
+<p><a href="#k06">6. Vnitřní synchronizace: technologie safe-pointů</a></p>
+<p><a href="#k07">7. Princip práce safe-pointů v&nbsp;současných virtuálních strojích</a></p>
+<p><a href="#k08">8. Obsah následující části seriálu</a></p>
+<p><a href="#k09">9. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v&nbsp;Javě (4)</h2>
+
+<p>V&nbsp;dnešní části seriálu o programovacím jazyce Java i o virtuálním
+stroji Javy si řekneme, jakými způsoby je zajištěna atomicita některých operací
+a taktéž se zmíníme o tom, jak je implementována synchronizace
+v&nbsp;javovských aplikacích. Nebudeme se však prozatím do podrobností zabývat
+&bdquo;explicitní&ldquo; synchronizací s&nbsp;využitím synchronizovaných metod
+a synchronizovaných metod, ale poněkud méně viditelnou, ovšem velmi významnou
+technologií &ndash; jedná se o takzvané <i>safe-pointy</i>, které jsou
+používány jak interpretrem Javy, tak i JIT překladači typu klient a server.</p>
+
+<p>Nejprve si pro úplnost řekněme, jakými způsoby je vůbec možné zajistit
+synchronizaci v&nbsp;aplikacích naprogramovaných v&nbsp;Javě. Pravděpodobně
+nejznámější způsob spočívá ve využití již zmíněných synchronizovaných metod a
+synchronizovaných bloků. V&nbsp;případě synchronizovaných bloků se při překladu
+do bajtkódu generují instrukce <strong>monitorenter</strong> a
+<strong>monitorexit</strong>, jejichž význam a implementaci si popíšeme příště.
+Pro synchronizované metody připravuje a obhospodařuje příslušný zámek
+(<i>lock</i>) samotný JVM (to, že je metoda synchronizována, je označeno
+jednobitovým příznakem v&nbsp;bajtkódu).</p>
+
+<p>Další možnost zajištění synchronizace spočívá ve využití rozhraní a tříd
+z&nbsp;balíčku <strong>java.util.concurrent.locks</strong>, zatímco o zajištění
+atomicity vybraných operací (což se synchronizací velmi úzce souvisí) se
+starají rozhraní a třídy, které lze nalézt v&nbsp;balíčku
+<strong>java.util.concurrent.atomic</strong>. Programovací jazyk Java navíc
+obsahuje i podporu pro modifikátor <strong>volatile</strong> sloužící
+k&nbsp;deklaraci volatilních atributů (ne však již parametrů ani lokálních
+proměnných), s&nbsp;nimiž se interně pracuje značně rozdílným způsobem, než
+s&nbsp;nevolatilními (tj.&nbsp;vlastně &bdquo;normálními&ldquo;) atributy.
+S&nbsp;použitím atributů s&nbsp;modifikátorem <strong>volatile</strong> souvisí
+i několik na první pohled možná ne zcela zřejmých problémů, které si popíšeme
+v&nbsp;následujících pěti kapitolách.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Atributy s&nbsp;modifikátorem <strong>volatile</strong></h2>
+
+<p>Práce s&nbsp;volatilními atributy je problematická z&nbsp;toho důvodu, že
+čtení i zápis těchto atributů musí být proveden atomicky, a to za všech
+okolností. To znamená, že při zápisu nové hodnoty do volatilního atributu by
+tuto hodnotu měly posléze načíst všechna ostatní vlákna. Zdánlivě se tedy o
+žádný problém nejedná, ve skutečnosti zde však můžeme nalézt hned dvě
+problematická místa.</p>
+
+<p>Prvním z&nbsp;nich je zajištění atomicity čtení a zápisu atributů
+s&nbsp;bitovou šířkou 64 bitů na 32bitových platformách. Zatímco běžný atribut
+typu <strong>long</strong> či <strong>double</strong> může být velmi snadno
+přečten ve dvou krocích, u atributů volatilních je nutné zajistit použití
+64bitových registrů &ndash; na současných mikroprocesorech se jedná o instrukce
+SSE2 pracující s&nbsp;registry XMM0 až XMM7 (konkrétně se pro přenos dat
+z&nbsp;paměti do XMMx či naopak používá instrukce <strong>movsd</strong>,
+s&nbsp;níž jsme se ostatně již seznámili minule). Na starších mikroprocesorech
+se používají registry matematického koprocesoru a instrukce
+<strong>fild*</strong> a <strong>fist*</strong> (platí pro uniprocesorové
+počítače, zatímco u počítačů s&nbsp;více jádry je již nutné použít lock).</p>
+
+<p>Druhý problém související s&nbsp;volatilními atributy spočívá v&nbsp;tom, že
+změna hodnoty těchto atributů musí být viditelná i pro další vlákna, což
+znamená nutnost synchronizace vyrovnávacích pamětí (cache) jednotlivých
+mikroprocesorů či procesorových jader. Navíc je nutné, aby ostatní vlákna
+viděla <i>postupnou změnu</i> hodnoty volatilního atributu přesně v&nbsp;tom
+pořadí, v&nbsp;jakém ke změně došlo. To poněkud omezuje možnosti optimalizací
+při JIT překladu; nové hodnoty volatilních atributů se ihned ukládají do paměti
+a na mnoha architekturách (včetně x86) se používají paměťové bariéry
+(implementované například instrukcí pro čtení paměti, u níž je uveden prefix
+<strong>lock</strong>.</p>
+
+<p>Důležitá poznámka: u volatilních atributů je zajištěna pouze atomicita čtení
+a zápisu, nikoli již dalších složitějších operací. Například u atributu
+<strong>volatile long x</strong> není a nemůže být zajištěno, že operace
+<strong>x++</strong> proběhne atomicky &ndash; naopak, dvě souběžná vlákna si
+mohou navzájem přepsat své výsledky. Nicméně by se nikdy nemělo stát, že by při
+operaci <strong>x=0x0000000000000000; x=0xffffffffffffffff</strong> nějaké
+další vlákno přečetlo hodnotu 0x00000000ffffffff či 0xffffffff00000000, a to i
+na 32bitových architekturách (u nevolatilních atributů to však velmi
+pravděpodobně nastane :-).</p>
+
+<p>Druhá poznámka: atomicita čtení a zápisu volatilních atributů je teoreticky
+zajištěna od Javy 5.0, ve skutečnosti však některé verze Javy v&nbsp;tomto
+ohledu pracovaly chybně. Nicméně v&nbsp;Javě 7 by již vše mělo být opraveno
+podle specifikace.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Ukázkový příklad číslo 1 &ndash; použití atributů typu <strong>volatile int</strong></h2>
+
+<p>Podívejme se nyní na velmi jednoduchý ukázkový příklad, v&nbsp;němž je
+použita třída obsahující nevolatilní celočíselný atribut <strong>x</strong> a
+volatilní celočíselný atribut <strong>y</strong>. První atribut je postupně
+zvyšován v&nbsp;programové smyčce implementované v&nbsp;metodě
+<strong>VolatileTest1.testX()</strong>, druhý atribut je postupně zvyšován
+v&nbsp;metodě <strong>VolatileTest2.testY()</strong>. Zaznamenává se celkový
+čas běhu první i druhé testovací metody tohoto benchmarku:</p>
+
+<pre>
+public class <strong>VolatileTest1</strong> {
+    private final static int <strong>ITERATIONS</strong> = 1000000;
+&nbsp;
+    public int x;
+    public volatile int y;
+&nbsp;
+<i>    // test s nevolatilnim atributem</i>
+    private void <strong>testX</strong>() {
+        x = 0;
+        for (int i=0; i&lt;ITERATIONS; i++) {
+            x += 1;
+        }
+    }
+&nbsp;
+<i>    // test s volatilnim atributem</i>
+    private void <strong>testY</strong>() {
+        y = 0;
+        for (int i=0; i&lt;ITERATIONS; i++) {
+            y += 1;
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        VolatileTest1 test = new VolatileTest1();
+        long t1, t2, delta_t;
+        long sumTestX=0, sumTestY=0;
+&nbsp;
+<i>        // provest zadany pocet testu</i>
+        for (int i = 0; i &lt; 10; i++) {
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            test.testX();
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            sumTestX += delta_t;
+&nbsp;
+<i>            // vypis casu pro jeden test</i>
+            System.out.format("Round #%2d testX() time: %,12d ns\n", i, delta_t);
+&nbsp;
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            test.testY();
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            sumTestY += delta_t;
+&nbsp;
+<i>            // vypis casu pro jeden test</i>
+            System.out.format("Round #%2d testY() time: %,12d ns\n", i, delta_t);
+        }
+&nbsp;
+<i>        // vypis kumulativniho casu</i>
+        System.out.format("Cumulative time for testX(): %,12d ns\n", sumTestX);
+        System.out.format("Cumulative time for testY(): %,12d ns\n", sumTestY);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výsledky běhu prvního demonstračního příkladu</h2>
+
+<p>Nyní si zkusíme demonstrační příklad popsaný <a href="#k03">v&nbsp;předchozí
+kapitole</a> spustit na počítači s&nbsp;jedním mikroprocesorem (Pentium M) a
+přitom použijeme přepínač <strong>-client</strong>:</p>
+
+<pre>
+Round # 0 testX() time:    7 304 001 ns
+Round # 0 testY() time:    9 380 523 ns
+Round # 1 testX() time:    7 408 764 ns
+Round # 1 testY() time:    9 173 512 ns
+Round # 2 testX() time:    7 637 004 ns
+Round # 2 testY() time:    7 637 005 ns
+Round # 3 testX() time:    7 635 886 ns
+Round # 3 testY() time:    7 645 665 ns
+Round # 4 testX() time:    7 671 925 ns
+Round # 4 testY() time:    7 644 827 ns
+Round # 5 testX() time:    7 552 915 ns
+Round # 5 testY() time:    7 637 004 ns
+Round # 6 testX() time:    7 793 729 ns
+Round # 6 testY() time:    7 647 899 ns
+Round # 7 testX() time:    5 906 337 ns
+Round # 7 testY() time:    7 645 385 ns
+Round # 8 testX() time:    7 637 004 ns
+Round # 8 testY() time:    7 645 106 ns
+Round # 9 testX() time:    4 800 890 ns
+Round # 9 testY() time:    7 666 897 ns
+Cumulative time for testX():   71 348 455 ns
+Cumulative time for testY():   79 723 823 ns
+</pre>
+
+<p>Vidíme, že práce s&nbsp;volatilním atributem je nepatrně pomalejší.</p>
+
+<p>Co se ovšem stane, pokud na stejném počítači povolíme použití JIT překladače
+typu server? Výsledky budou mnohem zajímavější:</p>
+
+<pre>
+Round # 0 testX() time:   18 140 294 ns
+Round # 0 testY() time:   15 192 155 ns
+Round # 1 testX() time:    3 523 632 ns
+Round # 1 testY() time:   11 826 084 ns
+Round # 2 testX() time:      158 959 ns
+Round # 2 testY() time:    7 845 970 ns
+Round # 3 testX() time:      158 679 ns
+Round # 3 testY() time:    7 847 087 ns
+Round # 4 testX() time:      158 680 ns
+Round # 4 testY() time:    7 887 315 ns
+Round # 5 testX() time:      158 958 ns
+Round # 5 testY() time:    7 571 912 ns
+Round # 6 testX() time:      158 959 ns
+Round # 6 testY() time:    7 852 675 ns
+Round # 7 testX() time:      158 959 ns
+Round # 7 testY() time:    7 852 675 ns
+Round # 8 testX() time:      158 959 ns
+Round # 8 testY() time:    8 026 720 ns
+Round # 9 testX() time:      158 959 ns
+Round # 9 testY() time:    7 897 094 ns
+Cumulative time for testX():   22 935 038 ns
+Cumulative time for testY():   89 799 687 ns
+</pre>
+
+<p>Vidíme, že JIT překladač typu server sice dokázal dobře optimalizovat
+programovou smyčku, v&nbsp;níž se měnil nevolatilní atribut, ovšem u atributu
+volatilního již úspěšnost nebyla nijak velká. Je tomu tak z&nbsp;toho důvodu,
+že nedošlo k&nbsp;tak dokonalému rozbalení smyčky a taky z&nbsp;důvodu použití
+paměťové bariéry. I v&nbsp;takto jednoduchém benchmarku je rozdíl
+v&nbsp;rychlosti běhu čtyřnásobný!</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Ukázkový příklad číslo 2 &ndash; použití atributů typu <strong>volatile long</strong></h2>
+
+<p>Nyní demonstrační příklad nepatrně upravíme, a to tak, aby byly oba
+celočíselné atributy (nevolatilní i volatilní) typu <strong>long</strong> a
+nikoli typu <strong>int</strong>. Druhý demonstrační příklad bude mít
+následující tvar:</p>
+
+<pre>
+public class <strong>VolatileTest2</strong> {
+    private final static int <strong>ITERATIONS</strong> = 1000000;
+&nbsp;
+    public long x;
+    public volatile long y;
+&nbsp;
+<i>    // test s nevolatilnim atributem</i>
+    private void <strong>testX</strong>() {
+        x = 0;
+        for (int i=0; i&lt;ITERATIONS; i++) {
+            x += 1;
+        }
+    }
+&nbsp;
+<i>    // test s volatilnim atributem</i>
+    private void <strong>testY</strong>() {
+        y = 0;
+        for (int i=0; i&lt;ITERATIONS; i++) {
+            y += 1;
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        VolatileTest2 test = new VolatileTest2();
+        long t1, t2, delta_t;
+        long sumTestX=0, sumTestY=0;
+&nbsp;
+<i>        // provest zadany pocet testu</i>
+        for (int i = 0; i &lt; 10; i++) {
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            test.testX();
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            sumTestX += delta_t;
+&nbsp;
+<i>            // vypis casu pro jeden test</i>
+            System.out.format("Round #%2d testX() time: %,12d ns\n", i, delta_t);
+&nbsp;
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            test.testY();
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            sumTestY += delta_t;
+&nbsp;
+<i>            // vypis casu pro jeden test</i>
+            System.out.format("Round #%2d testY() time: %,12d ns\n", i, delta_t);
+        }
+&nbsp;
+<i>        // vypis kumulativniho casu</i>
+        System.out.format("Cumulative time for testX(): %,12d ns\n", sumTestX);
+        System.out.format("Cumulative time for testY(): %,12d ns\n", sumTestY);
+    }
+&nbsp;
+}
+</pre>
+
+<p>Opět zkusíme tento demonstrační benchmark spustit na počítači
+s&nbsp;mikroprocesorem Pentium M. Jedná se o 32bitovou architekturu, což
+znamená, že se JIT překladač bude muset ještě více snažit o dosažení atomicity
+čtení a zápisu volatilního atributu typu <strong>long</strong> (64 bitů).
+Nejdříve se podívejme, co se stane v&nbsp;případě použití JIT překladače typu
+klient:</p>
+
+<pre>
+Round # 0 testX() time:   11 833 347 ns
+Round # 0 testY() time:   27 286 150 ns
+Round # 1 testX() time:   11 482 745 ns
+Round # 1 testY() time:   27 220 499 ns
+Round # 2 testX() time:    9 595 353 ns
+Round # 2 testY() time:   25 362 721 ns
+Round # 3 testX() time:    9 788 675 ns
+Round # 3 testY() time:   25 414 123 ns
+Round # 4 testX() time:    9 662 122 ns
+Round # 4 testY() time:   25 300 702 ns
+Round # 5 testX() time:   10 094 858 ns
+Round # 5 testY() time:   25 423 622 ns
+Round # 6 testX() time:    9 599 544 ns
+Round # 6 testY() time:   25 476 701 ns
+Round # 7 testX() time:    9 612 953 ns
+Round # 7 testY() time:   25 164 092 ns
+Round # 8 testX() time:    9 801 525 ns
+Round # 8 testY() time:   25 608 282 ns
+Round # 9 testX() time:    9 592 001 ns
+Round # 9 testY() time:   25 394 569 ns
+Cumulative time for testX():  101 063 123 ns
+Cumulative time for testY():  257 651 461 ns
+</pre>
+
+<p>Vidíme, že je zde změna volatilního atributu cca 2,5&times; pomalejší, než u
+atributu nevolatilního.</p>
+
+<p>V&nbsp;případě použití JIT překladače typu server je rozdíl ještě mnohem
+větší!</p>
+
+<pre>
+Round # 0 testX() time:   18 521 070 ns
+Round # 0 testY() time:   28 023 393 ns
+Round # 1 testX() time:    4 280 152 ns
+Round # 1 testY() time:   24 841 706 ns
+Round # 2 testX() time:      458 717 ns
+Round # 2 testY() time:   19 393 247 ns
+Round # 3 testX() time:      458 717 ns
+Round # 3 testY() time:   19 441 019 ns
+Round # 4 testX() time:      458 996 ns
+Round # 4 testY() time:   21 765 336 ns
+Round # 5 testX() time:      458 717 ns
+Round # 5 testY() time:   19 263 342 ns
+Round # 6 testX() time:      458 718 ns
+Round # 6 testY() time:   19 510 580 ns
+Round # 7 testX() time:      464 863 ns
+Round # 7 testY() time:   19 269 209 ns
+Round # 8 testX() time:      458 717 ns
+Round # 8 testY() time:   19 280 104 ns
+Round # 9 testX() time:      458 718 ns
+Round # 9 testY() time:   19 446 885 ns
+Cumulative time for testX():   26 477 385 ns
+Cumulative time for testY():  210 234 821 ns
+</pre>
+
+<p>Zde se již jedná o skoro řádový rozdíl &ndash; změna volatilního atributu je
+8&times; pomalejší, než u atributu nevolatilního.</p>
+
+<p>Na tomto místě si možná čtenáři říkají, proč je vlastně sáhodlouze
+popisována problematika práce s&nbsp;64bitovými volatilními atributy
+(<strong>long, double</strong>) na 32bitových architekturách, když se dnes
+můžeme spíše setkat s&nbsp;64bitovými servery či osobními počítači. Nesmíme
+však zapomínat na smartphony a další mobilní zařízení, v&nbsp;nichž se typicky
+setkáváme s&nbsp;32bitovou architekturou ARM (a problematika volatilních
+atributů je prakticky stejná, bez ohledu na to, zda virtuálnímu stroji říkáme
+Java Virtual Machine či Dalvik ;-).</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Vnitřní synchronizace: technologie safe-pointů</h2>
+
+<p>Všechny synchronizační mechanismy zmíněné v&nbsp;předchozích kapitolách jsou
+explicitně vyžadovány programátorem, ať již se jedná o použití
+synchronizovaných metod a bloků či o využití tříd, v&nbsp;nichž se
+synchronizace vnitřně provádí (typickým příkladem je zmíněná třída
+<strong>java.util.Vector</strong> či <strong>java.util.StringBuffer</strong>).
+Ovšem kromě těchto na první či druhý pohled rozpoznatelných synchronizačních
+mechanismů se synchronizace jednotlivých vláken běžících ve virtuálním stroji
+provádí i na poněkud nižší úrovni, která již nemá přímý obraz ve zdrojovém
+kódu. To mimochodem znamená, že při pohledu na zdrojový kód již není zcela
+jednoduché říci, ve kterém okamžiku a ve kterém místě ve zdrojovém kódu
+k&nbsp;této synchronizaci může docházet. Tento skrytý a přitom velmi důležitý
+synchronizační mechanismus použitý v&nbsp;HotSpotu i v&nbsp;některých dalších
+virtuálních strojích se nazývá <i>safe-point(s)</i> (nebudu se zde snažit
+zavádět novou českou terminologii, význam anglického názvu je asi zřejmý).</p>
+
+<p>Obecně řečeno se pod označením <i>safe-point</i> skrývají určitá místa
+v&nbsp;bajtkódu či v&nbsp;přeloženém strojovém kódu, v&nbsp;nichž může dojít
+k&nbsp;pozastavení běhu vláken, aby mohl virtuální stroj Javy provést nějakou
+operaci, která vyžaduje, aby všechna aplikační vlákna byla nejenom pozastavena,
+ale aby byla navíc pozastavena v&nbsp;přesně definovaném stavu. Nejtypičtějším
+důvodem pro použití safe-pointů je nutnost spouštět správce paměti (<i>GC
+&ndash; Garbage Collector</i>), protože se při úklidu paměti mohou měnit adresy
+jednotlivých objektů a všechna běžící vlákna musí po proběhnutí GC již pracovat
+s&nbsp;novými adresami (na úrovni programovacího jazyka Java samozřejmě nemáme
+k&nbsp;přímým adresám přístup).</p>
+
+<p>Důvodů je ovšem ve skutečnosti více, například nutnost pozastavit vlákna při
+takzvaném <i>hot-swapu</i> (vložení modifikovaného bajtkódu do běžící JVM),
+použití instrumentace či při některých ladicích operacích (detekce deadlocků,
+požadavek na vytvoření výpisu obsahu zásobníkových rámců apod.)</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Princip práce safe-pointů v&nbsp;současných virtuálních strojích</h2>
+
+<p>Safe-pointy jsou použity jak při pouhé interpretaci bajtkódu, tak i ve
+strojovém (nativním) kódu vygenerovaném JIT překladačem typu <i>client</i>
+(<i>C1</i>) i <i>server</i> (<i>C2</i>). Použitím interpretru se dnes nebudeme
+příliš zabývat (už jen z&nbsp;praktických důvodů), o to zajímavější je však
+způsob implementace safe-pointů v&nbsp;současných verzích JIT překladačů
+virtuálního stroje Javy. Při určování těch oblastí, v&nbsp;nichž mají být
+safe-pointy použity v&nbsp;generovaném zdrojovém kódu, je nutné brát ohled na
+dvě navzájem protichůdná hlediska:</p>
+
+<ol>
+
+<li>Vzhledem k&nbsp;tomu, že <i>safe-pointy</i> jsou mj.&nbsp;používány i těmi
+správci paměti, které před svým během pozastavují všechna aplikační vlákna
+(takzvaní <i>stop-the-world</i> či jen <i>STW</i> správci paměti), je
+z&nbsp;tohoto hlediska vhodné, aby se v&nbsp;kódu vyskytovalo co největší
+množství safe-pointů. Pokud by totiž safe-point nebyl například vložen do
+dlouhotrvající programové smyčky, znamenalo by to, že se před vlastním
+spuštěním GC pozastaví všechna ostatní vlákna aplikace a tato vlákna by jen
+nečinně čekala na dokončení zmíněné smyčky v&nbsp;posledním nepozastaveném
+vláknu, což je zcela jistě neakceptovatelná situace (i zde tedy můžeme poměrně
+názorně vidět, že použití GC není v&nbsp;žádném případě &bdquo;zadarmo&ldquo;).
+Velké množství safe-pointů taktéž napomáhá mnohem lépe lokalizovat ta místa,
+v&nbsp;nichž došlo k&nbsp;deadlocku.</li>
+
+<li>Na druhou stranu je však vkládání safe-pointů do generovaného strojového
+kódu náročné jak z&nbsp;paměťového hlediska, tak i z&nbsp;hlediska času běhu
+všech aplikačních vláken. Teoreticky je sice možné safe-point vložit mezi
+každou instrukci (což by bylo zcela ideální, pokud by se vzalo do úvahy pouze
+první hledisko), ovšem to by znamenalo přibližně dvojnásobný nárůst paměťových
+nároků na velikost oblasti paměti, do níž se generují &bdquo;JITované&ldquo;
+metody. Ve skutečnosti je ovšem nutné si u každého safe-pointu zapamatovat i
+další údaje, zejména takzvanou mapu referencí na objekty, takže by spotřeba
+paměti byla ještě mnohonásobně větší.</li>
+
+</ol>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Obsah následující části seriálu</h2>
+
+<p>V&nbsp;následující části tohoto seriálu si nejdříve řekneme, jakým způsobem
+vyřešili autoři HotSpotu problematiku obou protichůdných hledisek zmíněných <a
+href="#k07">v&nbsp;předchozí kapitole</a>. Posléze se seznámíme
+s&nbsp;principem generování safe-pointů na platformě x86_64; protože se jedná
+(alespoň podle mého názoru) o dosti elegantní řešení celé problematiky, které
+je &bdquo;optimistické&ldquo; v&nbsp;tom smyslu, že se generuje poměrně velké
+množství safe-pointů, ovšem na druhou stranu se optimisticky předpokládá, že se
+těmito safe-pointy bude ve většině případů pouze procházet bez pozastavení
+vlákna.</p>
+
+<p>Takže se opět můžeme těšit na assembler! :-)</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. V&nbsp;následující tabulce najdete odkazy na
+prozatím nejnovější verze obou dnes použitých jednoduchých benchmarků:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>VolatileTest1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/9e93a1b7c472/jit/VolatileTest1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/9e93a1b7c472/jit/VolatileTest1.java</a></td></tr>
+<tr><td>2</td><td>VolatileTest2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/9e93a1b7c472/jit/VolatileTest2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/9e93a1b7c472/jit/VolatileTest2.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
