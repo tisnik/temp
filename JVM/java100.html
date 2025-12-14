@@ -1,0 +1,1114 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si popíšeme některé další typy optimalizací prováděných automaticky JIT překladači. Zaměříme se jak na známé optimalizační metody typu rozbalení smyček či eliminaci volání metod, tak i na využití již připravených sekvencí instrukcí (intrinsic funkce)</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</a></p>
+<p><a href="#k02">2. Alokace pracovních registrů</a></p>
+<p><a href="#k03">3. Rozbalení programových smyček: loop unrolling</a></p>
+<p><a href="#k04">4. První demonstrační příklad &ndash; rozbalení smyček</a></p>
+<p><a href="#k05">5. Method inlining</a></p>
+<p><a href="#k06">6. Druhý demonstrační příklad &ndash; eliminace volání metod</a></p>
+<p><a href="#k07">7. Použití intrinsic &bdquo;funkcí&ldquo;</a></p>
+<p><a href="#k08">8. Seznam všech &bdquo;intrinsic&ldquo;</a></p>
+<p><a href="#k09">9. Metoda <strong>System.arraycopy()</strong></a></p>
+<p><a href="#k10">10. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o virtuálním stroji Javy</a> si stručně popíšeme
+několik optimalizačních metod prováděných JIT překladači typu client a
+především pak JIT překladači typu server. Účinek dále popsaných optimalizačních
+metod si ukážeme na několika demonstračních příkladech. Před popisem
+jednotlivých optimalizačních metod si však nejprve řekněme, na jaké oblasti se
+vlastně JIT překladače zaměřují:</p>
+
+<ol>
+
+<li>Největším problémem, který se JIT překladače snaží (někdy více, někdy ale
+již méně úspěšně :-) eliminovat, jsou přístupy do operační paměti. Každý
+přístup do operační paměti může znamenat nutnost synchronizace vyrovnávacích
+pamětí (cache), což může způsobit vážné snížení výkonnosti aplikací zejména na
+systémech s&nbsp;mnoha jádry. Právě zde se uplatňuje Amdahlův zákon
+(vztah).</li>
+
+<li>Dalším problémem je volání metod, které je taktéž vhodné eliminovat.
+Překladače se snaží zjistit, které metody jsou natolik jednoduché a přitom
+často volané, aby se namísto jejich skutečného volání mohlo nakopírovat tělo
+metody přímo do volajícího kódu. Tato optimalizace &ndash; zde založená na
+reálných datech získaných při běhu aplikace! &ndash; se nazývá <i>method
+inlining</i>.</li>
+
+<li>Třetí problém způsobuje používání zámků. I zde se překladače snaží různým
+způsobem buď zcela použití zámků eliminovat (někdy to skutečně možné je),
+popř.&nbsp;použít jeden a týž zámek pro delší úsek kódu.</li>
+
+<li>Na mnoha architekturách je taktéž vhodné eliminovat podmíněné a nepodmíněné
+skoky, popř.&nbsp;přerovnat kód takovým způsobem, aby prediktory skoků dokázaly
+správně odhadnout, zda se podmíněný skok provede či nikoli. Základní
+optimalizační metodou je zde rozbalování smyček (<i>loop unrolling</i>).</li>
+
+<li>Některé metody jsou tak často používané a současně tak obecné, že se
+vyplatí dopředu si připravit optimalizovanou sekvenci strojových instrukcí
+implementujících tyto metody na cílové platformě. Klasickým příkladem je metoda
+<strong>System.arraycopy()</strong>, jejíž kód je již připraven a to hned
+v&nbsp;několika variantách optimalizovaných pro různé případy, které mohou
+v&nbsp;praxi nastat (překryv polí, zarovnání či naopak nezarovnání polí
+atd.).</li>
+
+</ol>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Alokace pracovních registrů</h2>
+
+<p>JIT překladače typu client i server jsou v&nbsp;současnosti implementovány
+na mikroprocesorových architekturách založených na pracovních registrech a
+nikoli například na zásobníku operandů (tyto alternativní architektury jsou
+dnes spíše minoritní). To mj.&nbsp;znamená, že JIT překladač musí vhodným
+způsobem transformovat původní bajtkód založený na použití zásobníku operandů
+na strojový kód, v&nbsp;němž se používají pracovní registry cílové
+mikroprocesorové architektury (i686, x86_64, SPARC, ARM, AArch64...). Počet
+dostupných pracovních registrů i způsob jejich využití je na každé
+mikroprocesorové architektuře odlišný, což je jeden z&nbsp;důvodů, proč se JIT
+překladače musí pro každou novou architekturu vždy z&nbsp;určité části přepsat;
+což je mimochodem poměrně zajímavé téma, kterému se ještě v&nbsp;tomto seriálu
+budeme podrobněji věnovat, zejména s&nbsp;ohledem na právě vznikající C1 a C2
+JIT překladače určené pro mikroprocesory AArch64.</p>
+
+<p>Pro alokaci registrů se využívají dva odlišné způsoby. JIT překladač typu
+client je &ndash; jak již víme z&nbsp;předchozích částí tohoto seriálu &ndash;
+zaměřen především na rychlost překladu a nikoli na kvalitu výsledného kódu, a
+proto používá jednoduchou lineární alokaci registrů souběžně s&nbsp;takzvanými
+šablonami kódu (<i>code templates</i>), v&nbsp;nichž se pro implementaci
+různých operací používají vždy stejné registry. Naproti tomu JIT překladač typu
+server již při alokaci registrů vytváří graf dostupnosti a snaží se registry
+využít optimálním způsobem, zejména s&nbsp;ohledem na to, aby se mezivýsledky
+různých operací nemusely ukládat do paměti a aby přesuny dat mezi registry byly
+minimalizovány. Na většině současných architektur je navíc alokace rozdělena
+minimálně na dvě části &ndash; registry pro ALU operace a adresování a registry
+pro provádění operací s&nbsp;čísly s&nbsp;plovoucí řádovou čárkou (<i>floating
+point</i>). K&nbsp;této problematice se taktéž ještě vrátíme.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Rozbalení programových smyček: loop unrolling</h2>
+
+<p>Jednou ze základních optimalizací, o níž jsme se zmiňovali <a
+href="#k01">v&nbsp;první kapitole</a>, je rozbalení programových smyček neboli
+<i>loop unrolling</i>. Překladače se k&nbsp;této optimalizaci uchylují
+především z&nbsp;toho důvodu, že moderní mikroprocesory obsahují dlouhé
+pipeline. Při výskytu skoku se musí vyřešit problém, co se má udělat
+s&nbsp;instrukcemi, které se nachází v&nbsp;rozpracovaném stavu uvnitř
+pipeline. Většinou nastává nejhorší případ, kdy se tyto instrukce musí zahodit
+a po provedení skoku se musí pipeline znovu naplnit, tentokrát jinými
+instrukcemi (zde trošku celý problém zjednodušuji). To má samozřejmě za
+následek snížení výpočetního výkonu, které může být někdy velmi radikální
+(například Pentium 4 má pipeline rozdělenou na více než 30 řezů, tj.&nbsp;může
+se v&nbsp;ní nacházet třicet rozpracovaných instrukcí). Je tedy vhodné nějakým
+způsobem skoky co nejvíce omezit či snížit jejich negativní dopad na rychlost
+běhu programu. První metody, tj.&nbsp;omezení skoků, jsou vesměs záležitostí
+překladače či ruční optimalizace kódu. A právě sem spadá i zmíněné rozbalení
+smyček.</p>
+
+<p>Většinou se však neprovádí jen jednoduché rozbalení smyčky ve stylu, že by
+se například sekvence instrukcí pro tři po sobě jdoucí iterace jednoduše
+nakopírovaly za sebe, ale JIT překladač se současně snaží i o eliminaci
+zbytečných přesunů dat mezi operační pamětí a pracovními registry. To je jeden
+z&nbsp;důvodů, proč je při pohledu na disassemblovaný kód někdy velmi těžké
+určit, jak přesně se rozbalení smyčky provedlo. Navíc se ukazuje, že
+v&nbsp;některých případech by schopný programátor dokázal výsledný strojový kód
+optimalizovat ještě lépe než JIT překladač (ten je totiž omezen mj.&nbsp;i
+safepointy, které většinou při optimalizacích nepřekračuje), ovšem to je fakt,
+který lze aplikovat i například na klasické překladače programovacích jazyků
+typu C, C++ či Fortran.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. První demonstrační příklad &ndash; rozbalení smyček</h2>
+
+<p>Ukažme si nyní způsob rozbalení smyčky u demonstračního programu pro výpočet
+faktoriálu. Faktoriál je vypočten v&nbsp;metodě <strong>factorial</strong>,
+v&nbsp;níž je výpočet realizován jednoduchou počítanou programovou smyčkou. Pro
+jednoduchost jsou výpočty prováděny s&nbsp;výsledkem typu <strong>int</strong>,
+protože se budeme dívat na disassemblovaný kód pro platformu <i>x86</i>, kde by
+výpočty s&nbsp;64bitovými čísly byly poměrně kryptické (kombinace instrukcí
+<strong>mul</strong> a <strong>imul</strong> atd.). Zdrojový kód demonstračního
+příkladu vypadá následovně:</p>
+
+<pre>
+public class <strong>Factorial</strong> {
+&nbsp;
+    public static int <strong>factorial</strong>(int n) {
+        if (n &lt;= 1) return 1;
+        int result = 1;
+        for (int i = 1; i &lt;= n; i++) {
+            result *= i;
+        }
+        return result;
+    }
+&nbsp;
+    public static void <strong>testFactorial</strong>() {
+        for (int i = 0; i &lt; 16; i++) {
+            System.out.println(i + "! = " + factorial(i));
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        for (int i = 0; i &lt; 100; i++) {
+            testFactorial();
+        }
+    }
+}
+</pre>
+
+<p>Metoda <strong>factorial</strong> se přeloží do následující sekvence
+instrukcí bajtkódu. Vlastní programová smyčka je od ostatního kódu pro větší
+přehlednost oddělena:</p>
+
+<pre>
+  public static int <strong>factorial</strong>(int);
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=2, locals=3, args_size=1
+         0: iload_0
+         1: iconst_1
+         2: if_icmpgt     7
+         5: iconst_1
+         6: ireturn
+         7: iconst_1
+         8: istore_1
+         9: iconst_1
+        10: istore_2
+        =================================
+        11: iload_2
+        12: iload_0
+        13: if_icmpgt     26
+        16: iload_1
+        17: iload_2
+        18: imul
+        19: istore_1
+        20: iinc          2, 1
+        23: goto          11
+        =================================
+        26: iload_1
+        27: ireturn
+      LineNumberTable:
+        line 4: 0
+        line 5: 7
+        line 6: 9
+        line 7: 16
+        line 6: 20
+        line 9: 26
+      StackMapTable: number_of_entries = 3
+           frame_type = 7 /* same */
+           frame_type = 253 /* append */
+             offset_delta = 3
+        locals = [ int, int ]
+           frame_type = 250 /* chop */
+          offset_delta = 14
+</pre>
+
+<p>A zde se již můžeme podívat na výsledný (disassemblovaný) strojový kód, kde
+již došlo k&nbsp;rozbalení počítané programové smyčky. Povšimněte si, jakým
+způsobem nám disassembler oznamuje mapování strojových instrukcí na instrukce
+bajtkódu (poznámky obsahující jméno metody s&nbsp;indexem za zavináčem):</p>
+
+<pre>
+Decoding compiled method 0x009bab88:
+Code:
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+[Exception Handler]
+[Stub Code]
+  0x009bad40: jmp    0x009b7240         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009bad45: push   $0x9bad45          ;   {section_word}
+  0x009bad4a: jmp    0x0099e280         ;   {runtime_call}
+  0x009bad4f: hlt    
+  # {method} <strong>'factorial' '(I)I' in 'Factorial'</strong>
+  # parm0:    ecx       = int
+  #           [sp+0x10]  (sp of caller)
+  0x009bac80: mov    %eax,0xffffc000(%esp)
+  0x009bac87: push   %ebp
+  0x009bac88: sub    $0x8,%esp          ;*synchronization entry
+                                        ; - Factorial::factorial@-1 (line 4)
+  0x009bac8b: mov    $0x1,%eax
+  0x009bac90: cmp    $0x1,%ecx
+  0x009bac93: jle    0x009bad0a         ;*if_icmpgt
+                                        ; - Factorial::factorial@2 (line 4)
+  0x009bac95: cmp    $0x1,%ecx
+  0x009bac98: jl     0x009bad0a         ;*if_icmpgt
+                                        ; - Factorial::factorial@13 (line 6)
+  0x009bac9a: cmp    $0x7ffffffe,%ecx
+  0x009baca0: jg     0x009bad15         ;*iload_1
+                                        ; - Factorial::factorial@16 (line 7)
+  0x009baca2: mov    %ecx,%edi
+  0x009baca4: inc    %edi
+  0x009baca5: add    $0xfffffffe,%ecx
+  0x009baca8: mov    $0x80000000,%ebx
+  0x009bacad: cmp    %ecx,%edi
+  0x009bacaf: cmovl  %ebx,%ecx
+  0x009bacb2: mov    $0x2,%edx
+  0x009bacb7: cmp    $0x2,%ecx
+  0x009bacba: jle    0x009bad25
+  0x009bacbc: mov    $0x2,%eax
+  0x009bacc1: jmp    0x009bace2
+  0x009bacc3: mov    %esi,%ecx
+  0x009bacc5: imul   %eax,%ecx
+  0x009bacc8: mov    %ecx,%eax          ;*imul
+                                        ; - Factorial::factorial@18 (line 7)
+  0x009bacca: inc    %esi               ;*iinc
+                                        ; - Factorial::factorial@20 (line 6)
+  0x009baccb: cmp    %edi,%esi
+  0x009baccd: jl     0x009bacc3         ;*if_icmpgt
+                                        ; - Factorial::factorial@13 (line 6)
+  0x009baccf: jmp    0x009bad0a
+  0x009bacd1: nopw   0x0(%eax,%eax,1)
+  0x009bacdc: xchg   %ax,%ax
+  0x009bace0: mov    %esi,%edx          ;*imul
+                                        ; - Factorial::factorial@18 (line 7)
+  0x009bace2: mov    %edx,%ebx
+  0x009bace4: add    $0x3,%ebx
+  0x009bace7: mov    %edx,%esi
+  0x009bace9: add    $0x4,%esi          ;*iinc
+                                        ; - Factorial::factorial@20 (line 6)
+  0x009bacec: mov    %edx,%ebp
+  0x009bacee: add    $0x2,%ebp
+  0x009bacf1: inc    %edx
+  0x009bacf2: imul   %eax,%edx
+  0x009bacf5: imul   %ebp,%edx
+  0x009bacf8: imul   %edx,%ebx
+  0x009bacfb: mov    %esi,%eax
+  0x009bacfd: imul   %ebx,%eax          ;*imul
+                                        ; - Factorial::factorial@18 (line 7)
+  0x009bad00: cmp    %ecx,%esi
+  0x009bad02: jl     0x009bace0         ;*if_icmpgt
+                                        ; - Factorial::factorial@13 (line 6)
+  0x009bad04: cmp    %edi,%esi
+  0x009bad06: jl     0x009bacca
+  0x009bad08: mov    %ebx,%eax
+  0x009bad0a: add    $0x8,%esp
+  0x009bad0d: pop    %ebp
+  0x009bad0e: test   %eax,0x940000      ;   {poll_return}
+  0x009bad14: ret    
+  0x009bad15: mov    %ecx,%ebp
+  0x009bad17: mov    $0xffffff7e,%ecx
+  0x009bad1c: xchg   %ax,%ax
+  0x009bad1f: call   0x0099dd00         ; OopMap{off=164}
+                                        ;*iload_1
+                                        ; - Factorial::factorial@16 (line 7)
+                                        ;   {runtime_call}
+  0x009bad24: int3                      ;*iload_1
+                                        ; - Factorial::factorial@16 (line 7)
+  0x009bad25: mov    $0x2,%esi
+  0x009bad2a: mov    $0x2,%eax
+  0x009bad2f: mov    $0x1,%ebx
+  0x009bad34: jmp    0x009bad04         ;*if_icmpgt
+                                        ; - Factorial::factorial@13 (line 6)
+  0x009bad36: hlt
+  0x009bad37: hlt
+  0x009bad38: hlt
+  0x009bad39: hlt
+  0x009bad3a: hlt
+  0x009bad3b: hlt
+  0x009bad3c: hlt
+  0x009bad3d: hlt
+  0x009bad3e: hlt
+  0x009bad3f: hlt
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Method inlining</h2>
+
+<p>Další optimalizační metodou, o níž jsme se zmínili <a
+href="#k01">v&nbsp;první kapitole</a>, je eliminace volání metod neboli
+<i>method inlining</i>. Tato optimalizační metoda je založena na známém faktu,
+že volání metod/funkcí s&nbsp;krátkým (přesněji řečeno jednoduchým) tělem je
+neekonomické, a to z&nbsp;důvodu nutnosti přípravy parametrů pro volanou funkci
+i kvůli vlastní režii volání (strojové instrukce typu <strong>call</strong> a
+<strong>return</strong>, popř.&nbsp;na některých architekturách instrukce typu
+<strong>BL=branch+link</strong>). JIT překladač tedy dokáže detekovat metody,
+jejichž volání by bylo vhodné nahradit vložením těla metody přímo do volající
+metody. Jedním z&nbsp;parametrů virtuálního stroje, který ovlivňuje rozhodování
+o použití této optimalizační metody, je parametr nazvaný
+<strong>InlineSmallCode</strong>, který je v&nbsp;případě architektury x86
+nastaven na hodnotu 1000 (velikost kódu) a parametr
+<strong>MinInliningThreshold</strong> určující, kolikrát musí být metoda volána
+v&nbsp;čase běhu aplikace.</p>
+
+<p>Základní informaci o tom, které metody jsou touto optimalizační technikou
+nahrazeny svým tělem, je možné získat následujícím způsobem:</p>
+
+<pre>
+java -server -XX:+UnlockDiagnosticVMOptions -XX:+PrintInlining FooBar
+</pre>
+
+<p>Podívejme se na příklad použití těchto dvou přepínačů ve chvíli, kdy jsou
+použity při spouštění virtuálního stroje s&nbsp;demonstračním benchmarkem <a
+href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/05d05b5fd08d/jit/MandelbrotRenderer.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/05d05b5fd08d/jit/MandelbrotRenderer.java</a>,
+který jsme si popsali již v&nbsp;devadesáté sedmé části tohoto seriálu:</p>
+
+<a href="http://i.iinfo.cz/images/12/mandel.png"><img src="http://i.iinfo.cz/images/12/mandel-prev.png" class="image-145955" width="270" height="270" alt="&#160;" /></a>
+
+<p>Informace o method inliningu:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintInlining MandelbrotRenderer
+</pre>
+
+<pre>
+                            @ 17   sun.java2d.StateTrackableDelegate::markDirty (6 bytes)   inline (hot)
+                            @ 59   MandelbrotRenderer::iteration (93 bytes)   inline (hot)
+                            @ 70   java.awt.image.DataBufferByte::setElem (21 bytes)   inline (hot)
+                              @ 17   sun.java2d.StateTrackableDelegate::markDirty (6 bytes)   inline (hot)
+                            @ 963   com.sun.imageio.plugins.png.RowFilter::filterRow (426 bytes)   too big
+                            @ 971   com.sun.imageio.plugins.png.IDATOutputStream::write (17 bytes)   executed &lt; MinInliningThreshold times
+                            @ 990   com.sun.imageio.plugins.png.IDATOutputStream::write (43 bytes)   too big
+                            @ 1041   javax.imageio.ImageWriter::processImageProgress (56 bytes)   too big
+              s             @ 1045   javax.imageio.ImageWriter::abortRequested (5 bytes)   inline (hot)
+                            @ 317   java.awt.Rectangle::&lt;init&gt; (26 bytes)   inline (hot)
+                              @ 1   java.awt.geom.Rectangle2D::&lt;init&gt; (5 bytes)   inline (hot)
+                                @ 1   java.awt.geom.RectangularShape::&lt;init&gt; (5 bytes)   inline (hot)
+                                  @ 1   java.lang.Object::&lt;init&gt; (1 bytes)   inline (hot)
+                            @ 325   java.awt.image.BufferedImage::getData (113 bytes)   too big
+                            @ 372   sun.awt.image.ByteInterleavedRaster::getPixels (865 bytes)   too big
+                            @ 377   java.awt.image.BufferedImage::getColorModel (5 bytes)   inline (hot)
+                            @ 382   java.awt.image.ColorModel::isAlphaPremultiplied (5 bytes)   inline (hot)
+                            @ 390   sun.awt.image.ByteInterleavedRaster::createCompatibleWritableRaster (13 bytes)   never executed
+                            @ 399   java.awt.image.Raster::getMinX (5 bytes)   inline (hot)
+                            @ 404   java.awt.image.Raster::getMinY (5 bytes)   inline (hot)
+                            @ 409   java.awt.image.Raster::getWidth (5 bytes)   inline (hot)
+                            @ 414   java.awt.image.Raster::getHeight (5 bytes)   inline (hot)
+                            @ 423   java.awt.image.BufferedImage::getColorModel (5 bytes)   inline (hot)
+                            @ 439   java.awt.image.Raster::getMinX (5 bytes)   inline (hot)
+                            @ 444   java.awt.image.Raster::getMinY (5 bytes)   inline (hot)
+                            @ 449   java.awt.image.Raster::getWidth (5 bytes)   inline (hot)
+                            @ 454   java.awt.image.Raster::getHeight (5 bytes)   inline (hot)
+                            @ 963   com.sun.imageio.plugins.png.RowFilter::filterRow (426 bytes)   too big
+                            @ 971   com.sun.imageio.plugins.png.IDATOutputStream::write (17 bytes)   executed &lt; MinInliningThreshold times
+                            @ 990   com.sun.imageio.plugins.png.IDATOutputStream::write (43 bytes)   too big
+                            @ 1041   javax.imageio.ImageWriter::processImageProgress (56 bytes)   too big
+              s             @ 1045   javax.imageio.ImageWriter::abortRequested (5 bytes)   inline (hot)
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Druhý demonstrační příklad &ndash; eliminace volání metod</h2>
+
+<p>Zkusme si nyní upravit příklad pro výpočet faktoriálu takovým způsobem, aby
+byl JIT překladač typu server donucen provést eliminaci volání metod,
+tj.&nbsp;<i>method inlining</i>. Je to ve skutečnosti velmi jednoduché,
+postačuje totiž vlastní výpočet prováděný původně v&nbsp;počítané programové
+smyčce v&nbsp;metodě <strong>factorial()</strong> &bdquo;refaktorovat&ldquo; do
+zvláštní metody <strong>calcResult()</strong>, která pouze vrátí výsledek
+součinu svých dvou operandů. Nový demonstrační příklad vypadá následovně:</p>
+
+<pre>
+public class <strong>Factorial2</strong> {
+&nbsp;
+    public static int <strong>factorial</strong>(int n) {
+        if (n &lt;= 1) return 1;
+        int result = 1;
+        for (int i = 1; i &lt;= n; i++) {
+            result = calcResult(result, i);
+        }
+        return result;
+    }
+&nbsp;
+    public static int <strong>calcResult</strong>(int result, int i) {
+        return result * i;
+    }
+&nbsp;
+    public static void <strong>testFactorial</strong>() {
+        for (int i = 0; i &lt; 16; i++) {
+            System.out.println(i + "! = " + factorial(i));
+        }
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        for (int i = 0; i &lt; 100; i++) {
+            testFactorial();
+        }
+    }
+}
+</pre>
+
+<p>Snadno se můžeme přesvědčit o tom, že v&nbsp;bajtkódu je skutečně statická
+metoda <strong>calcResult()</strong> volána, protože vlastní překladač
+<strong>javac</strong> žádné významné optimalizace neprovádí:</p>
+
+<pre>
+  public static int <strong>factorial</strong>(int);
+    Code:
+       0: iload_0       
+       1: iconst_1      
+       2: if_icmpgt     7
+       5: iconst_1      
+       6: ireturn       
+       7: iconst_1      
+       8: istore_1      
+       9: iconst_1      
+      10: istore_2      
+      11: iload_2       
+      12: iload_0       
+      13: if_icmpgt     28
+      16: iload_1       
+      17: iload_2       
+      18: <strong>invokestatic  #2                  // Method calcResult:(II)I</strong>
+      21: istore_1      
+      22: iinc          2, 1
+      25: goto          11
+      28: iload_1       
+      29: ireturn       
+</pre>
+
+<p>Bajtkód metody <strong>calcResult()</strong> je skutečně velmi jednoduchý
+&ndash; typický adept na method inlining:</p>
+
+<pre>
+  public static int <strong>calcResult</strong>(int, int);
+    Code:
+       0: iload_0       
+       1: iload_1       
+       2: imul          
+       3: ireturn       
+</pre>
+
+<p>Nyní se podívejme na to, jak byla metoda <strong>factorial()</strong>
+přeložena JIT překladačem typu server:</p>
+
+<pre>
+Decoding compiled method 0x009bab88:
+Code:
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} <strong>'factorial' '(I)I' in 'Factorial2'</strong>
+  # parm0:    ecx       = int
+  #           [sp+0x10]  (sp of caller)
+  0x009bac80: mov    %eax,0xffffc000(%esp)
+  0x009bac87: push   %ebp
+  0x009bac88: sub    $0x8,%esp          ;*synchronization entry
+                                        ; - Factorial2::factorial@-1 (line 4)
+  0x009bac8b: mov    $0x1,%eax
+  0x009bac90: cmp    $0x1,%ecx
+  0x009bac93: jle    0x009bad0a         ;*if_icmpgt
+                                        ; - Factorial2::factorial@2 (line 4)
+  0x009bac95: cmp    $0x1,%ecx
+  0x009bac98: jl     0x009bad0a         ;*if_icmpgt
+                                        ; - Factorial2::factorial@13 (line 6)
+  0x009bac9a: cmp    $0x7ffffffe,%ecx
+  0x009baca0: jg     0x009bad15         ;*iload_1
+                                        ; - Factorial2::factorial@16 (line 7)
+  0x009baca2: mov    %ecx,%edi
+  0x009baca4: inc    %edi
+  0x009baca5: add    $0xfffffffe,%ecx
+  0x009baca8: mov    $0x80000000,%ebx
+  0x009bacad: cmp    %ecx,%edi
+  0x009bacaf: cmovl  %ebx,%ecx
+  0x009bacb2: mov    $0x2,%edx
+  0x009bacb7: cmp    $0x2,%ecx
+  0x009bacba: jle    0x009bad25
+  0x009bacbc: mov    $0x2,%eax
+  0x009bacc1: jmp    0x009bace2
+  ======================================
+  0x009bacc3: mov    %esi,%ecx
+  0x009bacc5: imul   %eax,%ecx
+  0x009bacc8: mov    %ecx,%eax          ;*imul
+                                        ; - Factorial2::calcResult@2 (line 13)
+                                        ; - Factorial2::factorial@18 (line 7)
+  ======================================
+  0x009bacca: inc    %esi               ;*iinc
+                                        ; - Factorial2::factorial@22 (line 6)
+  0x009baccb: cmp    %edi,%esi
+  0x009baccd: jl     0x009bacc3         ;*if_icmpgt
+                                        ; - Factorial2::factorial@13 (line 6)
+  0x009baccf: jmp    0x009bad0a
+  0x009bacd1: nopw   0x0(%eax,%eax,1)
+  0x009bacdc: xchg   %ax,%ax
+  0x009bace0: mov    %esi,%edx          ;*imul
+                                        ; - Factorial2::calcResult@2 (line 13)
+                                        ; - Factorial2::factorial@18 (line 7)
+  0x009bace2: mov    %edx,%ebx
+  0x009bace4: add    $0x3,%ebx
+  0x009bace7: mov    %edx,%esi
+  0x009bace9: add    $0x4,%esi          ;*iinc
+                                        ; - Factorial2::factorial@22 (line 6)
+  0x009bacec: mov    %edx,%ebp
+  0x009bacee: add    $0x2,%ebp
+  ======================================
+  0x009bacf1: inc    %edx
+  0x009bacf2: imul   %eax,%edx
+  0x009bacf5: imul   %ebp,%edx
+  0x009bacf8: imul   %edx,%ebx
+  0x009bacfb: mov    %esi,%eax
+  0x009bacfd: imul   %ebx,%eax          ;*imul
+                                        ; - Factorial2::calcResult@2 (line 13)
+                                        ; - Factorial2::factorial@18 (line 7)
+  ======================================
+  0x009bad00: cmp    %ecx,%esi
+  0x009bad02: jl     0x009bace0         ;*if_icmpgt
+                                        ; - Factorial2::factorial@13 (line 6)
+  0x009bad04: cmp    %edi,%esi
+  0x009bad06: jl     0x009bacca
+  0x009bad08: mov    %ebx,%eax
+  0x009bad0a: add    $0x8,%esp
+  0x009bad0d: pop    %ebp
+  0x009bad0e: test   %eax,0x940000      ;   {poll_return}
+  0x009bad14: ret    
+  0x009bad15: mov    %ecx,%ebp
+  0x009bad17: mov    $0xffffff7e,%ecx
+  0x009bad1c: xchg   %ax,%ax
+  0x009bad1f: call   0x0099dd00         ; OopMap{off=164}
+                                        ;*iload_1
+                                        ; - Factorial2::factorial@16 (line 7)
+                                        ;   {runtime_call}
+  0x009bad24: int3                      ;*iload_1
+                                        ; - Factorial2::factorial@16 (line 7)
+  0x009bad25: mov    $0x2,%esi
+  0x009bad2a: mov    $0x2,%eax
+  0x009bad2f: mov    $0x1,%ebx
+  0x009bad34: jmp    0x009bad04         ;*if_icmpgt
+                                        ; - Factorial2::factorial@13 (line 6)
+  0x009bad36: hlt    
+  0x009bad37: hlt    
+  0x009bad38: hlt    
+  0x009bad39: hlt    
+  0x009bad3a: hlt    
+  0x009bad3b: hlt    
+  0x009bad3c: hlt    
+  0x009bad3d: hlt    
+  0x009bad3e: hlt    
+  0x009bad3f: hlt    
+[Exception Handler]
+[Stub Code]
+  0x009bad40: jmp    0x009b7240         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009bad45: push   $0x9bad45          ;   {section_word}
+  0x009bad4a: jmp    0x0099e280         ;   {runtime_call}
+  0x009bad4f: hlt    
+</pre>
+
+<p>Z&nbsp;výpisu je patrné, že se skutečně provedl method inlining (žádné
+<strong>call</strong>) a taktéž rozbalení programové smyčky.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Použití intrinsic &bdquo;funkcí&ldquo;</h2>
+
+<p>Poslední optimalizační technika, kterou se v&nbsp;dnešním článku budeme
+zabývat, je založena na myšlence, že některé standardní metody jsou používané
+velmi často a současně i provádí časově náročné činnosti, takže by bylo vhodné,
+aby byly tyto metody již dopředu implementovány a optimalizovány. Jedná se
+například o některé metody (či přesněji řečeno funkce), které lze nalézt ve
+třídě <strong>java.lang.Math</strong>. Tyto metody/funkce (například
+goniometrické funkce) jsou implementovány takovým způsobem, že v&nbsp;některých
+případech vůbec nedojde k&nbsp;volání příslušných běhových nativních funkcí,
+ale namísto toho jsou přímo vygenerovány instrukce pro matematický koprocesor.
+Příkladem může být interní funkce JIT překladače generující dvojici bajtů,
+které ve strojovém kódu znamenají výpočet hodnoty sinus:</p>
+
+<pre>
+void Assembler::fsin() {
+  emit_byte(0xD9);
+  emit_byte(0xFE);
+}
+</pre>
+
+<p>Dalším příkladem může být implementace metody
+<strong>String.indexOf()</strong>, kterou je taktéž možné nahradit
+optimalizovanou sekvencí instrukcí (hledání tak je možné provádět po osmici
+bajtů apod.).</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Seznam všech &bdquo;intrinsic&ldquo;</h2>
+
+<p>Seznam všech tzv.&nbsp;<i>intrinsic</i> lze nalézt v&nbsp;hlavičkovém
+souboru <strong>vmSymbols.hpp</strong> (jedná se o součást OpenJDK):</p>
+
+<pre>
+Jméno generující funkce        Třída
+_hashCode,                     java_lang_Object
+_getClass,                     java_lang_Object
+_clone,                        java_lang_Object
+_dabs,                         java_lang_Math
+_dsin,                         java_lang_Math
+_dcos,                         java_lang_Math
+_dtan,                         java_lang_Math
+_datan2,                       java_lang_Math
+_dsqrt,                        java_lang_Math
+_dlog,                         java_lang_Math
+_dlog10,                       java_lang_Math
+_dpow,                         java_lang_Math
+_dexp,                         java_lang_Math
+_min,                          java_lang_Math
+_max,                          java_lang_Math
+_floatToRawIntBits,            java_lang_Float
+_floatToIntBits,               java_lang_Float
+_intBitsToFloat,               java_lang_Float
+_doubleToRawLongBits,          java_lang_Double
+_doubleToLongBits,             java_lang_Double
+_longBitsToDouble,             java_lang_Double
+_numberOfLeadingZeros_i,       java_lang_Integer
+_numberOfLeadingZeros_l,       java_lang_Long
+_numberOfTrailingZeros_i,      java_lang_Integer
+_numberOfTrailingZeros_l,      java_lang_Long
+_bitCount_i,                   java_lang_Integer
+_bitCount_l,                   java_lang_Long
+_reverseBytes_i,               java_lang_Integer
+_reverseBytes_l,               java_lang_Long
+_reverseBytes_c,               java_lang_Character
+_reverseBytes_s,               java_lang_Short
+_identityHashCode,             java_lang_System
+_currentTimeMillis,            java_lang_System
+_nanoTime,                     java_lang_System
+_arraycopy,                    java_lang_System
+_isInterrupted,                java_lang_Thread
+_currentThread,                java_lang_Thread
+_isAssignableFrom,             java_lang_Class
+_isInstance,                   java_lang_Class
+_getModifiers,                 java_lang_Class
+_isInterface,                  java_lang_Class
+_isArray,                      java_lang_Class
+_isPrimitive,                  java_lang_Class
+_getSuperclass,                java_lang_Class
+_getComponentType,             java_lang_Class
+_getClassAccessFlags,          sun_reflect_Reflection
+_getLength,                    java_lang_reflect_Array
+_getCallerClass,               sun_reflect_Reflection
+_newArray,                     java_lang_reflect_Array
+_copyOf,                       java_util_Arrays
+_copyOfRange,                  java_util_Arrays
+_equalsC,                      java_util_Arrays
+_compareTo,                    java_lang_String
+_indexOf,                      java_lang_String
+_equals,                       java_lang_String
+_checkIndex,                   java_nio_Buffer
+_Reference_get,                java_lang_ref_Reference
+_get_AtomicLong,               sun_misc_AtomicLongCSImpl
+_attemptUpdate,                sun_misc_AtomicLongCSImpl
+_allocateInstance,             sun_misc_Unsafe
+_copyMemory,                   sun_misc_Unsafe
+_park,                         sun_misc_Unsafe
+_unpark,                       sun_misc_Unsafe
+_getObject,                    sun_misc_Unsafe
+_getBoolean,                   sun_misc_Unsafe
+_getByte,                      sun_misc_Unsafe
+_getShort,                     sun_misc_Unsafe
+_getChar,                      sun_misc_Unsafe
+_getInt,                       sun_misc_Unsafe
+_getLong,                      sun_misc_Unsafe
+_getFloat,                     sun_misc_Unsafe
+_getDouble,                    sun_misc_Unsafe
+_putObject,                    sun_misc_Unsafe
+_putBoolean,                   sun_misc_Unsafe
+_putByte,                      sun_misc_Unsafe
+_putShort,                     sun_misc_Unsafe
+_putChar,                      sun_misc_Unsafe
+_putInt,                       sun_misc_Unsafe
+_putLong,                      sun_misc_Unsafe
+_putFloat,                     sun_misc_Unsafe
+_putDouble,                    sun_misc_Unsafe
+_getObjectVolatile,            sun_misc_Unsafe
+_getBooleanVolatile,           sun_misc_Unsafe
+_getByteVolatile,              sun_misc_Unsafe
+_getShortVolatile,             sun_misc_Unsafe
+_getCharVolatile,              sun_misc_Unsafe
+_getIntVolatile,               sun_misc_Unsafe
+_getLongVolatile,              sun_misc_Unsafe
+_getFloatVolatile,             sun_misc_Unsafe
+_getDoubleVolatile,            sun_misc_Unsafe
+_putObjectVolatile,            sun_misc_Unsafe
+_putBooleanVolatile,           sun_misc_Unsafe
+_putByteVolatile,              sun_misc_Unsafe
+_putShortVolatile,             sun_misc_Unsafe
+_putCharVolatile,              sun_misc_Unsafe
+_putIntVolatile,               sun_misc_Unsafe
+_putLongVolatile,              sun_misc_Unsafe
+_putFloatVolatile,             sun_misc_Unsafe
+_putDoubleVolatile,            sun_misc_Unsafe
+_getByte_raw,                  sun_misc_Unsafe
+_getShort_raw,                 sun_misc_Unsafe
+_getChar_raw,                  sun_misc_Unsafe
+_getInt_raw,                   sun_misc_Unsafe
+_getLong_raw,                  sun_misc_Unsafe
+_getFloat_raw,                 sun_misc_Unsafe
+_getDouble_raw,                sun_misc_Unsafe
+_getAddress_raw,               sun_misc_Unsafe
+_putByte_raw,                  sun_misc_Unsafe
+_putShort_raw,                 sun_misc_Unsafe
+_putChar_raw,                  sun_misc_Unsafe
+_putInt_raw,                   sun_misc_Unsafe
+_putLong_raw,                  sun_misc_Unsafe
+_putFloat_raw,                 sun_misc_Unsafe
+_putDouble_raw,                sun_misc_Unsafe
+_putAddress_raw,               sun_misc_Unsafe
+_compareAndSwapObject,         sun_misc_Unsafe
+_compareAndSwapInt,            sun_misc_Unsafe
+_putOrderedObject,             sun_misc_Unsafe
+_putOrderedLong,               sun_misc_Unsafe
+_putOrderedInt,                sun_misc_Unsafe
+_prefetchRead,                 sun_misc_Unsafe
+_prefetchWrite,                sun_misc_Unsafe
+_prefetchReadStatic,           sun_misc_Unsafe
+_prefetchWriteStatic,          sun_misc_Unsafe
+_fillInStackTrace,             java_lang_Throwable
+_StringBuilder_void,           java_lang_StringBuilder
+_StringBuilder_int,            java_lang_StringBuilder
+_StringBuilder_String,         java_lang_StringBuilder
+_StringBuilder_append_char,    java_lang_StringBuilder
+_StringBuilder_append_int,     java_lang_StringBuilder
+_StringBuilder_append_String , java_lang_StringBuilder
+_StringBuilder_toString,       java_lang_StringBuilder
+_StringBuffer_void,            java_lang_StringBuffer
+_StringBuffer_int,             java_lang_StringBuffer
+_StringBuffer_String,          java_lang_StringBuffer
+_StringBuffer_append_char,     java_lang_StringBuffer
+_StringBuffer_append_int,      java_lang_StringBuffer
+_StringBuffer_append_String,   java_lang_StringBuffer
+_StringBuffer_toString,        java_lang_StringBuffer
+_Integer_toString,             java_lang_Integer
+_String_String,                java_lang_String
+_Object_init,                  java_lang_Object
+_invoke,                       java_lang_reflect_Method
+_checkSpreadArgument,          java_lang_invoke_MethodHandleNatives
+_invokeExact,                  java_lang_invoke_MethodHandle
+_invokeGeneric,                java_lang_invoke_MethodHandle
+_invokeVarargs,                java_lang_invoke_MethodHandle
+_invokeDynamic,                java_lang_invoke_InvokeDynamic
+_booleanValue,                 java_lang_Boolean
+_byteValue,                    java_lang_Byte
+_charValue,                    java_lang_Character
+_shortValue,                   java_lang_Short
+_intValue,                     java_lang_Integer
+_longValue,                    java_lang_Long
+_floatValue,                   java_lang_Float
+_doubleValue,                  java_lang_Double
+_Boolean_valueOf,              java_lang_Boolean
+_Byte_valueOf,                 java_lang_Byte
+_Character_valueOf,            java_lang_Character
+_Short_valueOf,                java_lang_Short
+_Integer_valueOf,              java_lang_Integer
+_Long_valueOf,                 java_lang_Long
+_Float_valueOf,                java_lang_Float
+_Double_valueOf,               java_lang_Double
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Metoda <strong>System.arraycopy()</strong></h2>
+
+<p>Již v&nbsp;úvodní kapitole jsme si řekli, že jednou z&nbsp;těchto tzv.
+<i>intrinsic</i> je i metoda <strong>System.arraycopy()</strong>, jejíž kód je
+již dopředu připraven a to hned v&nbsp;několika variantách optimalizovaných pro
+různé případy, které mohou v&nbsp;praxi nastat (překryv polí, zarovnání či
+naopak nezarovnání polí atd.). Metoda <strong>System.arraycopy()</strong> má
+následující hlavičku:</p>
+
+<pre>
+public static void arraycopy(Object src,
+                             int srcPos,
+                             Object dest,
+                             int destPos,
+                             int length)
+</pre>
+
+<p>Tato metoda slouží ke kopii prvků z&nbsp;jednoho pole do pole jiného,
+přičemž je možné zvolit jak offsety prvků (nemusí se začínat prvkem
+s&nbsp;indexem 0), tak i celkový počet kopírovaných prvků. Podívejme se nyní na
+jednoduchý demonstrační příklad, kde se metoda
+<strong>System.arraycopy()</strong> volá s&nbsp;různými parametry:</p>
+
+<pre>
+public class <strong>ArrayCopyTest</strong> {
+    static int[] src = new int[30000];
+    static int[] dest = new int[30000];
+&nbsp;
+    public static void <strong>testArrayCopy1</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, 0, length);
+    }
+&nbsp;
+    public static void <strong>testArrayCopy2</strong>(int offset, int length) {
+        System.arraycopy(src, offset, dest, 0, length);
+    }
+&nbsp;
+    public static void <strong>testArrayCopy3</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, offset, length);
+    }
+&nbsp;
+    public static void <strong>testArrayCopy4</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, 0, length);
+    }
+&nbsp;
+    public static void <strong>testArrayCopy5</strong>(int offset, int length) {
+        System.arraycopy(src, offset, src, 0, length);
+    }
+&nbsp;
+    public static void <strong>testArrayCopy6</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, offset, length);
+    }
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+        for (int i = 0; i &lt; 10000; i++) {
+            testArrayCopy1(i, i);
+            testArrayCopy2(i, i);
+            testArrayCopy3(i, i);
+            testArrayCopy4(i, i);
+            testArrayCopy5(i, i);
+            testArrayCopy6(i, i);
+        }
+    }
+}
+</pre>
+
+<p>Při překladu dojde k&nbsp;nahrazení volání
+<strong>System.arraycopy()</strong> několika různými nativními a
+optimalizovanými variantami smyčky pro kopii prvků rozdílných typů
+s&nbsp;různým zarovnáním, překryvem polí atd. Konkrétní výsledky si ukážeme
+v&nbsp;následující části tohoto seriálu.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitých demonstračních příkladů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>Factorial.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d6e81b348112/jit/Factorial.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d6e81b348112/jit/Factorial.java</a></td></tr>
+<tr><td>2</td><td>Factorial2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d6e81b348112/jit/Factorial2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d6e81b348112/jit/Factorial2.java</a></td></tr>
+<tr><td>3</td><td>ArrayCopyTest.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d6e81b348112/jit/ArrayCopyTest.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/d6e81b348112/jit/ArrayCopyTest.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
