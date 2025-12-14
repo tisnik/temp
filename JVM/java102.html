@@ -1,0 +1,1628 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (použití MMX a SSE2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (použití MMX a SSE2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si řekneme další podrobnosti o optimalizacích funkce System.arraycopy(). Ukážeme si, jakým způsobem jsou při implementaci této funkce detekována a použita různá rozšíření instrukčních sad &ndash; MMX a SSE2.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (použití MMX a SSE2)</a></p>
+<p><a href="#k02">2. Rozšíření instrukční sady MMX</a></p>
+<p><a href="#k03">3. Rozšíření instrukční sady SSE2</a></p>
+<p><a href="#k04">4. Použití MMX a SSE2 v&nbsp;System.arraycopy()</a></p>
+<p><a href="#k05">5. Blokové přesuny dat pomocí MMX</a></p>
+<p><a href="#k06">6. Blokové přesuny dat pomocí SSE2</a></p>
+<p><a href="#k07">7. Funkce System.arraycopy() a přesuny nezarovnaných dat</a></p>
+<p><a href="#k08">8. Demonstrační benchmark <strong>ArrayCopyTest3.java</strong></a></p>
+<p><a href="#k09">9. Bajtkód benchmarku</a></p>
+<p><a href="#k10">10. Spuštění benchmarku</a></p>
+<p><a href="#k11">11. Výsledky běhu benchmarku &ndash; Intel Celeron M, 32bitový režim</a></p>
+<p><a href="#k12">12. Výsledky běhu benchmarku &ndash; Intel Xeon, 64bitový režim</a></p>
+<p><a href="#k13">13. Výsledky běhu benchmarku &ndash; AMD Opteron, 64bitový režim</a></p>
+<p><a href="#k14">14. Repositář s&nbsp;benchmarkem</a></p>
+<p><a href="#k15">15. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (použití MMX a SSE2)</h2>
+
+<p>Při implementaci a především pak při optimalizaci funkce
+<strong>System.arraycopy()</strong> se museli programátoři potýkat
+s&nbsp;relativně velkým množstvím problémů. První problém se týká kopií prvků
+v&nbsp;případě, že celkový počet přenesených bajtů není zarovnán na hodnotu 4
+či 8. Druhý problém spočívá v&nbsp;kopiích prvků, které již od začátku nejsou
+zarovnány. Tento problém nastává v&nbsp;praxi poměrně často, neboť si musíme
+uvědomit, že <strong>System.arraycopy()</strong> lze použít i pro pole typu
+byte[], short[] či char[], zatímco moderní mikroprocesory mají 32bitové či
+64bitové sběrnice upravené a optimalizované pro přenos dat zarovnaných na
+násobky 4, 8 či někdy i 16 bajtů, což u výše zmíněných polí nelze zaručit
+(přesněji řečeno je samotný začátek pole zarovnán správně, ovšem offset může
+být nastaven například na liché číslo, popř.&nbsp;číslo nedělitelné 4, 8 či
+16). Touto problematikou i způsobem jejího řešení se budeme zabývat
+v&nbsp;následujících kapitolách. Nejprve si však řekneme základní informace o
+rozšíření instrukčních sad <strong>MMX</strong> a <strong>SSE2</strong>, neboť
+právě tato rozšíření jsou při kopii polí využívána.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Rozšíření instrukční sady MMX</h2>
+
+<p>Instrukční sada mikroprocesorů řady <i>x86</i> začala být poměrně brzy
+doplňována o další instrukce, které v&nbsp;některých případech tvořily ucelené
+rozšíření instrukční sady o celou množinu instrukcí orientovaných na určitý
+problém (operace nad vektory celých čísel, operace nad vektory čísel
+s&nbsp;plovoucí řádovou čárkou atd.). Jedním ze známých a dodnes používaných
+rozšíření původní instrukční sady je rozšiřující sada instrukcí nazvaná
+<i>MMX</i> (<i>MultiMedia eXtension</i>, později taktéž rozepisováno jako
+<i>Matrix Math eXtension</i>). Toto rozšíření bylo navrženo v&nbsp;roce 1996 ve
+firmě Intel a od roku 1997 jí začaly být vybavovány prakticky všechny nové
+procesory této firmy, které patřily do rodiny <i>x86</i> (připomeňme si, že se
+tehdy ještě jednalo o 32bitové mikroprocesory, protože k&nbsp;rozšíření na
+64bitovou ALU došlo u mainstreamových čipů až o několik let později).</p>
+
+<p>Prvním mikroprocesorem s&nbsp;podporou <i>MMX</i> byl čip <i>Pentium
+P55C</i> nabízený od začátku roku 1997. Později došlo k&nbsp;implementaci
+<i>MMX</i> i na čipy <i>Pentium II</i> a procesory konkurenčních společností,
+konkrétně na čipy <i>AMD K6</i> a taktéž na <i>Cyrix M2 (6x86MX</i>) a <i>IDT
+C6</i>. Na tomto místě je nutné říci, že se vlastně nejednalo o nijak
+přelomovou technologii, protože v&nbsp;instrukční sadě <i>MMX</i> jsou použity
+instrukce analogické instrukcím ze <i>SPARC VIS</i> (VIS=Visual Instruction
+Set), <i>MIPS MDMX</i> či <i>HP-PA MAX-1</i> a <i>HP-PA MAX-2</i> (opět se tedy
+jedná o technologii inspirovanou RISCovými procesory).</p>
+
+<p>V&nbsp;rámci instrukční sady <i>MMX</i> se na původně prakticky ryze
+skalární platformu <i>x86</i> přidalo celkem 57 nových instrukcí a čtyři datové
+typy, které byly těmito instrukcemi podporovány. Jeden z&nbsp;nově zaváděných
+datových typů je skalární, další tři nové datové typy jsou představovány
+dvouprvkovým, čtyřprvkovým a osmiprvkovým vektorem:</p>
+
+<table>
+<tr><th>Datový typ</th><th>Bitová šířka operandu</th><th>Počet prvků vektoru</th></tr>
+<tr><td>packed byte</td><td>8 bitů</td><td>8</td></tr>
+<tr><td>packed word</td><td>16 bitů</td><td>4</td></tr>
+<tr><td>packed doubleword</td><td>32 bitů</td><td>2</td></tr>
+<tr><td>quadword</td><td>64 bitů</td><td>1</td></tr>
+</table>
+
+<p>Inženýři ve firmě <i>Intel</i> stáli při návrhu instrukční sady <i>MMX</i>
+před požadavkem na vytvoření výkonných instrukcí provádějících SIMD operace, na
+druhou stranu však bylo nutné šetřit počtem tranzistorů a tím pádem i plochou
+čipu, na němž byl mikroprocesor vytvořen. Pravděpodobně právě z&nbsp;tohoto
+důvodu se rozhodli učinit poněkud problematický krok &ndash; navrhli <i>MMX</i>
+instrukce takovým způsobem, aby mohly pracovat s&nbsp;osmicí 64bitových
+registrů rozdělených na jeden, dva, čtyři či osm prvků. Ovšem nejednalo se o
+nové registry rozšiřující původní sadu registrů procesoru Pentium, ale o část
+registrů využívaných matematickým koprocesorem (<i>FPU</i>). Ten na platformě
+<i>x86</i> prováděl operace s&nbsp;osmicí 80bitových registrů uspořádaných do
+zásobníku (u matematického koprocesoru <i>Intel 8087</i> byly používány čistě
+zásobníkové instrukce, později byly přidány i další adresovací režimy, které
+umožňovaly registry adresovat přímo, což se ukázalo být výhodnější především
+kvůli možnostem provádění různých optimalizací).</p>
+
+<p>V&nbsp;případě instrukcí <i>MMX</i> se sice registry adresovaly přímo
+(popř.&nbsp;se adresovala slova uložená v&nbsp;operační paměti, která mohla
+tvořit jeden z&nbsp;operandů), ale kvůli tomu, že jak <i>FPU</i>, tak i
+jednotka <i>MMX</i> pracovala se shodnými registry (horních 16 bitů nebylo
+využito), bylo současné používání SIMD operací a operací s&nbsp;hodnotami
+uloženými v&nbsp;systému plovoucí řádové čárky poměrně komplikované, což je
+škoda, protože právě souběžná práce superskalárního CPU (u mikroprocesorů
+<i>Pentium</i> byly vytvořeny dvě instrukční pipeline &bdquo;u&ldquo; a
+&bdquo;v&ldquo;), jednotky <i>MMX</i> a navíc ještě matematického koprocesoru
+by v&nbsp;mnoha případech mohla vést k&nbsp;citelnému nárůstu výpočetního
+výkonu. V&nbsp;následující tabulce jsou vypsána jména registrů tak, jak jsou
+použita v&nbsp;instrukcích matematického koprocesoru, i ve formě používané
+jednotkou <i>MMX</i>:</p>
+
+<table>
+<tr><th>Registr FPU</th><th>bity 79-64</th><th>bity 63-0</th></tr>
+<tr><td>ST0</td><td>nepoužito</td><td>MMX0</td></tr>
+<tr><td>ST1</td><td>nepoužito</td><td>MMX1</td></tr>
+<tr><td>ST2</td><td>nepoužito</td><td>MMX2</td></tr>
+<tr><td>ST3</td><td>nepoužito</td><td>MMX3</td></tr>
+<tr><td>ST4</td><td>nepoužito</td><td>MMX4</td></tr>
+<tr><td>ST5</td><td>nepoužito</td><td>MMX5</td></tr>
+<tr><td>ST6</td><td>nepoužito</td><td>MMX6</td></tr>
+<tr><td>ST7</td><td>nepoužito</td><td>MMX7</td></tr>
+</table>
+
+<p>Pro přesuny mezi těmito registry a operační pamětí se používá instrukce
+<strong>movq</strong>. Způsob použití registrů <strong>MMX?</strong> při kopii
+prvků pole uvidíme v&nbsp;navazujících kapitolách.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Rozšíření instrukční sady SSE2</h2>
+
+<p>V&nbsp;roce 1999 firma <i>Intel</i> navrhla další rozšíření původní
+instrukční sady mikroprocesorů řady x86. Toto rozšíření bylo pojmenováno <i>SSE
+(Streaming SIMD Extensions)</i>. Díky zavedení této technologie došlo
+k&nbsp;přidání osmi nových pracovních registrů s &ndash; na platformě
+<i>x86</i> doposud nevídanou &ndash; šířkou 128 bitů. Vzhledem k&nbsp;tomu, že
+se změnil počet pracovních registrů, bylo nutné některé části systému i
+aplikací upravit takovým způsobem, aby při přepnutí kontextu nedocházelo ke
+vzájemnému přepisování těchto registrů (ovšem jen za předpokladu, že operační
+systém práci s&nbsp;instrukcemi <i>SSE</i> povolil).</p>
+
+<p>Rozšiřující instrukční sada <i>SSE</i> obsahovala sedmdesát nových instrukcí
+orientovaných většinou na práci s&nbsp;vektory obsahujícími čtyři čísla typu
+<i>single</i>. Jednalo se o výrazné zlepšení oproti možnostem nabízeným
+konkurenční sadou <i>3DNow!</i>, protože při práci s&nbsp;reálnými čísly
+s&nbsp;jednoduchou přesností bylo možné teoreticky dosáhnout až dvojnásobného
+výpočetního výkonu v&nbsp;porovnání s&nbsp;<i>3DNow!</i> a čtyřnásobného výkonu
+oproti práci se skalárním matematickým koprocesorem.</p>
+
+<img src="http://i.iinfo.cz/images/147/pc161-02.png" width="500" height="323" alt="&#160;" />
+<p><i>Obrázek 1: Zjednodušený programátorský model mikroprocesoru x86
+s&nbsp;podporou MMX a SSE (i SSE2). V&nbsp;rámci MMX došlo k&nbsp;přidání
+osmice 64bitových registrů sdílených s&nbsp;FPU (modrý rámeček), zatímco
+v&nbsp;rámci SSE bylo přidáno osm registrů 128bitových a 32bitového řídicího
+registru MXCSR (dva červené rámečky).</i></p>
+
+<p>Zatímco se v&nbsp;rozšiřující instrukční sadě <i>SSE</i> nacházelo
+&bdquo;pouze&ldquo; 70 nových instrukcí, byli tvůrci instrukční sady
+<i>SSE2</i> mnohem velkorysejší, protože navrhli a posléze i implementovali
+hned 144 nových instrukcí, což přibližně odpovídá počtu všech základních
+instrukcí procesorů <i>x86</i> (pokud samozřejmě nepočítáme všechny povolené
+adresní režimy). Tento velký počet nových instrukcí souvisí jak s&nbsp;podporou
+šesti různých datových typů (včetně více než dvaceti konverzních funkcí), tak i
+s&nbsp;novými režimy přístupu k&nbsp;prvkům uloženým ve vektorech a se zcela
+novými operacemi, které byly navrženy pro podporu algoritmů pro 3D grafiku a
+práci s&nbsp;videem. Z&nbsp;našeho pohledu je důležitá především instrukce
+<strong>movdqu</strong> umožňující přenos celého vektoru i z&nbsp;nezarovnané
+adresy.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Použití MMX a SSE2 v&nbsp;System.arraycopy()</h2>
+
+<p>V&nbsp;předchozích dvou kapitolách jsme si (velmi stručně) popsali základní
+vlastnosti rozšíření instrukční sady <i>MMX</i> a <i>SSE2</i>. Podívejme se
+nyní na způsob použití těchto rozšíření v&nbsp;implementaci funkce
+<strong>System.arraycopy()</strong>. Ve zdrojových kódech Hotspotu můžeme
+nalézt ve funkci <strong>generate_disjoint_copy()</strong> mj.&nbsp;i
+následující podmínku (s&nbsp;poněkud matoucí poznámkou :-), v&nbsp;níž se
+virtuální stroj rozhoduje, zda se pro kopii prvků polí použijí instrukce
+<i>MMX</i> nebo <i>SSE2</i>. Tento rozeskok je řízen jak dopředu detekovanými
+možnostmi mikroprocesoru, tak i volbou <strong>UseXMMForArrayCopy</strong>
+popsanou v&nbsp;předchozí části seriálu:</p>
+
+<pre>
+<i>//</i>
+<i>// Copy 8-byte chunks through MMX registers, 8 per iteration of the loop</i>
+<i>//</i>
+if (UseXMMForArrayCopy)
+{
+    xmm_copy_forward(from, to_from, rax);
+}
+else
+{
+    mmx_copy_forward(from, to_from, rax);
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Blokové přesuny dat pomocí MMX</h2>
+
+<p>Funkce nazvaná <strong>mmx_copy_forward()</strong> využívá pro generování
+strojového kódu pro kopii prvků polí všech osm registrů <i>MMX</i>, o nichž
+jsme se zmínili <a href="#k02">ve druhé kapitole</a>. Již při zavolání této
+funkce je zaručeno, že se bude v&nbsp;každé iteraci kopírovat 64 bajtů,
+případné zbylé bajty na konci již jsou kopírovány v&nbsp;jiné části kódu
+(mj.&nbsp;i v&nbsp;závěrečné části této funkce, která bude začínat na návěští
+<strong>L_copy_8_bytes</strong>). Povšimněte si, jakým způsobem je vlastně
+strojový kód generován &ndash; hlavní smyčka pro kopii začíná generováním
+návěští <strong>L_copy_64_bytes_loop</strong> a vlastní smyčka je vlastně
+osmkrát &bdquo;rozbalena&ldquo;, proto se na konci počitadlo zvyšuje o hodnotu
+64 (8 bajtů &times; 8 rozbalení smyčky). Registry <i>MMX</i> jsou zde použity
+z&nbsp;toho důvodu, že instrukce <strong>movq</strong> nedokáže přenášet data
+z&nbsp;paměti do paměti:</p>
+
+<pre>
+<i>  // Copy 64 bytes chunks</i>
+<i>  //</i>
+<i>  // Inputs:</i>
+<i>  //   from        - source array address</i>
+<i>  //   to_from     - destination array address - from</i>
+<i>  //   qword_count - 8-bytes element count, negative</i>
+<i>  //</i>
+  void mmx_copy_forward(Register from, Register to_from, Register qword_count) {
+    assert( VM_Version::supports_mmx(), "supported cpu only" );
+    Label L_copy_64_bytes_loop, L_copy_64_bytes, L_copy_8_bytes, L_exit;
+<i>    // Copy 64-byte chunks</i>
+    __ jmpb(L_copy_64_bytes);
+    __ align(OptoLoopAlignment);
+  __ BIND(L_copy_64_bytes_loop);
+    __ movq(mmx0, Address(from, 0));
+    __ movq(mmx1, Address(from, 8));
+    __ movq(mmx2, Address(from, 16));
+    __ movq(Address(from, to_from, Address::times_1, 0), mmx0);
+    __ movq(mmx3, Address(from, 24));
+    __ movq(Address(from, to_from, Address::times_1, 8), mmx1);
+    __ movq(mmx4, Address(from, 32));
+    __ movq(Address(from, to_from, Address::times_1, 16), mmx2);
+    __ movq(mmx5, Address(from, 40));
+    __ movq(Address(from, to_from, Address::times_1, 24), mmx3);
+    __ movq(mmx6, Address(from, 48));
+    __ movq(Address(from, to_from, Address::times_1, 32), mmx4);
+    __ movq(mmx7, Address(from, 56));
+    __ movq(Address(from, to_from, Address::times_1, 40), mmx5);
+    __ movq(Address(from, to_from, Address::times_1, 48), mmx6);
+    __ movq(Address(from, to_from, Address::times_1, 56), mmx7);
+    __ addptr(from, 64);
+  __ BIND(L_copy_64_bytes);
+    __ subl(qword_count, 8);
+    __ jcc(Assembler::greaterEqual, L_copy_64_bytes_loop);
+    __ addl(qword_count, 8);
+    __ jccb(Assembler::zero, L_exit);
+<i>    //</i>
+<i>    // length is too short, just copy qwords</i>
+<i>    //</i>
+  __ BIND(L_copy_8_bytes);
+    __ movq(mmx0, Address(from, 0));
+    __ movq(Address(from, to_from, Address::times_1), mmx0);
+    __ addptr(from, 8);
+    __ decrement(qword_count);
+    __ jcc(Assembler::greater, L_copy_8_bytes);
+  __ BIND(L_exit);
+    __ emms();
+  }
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Blokové přesuny dat pomocí SSE2</h2>
+
+<p>Výše popsaná funkce <strong>mmx_copy_forward()</strong> byla vlastně velmi
+jednoduchá a výsledný strojový kód lze spustit na všech mikroprocesorech
+s&nbsp;podporou <i>MMX</i>. Druhá alternativně používaná funkce generující
+strojový kód pro kopii prvků pole se jmenuje
+<strong>xmm_copy_forward()</strong> (rozdíl v&nbsp;názvech je v&nbsp;prefixu
+mmx/xmm!). Zde již můžeme nalézt zajímavou novinku &ndash; na základě hodnoty
+přepínače <strong>UseUnalignedLoadStores</strong> (taktéž popsaného minule) je
+zde provedeno rozhodnutí, zda se ve vytvořené programové smyčce použije
+instrukce <strong>movdqu</strong> umožňující přesun potenciálně nezarovnaných
+128 bitů (16 bajtů), nebo zda se má použít nám již známá instrukce
+<strong>movq</strong>, která však dokáže přenést jen osm bajtů, tudíž musí být
+smyčka rozbalena osmkrát. Ve druhém případě se vlastně nevyužijí všechny
+možnosti, která nám <i>SSE2</i> a její 128bitové registry dávají, což se odrazí
+na výsledné výkonnosti vygenerovaného strojového kódu funkce
+<strong>System.arraycopy()</strong>:</p>
+
+<pre>
+<i>  // Copy 64 bytes chunks</i>
+<i>  //</i>
+<i>  // Inputs:</i>
+<i>  //   from        - source array address</i>
+<i>  //   to_from     - destination array address - from</i>
+<i>  //   qword_count - 8-bytes element count, negative</i>
+<i>  //</i>
+  void xmm_copy_forward(Register from, Register to_from, Register qword_count) {
+    assert( UseSSE &gt;= 2, "supported cpu only" );
+    Label L_copy_64_bytes_loop, L_copy_64_bytes, L_copy_8_bytes, L_exit;
+  <i>  // Copy 64-byte chunks</i>
+    __ jmpb(L_copy_64_bytes);
+    __ align(OptoLoopAlignment);
+  __ BIND(L_copy_64_bytes_loop);
+    if(UseUnalignedLoadStores) {
+      __ movdqu(xmm0, Address(from, 0));
+      __ movdqu(Address(from, to_from, Address::times_1, 0), xmm0);
+      __ movdqu(xmm1, Address(from, 16));
+      __ movdqu(Address(from, to_from, Address::times_1, 16), xmm1);
+      __ movdqu(xmm2, Address(from, 32));
+      __ movdqu(Address(from, to_from, Address::times_1, 32), xmm2);
+      __ movdqu(xmm3, Address(from, 48));
+      __ movdqu(Address(from, to_from, Address::times_1, 48), xmm3);
+    } else {
+      __ movq(xmm0, Address(from, 0));
+      __ movq(Address(from, to_from, Address::times_1, 0), xmm0);
+      __ movq(xmm1, Address(from, 8));
+      __ movq(Address(from, to_from, Address::times_1, 8), xmm1);
+      __ movq(xmm2, Address(from, 16));
+      __ movq(Address(from, to_from, Address::times_1, 16), xmm2);
+      __ movq(xmm3, Address(from, 24));
+      __ movq(Address(from, to_from, Address::times_1, 24), xmm3);
+      __ movq(xmm4, Address(from, 32));
+      __ movq(Address(from, to_from, Address::times_1, 32), xmm4);
+      __ movq(xmm5, Address(from, 40));
+      __ movq(Address(from, to_from, Address::times_1, 40), xmm5);
+      __ movq(xmm6, Address(from, 48));
+      __ movq(Address(from, to_from, Address::times_1, 48), xmm6);
+      __ movq(xmm7, Address(from, 56));
+      __ movq(Address(from, to_from, Address::times_1, 56), xmm7);
+    }
+    __ addl(from, 64);
+  __ BIND(L_copy_64_bytes);
+    __ subl(qword_count, 8);
+    __ jcc(Assembler::greaterEqual, L_copy_64_bytes_loop);
+    __ addl(qword_count, 8);
+    __ jccb(Assembler::zero, L_exit);
+<i>    //</i>
+<i>    // length is too short, just copy qwords</i>
+<i>    //</i>
+  __ BIND(L_copy_8_bytes);
+    __ movq(xmm0, Address(from, 0));
+    __ movq(Address(from, to_from, Address::times_1), xmm0);
+    __ addl(from, 8);
+    __ decrement(qword_count);
+    __ jcc(Assembler::greater, L_copy_8_bytes);
+  __ BIND(L_exit);
+  }
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Funkce System.arraycopy() a přesuny nezarovnaných dat</h2>
+
+<p>Funkci <strong>System.arraycopy()</strong> je možné využít pro přesuny prvků
+mezi poli různých typů. Minule se v&nbsp;benchmarku používala pole typu
+<strong>int []</strong>, ovšem velmi často se můžeme setkat s&nbsp;kopií prvků
+mezi poli typu <strong>byte []</strong> (obrázky atd.) a především pak
+<strong>char []</strong> (stačí se podívat do zdrojového kódu třídy
+<strong>String</strong>). U polí typu <strong>byte[]</strong> a
+<strong>char[]</strong> nastává problém se zarovnáním kopírovaných prvků, neboť
+i když první prvek pole je zarovnán vždy, kvůli možnosti specifikace offsetu je
+možné kopii zahájit na adrese, která není dělitelná ani osmi a dokonce ani
+čtyřmi. Jak (a zda vůbec) se problém se zarovnáním projeví v&nbsp;praxi
+zjistíme pomocí jednoduchého benchmarku, jehož zdrojový kód bude popsán <a
+href="#k08">v&nbsp;navazující kapitole</a>.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační benchmark <strong>ArrayCopyTest3.java</strong></h2>
+
+<p>Demonstrační benchmark nazvaný <strong>ArrayCopyTest3.java</strong> se
+v&nbsp;mnoha ohledech podobá minule popsanému benchmarku
+<strong>ArrayCopy2.java</strong>, jsou zde však tři podstatné rozdíly. První
+rozdíl spočívá samozřejmě ve faktu, že se namísto polí typu
+<strong>int[]</strong> kopírují prvky mezi poli typu <strong>byte[]</strong>.
+Došlo taktéž k&nbsp;rozšíření metod <strong>testArrayCopy*</strong>, protože
+byly přidány metody, v&nbsp;nichž je použit shodný offset jak pro zdrojové, tak
+i pro cílové pole. Nejdůležitější změnou však je, že se celý benchmark rozdělil
+na dvě části &ndash; kopie prvků s&nbsp;nezarovnanými offsety a kopie prvků
+zarovnaných na 16 bitů (2 bajty), 32 bitů (4 bajty) a 64 bitů (8 bajtů). To
+mj.&nbsp;znamená, že při běhu benchmarku dostaneme vždy čtyři výsledky pro
+každý z&nbsp;osmi testů:</p>
+
+<pre>
+<i>/**</i>
+<i> * Benchmark pro zjisteni intrinsic "funkci" implementujicich</i>
+<i> * @link System#arraycopy(java.lang.Object, int, java.lang.Object, int, int).</i>
+<i> * V tomto benchmarku se provadi kopie prvku typu byte s ruznym zarovnanim dat.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>ArrayCopyTest3</strong> {
+&nbsp;
+    private static final int ARRAYS_LENGTH = 50000;
+    private static final int WARMUP_ITERS = 20000;
+    private static final int BENCHMARK_ITERS = 20000;
+&nbsp;
+<i>    /** Pole pouzivana pro kopii prvku v benchmarku */</i>
+    static byte[] src = new byte[ARRAYS_LENGTH];
+    static byte[] dest = new byte[ARRAYS_LENGTH];
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, oba offsety jsou nulove */</i>
+    public static void <strong>testArrayCopy1</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, nulovy je jen druhy offset */</i>
+    public static void <strong>testArrayCopy2</strong>(int offset, int length) {
+        System.arraycopy(src, offset, dest, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, nulovy je jen prvni offset */</i>
+    public static void <strong>testArrayCopy3</strong>(int offset, int length) {
+        System.arraycopy(src, 0, dest, offset, length);
+    }
+&nbsp;
+<i>    /** Kopie mezi rozdilnymi poli, oba offsety jsou shodne */</i>
+    public static void <strong>testArrayCopy4</strong>(int offset, int length) {
+        System.arraycopy(src, offset, dest, offset, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, oba offsety jsou nulove */</i>
+    public static void <strong>testArrayCopy5</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, nulovy je jen druhy offset */</i>
+    public static void <strong>testArrayCopy6</strong>(int offset, int length) {
+        System.arraycopy(src, offset, src, 0, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, nulovy je jen prvni offset */</i>
+    public static void <strong>testArrayCopy7</strong>(int offset, int length) {
+        System.arraycopy(src, 0, src, offset, length);
+    }
+&nbsp;
+<i>    /** Kopie prvku v jednom poli, oba offsety jsou shodne */</i>
+    public static void <strong>testArrayCopy8</strong>(int offset, int length) {
+        System.arraycopy(src, offset, src, offset, length);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni vsech benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runSimpleBenchmarks</strong>() {
+        warmup();
+<i>        // zarovnani dat</i>
+        int align = 1;
+        for (int test = 1; test &lt;= 4; test++) {
+<i>            // spustit jednotlivy bechmark</i>
+            benchmarkWithAlignedArray(test, align);
+            align *= 2;
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>() {
+        System.out.println("Warmup phase...");
+<i>        // donutime JIT k prekladu, soucasne se vsak neprekroci</i>
+<i>        // meze poli</i>
+        for (int j = 0; j &lt; 10; j++) {
+            System.out.print(j);
+            System.out.print(' ');
+            for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+                testArrayCopy1(i, i);
+                testArrayCopy2(i, i);
+                testArrayCopy3(i, i);
+                testArrayCopy4(i, i);
+                testArrayCopy5(i, i);
+                testArrayCopy6(i, i);
+                testArrayCopy7(i, i);
+                testArrayCopy8(i, i);
+            }
+        }
+        System.out.println("   done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Benchmark se zarovanim</i>
+<i>     */</i>
+    private static void <strong>benchmarkWithAlignedArray</strong>(int benchmarkNo, int align) {
+        long t1, t2, delta_t;
+        long total_t = 0;
+        System.out.println("Benchmark #" + benchmarkNo);
+        for (int testNo = 1; testNo &lt;= 8; testNo++) {
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+<i>                // vypocet adresy pro zarovnani</i>
+                int offset = align == 0 ? i : i - (i % align);
+<i>                // skarede, ale zde nelze pouzit reflexi</i>
+<i>                // (stale cekame na moznost pouziti referenci na metody!)</i>
+                for (int j = 0; j &lt; 10; j++) {
+                    switch (testNo) {
+                        case 1: testArrayCopy1(offset, offset); break;
+                        case 2: testArrayCopy2(offset, offset); break;
+                        case 3: testArrayCopy3(offset, offset); break;
+                        case 4: testArrayCopy4(offset, offset); break;
+                        case 5: testArrayCopy5(offset, offset); break;
+                        case 6: testArrayCopy6(offset, offset); break;
+                        case 7: testArrayCopy7(offset, offset); break;
+                        case 8: testArrayCopy8(offset, offset); break;
+                    }
+                }
+            }
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            total_t += delta_t;
+<i>            // vypis casu pro jeden test</i>
+            System.out.format("Method ArrayCopyTest.testArrayCopy%d   time: %,12d ns\n", testNo, delta_t);
+        }
+        System.out.format("Total time: %,12d\n", total_t);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Start benchmarku.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        runSimpleBenchmarks();
+    }
+&nbsp;
+}
+&nbsp;
+<i>// finito</i>
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Bajtkód benchmarku</h2>
+
+<p>Ještě před zveřejněním výsledků benchmarku se podívejme na bajtkód všech
+osmi testovacích metod <strong>testArrayCopy1</strong>. Z&nbsp;následujícího
+výpisu je patrné, že překladač <strong>javac</strong> neprovedl žádné
+optimalizace, což je ovšem očekávatelné chování:</p>
+
+<pre>
+  public static void <strong>testArrayCopy1</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iconst_0      
+       4: getstatic     #3                  <i>// Field dest:[B</i>
+       7: iconst_0      
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy2</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iload_0       
+       4: getstatic     #3                  <i>// Field dest:[B</i>
+       7: iconst_0      
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy3</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iconst_0      
+       4: getstatic     #3                  <i>// Field dest:[B</i>
+       7: iload_0       
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy4</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iload_0       
+       4: getstatic     #3                  <i>// Field dest:[B</i>
+       7: iload_0       
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy5</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iconst_0      
+       4: getstatic     #2                  <i>// Field src:[B</i>
+       7: iconst_0      
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy6</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iload_0       
+       4: getstatic     #2                  <i>// Field src:[B</i>
+       7: iconst_0      
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy7</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iconst_0      
+       4: getstatic     #2                  <i>// Field src:[B</i>
+       7: iload_0       
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+&nbsp;
+  public static void <strong>testArrayCopy8</strong>(int, int);
+    Code:
+       0: getstatic     #2                  <i>// Field src:[B</i>
+       3: iload_0       
+       4: getstatic     #2                  <i>// Field src:[B</i>
+       7: iload_0       
+       8: iload_1       
+       9: invokestatic  #4                  <i>// Method java/lang/System.arraycopy:(Ljava/lang/Object;ILjava/lang/Object;II)V</i>
+      12: return        
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Spuštění benchmarku</h2>
+
+<p>Konečně se dostáváme k&nbsp;běhu dnešního testovacího benchmarku. Ten byl
+postupně spuštěn na třech počítačích vybavených různými typy mikroprocesorů.
+Spuštění na každém počítači proběhlo celkem čtyřikrát a použily se přitom
+všechny kombinace přepínačů <strong>UseXMMForArrayCopy</strong> a
+<strong>UseUnalignedLoadStores</strong>. První volba
+<strong>CompileThreshold</strong> je zde pouze pro jistotu, aby se zaručilo, že
+k&nbsp;JIT kompilaci dojde již v&nbsp;zahřívací fázi benchmarku:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3
+java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3
+java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3
+java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Výsledky běhu benchmarku &ndash; Intel Celeron M, 32bitový režim</h2>
+
+<p>První běh benchmarku proběhl na počítači s&nbsp;mikroprocesorem Intel
+Celeron M, tj.&nbsp;použit byl 32bitový režim. Výsledky jsou zde velmi zajímavé
+a ukazují na to, že použití přepínače <strong>UseUnalignedLoadStores</strong>
+je zde kontraproduktivní, nezávisle na zarovnání:</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-1.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-1-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-2.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-2-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-3.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-3-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-4.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-4-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-5.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-5-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-6.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-6-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-7.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-7-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-8.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-8-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-9.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-9-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-10.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-10-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-11.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-11-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-12.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-12-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-13.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-13-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-14.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-14-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-15.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-15-prev.png" class="image-150076" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-16.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-16-prev.png" class="image-150091" width="360" height="270" alt="&#160;" /></a>
+
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  582 159 462 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 020 880 866 ns
+Method ArrayCopyTest.testArrayCopy3   time:  908 134 414 ns
+Method ArrayCopyTest.testArrayCopy4   time:  566 883 780 ns
+Method ArrayCopyTest.testArrayCopy5   time:  385 383 616 ns
+Method ArrayCopyTest.testArrayCopy6   time:  910 200 318 ns
+Method ArrayCopyTest.testArrayCopy7   time:  917 916 942 ns
+Method ArrayCopyTest.testArrayCopy8   time:  388 817 852 ns
+Total time: 5 680 377 250
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  594 311 568 ns
+Method ArrayCopyTest.testArrayCopy2   time:  880 523 922 ns
+Method ArrayCopyTest.testArrayCopy3   time:  869 595 718 ns
+Method ArrayCopyTest.testArrayCopy4   time:  558 030 980 ns
+Method ArrayCopyTest.testArrayCopy5   time:  384 607 262 ns
+Method ArrayCopyTest.testArrayCopy6   time:  860 973 950 ns
+Method ArrayCopyTest.testArrayCopy7   time:  869 157 392 ns
+Method ArrayCopyTest.testArrayCopy8   time:  386 541 026 ns
+Total time: 5 403 741 818
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  551 635 474 ns
+Method ArrayCopyTest.testArrayCopy2   time:  763 892 336 ns
+Method ArrayCopyTest.testArrayCopy3   time:  763 726 676 ns
+Method ArrayCopyTest.testArrayCopy4   time:  557 804 972 ns
+Method ArrayCopyTest.testArrayCopy5   time:  382 451 680 ns
+Method ArrayCopyTest.testArrayCopy6   time:  767 211 474 ns
+Method ArrayCopyTest.testArrayCopy7   time:  775 241 824 ns
+Method ArrayCopyTest.testArrayCopy8   time:  384 974 906 ns
+Total time: 4 946 939 342
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  548 616 934 ns
+Method ArrayCopyTest.testArrayCopy2   time:  555 296 834 ns
+Method ArrayCopyTest.testArrayCopy3   time:  565 167 360 ns
+Method ArrayCopyTest.testArrayCopy4   time:  556 930 838 ns
+Method ArrayCopyTest.testArrayCopy5   time:  383 483 374 ns
+Method ArrayCopyTest.testArrayCopy6   time:  576 107 578 ns
+Method ArrayCopyTest.testArrayCopy7   time:  580 265 926 ns
+Method ArrayCopyTest.testArrayCopy8   time:  383 883 706 ns
+Total time: 4 149 752 550
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  784 363 376 ns
+Method ArrayCopyTest.testArrayCopy2   time:  952 110 396 ns
+Method ArrayCopyTest.testArrayCopy3   time:  966 767 286 ns
+Method ArrayCopyTest.testArrayCopy4   time:  772 235 298 ns
+Method ArrayCopyTest.testArrayCopy5   time:  684 697 358 ns
+Method ArrayCopyTest.testArrayCopy6   time:  937 867 800 ns
+Method ArrayCopyTest.testArrayCopy7   time:  969 225 420 ns
+Method ArrayCopyTest.testArrayCopy8   time:  686 645 370 ns
+Total time: 6 753 912 304
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  771 479 616 ns
+Method ArrayCopyTest.testArrayCopy2   time:  895 695 404 ns
+Method ArrayCopyTest.testArrayCopy3   time:  937 790 140 ns
+Method ArrayCopyTest.testArrayCopy4   time:  769 634 130 ns
+Method ArrayCopyTest.testArrayCopy5   time:  683 443 844 ns
+Method ArrayCopyTest.testArrayCopy6   time:  916 239 076 ns
+Method ArrayCopyTest.testArrayCopy7   time:  943 044 996 ns
+Method ArrayCopyTest.testArrayCopy8   time:  685 717 038 ns
+Total time: 6 603 044 244
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  764 334 014 ns
+Method ArrayCopyTest.testArrayCopy2   time:  847 251 258 ns
+Method ArrayCopyTest.testArrayCopy3   time:  885 242 398 ns
+Method ArrayCopyTest.testArrayCopy4   time:  767 676 340 ns
+Method ArrayCopyTest.testArrayCopy5   time:  680 948 834 ns
+Method ArrayCopyTest.testArrayCopy6   time:  867 578 420 ns
+Method ArrayCopyTest.testArrayCopy7   time:  891 481 460 ns
+Method ArrayCopyTest.testArrayCopy8   time:  684 789 266 ns
+Total time: 6 389 301 990
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  763 448 706 ns
+Method ArrayCopyTest.testArrayCopy2   time:  773 788 570 ns
+Method ArrayCopyTest.testArrayCopy3   time:  773 850 868 ns
+Method ArrayCopyTest.testArrayCopy4   time:  768 479 234 ns
+Method ArrayCopyTest.testArrayCopy5   time:  683 120 062 ns
+Method ArrayCopyTest.testArrayCopy6   time:  785 139 170 ns
+Method ArrayCopyTest.testArrayCopy7   time:  789 182 424 ns
+Method ArrayCopyTest.testArrayCopy8   time:  682 502 384 ns
+Total time: 6 019 511 418
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time: 1 334 243 318 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 361 655 740 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 362 195 476 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 231 543 956 ns
+Method ArrayCopyTest.testArrayCopy5   time: 1 735 656 348 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 295 616 344 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 358 155 018 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1 464 517 138 ns
+Total time: 11 143 583 338
+</pre>
+
+<pre>
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time: 1 327 318 696 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 280 500 174 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 319 262 364 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 133 852 486 ns
+Method ArrayCopyTest.testArrayCopy5   time: 1 733 376 170 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 244 037 998 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 316 091 012 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1 307 733 804 ns
+Total time: 10 662 172 704
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time: 1 317 418 274 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 179 543 490 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 233 368 208 ns
+Method ArrayCopyTest.testArrayCopy4   time:   954 346 712 ns
+Method ArrayCopyTest.testArrayCopy5   time: 1 767 438 320 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 157 340 110 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 241 038 734 ns
+Method ArrayCopyTest.testArrayCopy8   time:   998 609 040 ns
+Total time: 9 849 102 888
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time: 1 315 249 284 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 390 619 758 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 405 160 712 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 327 227 622 ns
+Method ArrayCopyTest.testArrayCopy5   time: 1 740 936 070 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 339 399 280 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 399 582 348 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1 624 700 904 ns
+Total time: 11 542 875 978
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time: 1 783 176 632 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 661 709 520 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 779 508 848 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 815 211 430 ns
+Method ArrayCopyTest.testArrayCopy5   time: 2 453 363 766 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 592 581 460 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 776 573 838 ns
+Method ArrayCopyTest.testArrayCopy8   time: 2 470 235 742 ns
+Total time: 15 332 361 236
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time: 1 766 891 324 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 556 098 890 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 703 022 310 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 688 697 026 ns
+Method ArrayCopyTest.testArrayCopy5   time: 2 451 716 908 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 529 903 942 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 689 830 970 ns
+Method ArrayCopyTest.testArrayCopy8   time: 2 227 066 290 ns
+Total time: 14 613 227 660
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time: 1 776 224 912 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 421 730 416 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 506 859 672 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 430 964 830 ns
+Method ArrayCopyTest.testArrayCopy5   time: 2 436 675 050 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 425 725 334 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 505 594 706 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1 774 720 810 ns
+Total time: 13 278 495 730
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time: 1 761 900 744 ns
+Method ArrayCopyTest.testArrayCopy2   time: 1 686 475 518 ns
+Method ArrayCopyTest.testArrayCopy3   time: 1 872 410 602 ns
+Method ArrayCopyTest.testArrayCopy4   time: 1 942 591 306 ns
+Method ArrayCopyTest.testArrayCopy5   time: 2 446 848 694 ns
+Method ArrayCopyTest.testArrayCopy6   time: 1 652 086 506 ns
+Method ArrayCopyTest.testArrayCopy7   time: 1 861 271 196 ns
+Method ArrayCopyTest.testArrayCopy8   time: 2 707 789 676 ns
+Total time: 15 931 374 242
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Výsledky běhu benchmarku &ndash; Intel Xeon, 64bitový režim</h2>
+
+<p>Další počítač byl vybaven čtyřmi mikroprocesory Intel Xeon, ovšem při běhu
+byl využit jen jediný z&nbsp;těchto čipů:</p>
+
+<pre>
+processor       : 0
+vendor_id       : GenuineIntel
+cpu family      : 6
+model           : 15
+model name      : Intel(R) Xeon(R) CPU           X3220  @ 2.40GHz
+stepping        : 11
+cpu MHz         : 1600.000
+cache size      : 4096 KB
+physical id     : 0
+siblings        : 4
+core id         : 0
+cpu cores       : 4
+apicid          : 0
+initial apicid  : 0
+fpu             : yes
+fpu_exception   : yes
+cpuid level     : 10
+wp              : yes
+flags           : fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx lm constant_tsc arch_perfmon pebs bts rep_good aperfmperf pni dtes64 monitor ds_cpl vmx est tm2 ssse3 cx16 xtpr pdcm lahf_lm dts tpr_shadow vnmi flexpriority
+bogomips        : 4800.53
+clflush size    : 64
+cache_alignment : 64
+address sizes   : 36 bits physical, 48 bits virtual
+power management:
+</pre>
+
+<p>I zde jsou výsledky poměrně zajímavé. Především je patrná problematická
+kopie prvků na stejné místo v&nbsp;operační paměti (shodné zdrojové a cílové
+pole, shodné offsety), což poněkud překvapivě není JIT překladačem zdetekováno.
+Dále zde můžeme vidět, jak pomáhá zarovnání prvků na 2, 4 a 8 bajtů, což je
+pochopitelné, neboť Intel Xeon je 64bitový mikroprocesor. Přepínač
+<strong>UseUnalignedLoadStores</strong> zde má navíc pozitivní efekt, na rozdíl
+od mikroprocesoru Intel Celeron M:</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-33.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-33-prev.png" class="150107" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-34.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-34-prev.png" class="150108" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-35.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-35-prev.png" class="150109" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-36.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-36-prev.png" class="150110" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-37.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-37-prev.png" class="150111" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-38.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-38-prev.png" class="150112" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-39.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-39-prev.png" class="150113" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-40.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-40-prev.png" class="150114" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-41.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-41-prev.png" class="150115" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-42.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-42-prev.png" class="150116" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-43.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-43-prev.png" class="150117" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-44.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-44-prev.png" class="150118" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-45.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-45-prev.png" class="150119" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-46.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-46-prev.png" class="150120" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-47.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-47-prev.png" class="150121" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-48.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-48-prev.png" class="150122" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:   150,253,975 ns
+Method ArrayCopyTest.testArrayCopy2   time:   387,015,315 ns
+Method ArrayCopyTest.testArrayCopy3   time:   311,134,882 ns
+Method ArrayCopyTest.testArrayCopy4   time:   490,229,219 ns
+Method ArrayCopyTest.testArrayCopy5   time:   108,898,195 ns
+Method ArrayCopyTest.testArrayCopy6   time:   386,127,506 ns
+Method ArrayCopyTest.testArrayCopy7   time:   308,954,311 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,259,313,819 ns
+Total time: 3,401,927,222
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:   148,035,135 ns
+Method ArrayCopyTest.testArrayCopy2   time:   352,216,529 ns
+Method ArrayCopyTest.testArrayCopy3   time:   289,365,053 ns
+Method ArrayCopyTest.testArrayCopy4   time:   441,759,013 ns
+Method ArrayCopyTest.testArrayCopy5   time:   108,672,719 ns
+Method ArrayCopyTest.testArrayCopy6   time:   353,356,766 ns
+Method ArrayCopyTest.testArrayCopy7   time:   287,850,435 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,094,764,136 ns
+Total time: 3,076,019,786
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  145,689,088 ns
+Method ArrayCopyTest.testArrayCopy2   time:  284,079,621 ns
+Method ArrayCopyTest.testArrayCopy3   time:  244,568,776 ns
+Method ArrayCopyTest.testArrayCopy4   time:  344,351,130 ns
+Method ArrayCopyTest.testArrayCopy5   time:  108,618,008 ns
+Method ArrayCopyTest.testArrayCopy6   time:  286,872,077 ns
+Method ArrayCopyTest.testArrayCopy7   time:  243,825,301 ns
+Method ArrayCopyTest.testArrayCopy8   time:  765,544,075 ns
+Total time: 2,423,548,076
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  145,472,753 ns
+Method ArrayCopyTest.testArrayCopy2   time:  150,435,476 ns
+Method ArrayCopyTest.testArrayCopy3   time:  155,575,448 ns
+Method ArrayCopyTest.testArrayCopy4   time:  150,576,347 ns
+Method ArrayCopyTest.testArrayCopy5   time:  108,542,178 ns
+Method ArrayCopyTest.testArrayCopy6   time:  155,649,938 ns
+Method ArrayCopyTest.testArrayCopy7   time:  155,055,840 ns
+Method ArrayCopyTest.testArrayCopy8   time:  108,755,286 ns
+Total time: 1,130,063,266
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3</strong> 
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:   150,317,175 ns
+Method ArrayCopyTest.testArrayCopy2   time:   387,483,951 ns
+Method ArrayCopyTest.testArrayCopy3   time:   311,097,061 ns
+Method ArrayCopyTest.testArrayCopy4   time:   490,243,696 ns
+Method ArrayCopyTest.testArrayCopy5   time:   108,917,514 ns
+Method ArrayCopyTest.testArrayCopy6   time:   386,151,866 ns
+Method ArrayCopyTest.testArrayCopy7   time:   308,851,362 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,259,389,483 ns
+Total time: 3,402,452,108
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:   148,451,477 ns
+Method ArrayCopyTest.testArrayCopy2   time:   352,161,760 ns
+Method ArrayCopyTest.testArrayCopy3   time:   288,472,709 ns
+Method ArrayCopyTest.testArrayCopy4   time:   441,780,629 ns
+Method ArrayCopyTest.testArrayCopy5   time:   108,678,846 ns
+Method ArrayCopyTest.testArrayCopy6   time:   353,355,277 ns
+Method ArrayCopyTest.testArrayCopy7   time:   287,836,930 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,094,791,997 ns
+Total time: 3,075,529,625
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  146,111,416 ns
+Method ArrayCopyTest.testArrayCopy2   time:  284,095,704 ns
+Method ArrayCopyTest.testArrayCopy3   time:  245,878,613 ns
+Method ArrayCopyTest.testArrayCopy4   time:  344,335,579 ns
+Method ArrayCopyTest.testArrayCopy5   time:  108,625,014 ns
+Method ArrayCopyTest.testArrayCopy6   time:  286,870,378 ns
+Method ArrayCopyTest.testArrayCopy7   time:  243,807,748 ns
+Method ArrayCopyTest.testArrayCopy8   time:  765,619,350 ns
+Total time: 2,425,343,802
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  145,504,646 ns
+Method ArrayCopyTest.testArrayCopy2   time:  150,413,097 ns
+Method ArrayCopyTest.testArrayCopy3   time:  155,591,185 ns
+Method ArrayCopyTest.testArrayCopy4   time:  150,637,178 ns
+Method ArrayCopyTest.testArrayCopy5   time:  108,555,157 ns
+Method ArrayCopyTest.testArrayCopy6   time:  155,693,763 ns
+Method ArrayCopyTest.testArrayCopy7   time:  155,051,413 ns
+Method ArrayCopyTest.testArrayCopy8   time:  108,751,122 ns
+Total time: 1,130,197,561
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  293,162,313 ns
+Method ArrayCopyTest.testArrayCopy2   time:  437,410,295 ns
+Method ArrayCopyTest.testArrayCopy3   time:  487,553,409 ns
+Method ArrayCopyTest.testArrayCopy4   time:  688,942,719 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,957,296 ns
+Method ArrayCopyTest.testArrayCopy6   time:  437,137,649 ns
+Method ArrayCopyTest.testArrayCopy7   time:  486,103,241 ns
+Method ArrayCopyTest.testArrayCopy8   time:  990,002,519 ns
+Total time: 4,111,269,441
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  291,383,874 ns
+Method ArrayCopyTest.testArrayCopy2   time:  415,546,370 ns
+Method ArrayCopyTest.testArrayCopy3   time:  460,015,314 ns
+Method ArrayCopyTest.testArrayCopy4   time:  632,019,304 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,781,297 ns
+Method ArrayCopyTest.testArrayCopy6   time:  416,637,669 ns
+Method ArrayCopyTest.testArrayCopy7   time:  458,586,799 ns
+Method ArrayCopyTest.testArrayCopy8   time:  889,958,282 ns
+Total time: 3,854,928,909
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  290,979,742 ns
+Method ArrayCopyTest.testArrayCopy2   time:  374,632,385 ns
+Method ArrayCopyTest.testArrayCopy3   time:  405,152,949 ns
+Method ArrayCopyTest.testArrayCopy4   time:  518,406,102 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,772,484 ns
+Method ArrayCopyTest.testArrayCopy6   time:  375,564,692 ns
+Method ArrayCopyTest.testArrayCopy7   time:  403,586,675 ns
+Method ArrayCopyTest.testArrayCopy8   time:  689,828,765 ns
+Total time: 3,348,923,794
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  290,891,370 ns
+Method ArrayCopyTest.testArrayCopy2   time:  294,150,448 ns
+Method ArrayCopyTest.testArrayCopy3   time:  295,781,195 ns
+Method ArrayCopyTest.testArrayCopy4   time:  291,827,693 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,690,920 ns
+Method ArrayCopyTest.testArrayCopy6   time:  294,430,379 ns
+Method ArrayCopyTest.testArrayCopy7   time:  294,471,100 ns
+Method ArrayCopyTest.testArrayCopy8   time:  290,869,381 ns
+Total time: 2,343,112,486
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  293,392,397 ns
+Method ArrayCopyTest.testArrayCopy2   time:  437,436,143 ns
+Method ArrayCopyTest.testArrayCopy3   time:  487,564,074 ns
+Method ArrayCopyTest.testArrayCopy4   time:  688,843,577 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,909,880 ns
+Method ArrayCopyTest.testArrayCopy6   time:  437,097,680 ns
+Method ArrayCopyTest.testArrayCopy7   time:  486,009,540 ns
+Method ArrayCopyTest.testArrayCopy8   time:  989,898,576 ns
+Total time: 4,111,151,867
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  291,373,156 ns
+Method ArrayCopyTest.testArrayCopy2   time:  415,460,120 ns
+Method ArrayCopyTest.testArrayCopy3   time:  459,955,630 ns
+Method ArrayCopyTest.testArrayCopy4   time:  631,970,012 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,724,598 ns
+Method ArrayCopyTest.testArrayCopy6   time:  416,585,025 ns
+Method ArrayCopyTest.testArrayCopy7   time:  458,523,902 ns
+Method ArrayCopyTest.testArrayCopy8   time:  889,837,330 ns
+Total time: 3,854,429,773
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  290,968,433 ns
+Method ArrayCopyTest.testArrayCopy2   time:  374,555,839 ns
+Method ArrayCopyTest.testArrayCopy3   time:  405,089,400 ns
+Method ArrayCopyTest.testArrayCopy4   time:  518,407,880 ns
+Method ArrayCopyTest.testArrayCopy5   time:  291,004,878 ns
+Method ArrayCopyTest.testArrayCopy6   time:  375,508,215 ns
+Method ArrayCopyTest.testArrayCopy7   time:  403,562,766 ns
+Method ArrayCopyTest.testArrayCopy8   time:  689,779,529 ns
+Total time: 3,348,876,940
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  290,873,806 ns
+Method ArrayCopyTest.testArrayCopy2   time:  294,123,182 ns
+Method ArrayCopyTest.testArrayCopy3   time:  295,750,289 ns
+Method ArrayCopyTest.testArrayCopy4   time:  291,802,565 ns
+Method ArrayCopyTest.testArrayCopy5   time:  290,665,220 ns
+Method ArrayCopyTest.testArrayCopy6   time:  294,399,761 ns
+Method ArrayCopyTest.testArrayCopy7   time:  294,466,604 ns
+Method ArrayCopyTest.testArrayCopy8   time:  290,837,821 ns
+Total time: 2,342,919,248
+</pre>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">13. Výsledky běhu benchmarku &ndash; AMD Opteron, 64bitový režim</h2>
+
+<p>Poslední test proběhl na počítači vybaveném osmicí mikroprocesorů AMD
+Quad-Core Opteron:</p>
+
+<pre>
+processor       : 0
+vendor_id       : AuthenticAMD
+cpu family      : 16
+model           : 2
+model name      : Quad-Core AMD Opteron(tm) Processor 2350
+stepping        : 3
+cpu MHz         : 1000.000
+cache size      : 512 KB
+physical id     : 0
+siblings        : 4
+core id         : 0
+cpu cores       : 4
+apicid          : 0
+fpu             : yes
+fpu_exception   : yes
+cpuid level     : 5
+wp              : yes
+flags           : fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm 3dnowext 3dnow constant_tsc nonstop_tsc pni cx16 popcnt lahf_lm cmp_legacy svm extapic cr8_legacy altmovcr8 abm sse4a misalignsse 3dnowprefetch osvw
+bogomips        : 3989.99
+TLB size        : 1024 4K pages
+clflush size    : 64
+cache_alignment : 64
+address sizes   : 48 bits physical, 48 bits virtual
+power management: ts ttp tm stc 100mhzsteps hwpstate [8]
+</pre>
+
+<p>Zde jsou výsledky velmi vyrovnané, bez ohledu na zarovnání a použití
+přepínačů <strong>UseXMMForArrayCopy</strong> a
+<strong>UseUnalignedLoadStores</strong>. Jedinou výjimkou je opět kopie prvků
+na sebe sama ve stejném poli a se shodným offsetem, zejména v&nbsp;případě
+nezarovnaných dat (offset není dělitelný osmi):</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-17.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-17-prev.png" class="150091" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-18.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-18-prev.png" class="150092" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-19.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-19-prev.png" class="150093" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-20.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-20-prev.png" class="150094" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-21.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-21-prev.png" class="150095" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-22.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-22-prev.png" class="150096" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-23.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-23-prev.png" class="150097" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-24.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-24-prev.png" class="150098" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-25.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-25-prev.png" class="150099" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-26.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-26-prev.png" class="150100" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-27.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-27-prev.png" class="150101" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-28.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-28-prev.png" class="150102" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-29.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-29-prev.png" class="150103" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-30.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-30-prev.png" class="150104" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-31.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-31-prev.png" class="150105" width="360" height="270" alt="&#160;" /></a>
+<a href="http://i.iinfo.cz/images/1/benchmark-gfx-32.png"><img src="http://i.iinfo.cz/images/1/benchmark-gfx-32-prev.png" class="150106" width="360" height="270" alt="&#160;" /></a>
+
+<p>&nbsp;</p>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  149,266,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  249,969,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  224,961,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  301,420,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  143,368,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  234,235,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  213,358,000 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,154,655,000 ns
+Total time: 2,671,232,000
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  142,888,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  230,755,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  213,826,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  277,550,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  141,704,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  222,858,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  202,097,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  845,650,000 ns
+Total time: 2,277,328,000
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  142,702,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  208,558,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  200,345,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  234,583,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  142,902,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  204,007,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  186,366,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  232,387,000 ns
+Total time: 1,551,850,000
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  142,688,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  166,772,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  168,386,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  147,190,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  143,243,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  164,366,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  156,452,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  142,863,000 ns
+Total time: 1,231,960,000
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:-UseUnalignedLoadStores ArrayCopyTest3</strong> 
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  149,846,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  247,209,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  227,488,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  302,458,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  143,474,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  235,238,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  213,341,000 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,155,744,000 ns
+Total time: 2,674,798,000
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  143,034,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  227,141,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  216,618,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  280,975,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  143,226,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  225,851,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  204,318,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  847,147,000 ns
+Total time: 2,288,310,000
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  142,781,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  206,391,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  200,550,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  237,726,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  142,831,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  205,559,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  188,201,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  232,530,000 ns
+Total time: 1,556,569,000
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  142,672,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  163,804,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  172,232,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  152,889,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  142,836,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  164,437,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  158,228,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  143,126,000 ns
+Total time: 1,240,224,000
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:-UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  200,516,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  188,695,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  220,978,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  200,452,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  215,284,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  177,400,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  210,219,000 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,008,838,000 ns
+Total time: 2,422,382,000
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  196,126,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  176,397,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  215,512,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  194,907,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  214,823,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  174,391,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  205,960,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  739,572,000 ns
+Total time: 2,117,688,000
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  195,898,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  169,772,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  205,281,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  184,077,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  214,285,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  168,742,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  196,480,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  200,333,000 ns
+Total time: 1,534,868,000
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  195,146,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  158,979,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  190,278,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  164,419,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  214,066,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  157,164,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  179,507,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  173,350,000 ns
+Total time: 1,432,909,000
+</pre>
+
+<pre>
+<strong>java -server -XX:CompileThreshold=10000 -XX:+UseXMMForArrayCopy -XX:+UseUnalignedLoadStores ArrayCopyTest3</strong>
+Warmup phase...
+0 1 2 3 4 5 6 7 8 9    done
+Benchmark #1
+Method ArrayCopyTest.testArrayCopy1   time:  202,619,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  186,705,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  221,659,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  204,394,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  217,842,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  178,402,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  210,449,000 ns
+Method ArrayCopyTest.testArrayCopy8   time: 1,020,494,000 ns
+Total time: 2,442,564,000
+Benchmark #2
+Method ArrayCopyTest.testArrayCopy1   time:  197,996,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  177,941,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  217,767,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  198,722,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  217,220,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  175,509,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  205,956,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  747,727,000 ns
+Total time: 2,138,838,000
+Benchmark #3
+Method ArrayCopyTest.testArrayCopy1   time:  197,015,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  171,053,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  206,438,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  186,913,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  216,747,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  169,362,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  195,872,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  202,696,000 ns
+Total time: 1,546,096,000
+Benchmark #4
+Method ArrayCopyTest.testArrayCopy1   time:  196,602,000 ns
+Method ArrayCopyTest.testArrayCopy2   time:  159,434,000 ns
+Method ArrayCopyTest.testArrayCopy3   time:  190,690,000 ns
+Method ArrayCopyTest.testArrayCopy4   time:  166,287,000 ns
+Method ArrayCopyTest.testArrayCopy5   time:  217,335,000 ns
+Method ArrayCopyTest.testArrayCopy6   time:  158,155,000 ns
+Method ArrayCopyTest.testArrayCopy7   time:  178,859,000 ns
+Method ArrayCopyTest.testArrayCopy8   time:  175,414,000 ns
+Total time: 1,442,776,000
+</pre>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">14. Repositář s&nbsp;benchmarkem</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitého benchmarku i výsledku běhu tohoto benchmarku:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ArrayCopyTest3.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/ArrayCopyTest3.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/ArrayCopyTest3.java</a></td></tr>
+<tr><td>2</td><td>celeron_m.txt</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/celeron_m.txt">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/celeron_m.txt</a></td></tr>
+<tr><td>3</td><td>xeon.txt</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/xeon.txt">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/xeon.txt</a></td></tr>
+<tr><td>4</td><td>opteron.txt</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/opteron.txt">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/b32c0ecc3d9e/jit/ArrayCopyTest3/opteron.txt</a></td></tr>
+</table>
+
+
+
+<p><a name="k15"></a></p>
+<h2 id="k15">15. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
