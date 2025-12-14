@@ -1,0 +1,1997 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (3)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (3)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si nejprve řekneme, jakým způsobem je možné se podívat na disasemblovaný výpis strojového kódu generovaného JIT překladačem. Ukážeme si taktéž, jak vypadá vygenerovaný kód po rozbalení smyček (loop unrolling), což je jedna z optimalizací prováděných JIT překladačem typu server (C2).</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Výpis symbolického kódu generovaného JIT překladačem (disassembler)</a></p>
+<p><a href="#k02">2. Ukázka kódu generovaného na platformě i386 (C1 překladač)</a></p>
+<p><a href="#k03">3. Ukázka kódu generovaného na platformě i386 (C2 překladač)</a></p>
+<p><a href="#k04">4. Žhavá technologická novinka &ndash; kód generovaný na platformě ARM 64 (AArch64)</a></p>
+<p><a href="#k05">5. Složitější příklad &ndash; výpočty ve formátu pohyblivé (plovoucí) řádové čárky</a></p>
+<p><a href="#k06">6. Generovaný kód v&nbsp;symbolickém formátu (C1 překladač)</a></p>
+<p><a href="#k07">7. Generovaný kód v&nbsp;symbolickém formátu (C2 překladač)</a></p>
+<p><a href="#k08">8. Generovaný kód v&nbsp;symbolickém formátu (AArch64)</a></p>
+<p><a href="#k09">9. Obsah následující části seriálu</a></p>
+<p><a href="#k10">10. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Výpis symbolického kódu generovaného JIT překladačem (disassembler)</h2>
+
+<p>V&nbsp;předchozí části tohoto seriálu jsme si ukázali, jakým způsobem je
+možné do jisté míry určit, ve kterém okamžiku se spustí <i>JIT</i>
+(<i>Just-In-Time</i>) překladač. Taktéž jsme si řekli, jaké základní
+optimalizace provádí JIT překladač typu <i>client</i> a o jaké optimalizace se
+pokouší sice pomaleji pracující, ale zato výkonnější překladač typu
+<i>server</i>. V&nbsp;některých případech je však dobré zjistit i sekvenci
+strojových instrukcí generovanou JIT překladačem. K&nbsp;tomuto účelu slouží
+volba <strong>-XX:+PrintAssembly</strong>, kterou je nutné zkombinovat
+s&nbsp;již minule popsanou volbou
+<strong>-XX:+UnlockDiagnosticVMOptions</strong>. Jakmile je volba
+<strong>-XX:+PrintAssembly</strong> použita, bude se na standardní výstup
+vypisovat disasemblovaný kód generovaný JIT překladačem. Termín
+&bdquo;disasemblovaný&ldquo; zde značí to, že se virtuální stroj Javy pokusí
+převést strojový kód (sekvenci bajtů) vytvořenou JIT překladačem na čitelný
+zdrojový kód v&nbsp;assembleru dané architektury (i386, x86_64, ARM32, ARM64,
+SPARC...).</p>
+
+<p>Samotný disassembler však v&nbsp;současnosti není součástí JVM ani JRE, ale
+vyžaduje se spolupráce s&nbsp;externí knihovnou nazvanou
+<strong>hsdis-${architektura}.so</strong> či
+<strong>hsdis-${architektura}.dll</strong>, kde se za slovo <i>architektura</i>
+doplňuje aktuálně používaná architektura mikroprocesoru, což může být například
+již zmíněný i386 atd. Tuto knihovnu je nutné buď přeložit (což není na Linuxu
+tak těžké, využívá se zde binutils) nebo získat již v&nbsp;přeložené podobě na
+Internetu. Informace o překladu získáte na stránkách <a
+href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+(README k&nbsp;OpenJDK7, odzkoušeno) a <a
+href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+(tento návod jsem nezkoušel), přeloženou knihovnu pro 32bitová Windows pak lze
+stáhnout ze stránky <a
+href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>.</p>
+
+<p>Pro vyzkoušení možností JIT překladačů využijeme demonstrační příklad
+nazvaný <strong>ArrayTest3</strong>, který jsme ostatně využili již
+v&nbsp;předchozí části tohoto seriálu:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Velmi jednoduchy benchmark - pruchod polem</i>
+<i>  */</i>
+public class <strong>ArrayTest3</strong> {
+    <i>// velikost pole pouziteho v testu</i>
+    public static final int <strong>ARRAY_SIZE</strong> = 5000;
+&nbsp;
+    public static void <strong>main</strong>(String[] args) throws InterruptedException, java.io.IOException {
+        <i>// nacist pocet opakovani testu</i>
+        final int iter = Integer.parseInt(args[0]);
+&nbsp;
+        <i>// priblizny celkovy cas behu testu</i>
+        <i>// (bez GC a cekani na dokonceni GC)</i>
+        long total_time = 0;
+&nbsp;
+        <i>// provest zadany pocet testu</i>
+        for (int i = 0; i &lt; iter; i++) {
+            <i>// pro jistotu nejdrive provedeme GC</i>
+            <i>// a pockame na jeho dokonceni (nepresne!)</i>
+            System.gc();
+            Thread.sleep(1000);
+&nbsp;
+            <i>// provest test a zmerit cas behu testu</i>
+            long t1 = System.nanoTime();
+            test();
+            long t2 = System.nanoTime();
+            long delta_t = t2 - t1;
+&nbsp;
+            <i>// vypis casu pro jeden test</i>
+            System.out.format("Round #%2d  time: %,12d ns\n", i, delta_t);
+&nbsp;
+            <i>// vypocet celkoveho casu behu vsech testu</i>
+            total_time += delta_t;
+        }
+        System.out.format("Total time: %,d ns\n", total_time);
+&nbsp;
+        <i>// cekat na stisk klavesy</i>
+        System.in.read();
+&nbsp;
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Vlastni test, kde se prochazi polem a postupne se</i>
+<i>      * naplnuji jednotlive prvky tohoto pole.</i>
+<i>      */</i>
+    private static void <strong>test</strong>() {
+        int[] array = new int[ARRAY_SIZE];
+        final int length = array.length;
+        for (int i = 0; i &lt; length; i++) {
+            array[i] = i;
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Důležitý je i bajtkód metody <strong>ArrayTest3.test()</strong>, protože
+právě tato metoda bude překládána:</p>
+
+<pre>
+  private static void test();
+    Code:
+       0: sipush        5000
+       3: newarray       int
+       5: astore_0
+       6: aload_0
+       7: arraylength
+       8: istore_1
+       9: iconst_0
+      10: istore_2
+      11: iload_2       &lt;--------+
+      12: iload_1                |
++---- 13: if_icmpge     26       |
+|     16: aload_0                |
+|     17: iload_2                |
+|     18: iload_2                |
+|     19: iastore                |
+|     20: iinc          2, 1     |
+|     23: goto          11   ----+
++---&gt; 26: return
+}
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Ukázka kódu generovaného na platformě i386 (C1 překladač)</h2>
+
+<p>Předpokládejme nyní, že máme k&nbsp;dispozici výše zmíněnou dynamickou
+knihovnu <strong>hsdis-${architektura}.so</strong> či
+<strong>hsdis-${architektura}.dll</strong>, která je umístěna do aktuálního
+adresáře, popř.&nbsp;do adresáře, na nějž se odkazuje proměnná
+<strong>LD_LIBRARY_PATH</strong>. Nyní můžeme demonstrační příklad
+<strong>ArrayTest3</strong> spustit takovým způsobem, aby se vynutil překlad
+metody <strong>ArrayTest3.test()</strong>. Připomeňme si, že metoda či smyčka
+uvnitř metody je přeložena ve chvíli, kdy proběhne takový počet iterací, který
+je určen parametrem <strong>-XX:CompileThreshold=10000</strong>,
+popř.&nbsp;dosáhne výchozí hodnoty 15000 iterací. Volání JVM může vypadat
+následovně:</p>
+
+<pre>
+java -client -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly ArrayTest3 3 &gt; output1.asm
+</pre>
+
+<p>Do souboru nazvaného <strong>output1.asm</strong> se nejdříve vypíše typ JIT
+překladače (zde <i>HotSpot Client</i>), jméno knihovny s&nbsp;disassemblerem
+(zde <i>hsdis-i386.so</i>) a taktéž architektura (<i>mach='i386'</i>, což zde
+není zcela přesná informace, jak ostatně uvidíme dále):</p>
+
+<pre>
+Java HotSpot(TM) Client VM warning: PrintAssembly is enabled; turning on DebugNonSafepoints to gain additional output
+Loaded disassembler from hsdis-i386.so
+Decoding compiled method 0x00a00908:
+Code:
+[Disassembling for mach='i386']
+</pre>
+
+<p>Dále se v&nbsp;průběhu překladu vypisuje i disasemblovaný kód i
+s&nbsp;dalšími informacemi. Nás zajímá především způsob překladu metody
+<strong>ArrayTest3.test()</strong>, který vypadá následovně:</p>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'test' '()V' in 'ArrayTest3'
+  #           [sp+0x20]  (sp of caller)
+  0x00a00a00: mov    %eax,0xffffc000(%esp)
+  0x00a00a07: push   %ebp
+  0x00a00a08: sub    $0x18,%esp         ;*sipush
+                                        ; - ArrayTest3::test@0 (line 47)
+  0x00a00a0b: mov    $0x1388,%ebx
+  0x00a00a10: mov    $0x2fb1c6a8,%edx   ;   {oop({type array int})}
+  0x00a00a15: mov    %ebx,%edi
+  0x00a00a17: cmp    $0xffffff,%ebx
+  0x00a00a1d: ja     0x00a00ab7
+  0x00a00a23: mov    $0x13,%esi
+  0x00a00a28: lea    (%esi,%ebx,4),%esi
+  0x00a00a2b: and    $0xfffffff8,%esi
+  0x00a00a2e: mov    %fs:0x0,%ecx
+  0x00a00a36: mov    0xfffffff4(%ecx),%ecx
+  0x00a00a39: mov    0x34(%ecx),%eax
+  0x00a00a3c: lea    (%eax,%esi,1),%esi
+  0x00a00a3f: cmp    0x3c(%ecx),%esi
+  0x00a00a42: ja     0x00a00ab7
+  0x00a00a48: mov    %esi,0x34(%ecx)
+  0x00a00a4b: sub    %eax,%esi
+  0x00a00a4d: movl   $0x1,(%eax)
+  0x00a00a53: mov    %edx,0x4(%eax)
+  0x00a00a56: mov    %ebx,0x8(%eax)
+  0x00a00a59: sub    $0xc,%esi
+  0x00a00a5c: je     0x00a00a82
+  0x00a00a62: xor    %ebx,%ebx
+  0x00a00a64: shr    $0x3,%esi
+  0x00a00a67: jae    0x00a00a77
+  0x00a00a6d: mov    %ebx,0xc(%eax,%esi,8)
+  0x00a00a71: je     0x00a00a82
+  0x00a00a77: mov    %ebx,0x8(%eax,%esi,8)
+  0x00a00a7b: mov    %ebx,0x4(%eax,%esi,8)
+  0x00a00a7f: dec    %esi
+  0x00a00a80: jne    0x00a00a77         ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+  0x00a00a82: mov    $0x0,%esi
+  0x00a00a87: jmp    0x00a00aa4         ;*iload_2
+                                        ; - ArrayTest3::test@11 (line 49)
+  0x00a00a8c: mov    $0x1388,%edi
+  0x00a00a91: cmp    %esi,%edi
+  0x00a00a93: jbe    0x00a00abe
+  0x00a00a99: mov    %esi,0xc(%eax,%esi,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x00a00a9d: inc    %esi               ; OopMap{eax=Oop off=158}
+                                        ;*goto
+                                        ; - ArrayTest3::test@23 (line 49)
+  0x00a00a9e: test   %eax,0x940100      ;*goto
+                                        ; - ArrayTest3::test@23 (line 49)
+                                        ;   {poll}
+  0x00a00aa4: cmp    $0x1388,%esi
+  0x00a00aaa: jl     0x00a00a8c         ;*if_icmpge
+                                        ; - ArrayTest3::test@13 (line 49)
+  0x00a00aac: add    $0x18,%esp
+  0x00a00aaf: pop    %ebp
+  0x00a00ab0: test   %eax,0x940100      ;   {poll_return}
+  0x00a00ab6: ret    
+  0x00a00ab7: call   0x009fef00         ; OopMap{off=188}
+                                        ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+                                        ;   {runtime_call}
+  0x00a00abc: jmp    0x00a00a82
+  0x00a00abe: mov    %esi,(%esp)
+  0x00a00ac1: call   0x009fe250         ; OopMap{eax=Oop off=198}
+                                        ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+                                        ;   {runtime_call}
+  0x00a00ac6: nop    
+  0x00a00ac7: nop    
+  0x00a00ac8: mov    %fs:0x0,%esi
+  0x00a00ad0: mov    0xfffffff4(%esi),%esi
+  0x00a00ad3: mov    0x188(%esi),%eax
+  0x00a00ad9: movl   $0x0,0x188(%esi)
+  0x00a00ae3: movl   $0x0,0x18c(%esi)
+  0x00a00aed: add    $0x18,%esp
+  0x00a00af0: pop    %ebp
+  0x00a00af1: jmp    0x009abb80         ;   {runtime_call}
+  0x00a00af6: hlt    
+  0x00a00af7: hlt    
+  0x00a00af8: hlt    
+  0x00a00af9: hlt    
+  0x00a00afa: hlt    
+  0x00a00afb: hlt    
+  0x00a00afc: hlt    
+  0x00a00afd: hlt    
+  0x00a00afe: hlt    
+  0x00a00aff: hlt    
+[Exception Handler]
+[Stub Code]
+  0x00a00b00: call   0x009ff880         ;   {no_reloc}
+  0x00a00b05: push   $0x6eb63690        ;   {external_word}
+  0x00a00b0a: call   0x00a00b0f
+  0x00a00b0f: pusha  
+  0x00a00b10: call   0x6ea45f60         ;   {runtime_call}
+  0x00a00b15: hlt    
+[Deopt Handler Code]
+  0x00a00b16: push   $0xa00b16          ;   {section_word}
+  0x00a00b1b: jmp    0x0099ca70         ;   {runtime_call}
+</pre>
+
+<p>uff :-)</p>
+
+<p>Vypadá to sice velmi složitě, ovšem vzhledem k&nbsp;tomu, že JIT překladač
+typu client (označovaný C1) je poměrně primitivní, nedá nám velký problém najít
+v&nbsp;celém kódu vlastní smyčku, v&nbsp;níž se naplňují prvky pole. Zde je
+zmíněná část kódu. Poznámka: 0x1388 je dekadicky přesně 5000, tedy délka pole i
+maximální počet průchodů smyčkou:</p>
+
+<pre>
+        0x00a00a82: mov    $0x0,%esi          ; počitadlo
++------ 0x00a00a87: jmp    0x00a00aa4         ; test na konci smyčky (trošku divné...)
+|                                             ; - ArrayTest3::test@11 (line 49)
+|  +--&gt; 0x00a00a8c: mov    $0x1388,%edi       ; délka pole
+|  |    0x00a00a91: cmp    %esi,%edi          ; konec?
+|  |    0x00a00a93: jbe    0x00a00abe
+|  |    0x00a00a99: mov    %esi,0xc(%eax,%esi,4)  ; zápis do pole
+|  |                                          ; - ArrayTest3::test@19 (line 50)
+|  |    0x00a00a9d: inc    %esi               ; zvýšení hodnoty počitadla
+|  |                                          ;*goto
+|  |                                          ; - ArrayTest3::test@23 (line 49)
+|  |    0x00a00a9e: test   %eax,0x940100      ;*goto
+|  |                                          ; - ArrayTest3::test@23 (line 49)
+|  |                                          ;   {poll}
++-----&gt; 0x00a00aa4: cmp    $0x1388,%esi    ; dosáhli jsme konce smyčky?
+   +--- 0x00a00aaa: jl     0x00a00a8c         ; jestli ne, hup na začátek
+                                              ; - ArrayTest3::test@13 (line 49)
+
+        0x00a00aac: add    $0x18,%esp         ; správa zásobníku při návratu
+        0x00a00aaf: pop    %ebp
+        0x00a00ab0: test   %eax,0x940100      ;   {poll_return}
+        0x00a00ab6: ret    
+        0x00a00ab7: call   0x009fef00         ; OopMap{off=188}
+                                              ;*newarray
+                                              ; - ArrayTest3::test@3 (line 47)
+                                              ;   {runtime_call}
+        0x00a00abc: jmp    0x00a00a82
+        0x00a00abe: mov    %esi,(%esp)
+</pre>
+
+<p>Můžeme vidět, že kód není příliš optimální vzhledem k&nbsp;množství
+prováděných skoků &ndash; ručně napsaný assembler by mohl být mnohem
+výkonnější. Význam &bdquo;prapodivné&ldquo; instrukce <strong>test
+%eax,0x940100</strong>, která v&nbsp;kódu nemá žádný viditelný vliv, si
+vysvětlíme příště.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Ukázka kódu generovaného na platformě i386 (C2 překladač)</h2>
+
+<p>Podívejme se nyní na to, jak se situace změní při použití JIT překladače
+typu server. Spuštění JVM bude v&nbsp;tomto případě nepatrně odlišné:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly ArrayTest3 3 &gt; output2.asm
+</pre>
+
+<p>Změní se samozřejmě hlavička vypisovaná do souboru
+<strong>output2.asm</strong>:</p>
+
+<pre>
+Java HotSpot(TM) Server VM warning: PrintAssembly is enabled; turning on DebugNonSafepoints to gain additional output
+Loaded disassembler from hsdis-i386.so
+Decoding compiled method 0x009b8e88:
+Code:
+[Disassembling for mach='i386']
+</pre>
+
+<p>Mnohem zajímavější je však sekvence strojových instrukcí generovaná pro námi
+testovanou metodu <strong>ArrayTest3.java</strong>. Metoda se přeloží hned
+dvakrát; zde je první verze disasemblovaného strojového kódu:</p>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'test' '()V' in 'ArrayTest3'
+  #           [sp+0x40]  (sp of caller)
+  0x009b8f80: mov    %eax,0xffffc000(%esp)
+  0x009b8f87: push   %ebp
+  0x009b8f88: sub    $0x38,%esp         ;*synchronization entry
+                                        ; - ArrayTest3::test@-1 (line 47)
+  0x009b8f8b: mov    %fs:0x0,%ebp
+  0x009b8f93: mov    0xfffffff4(%ebp),%ebp
+  0x009b8f96: mov    0x34(%ebp),%ebx
+  0x009b8f99: lea    0x4e30(%ebx),%edi
+  0x009b8f9f: cmp    0x3c(%ebp),%edi
+  0x009b8fa2: jae    0x009b90fc
+  0x009b8fa8: mov    %edi,0x34(%ebp)
+  0x009b8fab: prefetchnta 0x100(%edi)
+  0x009b8fb2: movl   $0x1,(%ebx)
+  0x009b8fb8: prefetchnta 0x120(%edi)
+  0x009b8fbf: movl   $0xbb30a30,0x4(%ebx)  ;   {oop({type array int})}
+  0x009b8fc6: prefetchnta 0x140(%edi)
+  0x009b8fcd: movl   $0x1388,0x8(%ebx)
+  0x009b8fd4: lea    0x10(%ebx),%edi
+  0x009b8fd7: movl   $0x0,0xc(%ebx)
+  0x009b8fde: mov    $0x9c4,%ecx
+  0x009b8fe3: shl    %ecx
+  0x009b8fe5: xor    %eax,%eax
+  0x009b8fe7: rep stos %eax,%es:(%edi)  ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+  0x009b8fe9: mov    $0x1,%ecx
+  0x009b8fee: jmp    0x009b8ff2
+  0x009b8ff0: mov    %ebp,%ecx          ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b8ff2: mov    %ecx,0xc(%ebx,%ecx,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b8ff6: mov    %ecx,%edi
+  0x009b8ff8: add    $0x10,%edi         ;*iinc
+                                        ; - ArrayTest3::test@20 (line 49)
+  0x009b8ffb: mov    %edi,(%esp)
+  0x009b8ffe: mov    %ecx,%ebp
+  0x009b9000: add    $0xf,%ebp
+  0x009b9003: mov    %ebp,0x4(%esp)
+  0x009b9007: mov    %ecx,%edi
+  0x009b9009: inc    %edi
+  0x009b900a: mov    %edi,0x10(%ebx,%ecx,4)
+  0x009b900e: mov    %ecx,%edi
+  0x009b9010: add    $0xe,%edi
+  0x009b9013: mov    %edi,0x8(%esp)
+  0x009b9017: mov    %ecx,%ebp
+  0x009b9019: add    $0xd,%ebp
+  0x009b901c: mov    %ebp,0xc(%esp)
+  0x009b9020: mov    %ecx,%edi
+  0x009b9022: add    $0xc,%edi
+  0x009b9025: mov    %edi,0x10(%esp)
+  0x009b9029: mov    %ecx,%ebp
+  0x009b902b: add    $0xb,%ebp
+  0x009b902e: mov    %ebp,0x14(%esp)
+  0x009b9032: mov    %ecx,%ebp
+  0x009b9034: add    $0xa,%ebp
+  0x009b9037: mov    %ebp,0x18(%esp)
+  0x009b903b: mov    %ecx,%ebp
+  0x009b903d: add    $0x9,%ebp
+  0x009b9040: mov    %ebp,0x1c(%esp)
+  0x009b9044: mov    %ecx,%ebp
+  0x009b9046: add    $0x8,%ebp
+  0x009b9049: mov    %ebp,0x20(%esp)
+  0x009b904d: mov    %ecx,%ebp
+  0x009b904f: add    $0x7,%ebp
+  0x009b9052: mov    %ebp,0x24(%esp)
+  0x009b9056: mov    %ecx,%edi
+  0x009b9058: add    $0x6,%edi
+  0x009b905b: mov    %ecx,%ebp
+  0x009b905d: add    $0x5,%ebp
+  0x009b9060: mov    %ecx,%edx
+  0x009b9062: add    $0x4,%edx
+  0x009b9065: mov    %ecx,%eax
+  0x009b9067: add    $0x3,%eax
+  0x009b906a: mov    %ecx,%esi
+  0x009b906c: add    $0x2,%esi
+  0x009b906f: mov    %esi,0x14(%ebx,%ecx,4)
+  0x009b9073: mov    %eax,0x18(%ebx,%ecx,4)
+  0x009b9077: mov    %edx,0x1c(%ebx,%ecx,4)
+  0x009b907b: mov    %ebp,0x20(%ebx,%ecx,4)
+  0x009b907f: mov    %edi,0x24(%ebx,%ecx,4)
+  0x009b9083: mov    0x24(%esp),%ebp
+  0x009b9087: mov    %ebp,0x28(%ebx,%ecx,4)
+  0x009b908b: mov    0x20(%esp),%ebp
+  0x009b908f: mov    %ebp,0x2c(%ebx,%ecx,4)
+  0x009b9093: mov    0x1c(%esp),%ebp
+  0x009b9097: mov    %ebp,0x30(%ebx,%ecx,4)
+  0x009b909b: mov    0x18(%esp),%ebp
+  0x009b909f: mov    %ebp,0x34(%ebx,%ecx,4)
+  0x009b90a3: mov    0x14(%esp),%ebp
+  0x009b90a7: mov    %ebp,0x38(%ebx,%ecx,4)
+  0x009b90ab: mov    0x10(%esp),%ebp
+  0x009b90af: mov    %ebp,0x3c(%ebx,%ecx,4)
+  0x009b90b3: mov    0xc(%esp),%ebp
+  0x009b90b7: mov    %ebp,0x40(%ebx,%ecx,4)
+  0x009b90bb: mov    0x8(%esp),%edi
+  0x009b90bf: mov    %edi,0x44(%ebx,%ecx,4)
+  0x009b90c3: mov    0x4(%esp),%ebp
+  0x009b90c7: mov    %ebp,0x48(%ebx,%ecx,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b90cb: mov    (%esp),%ebp
+  0x009b90ce: cmp    $0x1379,%ebp
+  0x009b90d4: jl     0x009b8ff0         ;*if_icmpge
+                                        ; - ArrayTest3::test@13 (line 49)
+  0x009b90da: mov    %ebp,%ecx
+  0x009b90dc: cmp    $0x1388,%ecx
+  0x009b90e2: jge    0x009b90f1         ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b90e4: mov    %ecx,0xc(%ebx,%ecx,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b90e8: inc    %ecx               ;*iinc
+                                        ; - ArrayTest3::test@20 (line 49)
+  0x009b90e9: cmp    $0x1388,%ecx
+  0x009b90ef: jl     0x009b90e4
+  0x009b90f1: add    $0x38,%esp
+  0x009b90f4: pop    %ebp
+  0x009b90f5: test   %eax,0x940000      ;   {poll_return}
+  0x009b90fb: ret    
+  0x009b90fc: mov    $0x1388,%edx
+  0x009b9101: mov    $0xbb30a30,%ecx    ;   {oop({type array int})}
+  0x009b9106: nop    
+  0x009b9107: call   0x009b78c0         ; OopMap{off=396}
+                                        ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+                                        ;   {runtime_call}
+  0x009b910c: mov    %eax,%ebx
+  0x009b910e: jmp    0x009b8fe9         ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+  0x009b9113: mov    %eax,%ecx
+  0x009b9115: add    $0x38,%esp
+  0x009b9118: pop    %ebp
+  0x009b9119: jmp    0x009bae80         ;   {runtime_call}
+  0x009b911e: hlt    
+  0x009b911f: hlt    
+[Exception Handler]
+[Stub Code]
+  0x009b9120: jmp    0x009b7a40         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b9125: push   $0x9b9125          ;   {section_word}
+  0x009b912a: jmp    0x0099e280         ;   {runtime_call}
+  0x009b912f: hlt    
+Decoding compiled method 0x009b89c8:
+Code:
+</pre>
+
+<p>Co zde vlastně vidíme? Jedná se o takzvané rozbalení smyčky (<i>loop
+unrolling</i>), které má zajistit co nejdelší sekvenci instrukcí bez
+podmíněných či nepodmíněných skoků. Tím je na většině současných mikroprocesorů
+v&nbsp;co největší míře využita instrukční pipeline, což se samozřejmě projeví
+při běhu smyčky (výhody a nevýhody jsme si vysvětlili minule).</p>
+
+<p>Druhá varianta přeložené metody <strong>ArrayTest3.test()</strong> je
+poněkud odlišná, některé instrukce byly prohozeny a poněkud se změnila i logika
+vyhodnocování:</p>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'test' '()V' in 'ArrayTest3'
+  0x009b8ac0: int3   
+  0x009b8ac1: xchg   %ax,%ax
+  0x009b8ac4: mov    %eax,0xffffc000(%esp)
+  0x009b8acb: push   %ebp
+  0x009b8acc: sub    $0x48,%esp
+  0x009b8acf: mov    (%ecx),%edi
+  0x009b8ad1: mov    0x8(%ecx),%ebp
+  0x009b8ad4: mov    0x4(%ecx),%ebx
+  0x009b8ad7: mov    %ecx,(%esp)
+  0x009b8ada: call   0x6ee57140         ;   {runtime_call}
+  0x009b8adf: test   %ebp,%ebp
+  0x009b8ae1: je     0x009b8c5c
+  0x009b8ae7: mov    0x4(%ebp),%eax
+  0x009b8aea: cmp    $0xbb30a30,%eax    ;   {oop({type array int})}
+  0x009b8af0: jne    0x009b8c7f         ;*iload_2
+                                        ; - ArrayTest3::test@11 (line 49)
+  0x009b8af6: cmp    %ebx,%edi
+  0x009b8af8: jge    0x009b8c51         ;*if_icmpge
+                                        ; - ArrayTest3::test@13 (line 49)
+  0x009b8afe: mov    0x8(%ebp),%eax     ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+                                        ; implicit exception: dispatches to 0x009b8c66
+  0x009b8b01: cmp    %eax,%edi
+  0x009b8b03: jae    0x009b8c66
+  0x009b8b09: mov    %ebx,%edx
+  0x009b8b0b: dec    %edx
+  0x009b8b0c: cmp    %eax,%edx
+  0x009b8b0e: jae    0x009b8c66
+  0x009b8b14: mov    %edi,%ecx
+  0x009b8b16: inc    %ecx               ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b8b17: mov    %edi,0xc(%ebp,%edi,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b8b1b: inc    %edi               ;*iinc
+                                        ; - ArrayTest3::test@20 (line 49)
+  0x009b8b1c: cmp    %ecx,%edi
+  0x009b8b1e: jl     0x009b8b17         ;*if_icmpge
+                                        ; - ArrayTest3::test@13 (line 49)
+  0x009b8b20: mov    %ebx,%edx
+  0x009b8b22: add    $0xfffffff1,%edx
+  0x009b8b25: mov    $0x80000000,%eax
+  0x009b8b2a: cmp    %edx,%ebx
+  0x009b8b2c: cmovl  %eax,%edx
+  0x009b8b2f: cmp    %edx,%edi
+  0x009b8b31: jge    0x009b8c79
+  0x009b8b37: mov    %ebx,0x2c(%esp)
+  0x009b8b3b: mov    %edx,0x30(%esp)
+  0x009b8b3f: jmp    0x009b8b52
+  0x009b8b41: nopw   0x0(%eax,%eax,1)
+  0x009b8b4c: xchg   %ax,%ax
+  0x009b8b50: mov    %ebx,%edi          ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b8b52: mov    %edi,0xc(%ebp,%edi,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b8b56: mov    %edi,%ecx
+  0x009b8b58: add    $0x10,%ecx         ;*iinc
+                                        ; - ArrayTest3::test@20 (line 49)
+  0x009b8b5b: mov    %ecx,0x4(%esp)
+  0x009b8b5f: mov    %edi,%ebx
+  0x009b8b61: add    $0xf,%ebx
+  0x009b8b64: mov    %ebx,0x8(%esp)
+  0x009b8b68: mov    %edi,%ecx
+  0x009b8b6a: inc    %ecx
+  0x009b8b6b: mov    %ecx,0x10(%ebp,%edi,4)
+  0x009b8b6f: mov    %edi,%ecx
+  0x009b8b71: add    $0xe,%ecx
+  0x009b8b74: mov    %ecx,0xc(%esp)
+  0x009b8b78: mov    %edi,%ecx
+  0x009b8b7a: add    $0xd,%ecx
+  0x009b8b7d: mov    %ecx,0x10(%esp)
+  0x009b8b81: mov    %edi,%ebx
+  0x009b8b83: add    $0xc,%ebx
+  0x009b8b86: mov    %ebx,0x14(%esp)
+  0x009b8b8a: mov    %edi,%ecx
+  0x009b8b8c: add    $0xb,%ecx
+  0x009b8b8f: mov    %ecx,0x18(%esp)
+  0x009b8b93: mov    %edi,%ecx
+  0x009b8b95: add    $0xa,%ecx
+  0x009b8b98: mov    %ecx,0x1c(%esp)
+  0x009b8b9c: mov    %edi,%ecx
+  0x009b8b9e: add    $0x9,%ecx
+  0x009b8ba1: mov    %ecx,0x20(%esp)
+  0x009b8ba5: mov    %edi,%ecx
+  0x009b8ba7: add    $0x8,%ecx
+  0x009b8baa: mov    %ecx,0x24(%esp)
+  0x009b8bae: mov    %edi,%ecx
+  0x009b8bb0: add    $0x7,%ecx
+  0x009b8bb3: mov    %ecx,0x28(%esp)
+  0x009b8bb7: mov    %edi,%ebx
+  0x009b8bb9: add    $0x6,%ebx
+  0x009b8bbc: mov    %edi,%ecx
+  0x009b8bbe: add    $0x5,%ecx
+  0x009b8bc1: mov    %edi,%edx
+  0x009b8bc3: add    $0x4,%edx
+  0x009b8bc6: mov    %edi,%eax
+  0x009b8bc8: add    $0x3,%eax
+  0x009b8bcb: mov    %edi,%esi
+  0x009b8bcd: add    $0x2,%esi
+  0x009b8bd0: mov    %esi,0x14(%ebp,%edi,4)
+  0x009b8bd4: mov    %eax,0x18(%ebp,%edi,4)
+  0x009b8bd8: mov    %edx,0x1c(%ebp,%edi,4)
+  0x009b8bdc: mov    %ecx,0x20(%ebp,%edi,4)
+  0x009b8be0: mov    %ebx,0x24(%ebp,%edi,4)
+  0x009b8be4: mov    0x28(%esp),%ecx
+  0x009b8be8: mov    %ecx,0x28(%ebp,%edi,4)
+  0x009b8bec: mov    0x24(%esp),%ecx
+  0x009b8bf0: mov    %ecx,0x2c(%ebp,%edi,4)
+  0x009b8bf4: mov    0x20(%esp),%ecx
+  0x009b8bf8: mov    %ecx,0x30(%ebp,%edi,4)
+  0x009b8bfc: mov    0x1c(%esp),%ecx
+  0x009b8c00: mov    %ecx,0x34(%ebp,%edi,4)
+  0x009b8c04: mov    0x18(%esp),%ecx
+  0x009b8c08: mov    %ecx,0x38(%ebp,%edi,4)
+  0x009b8c0c: mov    0x14(%esp),%ecx
+  0x009b8c10: mov    %ecx,0x3c(%ebp,%edi,4)
+  0x009b8c14: mov    0x10(%esp),%ebx
+  0x009b8c18: mov    %ebx,0x40(%ebp,%edi,4)
+  0x009b8c1c: mov    0xc(%esp),%ebx
+  0x009b8c20: mov    %ebx,0x44(%ebp,%edi,4)
+  0x009b8c24: mov    0x8(%esp),%ecx
+  0x009b8c28: mov    %ecx,0x48(%ebp,%edi,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b8c2c: mov    0x4(%esp),%ebx
+  0x009b8c30: cmp    0x30(%esp),%ebx
+  0x009b8c34: jl     0x009b8b50         ;*if_icmpge
+                                        ; - ArrayTest3::test@13 (line 49)
+  0x009b8c3a: mov    0x2c(%esp),%ebx
+  0x009b8c3e: mov    0x4(%esp),%ecx
+  0x009b8c42: cmp    %ebx,%ecx
+  0x009b8c44: jge    0x009b8c51
+  0x009b8c46: xchg   %ax,%ax            ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b8c48: mov    %ecx,0xc(%ebp,%ecx,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x009b8c4c: inc    %ecx               ;*iinc
+                                        ; - ArrayTest3::test@20 (line 49)
+  0x009b8c4d: cmp    %ebx,%ecx
+  0x009b8c4f: jl     0x009b8c48         ;*iload_2
+                                        ; - ArrayTest3::test@11 (line 49)
+  0x009b8c51: add    $0x48,%esp
+  0x009b8c54: pop    %ebp
+  0x009b8c55: test   %eax,0x940000      ;   {poll_return}
+  0x009b8c5b: ret    
+  0x009b8c5c: mov    $0x0,%ebp
+  0x009b8c61: jmp    0x009b8af6
+  0x009b8c66: mov    $0xffffff86,%ecx
+  0x009b8c6b: mov    %edi,0x4(%esp)
+  0x009b8c6f: mov    %ebx,0x8(%esp)
+  0x009b8c73: call   0x0099dd00         ; OopMap{ebp=Oop off=440}
+                                        ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+                                        ;   {runtime_call}
+  0x009b8c78: int3                      ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b8c79: mov    %edi,0x4(%esp)
+  0x009b8c7d: jmp    0x009b8c3e
+  0x009b8c7f: mov    $0xffffffad,%ecx
+  0x009b8c84: mov    %edi,0x4(%esp)
+  0x009b8c88: mov    %ebx,0x8(%esp)
+  0x009b8c8c: xchg   %ax,%ax
+  0x009b8c8f: call   0x0099dd00         ; OopMap{ebp=Oop off=468}
+                                        ;*iload_2
+                                        ; - ArrayTest3::test@11 (line 49)
+                                        ;   {runtime_call}
+  0x009b8c94: int3                      ;*aload_0
+                                        ; - ArrayTest3::test@16 (line 50)
+  0x009b8c95: hlt    
+  0x009b8c96: hlt    
+  0x009b8c97: hlt    
+  0x009b8c98: hlt    
+  0x009b8c99: hlt    
+  0x009b8c9a: hlt    
+  0x009b8c9b: hlt    
+  0x009b8c9c: hlt    
+  0x009b8c9d: hlt    
+  0x009b8c9e: hlt    
+  0x009b8c9f: hlt    
+[Exception Handler]
+[Stub Code]
+  0x009b8ca0: jmp    0x009b7a40         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b8ca5: push   $0x9b8ca5          ;   {section_word}
+  0x009b8caa: jmp    0x0099e280         ;   {runtime_call}
+  0x009b8caf: hlt    
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Žhavá technologická novinka &ndash; kód generovaný na platformě ARM 64 (AArch64)</h2>
+
+<p>Pro zajímavost se podívejme na to, jak pracuje JIT překladač na zcela nové
+platformě ARM 64 (korektněji AArch64). I zde je v&nbsp;případě OpenJDK
+k&nbsp;dispozici JIT překladač. JVM se spustí následujícím způsobem:</p>
+
+<pre>
+java -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly ArrayTest3 3 &gt; output3.asm
+</pre>
+
+<pre>
+Loaded disassembler from /home/pavel/jdk8/build/linux-aarch64-normal-client-slowdebug/images/j2sdk-image/jre/lib/aarch64/hsdis-aarch64.so
+Decoding compiled method 0x00007fd632201090:
+Code:
+[Disassembling for mach='aarch64']
+[Entry Point]
+[Verified Entry Point]
+  # {method}
+ {0x00007fd639ca96a0} 'test' '()V' in 'ArrayTest3'
+  #           [sp+0x40]  (sp of caller)
+  ;;  block B4 [0, 0]
+
+  ;; 0xFFFFFFFFFFFF7000
+  0x00007fd632204eb0: movn	xscratch2, #0x8fff  ;   {no_reloc}
+  0x00007fd632204eb4: ldr	xzr, [sp,x9]
+  0x00007fd632204eb8: stp	xfp, xlr, [sp,#-16]!
+  0x00007fd632204ebc: mov	xfp, sp
+  0x00007fd632204ec0: sub	sp, sp, #0x30
+  0x00007fd632204ec4: notify	entry           ;*sipush
+                                                ; - ArrayTest3::test@0 (line 47)
+
+  ;;  block B0 [0, 11]
+
+  ;; 0x1388
+  0x00007fd632204ec8: movz	w3, #0x1388
+  0x00007fd632204ecc: mov	x19, x3
+  0x00007fd632204ed0: ldr	x3, 0x00007fd632204ea0
+                                                ;   {section_word}
+  0x00007fd632204ed4: ubfx	x19, x19, #0, #32
+  0x00007fd632204ed8: mov	x5, x19
+  ;; 0xFFFFFF
+  0x00007fd632204edc: orr	xscratch1, xzr, #0xffffff
+  0x00007fd632204ee0: cmp	x19, xscratch1
+  0x00007fd632204ee4: b.cs	0x00007fd6322050b8
+  ;; 0x1F
+  0x00007fd632204ee8: orr	x4, xzr, #0x1f
+  0x00007fd632204eec: add	x4, x4, w19, uxtw #2
+  0x00007fd632204ef0: and	x4, x4, #0xfffffffffffffff8
+  0x00007fd632204ef4: ldr	x0, [xthread,#112]
+  0x00007fd632204ef8: add	x4, x0, x4, uxtx
+  0x00007fd632204efc: ldr	xscratch1, [xthread,#128]
+  0x00007fd632204f00: cmp	x4, xscratch1
+  0x00007fd632204f04: b.hi	0x00007fd6322050b8
+  0x00007fd632204f08: str	x4, [xthread,#112]
+  0x00007fd632204f0c: sub	x4, x4, x0
+  ;; 0x1
+  0x00007fd632204f10: orr	x2, xzr, #0x1
+  0x00007fd632204f14: str	x2, [x0]
+  0x00007fd632204f18: str	x3, [x0,#8]
+  0x00007fd632204f1c: str	w19, [x0,#16]
+  0x00007fd632204f20: subs	x4, x4, #0x18
+  0x00007fd632204f24: b.eq	0x00007fd63220506c
+  0x00007fd632204f28: tst	x4, #0x7
+  0x00007fd632204f2c: b.eq	0x00007fd632204fa0
+  0x00007fd632204f30: stp	xlr, xzr, [sp,#-16]!
+  0x00007fd632204f34: stp	xthread, xfp, [sp,#-16]!
+  0x00007fd632204f38: stp	xcpool, xheapbase, [sp,#-16]!
+  0x00007fd632204f3c: stp	xlocals, xmonitors, [sp,#-16]!
+  0x00007fd632204f40: stp	xbcp, x23, [sp,#-16]!
+  0x00007fd632204f44: stp	xesp, xdispatch, [sp,#-16]!
+  0x00007fd632204f48: stp	x18, x19, [sp,#-16]!
+  0x00007fd632204f4c: stp	x16, x17, [sp,#-16]!
+  0x00007fd632204f50: stp	x14, x15, [sp,#-16]!
+  0x00007fd632204f54: stp	xmethod, x13, [sp,#-16]!
+  0x00007fd632204f58: stp	x10, x11, [sp,#-16]!
+  0x00007fd632204f5c: stp	xscratch1, xscratch2, [sp,#-16]!
+  0x00007fd632204f60: stp	x6, x7, [sp,#-16]!
+  0x00007fd632204f64: stp	x4, x5, [sp,#-16]!
+  0x00007fd632204f68: stp	x2, x3, [sp,#-16]!
+  0x00007fd632204f6c: stp	x0, x1, [sp,#-16]!
+  ;; 0x7FD63B4D2E28
+  0x00007fd632204f70: movz	x0, #0x2e28
+  0x00007fd632204f74: movk	x0, #0x3b4d, lsl #16
+  0x00007fd632204f78: movk	x0, #0x7fd6, lsl #32
+  ;; 0x7FD63216CE50
+  0x00007fd632204f7c: movz	x1, #0xce50
+  0x00007fd632204f80: movk	x1, #0x3216, lsl #16
+  0x00007fd632204f84: movk	x1, #0x7fd6, lsl #32
+  0x00007fd632204f88: mov	x2, sp
+  ;; 0x7FD63B2AE8E8
+  0x00007fd632204f8c: movz	x3, #0xe8e8
+  0x00007fd632204f90: movk	x3, #0x3b2a, lsl #16
+  0x00007fd632204f94: movk	x3, #0x7fd6, lsl #32
+  0x00007fd632204f98: brx86	x3, 3, 0, 1
+  0x00007fd632204f9c: hlt	#0x0
+  0x00007fd632204fa0: add	x0, x0, #0x18
+  0x00007fd632204fa4: tst	x4, #0x7
+  0x00007fd632204fa8: b.eq	0x00007fd63220501c
+  0x00007fd632204fac: stp	xlr, xzr, [sp,#-16]!
+  0x00007fd632204fb0: stp	xthread, xfp, [sp,#-16]!
+  0x00007fd632204fb4: stp	xcpool, xheapbase, [sp,#-16]!
+  0x00007fd632204fb8: stp	xlocals, xmonitors, [sp,#-16]!
+  0x00007fd632204fbc: stp	xbcp, x23, [sp,#-16]!
+  0x00007fd632204fc0: stp	xesp, xdispatch, [sp,#-16]!
+  0x00007fd632204fc4: stp	x18, x19, [sp,#-16]!
+  0x00007fd632204fc8: stp	x16, x17, [sp,#-16]!
+  0x00007fd632204fcc: stp	x14, x15, [sp,#-16]!
+  0x00007fd632204fd0: stp	xmethod, x13, [sp,#-16]!
+  0x00007fd632204fd4: stp	x10, x11, [sp,#-16]!
+  0x00007fd632204fd8: stp	xscratch1, xscratch2, [sp,#-16]!
+  0x00007fd632204fdc: stp	x6, x7, [sp,#-16]!
+  0x00007fd632204fe0: stp	x4, x5, [sp,#-16]!
+  0x00007fd632204fe4: stp	x2, x3, [sp,#-16]!
+  0x00007fd632204fe8: stp	x0, x1, [sp,#-16]!
+  ;; 0x7FD63B4D2D38
+  0x00007fd632204fec: movz	x0, #0x2d38
+  0x00007fd632204ff0: movk	x0, #0x3b4d, lsl #16
+  0x00007fd632204ff4: movk	x0, #0x7fd6, lsl #32
+  ;; 0x7FD63216CECC
+  0x00007fd632204ff8: movz	x1, #0xcecc
+  0x00007fd632204ffc: movk	x1, #0x3216, lsl #16
+  0x00007fd632205000: movk	x1, #0x7fd6, lsl #32
+  0x00007fd632205004: mov	x2, sp
+  ;; 0x7FD63B2AE8E8
+  0x00007fd632205008: movz	x3, #0xe8e8
+  0x00007fd63220500c: movk	x3, #0x3b2a, lsl #16
+  0x00007fd632205010: movk	x3, #0x7fd6, lsl #32
+  0x00007fd632205014: brx86	x3, 3, 0, 1
+  0x00007fd632205018: hlt	#0x0
+  ;; zero memory
+  0x00007fd63220501c: lsr	x4, x4, #3
+  0x00007fd632205020: mov	xscratch1, x0
+  0x00007fd632205024: tst	x4, #0x1
+  0x00007fd632205028: b.eq	0x00007fd632205034
+  0x00007fd63220502c: str	xzr, [xscratch1],#8
+  0x00007fd632205030: sub	x4, x4, #0x1
+  0x00007fd632205034: mov	x19, xzr
+  0x00007fd632205038: b	0x00007fd632205044
+  0x00007fd63220503c: stp	xzr, x19, [xscratch1],#16
+  0x00007fd632205040: sub	x4, x4, #0x2
+  0x00007fd632205044: tst	x4, #0x7
+  0x00007fd632205048: b.ne	0x00007fd63220503c
+  0x00007fd63220504c: cbz	x4, 0x00007fd632205068
+  0x00007fd632205050: stp	xzr, x19, [xscratch1],#16
+  0x00007fd632205054: stp	xzr, x19, [xscratch1],#16
+  0x00007fd632205058: stp	xzr, x19, [xscratch1],#16
+  0x00007fd63220505c: stp	xzr, x19, [xscratch1],#16
+  0x00007fd632205060: sub	x4, x4, #0x8
+  0x00007fd632205064: cbnz	x4, 0x00007fd632205050
+  0x00007fd632205068: sub	x0, x0, #0x18   ;*newarray
+                                                ; - ArrayTest3::test@3 (line 47)
+
+  ;; 0x0
+  0x00007fd63220506c: movz	w1, #0x0, lsl #16
+  ;;   20 branch [AL] [B1] 
+  0x00007fd632205070: b	0x00007fd632205094      ;*iload_2
+                                                ; - ArrayTest3::test@11 (line 49)
+
+  ;;  block B2 [16, 23]
+
+  ;; 0x1388
+  0x00007fd632205074: movz	w2, #0x1388
+  0x00007fd632205078: add	x3, x0, #0x18
+  0x00007fd63220507c: cmp	w2, w1
+  ;;   40 branch [BE] [RangeCheckStub: 0x1b458] [bci:19]
+  0x00007fd632205080: b.ls	0x00007fd6322050c0
+  0x00007fd632205084: str	w1, [x3,w1,sxtw #2]  ;*iastore
+                                                ; - ArrayTest3::test@19 (line 50)
+
+  0x00007fd632205088: add	w1, w1, #0x1
+  0x00007fd63220508c: adrp	xscratch1, 0x00007fd63bd32000
+                                                ; OopMap{c_rarg0=Oop off=480}
+                                                ;*goto
+                                                ; - ArrayTest3::test@23 (line 49)
+                                                ;   {poll}
+  0x00007fd632205090: ldr	wzr, [xscratch1,#256]  ;*goto
+                                                ; - ArrayTest3::test@23 (line 49)
+                                                ;   {poll}
+  ;;  block B1 [11, 13]
+
+  ;; 0x1388
+  0x00007fd632205094: movz	w2, #0x1388
+  0x00007fd632205098: cmp	w1, w2
+  ;;   28 branch [LT] [B2] 
+  0x00007fd63220509c: b.lt	0x00007fd632205074  ;*if_icmpge
+                                                ; - ArrayTest3::test@13 (line 49)
+
+  ;;  block B3 [26, 26]
+
+  0x00007fd6322050a0: add	sp, sp, #0x30
+  0x00007fd6322050a4: ldp	xfp, xlr, [sp],#16
+  0x00007fd6322050a8: notify	reentry
+  0x00007fd6322050ac: adrp	xscratch1, 0x00007fd63bd32000
+                                                ;   {poll_return}
+  0x00007fd6322050b0: ldr	wzr, [xscratch1,#256]  ;   {poll_return}
+  0x00007fd6322050b4: ret
+  ;; NewTypeArrayStub slow case
+  0x00007fd6322050b8: bl	0x00007fd6321fc550  ; OopMap{off=524}
+                                                ;*newarray
+                                                ; - ArrayTest3::test@3 (line 47)
+                                                ;   {runtime_call}
+  0x00007fd6322050bc: b	0x00007fd63220506c
+  ;; RangeCheckStub slow case
+  0x00007fd6322050c0: mov	xscratch1, x1
+  0x00007fd6322050c4: bl	0x00007fd6321fa2a0  ; OopMap{c_rarg0=Oop off=536}
+                                                ;*iastore
+                                                ; - ArrayTest3::test@19 (line 50)
+                                                ;   {runtime_call}
+  0x00007fd6322050c8: stp	xlr, xzr, [sp,#-16]!
+  0x00007fd6322050cc: stp	xthread, xfp, [sp,#-16]!
+  0x00007fd6322050d0: stp	xcpool, xheapbase, [sp,#-16]!
+  0x00007fd6322050d4: stp	xlocals, xmonitors, [sp,#-16]!
+  0x00007fd6322050d8: stp	xbcp, x23, [sp,#-16]!
+  0x00007fd6322050dc: stp	xesp, xdispatch, [sp,#-16]!
+  0x00007fd6322050e0: stp	x18, x19, [sp,#-16]!
+  0x00007fd6322050e4: stp	x16, x17, [sp,#-16]!
+  0x00007fd6322050e8: stp	x14, x15, [sp,#-16]!
+  0x00007fd6322050ec: stp	xmethod, x13, [sp,#-16]!
+  0x00007fd6322050f0: stp	x10, x11, [sp,#-16]!
+  0x00007fd6322050f4: stp	xscratch1, xscratch2, [sp,#-16]!
+  0x00007fd6322050f8: stp	x6, x7, [sp,#-16]!
+  0x00007fd6322050fc: stp	x4, x5, [sp,#-16]!
+  0x00007fd632205100: stp	x2, x3, [sp,#-16]!
+  0x00007fd632205104: stp	x0, x1, [sp,#-16]!
+  ;; 0x7FD63B4AB0AA
+  0x00007fd632205108: movz	x0, #0xb0aa
+  0x00007fd63220510c: movk	x0, #0x3b4a, lsl #16
+  0x00007fd632205110: movk	x0, #0x7fd6, lsl #32
+  ;; 0x7FD63216CFE8
+  0x00007fd632205114: movz	x1, #0xcfe8
+  0x00007fd632205118: movk	x1, #0x3216, lsl #16
+  0x00007fd63220511c: movk	x1, #0x7fd6, lsl #32
+  0x00007fd632205120: mov	x2, sp
+  ;; 0x7FD63B2AE8E8
+  0x00007fd632205124: movz	x3, #0xe8e8
+  0x00007fd632205128: movk	x3, #0x3b2a, lsl #16
+  0x00007fd63220512c: movk	x3, #0x7fd6, lsl #32
+  0x00007fd632205130: brx86	x3, 3, 0, 1
+  0x00007fd632205134: hlt	#0x0
+  0x00007fd632205138: nop
+  0x00007fd63220513c: nop
+  ;; Unwind handler
+  0x00007fd632205140: ldr	x0, [xthread,#704]
+  0x00007fd632205144: str	xzr, [xthread,#704]
+  0x00007fd632205148: str	xzr, [xthread,#712]
+  ;; remove_frame and dispatch to the unwind handler
+  0x00007fd63220514c: add	sp, sp, #0x30
+  0x00007fd632205150: ldp	xfp, xlr, [sp],#16
+  0x00007fd632205154: notify	reentry
+  0x00007fd632205158: b	0x00007fd6321f9d60      ;   {runtime_call}
+  0x00007fd63220515c: .inst	0x00000000 ; undefined
+[Exception Handler]
+[Stub Code]
+  0x00007fd632205160: movz	x19, #0xdead    ;   {no_reloc}
+  0x00007fd632205164: movz	x2, #0xd
+  0x00007fd632205168: movz	x4, #0xdead
+  0x00007fd63220516c: movz	x5, #0xdead
+  0x00007fd632205170: bl	0x00007fd6321fe1a0  ;   {runtime_call}
+  0x00007fd632205174: stp	xlr, xzr, [sp,#-16]!
+  0x00007fd632205178: stp	xthread, xfp, [sp,#-16]!
+  0x00007fd63220517c: stp	xcpool, xheapbase, [sp,#-16]!
+  0x00007fd632205180: stp	xlocals, xmonitors, [sp,#-16]!
+  0x00007fd632205184: stp	xbcp, x23, [sp,#-16]!
+  0x00007fd632205188: stp	xesp, xdispatch, [sp,#-16]!
+  0x00007fd63220518c: stp	x18, x19, [sp,#-16]!
+  0x00007fd632205190: stp	x16, x17, [sp,#-16]!
+  0x00007fd632205194: stp	x14, x15, [sp,#-16]!
+  0x00007fd632205198: stp	xmethod, x13, [sp,#-16]!
+  0x00007fd63220519c: stp	x10, x11, [sp,#-16]!
+  0x00007fd6322051a0: stp	xscratch1, xscratch2, [sp,#-16]!
+  0x00007fd6322051a4: stp	x6, x7, [sp,#-16]!
+  0x00007fd6322051a8: stp	x4, x5, [sp,#-16]!
+  0x00007fd6322051ac: stp	x2, x3, [sp,#-16]!
+  0x00007fd6322051b0: stp	x0, x1, [sp,#-16]!
+  0x00007fd6322051b4: movz	x0, #0xb0aa
+  0x00007fd6322051b8: movk	x0, #0x3b4a, lsl #16
+  0x00007fd6322051bc: movk	x0, #0x7fd6, lsl #32
+  0x00007fd6322051c0: movz	x1, #0xc9a4
+  0x00007fd6322051c4: movk	x1, #0x321e, lsl #16
+  0x00007fd6322051c8: movk	x1, #0x7fd6, lsl #32
+  0x00007fd6322051cc: mov	x2, sp
+  0x00007fd6322051d0: movz	x3, #0xe8e8
+  0x00007fd6322051d4: movk	x3, #0x3b2a, lsl #16
+  0x00007fd6322051d8: movk	x3, #0x7fd6, lsl #32
+  0x00007fd6322051dc: brx86	x3, 3, 0, 1
+  0x00007fd6322051e0: hlt	#0x0
+[Deopt Handler Code]
+  0x00007fd6322051e4: adr	xlr, 0x00007fd6322051e4
+  0x00007fd6322051e8: b	0x00007fd632148cb0      ;   {runtime_call}
+  0x00007fd6322051ec: .inst	0x00000000 ; undefined
+</pre>
+
+<p>Generované instrukce budou pravděpodobně pro většinu čtenářů poněkud méně
+srozumitelné, takže si některé z&nbsp;nich popíšeme. Většina aritmetických a
+logických instrukcí používá takzvaný tříadresový kód, tj.&nbsp;pracuje se třemi
+registry &ndash; dvěma registry zdrojovými a jedním registrem cílovým (celkem
+je k&nbsp;dispozici 31 registrů R0 až R30). U některých instrukcí lze namísto
+druhého zdrojového registru použít i celočíselnou konstantu. Dalšími
+instrukcemi jsou skoky, tyto instrukce vždy začínají písmenem
+<strong>b</strong>. Zvláštní skupinu pak tvoří instrukce pro přenosy dat. Pokud
+některé registry začínají písmenem <strong>w</strong>, značí to použití dolních
+32 bitů z&nbsp;64 bitů:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Stručný popis</th></tr>
+<tr><td> 1</td><td>add </td><td>x,y,z součet x=y+z</td></tr>
+<tr><td> 2</td><td>add </td><td>x,y,#const součet x=y+konstanta</td></tr>
+<tr><td> 3</td><td>sub </td><td>rozdíl</td></tr>
+<tr><td> 4</td><td>and </td><td>bitový součin</td></tr>
+<tr><td> 5</td><td>orr </td><td>bitový součet</td></tr>
+<tr><td> 6</td><td>lsl </td><td>bitový posun</td></tr>
+<tr><td> 7</td><td>neg </td><td>negace (jen dva operandy)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>b   </td><td>skok</td></tr>
+<tr><td> 9</td><td>bl  </td><td>skok do podprogramu (branch and link)</td></tr>
+<tr><td>10</td><td>ret </td><td>návrat z podprogramu</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>mov  </td><td>klasický přesun dat</td></tr>
+<tr><td>12</td><td>movz </td><td>načtení 16bitové konstanty (zbylých 16 či 48 bitů se vynuluje)</td></tr>
+<tr><td>13</td><td>movn </td><td>jako movz, ale konstanta je negována (vhodné pro malá záporná čísla)</td></tr>
+<tr><td>14</td><td>movk </td><td>načtení 16bitové konstanty do bitů 16-32, zbylé bity jsou ponechány na původní hodnotě</td></tr>
+<tr><td>15</td><td>ldr  </td><td>načtení dat z paměti</td></tr>
+<tr><td>16</td><td>str  </td><td>uložení registru do paměti</td></tr>
+<tr><td>17</td><td>ldp  </td><td>načtení registrového páru z paměti</td></tr>
+<tr><td>18</td><td>stp  </td><td>uložení registrového páru do paměti</td></tr>
+</table>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Složitější příklad &ndash; výpočty ve formátu pohyblivé (plovoucí) řádové čárky</h2>
+
+<p>V&nbsp;předchozích kapitolách jsme si ukázali, jakým způsobem se podařilo
+JIT překladačům typu client i server přeložit velmi jednoduchou počítanou
+programovou smyčku, v&nbsp;níž se přistupovalo do pole. Zajímavé bude se
+podívat na to, jak vypadá překlad metod, v&nbsp;nichž se provádí výpočty ve
+formátu pohyblivé (plovoucí) řádové čárky; konkrétně výpočty s&nbsp;hodnotami
+typu <i>double</i>. Následující demonstrační příklad vypočítá a vykreslí výřez
+ze známé Mandelbrotovy množiny (<a
+href="http://www.root.cz/clanky/fraktaly-v-pocitacove-grafice-xii/">http://www.root.cz/clanky/fraktaly-v-pocitacove-grafice-xii/</a>,
+<a
+href="http://www.root.cz/clanky/fraktaly-v-pocitacove-grafice-xiii/">http://www.root.cz/clanky/fraktaly-v-pocitacove-grafice-xiii/</a>).
+Při výpočtech se iterativně (ve smyčce) provádí výpočty s&nbsp;několika
+proměnnými typu <i>double</i>, takže by se zde měly projevit výhody
+optimalizujících JIT překladačů typu server:</p>
+
+<pre>
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBuffer;
+import java.io.File;
+import java.io.IOException;
+&nbsp;
+import javax.imageio.ImageIO;
+&nbsp;
+<i>/**</i>
+<i> * Priklad, na kterem si ukazeme pouziti JIT prekladace</i>
+<i> * pri prekladu vypoctu s cisly typu double.</i>
+<i> *</i>
+<i> * @autor Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>MandelbrotRenderer</strong> {
+&nbsp;
+    <i>/**</i>
+<i>     * Prefix jmena souboru s vygenerovanou bitmapou.</i>
+<i>     */</i>
+    private static final String <strong>OUTPUT_FILE_NAME_PREFIX</strong> = "mandelbrot";
+&nbsp;
+    <i>/**</i>
+<i>     * Horizontalni rozmer bitmapy.</i>
+<i>     */</i>
+    private static final int <strong>IMAGE_HEIGHT</strong> = 1024;
+&nbsp;
+    <i>/**</i>
+<i>     * Vertikalni rozmer bitmapy.</i>
+<i>     */</i>
+    private static final int <strong>IMAGE_WIDTH</strong> = 1024;
+&nbsp;
+    <i>/**</i>
+<i>     * Vypocet jedne iterace</i>
+<i>     * @param x realna cast komplexniho cisla C</i>
+<i>     * @param y imaginarni cast komplexniho cisla C</i>
+<i>     * @param maxiter</i>
+<i>     * @return</i>
+<i>     */</i>
+    static int <strong>iteration</strong>(double x, double y, int maxiter)
+    {
+        double zx = 0, zy = 0, cx = x, cy = y, zx2 = 0, zy2 = 0;
+        int    iter=0;
+&nbsp;
+        <i>// iteracni smycka Z=Z^2+C</i>
+        for (iter = 0; iter &lt; maxiter; iter++) {
+            zx2 = zx * zx;
+            zy2 = zy * zy;
+            <i>// kdyz |Z|&gt;2 ukonci smycku</i>
+            if (zx2 + zy2 &gt; 4.0) {
+                break;
+            }
+            zy = 2.0 * zx * zy + cy;
+            zx = zx2 - zy2 + cx;
+        }
+        return iter;
+    }
+&nbsp;
+    <i>/**</i>
+<i>     * Vypocet a zobrazeni vyrezu Mandelbrotovy mnoziny.</i>
+<i>     */</i>
+    static void <strong>calculateMandelbrot</strong>(BufferedImage image)
+    {
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+&nbsp;
+        <i>// umozneni pristupu k jednotlivym pixelum</i>
+        DataBuffer dataBuffer = image.getRaster().getDataBuffer();
+&nbsp;
+        <i>// vlastni naplneni bitmapy</i>
+        int index = 0;
+        double cy = -0.18;
+        for (int y = 0; y &lt; height; y++) {
+            double cx = -.8;
+            for (int x = 0; x &lt; width; x++) {
+                <i>// barva pixelu</i>
+                final int iter = 0xff - iteration(cx, cy, 255);
+                <i>// zapis barvy pixelu</i>
+                dataBuffer.setElem(index, iter);
+                cx += 0.07 / width;
+                index++;
+            }
+            cy += 0.07 / height;
+        }
+    }
+&nbsp;
+    <i>/**</i>
+<i>     * Vytvoreni nove bitmapy se stupni sedi.</i>
+<i>     *</i>
+<i>     * @return nove vytvorena bitmapa</i>
+<i>     */</i>
+    private static BufferedImage <strong>createEmptyImage</strong>() {
+        return new BufferedImage(IMAGE_WIDTH, IMAGE_HEIGHT, BufferedImage.TYPE_BYTE_GRAY);
+    }
+&nbsp;
+    <i>/**</i>
+<i>     * Zapis bitmapy na disk ve formatu PNG.</i>
+<i>     * </i>
+<i>     * @param image</i>
+<i>     *            testovaci bitmapa</i>
+<i>     * @throws IOException</i>
+<i>     */</i>
+    private static void <strong>writeImageIntoFile</strong>(BufferedImage image, String fileName) throws IOException {
+        ImageIO.write(image, "png", new File(fileName));
+    }
+&nbsp;
+    <i>/**</i>
+<i>     * Vypocet a zobrazeni vyrezu Mandelbrotovy mnoziny.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) throws IOException {
+        <i>// vytvoreni bitmapy</i>
+        BufferedImage image = createEmptyImage();
+&nbsp;
+        long t1 = System.nanoTime();
+        calculateMandelbrot(image);
+        long t2 = System.nanoTime();
+        System.out.println("Time: " + (long) (t2 - t1));
+&nbsp;
+        <i>// zapis bitmapy na disk</i>
+        writeImageIntoFile(image, OUTPUT_FILE_NAME_PREFIX + ".png");
+    }
+&nbsp;
+}
+</pre>
+
+<p>Vykreslený obrázek vypadá následovně:</p>
+
+<a href="http://i.iinfo.cz/images/12/mandel.png"><img src="http://i.iinfo.cz/images/12/mandel-prev.png" class="image-145955" width="270" height="270" alt="&#160;" /></a>
+
+<p>Bajtkód metody <strong>MandelbrotRenderer.iteration()</strong>:</p>
+
+<pre>
+  static int iteration(double, double, int);
+    Code:
+       0: dconst_0      
+       1: dstore        5
+       3: dconst_0      
+       4: dstore        7
+       6: dload_0       
+       7: dstore        9
+       9: dload_2       
+      10: dstore        11
+      12: dconst_0      
+      13: dstore        13
+      15: dconst_0      
+      16: dstore        15
+      18: iconst_0      
+      19: istore        17
+      21: iconst_0      
+      22: istore        17
+      24: iload         17
+      26: iload         4
+      28: if_icmpge     90
+      31: dload         5
+      33: dload         5
+      35: dmul          
+      36: dstore        13
+      38: dload         7
+      40: dload         7
+      42: dmul          
+      43: dstore        15
+      45: dload         13
+      47: dload         15
+      49: dadd          
+      50: ldc2_w        #2                  // double 4.0d
+      53: dcmpl         
+      54: ifle          60
+      57: goto          90
+      60: ldc2_w        #4                  // double 2.0d
+      63: dload         5
+      65: dmul          
+      66: dload         7
+      68: dmul          
+      69: dload         11
+      71: dadd          
+      72: dstore        7
+      74: dload         13
+      76: dload         15
+      78: dsub          
+      79: dload         9
+      81: dadd          
+      82: dstore        5
+      84: iinc          17, 1
+      87: goto          24
+      90: iload         17
+      92: ireturn       
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Generovaný kód v&nbsp;symbolickém formátu (C1 překladač)</h2>
+
+<p>V&nbsp;této kapitole nás bude zajímat především to, jakým způsobem dokázal
+JIT překladač typu client přeložit metodu
+<strong>MandelbrotRenderer.iteration</strong>. Povšimněte si, že na začátku
+výpisu je uvedeno, které registry jsou použity pro předávání parametrů do
+přeložené metody (tuto informaci jsme v&nbsp;předchozích výpisech neviděli,
+protože metoda <strong>ArrayTest3.test()</strong> žádné parametry
+neakceptovala):</p>
+
+<pre>
+Java HotSpot(TM) Client VM warning: PrintAssembly is enabled; turning on DebugNonSafepoints to gain additional output
+Loaded disassembler from hsdis-i386.so
+Decoding compiled method 0x00a00bc8:
+Code:
+[Constants]
+  0x00a00cc0 (offset:    0): 0x00000000   0x4010000000000000
+  0x00a00cc4 (offset:    4): 0x40100000
+  0x00a00cc8 (offset:    8): 0x00000000   0x4000000000000000
+  0x00a00ccc (offset:   12): 0x40000000
+[Disassembling for mach='i386']
+[Entry Point]
+[Verified Entry Point]
+  # {method} 'iteration' '(DDI)I' in 'MandelbrotRenderer'
+  # parm0:    xmm0:xmm0   = double
+  # parm1:    xmm1:xmm1   = double
+  # parm2:    ecx       = int
+  #           [sp+0x20]  (sp of caller)
+  0x00a00cd0: mov    %eax,0xffffc000(%esp)  ;   {no_reloc}
+  0x00a00cd7: push   %ebp
+  0x00a00cd8: sub    $0x18,%esp         ;*dconst_0
+                                        ; - MandelbrotRenderer::iteration@0 (line 40)
+  0x00a00cdb: mov    $0x0,%eax
+  0x00a00ce0: xorpd  %xmm2,%xmm2
+  0x00a00ce4: xorpd  %xmm3,%xmm3
+  0x00a00ce8: jmp    0x00a00d47         ;*iload
+                                        ; - MandelbrotRenderer::iteration@24 (line 44)
+  0x00a00ced: xchg   %ax,%ax
+  0x00a00cf0: movsd  %xmm3,%xmm4
+  0x00a00cf4: mulsd  %xmm3,%xmm4
+  0x00a00cf8: movsd  %xmm2,%xmm5
+  0x00a00cfc: mulsd  %xmm2,%xmm5
+  0x00a00d00: movsd  %xmm4,%xmm6
+  0x00a00d04: addsd  %xmm5,%xmm6
+  0x00a00d08: movsd  0xa00cc0,%xmm7     ;   {section_word}
+  0x00a00d10: ucomisd %xmm7,%xmm6
+  0x00a00d14: jp     0x00a00d20
+  0x00a00d1a: ja     0x00a00d4b         ;*dcmpl
+                                        ; - MandelbrotRenderer::iteration@53 (line 48)
+  0x00a00d20: mulsd  0xa00cc8,%xmm3     ;   {section_word}
+  0x00a00d28: mulsd  %xmm2,%xmm3
+  0x00a00d2c: addsd  %xmm1,%xmm3
+  0x00a00d30: subsd  %xmm5,%xmm4
+  0x00a00d34: addsd  %xmm0,%xmm4
+  0x00a00d38: inc    %eax               ; OopMap{off=105}
+                                        ;*goto
+                                        ; - MandelbrotRenderer::iteration@87 (line 44)
+  0x00a00d39: test   %eax,0x940100      ;   {poll}
+  0x00a00d3f: movsd  %xmm3,%xmm2
+  0x00a00d43: movsd  %xmm4,%xmm3        ;*goto
+                                        ; - MandelbrotRenderer::iteration@87 (line 44)
+  0x00a00d47: cmp    %ecx,%eax
+  0x00a00d49: jl     0x00a00cf0         ;*if_icmpge
+                                        ; - MandelbrotRenderer::iteration@28 (line 44)
+  0x00a00d4b: add    $0x18,%esp
+  0x00a00d4e: pop    %ebp
+  0x00a00d4f: test   %eax,0x940100      ;   {poll_return}
+  0x00a00d55: ret    
+  0x00a00d56: nop    
+  0x00a00d57: nop    
+  0x00a00d58: mov    %fs:0x0,%esi
+  0x00a00d60: mov    0xfffffff4(%esi),%esi
+  0x00a00d63: mov    0x188(%esi),%eax
+  0x00a00d69: movl   $0x0,0x188(%esi)
+  0x00a00d73: movl   $0x0,0x18c(%esi)
+  0x00a00d7d: add    $0x18,%esp
+  0x00a00d80: pop    %ebp
+  0x00a00d81: jmp    0x009abb80         ;   {runtime_call}
+  0x00a00d86: hlt    
+  0x00a00d87: hlt    
+  0x00a00d88: hlt    
+  0x00a00d89: hlt    
+  0x00a00d8a: hlt    
+  0x00a00d8b: hlt    
+  0x00a00d8c: hlt    
+  0x00a00d8d: hlt    
+  0x00a00d8e: hlt    
+  0x00a00d8f: hlt    
+[Exception Handler]
+[Stub Code]
+  0x00a00d90: call   0x009ffb40         ;   {no_reloc}
+  0x00a00d95: push   $0x6eb63690        ;   {external_word}
+  0x00a00d9a: call   0x00a00d9f
+  0x00a00d9f: pusha  
+  0x00a00da0: call   0x6ea45f60         ;   {runtime_call}
+  0x00a00da5: hlt    
+[Deopt Handler Code]
+  0x00a00da6: push   $0xa00da6          ;   {section_word}
+  0x00a00dab: jmp    0x0099ca70         ;   {runtime_call}
+</pre>
+
+<p>(opět zde můžeme vidět použití zdánlivě nelogické instrukce <strong>test
+%eax,0x940100</strong>). Registr EAX totiž obsahuje počitadlo iterací, které je
+%porovnáváno s&nbsp;registrem ECX obsahujícím předávaný maximální počet
+%iterací.</p>
+
+<p>Výsledek překladu je možná poněkud překvapivý, protože jsou zde využity
+registry XMM0 až XMM7, které jsou dostupné v&nbsp;rozšíření instrukční sady
+<i>SSE2</i>. Fakt, že JIT překladač tyto instrukce generuje, byl zajištěn
+testem možností mikroprocesoru na začátku spuštění JVM. Poznámka: instrukce
+končící písmenem "D" jsou prováděny s&nbsp;hodnotami typu <i>double</i>, pokud
+instrukce navíc končí dvojicí znaků "SD", jedná se o skalární operace (SSE2
+podporuje i vektorové operace).</p>
+
+<p>V&nbsp;následující tabulce jsou vypsány některé instrukce použité
+v&nbsp;přeložené metodě:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Operace/funkce</th><th>Struktura vektoru</th><th>Datový typ</th><th>Saturace?</th><th>Poznámka</th></tr>
+<tr><td>1</td><td>movsd  </td><td>přesun            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>&nbsp;</td></tr>
+<tr><td>2</td><td>addsd  </td><td>součet            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td>3</td><td>subsd  </td><td>rozdíl            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+<tr><td>4</td><td>mulsd  </td><td>součin            </td><td>1&times;64bit</td><td>double  </td><td>&times;</td><td>operace provedena jen s&nbsp;pravým prvkem vektorů</td></tr>
+</table>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Generovaný kód v&nbsp;symbolickém formátu (C2 překladač)</h2>
+
+<p>Nikoho asi nepřekvapí, že JIT překladači typu server (C2) se podařilo
+poměrně elegantním způsobem celou programovou smyčku rozbalit a kód tak
+(zde dosti výrazným způsobem) urychlit:</p>
+
+<pre>
+Java HotSpot(TM) Server VM warning: PrintAssembly is enabled; turning on DebugNonSafepoints to gain additional output
+Loaded disassembler from hsdis-i386.so
+Decoding compiled method 0x009b95c8:
+Code:
+[Constants]
+  0x009b96e0 (offset:    0): 0x00000000   0x4000000000000000
+  0x009b96e4 (offset:    4): 0x40000000
+  0x009b96e8 (offset:    8): 0x00000000   0x0000000000000000
+  0x009b96ec (offset:   12): 0x00000000
+  0x009b96f0 (offset:   16): 0x00000000   0x4010000000000000
+  0x009b96f4 (offset:   20): 0x40100000
+  0x009b96f8 (offset:   24): 0xf4f4f4f4   0xf4f4f4f4f4f4f4f4
+  0x009b96fc (offset:   28): 0xf4f4f4f4
+[Disassembling for mach='i386']
+[Entry Point]
+[Verified Entry Point]
+  # {method} 'iteration' '(DDI)I' in 'MandelbrotRenderer'
+  # parm0:    xmm0:xmm0   = double
+  # parm1:    xmm1:xmm1   = double
+  # parm2:    ecx       = int
+  #           [sp+0x10]  (sp of caller)
+  0x009b9700: sub    $0xc,%esp          ;   {no_reloc}
+  0x009b9706: mov    %ebp,0x8(%esp)     ;*synchronization entry
+                                        ; - MandelbrotRenderer::iteration@-1 (line 40)
+  0x009b970a: test   %ecx,%ecx
+  0x009b970c: jle    0x009b98da         ;*if_icmpge
+                                        ; - MandelbrotRenderer::iteration@28 (line 44)
+  0x009b9712: mov    %ecx,%ebx
+  0x009b9714: add    $0xfffffffd,%ebx
+  0x009b9717: mov    $0x1,%eax
+  0x009b971c: movsd  %xmm1,%xmm3
+  0x009b9720: addsd  0x9b96e8,%xmm3     ;*dadd
+                                        ; - MandelbrotRenderer::iteration@71 (line 51)
+                                        ;   {section_word}
+  0x009b9728: movsd  %xmm0,%xmm4
+  0x009b972c: addsd  0x9b96e8,%xmm4     ;*dadd
+                                        ; - MandelbrotRenderer::iteration@81 (line 52)
+                                        ;   {section_word}
+  0x009b9734: movsd  %xmm3,%xmm7
+  0x009b9738: mulsd  %xmm3,%xmm7        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@42 (line 46)
+  0x009b973c: movsd  %xmm4,%xmm5
+  0x009b9740: mulsd  %xmm4,%xmm5        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@35 (line 45)
+  0x009b9744: movsd  0x9b96f0,%xmm6     ;   {section_word}
+  0x009b974c: mov    $0x80000000,%ebp
+  0x009b9751: cmp    %ebx,%ecx
+  0x009b9753: cmovl  %ebp,%ebx
+  0x009b9756: cmp    $0x1,%ebx
+  0x009b9759: jg     0x009b9772
+  0x009b975b: mov    $0x1,%edi
+  0x009b9760: xor    %eax,%eax
+  0x009b9762: jmp    0x009b986a
+  0x009b9767: nopw   0x0(%eax,%eax,1)
+  0x009b9770: mov    %edi,%eax          ;*dload
+                                        ; - MandelbrotRenderer::iteration@31 (line 45)
+  0x009b9772: movsd  %xmm7,%xmm2
+  0x009b9776: addsd  %xmm5,%xmm2
+  0x009b977a: ucomisd %xmm6,%xmm2
+  0x009b977e: ja     0x009b98cf         ;*ifle
+                                        ; - MandelbrotRenderer::iteration@54 (line 48)
+  0x009b9784: subsd  %xmm7,%xmm5
+  0x009b9788: mulsd  0x9b96e0,%xmm4     ;   {section_word}
+  0x009b9790: addsd  %xmm0,%xmm5        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@81 (line 52)
+  0x009b9794: mulsd  %xmm3,%xmm4
+  0x009b9798: movsd  %xmm5,%xmm7
+  0x009b979c: mulsd  %xmm5,%xmm7        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@35 (line 45)
+  0x009b97a0: addsd  %xmm1,%xmm4        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@71 (line 51)
+  0x009b97a4: movsd  %xmm4,%xmm2
+  0x009b97a8: mulsd  %xmm4,%xmm2        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@42 (line 46)
+  0x009b97ac: movsd  %xmm2,%xmm3
+  0x009b97b0: addsd  %xmm7,%xmm3
+  0x009b97b4: ucomisd %xmm6,%xmm3
+  0x009b97b8: ja     0x009b98c4         ;*ifle
+                                        ; - MandelbrotRenderer::iteration@54 (line 48)
+  0x009b97be: mulsd  0x9b96e0,%xmm5     ;   {section_word}
+  0x009b97c6: subsd  %xmm2,%xmm7
+  0x009b97ca: mulsd  %xmm4,%xmm5
+  0x009b97ce: addsd  %xmm0,%xmm7        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@81 (line 52)
+  0x009b97d2: addsd  %xmm1,%xmm5        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@71 (line 51)
+  0x009b97d6: movsd  %xmm7,%xmm3
+  0x009b97da: mulsd  %xmm7,%xmm3        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@35 (line 45)
+  0x009b97de: movsd  %xmm5,%xmm2
+  0x009b97e2: mulsd  %xmm5,%xmm2        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@42 (line 46)
+  0x009b97e6: movsd  %xmm2,%xmm4
+  0x009b97ea: addsd  %xmm3,%xmm4
+  0x009b97ee: ucomisd %xmm6,%xmm4
+  0x009b97f2: ja     0x009b98c7         ;*ifle
+                                        ; - MandelbrotRenderer::iteration@54 (line 48)
+  0x009b97f8: subsd  %xmm2,%xmm3
+  0x009b97fc: mulsd  0x9b96e0,%xmm7     ;   {section_word}
+  0x009b9804: addsd  %xmm0,%xmm3        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@81 (line 52)
+  0x009b9808: mulsd  %xmm5,%xmm7
+  0x009b980c: movsd  %xmm3,%xmm4
+  0x009b9810: mulsd  %xmm3,%xmm4        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@35 (line 45)
+  0x009b9814: addsd  %xmm1,%xmm7        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@71 (line 51)
+  0x009b9818: movsd  %xmm7,%xmm2
+  0x009b981c: mulsd  %xmm7,%xmm2        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@42 (line 46)
+  0x009b9820: movsd  %xmm4,%xmm5
+  0x009b9824: addsd  %xmm2,%xmm5
+  0x009b9828: ucomisd %xmm6,%xmm5
+  0x009b982c: ja     0x009b98cc         ;*ifle
+                                        ; - MandelbrotRenderer::iteration@54 (line 48)
+  0x009b9832: subsd  %xmm2,%xmm4
+  0x009b9836: mulsd  0x9b96e0,%xmm3     ;   {section_word}
+  0x009b983e: addsd  %xmm0,%xmm4        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@81 (line 52)
+  0x009b9842: mulsd  %xmm7,%xmm3
+  0x009b9846: movsd  %xmm4,%xmm5
+  0x009b984a: mulsd  %xmm4,%xmm5        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@35 (line 45)
+  0x009b984e: addsd  %xmm1,%xmm3        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@71 (line 51)
+  0x009b9852: movsd  %xmm3,%xmm7
+  0x009b9856: mulsd  %xmm3,%xmm7        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@42 (line 46)
+  0x009b985a: mov    %eax,%edi
+  0x009b985c: add    $0x4,%edi          ;*iinc
+                                        ; - MandelbrotRenderer::iteration@84 (line 44)
+  0x009b985f: cmp    %ebx,%edi
+  0x009b9861: jl     0x009b9770         ;*if_icmpge
+                                        ; - MandelbrotRenderer::iteration@28 (line 44)
+  0x009b9867: add    $0x3,%eax          ;*iinc
+                                        ; - MandelbrotRenderer::iteration@84 (line 44)
+  0x009b986a: cmp    %ecx,%edi
+  0x009b986c: jl     0x009b98aa
+  0x009b986e: mov    %eax,%edi
+  0x009b9870: jmp    0x009b98bf
+  0x009b9872: xchg   %ax,%ax
+  0x009b9874: subsd  %xmm7,%xmm5
+  0x009b9878: movsd  %xmm4,%xmm2
+  0x009b987c: mulsd  0x9b96e0,%xmm2     ;   {section_word}
+  0x009b9884: movsd  %xmm5,%xmm4
+  0x009b9888: addsd  %xmm0,%xmm4        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@81 (line 52)
+  0x009b988c: mulsd  %xmm3,%xmm2
+  0x009b9890: movsd  %xmm4,%xmm5
+  0x009b9894: mulsd  %xmm4,%xmm5        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@35 (line 45)
+  0x009b9898: movsd  %xmm2,%xmm3
+  0x009b989c: addsd  %xmm1,%xmm3        ;*dadd
+                                        ; - MandelbrotRenderer::iteration@71 (line 51)
+  0x009b98a0: movsd  %xmm3,%xmm7
+  0x009b98a4: mulsd  %xmm3,%xmm7        ;*dmul
+                                        ; - MandelbrotRenderer::iteration@42 (line 46)
+  0x009b98a8: mov    %ebx,%edi          ;*dload
+                                        ; - MandelbrotRenderer::iteration@31 (line 45)
+  0x009b98aa: movsd  %xmm5,%xmm2
+  0x009b98ae: addsd  %xmm7,%xmm2
+  0x009b98b2: ucomisd %xmm6,%xmm2
+  0x009b98b6: ja     0x009b98de         ;*ifle
+                                        ; - MandelbrotRenderer::iteration@54 (line 48)
+  0x009b98b8: mov    %edi,%ebx
+  0x009b98ba: inc    %ebx               ;*iinc
+                                        ; - MandelbrotRenderer::iteration@84 (line 44)
+  0x009b98bb: cmp    %ecx,%ebx
+  0x009b98bd: jl     0x009b9874         ;*if_icmpge
+                                        ; - MandelbrotRenderer::iteration@28 (line 44)
+  0x009b98bf: mov    %edi,%eax
+  0x009b98c1: inc    %eax
+  0x009b98c2: jmp    0x009b98cf
+  0x009b98c4: inc    %eax
+  0x009b98c5: jmp    0x009b98cf
+  0x009b98c7: add    $0x2,%eax
+  0x009b98ca: jmp    0x009b98cf
+  0x009b98cc: add    $0x3,%eax          ;*goto
+                                        ; - MandelbrotRenderer::iteration@57 (line 49)
+  0x009b98cf: add    $0x8,%esp
+  0x009b98d2: pop    %ebp
+  0x009b98d3: test   %eax,0x940000      ;   {poll_return}
+  0x009b98d9: ret    
+  0x009b98da: xor    %eax,%eax
+  0x009b98dc: jmp    0x009b98cf
+  0x009b98de: mov    %edi,%eax
+  0x009b98e0: jmp    0x009b98cf
+  0x009b98e2: hlt    
+  0x009b98e3: hlt    
+  0x009b98e4: hlt    
+  0x009b98e5: hlt    
+  0x009b98e6: hlt    
+  0x009b98e7: hlt    
+  0x009b98e8: hlt    
+  0x009b98e9: hlt    
+  0x009b98ea: hlt    
+  0x009b98eb: hlt    
+  0x009b98ec: hlt    
+  0x009b98ed: hlt    
+  0x009b98ee: hlt    
+  0x009b98ef: hlt    
+  0x009b98f0: hlt    
+  0x009b98f1: hlt    
+  0x009b98f2: hlt    
+  0x009b98f3: hlt    
+  0x009b98f4: hlt    
+  0x009b98f5: hlt    
+  0x009b98f6: hlt    
+  0x009b98f7: hlt    
+  0x009b98f8: hlt    
+  0x009b98f9: hlt    
+  0x009b98fa: hlt    
+  0x009b98fb: hlt    
+  0x009b98fc: hlt    
+  0x009b98fd: hlt    
+  0x009b98fe: hlt    
+  0x009b98ff: hlt    
+[Exception Handler]
+[Stub Code]
+  0x009b9900: jmp    0x009b7d00         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b9905: push   $0x9b9905          ;   {section_word}
+  0x009b990a: jmp    0x0099e280         ;   {runtime_call}
+  0x009b990f: hlt    
+Decoding compiled method 0x009b7dc8:
+Code:
+[Entry Point]
+</pre>
+
+<p>Instrukce <strong>htl</strong> (halt) na konci metody slouží především pro
+zarovnání strojového kódu.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Generovaný kód v&nbsp;symbolickém formátu (AArch64)</h2>
+
+<p>Na platformě <i>ARM 64/AArch64</i> bude vygenerovaný strojový kód vypadat po
+svém disasemblování následovně:</p>
+
+<pre>
+Loaded disassembler from /home/pavel/jdk8/build/linux-aarch64-normal-client-slowdebug/images/j2sdk-image/jre/lib/aarch64/hsdis-aarch64.so
+Decoding compiled method 0x00007fcdf8cd8a10:
+Code:
+[Constants]
+  0x00007fcdf8cd8b60 (offset:    0): 0x00000000   0x4010000000000000
+  0x00007fcdf8cd8b64 (offset:    4): 0x40100000
+  0x00007fcdf8cd8b68 (offset:    8): 0x00000000   0x4000000000000000
+  0x00007fcdf8cd8b6c (offset:   12): 0x40000000
+[Disassembling for mach='aarch64']
+[Entry Point]
+[Verified Entry Point]
+  # {method}
+ {0x00007fcdfaed3770} 'iteration' '(DDI)I' in 'MandelbrotRenderer'
+  # parm0:    v0:v0     = double
+  # parm1:    v1:v1     = double
+  # parm2:    c_rarg1   = int
+  #           [sp+0x50]  (sp of caller)
+  ;;  block B6 [0, 0]
+
+  ;; 0xFFFFFFFFFFFF7000
+  0x00007fcdf8cd8b70: movn	xscratch2, #0x8fff  ;   {no_reloc}
+  0x00007fcdf8cd8b74: ldr	xzr, [sp,x9]
+  0x00007fcdf8cd8b78: stp	xfp, xlr, [sp,#-16]!
+  0x00007fcdf8cd8b7c: mov	xfp, sp
+  0x00007fcdf8cd8b80: sub	sp, sp, #0x40
+  0x00007fcdf8cd8b84: notify	entry           ;*dconst_0
+                                                ; - MandelbrotRenderer::iteration@0 (line 40)
+
+  ;;  block B0 [0, 24]
+
+  ;; 0x0
+  0x00007fcdf8cd8b88: movz	w0, #0x0, lsl #16
+  0x00007fcdf8cd8b8c: fmov	d2, xzr
+  0x00007fcdf8cd8b90: fmov	d3, xzr
+  ;;   20 branch [AL] [B1] 
+  0x00007fcdf8cd8b94: b	0x00007fcdf8cd8bdc      ;*iload
+                                                ; - MandelbrotRenderer::iteration@24 (line 44)
+
+  ;;  block B2 [31, 53]
+
+  0x00007fcdf8cd8b98: fmul	d4, d3, d3
+  0x00007fcdf8cd8b9c: fmul	d5, d2, d2
+  0x00007fcdf8cd8ba0: fadd	d6, d4, d5
+  0x00007fcdf8cd8ba4: adr	xscratch1, 0x00007fcdf8cd8b60
+                                                ;   {section_word}
+  0x00007fcdf8cd8ba8: ldr	d7, [xscratch1]
+  0x00007fcdf8cd8bac: fcmp	d6, d7
+  0x00007fcdf8cd8bb0: b.gt	0x00007fcdf8cd8be4  ;*dcmpl
+                                                ; - MandelbrotRenderer::iteration@53 (line 48)
+
+  ;;  block B5 [60, 87]
+
+  0x00007fcdf8cd8bb4: adr	xscratch1, 0x00007fcdf8cd8b68
+                                                ;   {section_word}
+  0x00007fcdf8cd8bb8: ldr	d6, [xscratch1]
+  0x00007fcdf8cd8bbc: fmul	d3, d3, d6
+  0x00007fcdf8cd8bc0: fmul	d2, d3, d2
+  0x00007fcdf8cd8bc4: fadd	d2, d2, d1
+  0x00007fcdf8cd8bc8: fsub	d3, d4, d5
+  0x00007fcdf8cd8bcc: fadd	d3, d3, d0
+  0x00007fcdf8cd8bd0: add	w0, w0, #0x1
+  0x00007fcdf8cd8bd4: adrp	xscratch1, 0x00007fcdfcf5c000
+                                                ; OopMap{off=104}
+                                                ;*goto
+                                                ; - MandelbrotRenderer::iteration@87 (line 44)
+                                                ;   {poll}
+  0x00007fcdf8cd8bd8: ldr	wzr, [xscratch1,#256]  ;*goto
+                                                ; - MandelbrotRenderer::iteration@87 (line 44)
+                                                ;   {poll}
+  ;;  block B1 [24, 28]
+
+  0x00007fcdf8cd8bdc: cmp	w0, w1
+  ;;   26 branch [LT] [B2] 
+  0x00007fcdf8cd8be0: b.lt	0x00007fcdf8cd8b98  ;*if_icmpge
+                                                ; - MandelbrotRenderer::iteration@28 (line 44)
+
+  ;;  block B3 [90, 92]
+
+  0x00007fcdf8cd8be4: add	sp, sp, #0x40
+  0x00007fcdf8cd8be8: ldp	xfp, xlr, [sp],#16
+  0x00007fcdf8cd8bec: notify	reentry
+  0x00007fcdf8cd8bf0: adrp	xscratch1, 0x00007fcdfcf5c000
+                                                ;   {poll_return}
+  0x00007fcdf8cd8bf4: ldr	wzr, [xscratch1,#256]  ;   {poll_return}
+  0x00007fcdf8cd8bf8: ret
+  0x00007fcdf8cd8bfc: nop
+  0x00007fcdf8cd8c00: nop
+  ;; Unwind handler
+  0x00007fcdf8cd8c04: ldr	x0, [xthread,#704]
+  0x00007fcdf8cd8c08: str	xzr, [xthread,#704]
+  0x00007fcdf8cd8c0c: str	xzr, [xthread,#712]
+  ;; remove_frame and dispatch to the unwind handler
+  0x00007fcdf8cd8c10: add	sp, sp, #0x40
+  0x00007fcdf8cd8c14: ldp	xfp, xlr, [sp],#16
+  0x00007fcdf8cd8c18: notify	reentry
+  0x00007fcdf8cd8c1c: b	0x00007fcdf8cd16e0      ;   {runtime_call}
+[Exception Handler]
+[Stub Code]
+  0x00007fcdf8cd8c20: movz	x19, #0xdead    ;   {no_reloc}
+  0x00007fcdf8cd8c24: movz	x2, #0xa
+  0x00007fcdf8cd8c28: movz	x4, #0xdead
+  0x00007fcdf8cd8c2c: movz	x5, #0xdead
+  0x00007fcdf8cd8c30: bl	0x00007fcdf8cd5b20  ;   {runtime_call}
+  0x00007fcdf8cd8c34: stp	xlr, xzr, [sp,#-16]!
+  0x00007fcdf8cd8c38: stp	xthread, xfp, [sp,#-16]!
+  0x00007fcdf8cd8c3c: stp	xcpool, xheapbase, [sp,#-16]!
+  0x00007fcdf8cd8c40: stp	xlocals, xmonitors, [sp,#-16]!
+  0x00007fcdf8cd8c44: stp	xbcp, x23, [sp,#-16]!
+  0x00007fcdf8cd8c48: stp	xesp, xdispatch, [sp,#-16]!
+  0x00007fcdf8cd8c4c: stp	x18, x19, [sp,#-16]!
+  0x00007fcdf8cd8c50: stp	x16, x17, [sp,#-16]!
+  0x00007fcdf8cd8c54: stp	x14, x15, [sp,#-16]!
+  0x00007fcdf8cd8c58: stp	xmethod, x13, [sp,#-16]!
+  0x00007fcdf8cd8c5c: stp	x10, x11, [sp,#-16]!
+  0x00007fcdf8cd8c60: stp	xscratch1, xscratch2, [sp,#-16]!
+  0x00007fcdf8cd8c64: stp	x6, x7, [sp,#-16]!
+  0x00007fcdf8cd8c68: stp	x4, x5, [sp,#-16]!
+  0x00007fcdf8cd8c6c: stp	x2, x3, [sp,#-16]!
+  0x00007fcdf8cd8c70: stp	x0, x1, [sp,#-16]!
+  0x00007fcdf8cd8c74: movz	x0, #0x50aa
+  0x00007fcdf8cd8c78: movk	x0, #0xfc6d, lsl #16
+  0x00007fcdf8cd8c7c: movk	x0, #0x7fcd, lsl #32
+  0x00007fcdf8cd8c80: movz	x1, #0x4324
+  0x00007fcdf8cd8c84: movk	x1, #0xf8cc, lsl #16
+  0x00007fcdf8cd8c88: movk	x1, #0x7fcd, lsl #32
+  0x00007fcdf8cd8c8c: mov	x2, sp
+  0x00007fcdf8cd8c90: movz	x3, #0x88e8
+  0x00007fcdf8cd8c94: movk	x3, #0xfc4d, lsl #16
+  0x00007fcdf8cd8c98: movk	x3, #0x7fcd, lsl #32
+  0x00007fcdf8cd8c9c: brx86	x3, 3, 0, 1
+  0x00007fcdf8cd8ca0: hlt	#0x0
+[Deopt Handler Code]
+  0x00007fcdf8cd8ca4: adr	xlr, 0x00007fcdf8cd8ca4
+  0x00007fcdf8cd8ca8: b	0x00007fcdf8c1bcb0      ;   {runtime_call}
+  0x00007fcdf8cd8cac: .inst	0x00000000 ; undefined
+</pre>
+
+<p>V&nbsp;tomto případě se masivně využívají instrukce pro práci
+s&nbsp;hodnotami typu double. Tyto instrukce mají na začátku svého jména
+písmeno "f" (fadd, fmul, fcmp) a pracují s&nbsp;registry d0 až d31 (kam se
+hrabe platforma x86 :-). Podrobnosti si v&nbsp;případě zájmu můžeme říci
+příště.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Obsah následující části seriálu</h2>
+
+<p>V&nbsp;následující části tohoto seriálu odbočíme od problematiky assembleru
+a disassembleru, protože se budeme zabývat problematikou synchronizace
+v&nbsp;javovských aplikacích. Mimo jiné si řekneme, jaké vážné problémy může
+způsobit použití atributů s&nbsp;modifikátorem <strong>volatile</strong>,
+především v&nbsp;těch případech, pokud je javovská aplikace provozována na
+32bitovém systému, popř.&nbsp;na počítači s&nbsp;větším počtem jader (obě
+zmíněné varianty pravděpodobně zahrnují více než 90% všech případů použití Javy
+:-).</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. V&nbsp;následující tabulce najdete odkazy na
+prozatím nejnovější verze obou dnes použitých benchmarků:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ArrayTest3.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest3.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest3.java</a></td></tr>
+<tr><td>2</td><td>MandelbrotRenderer.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/05d05b5fd08d/jit/MandelbrotRenderer.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/05d05b5fd08d/jit/MandelbrotRenderer.java</a></td></tr>
+<tr><td>3</td><td>mandel.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/05d05b5fd08d/jit/mandel.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/05d05b5fd08d/jit/mandel.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang <br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis <br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper <br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog <br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows <br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly <br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
