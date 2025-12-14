@@ -1,0 +1,1124 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy se již podruhé budeme zabývat způsobem optimalizace aplikací naprogramovaných v Javě. Velký vliv na výkonnost aplikací běžících v JVM mají JIT (Just-In-Time) překladače, takže se dnes seznámíme se základy jejich nastavování a sledování.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Role JIT překladače na výkonnost aplikací naprogramovaných v&nbsp;Javě</a></p>
+<p><a href="#k02">2. Jednoduchý benchmark &ndash; vytvoření a naplnění pole celých čísel</a></p>
+<p><a href="#k03">3. Doba běhu benchmarku pro režim interpretru, JIT překladače typu klient a JIT překladače typu server</a></p>
+<p><a href="#k04">4. Je JIT překladač typu server vždy nejvýhodnější?</a></p>
+<p><a href="#k05">5. Práh při němž se spustí JIT překlad</a></p>
+<p><a href="#k06">6. Nastavení prahu, při němž se spustí JIT překlad</a></p>
+<p><a href="#k07">7. Několik možností sledování JIT překladu</a></p>
+<p><a href="#k08">8. Použití volby <strong>-XX:+PrintCompilation</strong></a></p>
+<p><a href="#k09">9. Použití volby <strong>-XX:+LogCompilation</strong></a></p>
+<p><a href="#k10">10. Využití nástroje <strong>jstat</strong></a></p>
+<p><a href="#k11">11. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Role JIT překladače na výkonnost aplikací naprogramovaných v&nbsp;Javě</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">tohoto
+seriálu</a> jsme si řekli, jakým způsobem (resp.&nbsp;přesněji řečeno na jakých
+úrovních) je možné provádět optimalizaci aplikací naprogramovaných v&nbsp;Javě.
+Na nejvyšší úrovni lze provádět optimalizace samotných algoritmů (vylepšení
+časové či prostorové složitosti, podpora pro více vláken atd.), dále je možné
+vyladit JIT překladač, správce paměti a v&nbsp;neposlední řadě je možné
+v&nbsp;některých případech nezanedbatelně zvýšit výkonnost aplikací některými
+nízkoúrovňovými optimalizacemi. V&nbsp;odůvodněných případech je dokonce možné
+&bdquo;rezignovat&ldquo; na to, aby celá aplikace byla naprogramována jen a
+pouze v&nbsp;Javě a napsat část aplikace například v&nbsp;C či C++ &ndash;
+Javovská část a C/C++ část spolu budou komunikovat přes rozhraní <i>JNI (Java
+Native Interface)</i>, které je sice navržené poněkud nešikovně (prý naschvál,
+aby vývojáři <i>JNI</i> používali skutečně jen v&nbsp;nejnutnějších případech
+:-), ale pracuje spolehlivě a nezávisle na použité architektuře a operačním
+systému.</p>
+
+<p>Dnes si řekneme základní informace o tom, jakým způsobem pracují takzvané
+<i>JIT (Just-In-Time)</i> překladače, protože právě volba vhodného JIT
+překladače a nastavení jeho parametrů mohou mít nezanedbatelný vliv na to, jak
+se bude Javovská aplikace chovat. Z&nbsp;předchozí části již víme, že
+v&nbsp;JVM vždy existuje interpret bajtkódu a potom většinou jeden až dva typy
+JIT překladačů z&nbsp;bajtkódu do nativního kódu &ndash; takzvaný JIT klient a
+JIT server. Bajtkód, do něhož jsou přeložena těla jednotlivých metod, se
+nejprve pouze interpretuje, což je relativně pomalé, zejména v&nbsp;porovnání
+se skutečným přeloženým (kompilovaným) kódem. Právě fakt, že všechny metody
+jsou při spuštění JVM zpočátku interpretovány, způsobuje relativně pomalé
+spouštění virtuálního stroje Javy, což je patrné především při spouštění
+aplikací na desktopech uživatelů (u serverových aplikací je tato počáteční
+&bdquo;zahřívací&ldquo; fáze v&nbsp;naprosté většině případů zanedbatelná,
+dokonce platí, že čím déle je kód interpretován, tím kvalitnější bude jeho
+překlad).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Jednoduchý benchmark &ndash; vytvoření a naplnění pole celých čísel</h2>
+
+<p>Aby bylo možné vzájemně porovnat výkonnost a účinnost interpretru i obou
+typů JIT překladačů, použijeme následující (velmi jednoduchý) benchmark. Ten
+při svém spuštění několikrát zavolá metodu <strong>ArrayTest2.test()</strong>,
+v&nbsp;níž je vytvořeno pole celých čísel s&nbsp;5000 prvky, které jsou
+naplněny hodnotami 0..4999. Velikost tohoto pole nebyla zvolena náhodně, jak si
+ostatně vysvětlíme v&nbsp;navazujících kapitolách. Samotná metoda
+<strong>ArrayTest2.test()</strong> je spuštěna ve smyčce, přičemž počet
+opakování této smyčky je zadán při startu aplikace na příkazové řádce. Navíc se
+před každým spuštěním vynutí běh správce paměti a následně program počká jednu
+sekundu na dokončení jeho běhu. Ve skutečnosti sice není zaručeno, že GC
+(správce paměti) skutečně proběhne, s&nbsp;využitím volby
+<strong>-verbose:gc</strong> je ale možné se přesvědčit o tom, že v&nbsp;našem
+jednoduchém benchmarku tomu tak skutečně je:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Velmi jednoduchy benchmark - pruchod polem</i>
+<i>  */</i>
+public class <strong>ArrayTest2</strong> {
+    <i>// velikost pole pouziteho v testu</i>
+    public static final int <strong>ARRAY_SIZE</strong> = 5000;
+&nbsp;
+    public static void <strong>main</strong>(String[] args) throws InterruptedException {
+        <i>// nacist pocet opakovani testu</i>
+        final int iter = Integer.parseInt(args[0]);
+&nbsp;
+        <i>// priblizny celkovy cas behu testu</i>
+        <i>// (bez GC a cekani na dokonceni GC)</i>
+        long total_time = 0;
+&nbsp;
+        <i>// provest zadany pocet testu</i>
+        for (int i = 0; i &lt; iter; i++) {
+            <i>// pro jistotu nejdrive provedeme GC</i>
+            <i>// a pockame na jeho dokonceni (nepresne!)</i>
+            System.gc();
+            Thread.sleep(1000);
+&nbsp;
+            <i>// provest test a zmerit cas behu testu</i>
+            long t1 = System.nanoTime();
+            test();
+            long t2 = System.nanoTime();
+            long delta_t = t2 - t1;
+&nbsp;
+            <i>// vypis casu pro jeden test</i>
+            System.out.format("Round #%2d  time: %,12d ns\n", i, delta_t);
+&nbsp;
+            <i>// vypocet celkoveho casu behu vsech testu</i>
+            total_time += delta_t;
+        }
+        System.out.format("Total time: %,d ns\n", total_time);
+&nbsp;
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Vlastni test, kde se prochazi polem a postupne se</i>
+<i>      * naplnuji jednotlive prvky tohoto pole.</i>
+<i>      */</i>
+    private static void <strong>test</strong>() {
+        int[] array = new int[ARRAY_SIZE];
+        final int length = array.length;
+        for (int i = 0; i &lt; length; i++) {
+            array[i] = i;
+        }
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Doba běhu benchmarku pro režim interpretru, JIT překladače typu klient a JIT překladače typu server</h2>
+
+<p>Při spuštění virtuálního stroje Javy máme možnost specifikovat, zda se má
+použít jen interpret, nebo jeden ze dvou JIT překladačů. K&nbsp;tomu slouží
+volby <strong>-Xint</strong>, <strong>-client</strong> a
+<strong>-server</strong>. Podívejme se nyní, co se stane v&nbsp;případě, že
+zvolíme pouhé jediné opakování metody <strong>ArrayTest2.test()</strong> a
+přitom budeme přepínat mezi interpretrem, JIT serverem a JIT klientem:</p>
+
+<pre>
+<strong>java -Xint ArrayTest2 1</strong>
+Round # 0  time:      362 616 ns
+Total time: 362 616 ns
+&nbsp;
+<strong>java -client ArrayTest2 1</strong>
+Round # 0  time:      379 377 ns
+Total time: 379 377 ns
+&nbsp;
+<strong>java -server ArrayTest2 1</strong>
+Round # 0  time:      453 689 ns
+Total time: 453 689 ns
+</pre>
+
+<p>Výsledky možná mohou být překvapivé, protože zatímco interpret a JIT client
+běžely přibližně stejnou dobu, u JIT serveru je doba běhu aplikace
+<strong>delší</strong> a nikoli kratší.</p>
+
+<p>Co se stane ve chvíli, kdy se bude smyčka s&nbsp;benchmarkem opakovat
+pětkrát? Opět není problém si to vyzkoušet:</p>
+
+<pre>
+<strong>java -Xint ArrayTest2 5</strong>
+Round # 0  time:      371 276 ns
+Round # 1  time:      357 308 ns
+Round # 2  time:      392 457 ns
+Round # 3  time:      360 940 ns
+Round # 4  time:      365 409 ns
+Total time: 1 887 390 ns
+&nbsp;
+<strong>java -client ArrayTest2 5</strong>
+Round # 0  time:      380 495 ns
+Round # 1  time:      981 688 ns
+Round # 2  time:       63 696 ns
+Round # 3  time:       50 845 ns
+Round # 4  time:       62 857 ns
+Total time: 1 539 581 ns
+&nbsp;
+<strong>java -server ArrayTest2 5</strong>
+Round # 0  time:      447 823 ns
+Round # 1  time:      476 039 ns
+Round # 2  time:   36 634 265 ns
+Round # 3  time:       56 152 ns
+Round # 4  time:       55 873 ns
+Total time: 37 670 152 ns
+</pre>
+
+<p>Rychlost interpretru zůstala přibližně stejná &ndash; každá iterace proběhla
+za zhruba stejnou dobu, případné výchylky jsou způsobeny vnějšími vlivy (další
+procesy, I/O operace probíhající na pozadí...). Zajímavější je situace u JIT
+klienta. Tam můžeme vidět, že první běh trval zhruba stejně dlouho, jako u
+interpretru, druhá iterace byla znatelně delší a třetí až pátá iterace naopak
+mnohem rychlejší. Ve skutečnosti je tomu tak, že v&nbsp;první iteraci byla
+smyčka čistě interpretována, ve druhé iteraci se spustil JIT překlad a další
+iterace již probíhaly nad přeloženým kódem. Podobně je tomu o JIT serveru, až
+na některé rozdíly &ndash; JIT překlad byl spuštěn až ve třetí iteraci a trval
+výrazně delší dobu, naproti tomu již další iterace (přeložená smyčka) probíhaly
+nejrychleji.</p>
+
+<p>Aby bylo zřejmé, že se nejedná o náhodu, zkusme si smyčku s&nbsp;benchmarkem
+zopakovat desetkrát:</p>
+
+<pre>
+<strong>java -Xint ArrayTest2 10</strong>
+Round # 0  time:      364 012 ns
+Round # 1  time:      358 425 ns
+Round # 2  time:      359 263 ns
+Round # 3  time:      363 733 ns
+Round # 4  time:      362 616 ns
+Round # 5  time:      358 145 ns
+Round # 6  time:      359 263 ns
+Round # 7  time:      360 940 ns
+Round # 8  time:      362 895 ns
+Round # 9  time:      359 542 ns
+Total time: 3 608 834 ns
+&nbsp;
+<strong>java -client ArrayTest2 10</strong>
+Round # 0  time:      379 937 ns
+Round # 1  time:    1 000 127 ns
+Round # 2  time:       64 533 ns
+Round # 3  time:       61 461 ns
+Round # 4  time:       63 974 ns
+Round # 5  time:       64 533 ns
+Round # 6  time:       65 651 ns
+Round # 7  time:       63 975 ns
+Round # 8  time:       63 695 ns
+Round # 9  time:       64 813 ns
+Total time: 1 892 699 ns
+&nbsp;
+<strong>java -server ArrayTest2 10 </strong>
+Round # 0  time:      447 822 ns
+Round # 1  time:      473 804 ns
+Round # 2  time:   36 713 605 ns
+Round # 3  time:       56 711 ns
+Round # 4  time:       53 638 ns
+Round # 5  time:       54 475 ns
+Round # 6  time:       53 917 ns
+Round # 7  time:       53 639 ns
+Round # 8  time:       54 477 ns
+Round # 9  time:       55 315 ns
+Total time: 38 017 403 ns
+</pre>
+
+<p>Vidíme, že schéma zůstalo zachováno &ndash; interpret stále běží stejnou
+rychlostí 360 &micro;s/benchmark, JIT klient první iteraci taktéž interpretoval
+a po překladu (trval přibližně 1ms) je již rychlost rovna 63
+&micro;s/benchmark. JIT server má sice rychlejší přeložený kód (54
+&micro;s/benchmark), ovšem taktéž výrazně delší překlad a pomalejší
+interpret.</p>
+
+<p>Dále se zvyšující počet iterací již toto schéma nijak nenaruší:</p>
+
+<pre>
+<strong>java -Xint ArrayTest2 20</strong>
+Round # 0  time:      355 352 ns
+Round # 1  time:      359 822 ns
+Round # 2  time:      360 940 ns
+Round # 3  time:      359 543 ns
+Round # 4  time:      362 057 ns
+Round # 5  time:      360 662 ns
+Round # 6  time:      361 498 ns
+Round # 7  time:      362 616 ns
+Round # 8  time:      360 381 ns
+Round # 9  time:      359 822 ns
+Round #10  time:      359 263 ns
+Round #11  time:      362 616 ns
+Round #12  time:      367 644 ns
+Round #13  time:      360 102 ns
+Round #14  time:      359 542 ns
+Round #15  time:      360 661 ns
+Round #16  time:      364 013 ns
+Round #17  time:      361 778 ns
+Round #18  time:      360 381 ns
+Round #19  time:      360 381 ns
+Total time: 7 219 074 ns
+&nbsp;
+<strong>java -client ArrayTest2 20</strong>
+Round # 0  time:      385 524 ns
+Round # 1  time:      997 613 ns
+Round # 2  time:       63 974 ns
+Round # 3  time:       63 695 ns
+Round # 4  time:       64 254 ns
+Round # 5  time:       63 416 ns
+Round # 6  time:       64 254 ns
+Round # 7  time:       63 415 ns
+Round # 8  time:       64 254 ns
+Round # 9  time:       63 975 ns
+Round #10  time:       53 638 ns
+Round #11  time:       54 477 ns
+Round #12  time:       65 092 ns
+Round #13  time:       64 254 ns
+Round #14  time:       64 534 ns
+Round #15  time:       59 224 ns
+Round #16  time:       63 695 ns
+Round #17  time:       63 695 ns
+Round #18  time:       65 092 ns
+Round #19  time:       64 254 ns
+Total time: 2 512 329 ns
+&nbsp;
+<strong>java -server ArrayTest2 20</strong>
+Round # 0  time:      445 587 ns
+Round # 1  time:      482 463 ns
+Round # 2  time:   36 704 106 ns
+Round # 3  time:       60 063 ns
+Round # 4  time:       45 536 ns
+Round # 5  time:       53 917 ns
+Round # 6  time:       55 034 ns
+Round # 7  time:       56 432 ns
+Round # 8  time:       53 359 ns
+Round # 9  time:       55 034 ns
+Round #10  time:       47 771 ns
+Round #11  time:       57 828 ns
+Round #12  time:       53 917 ns
+Round #13  time:       53 080 ns
+Round #14  time:       55 034 ns
+Round #15  time:       56 711 ns
+Round #16  time:       54 476 ns
+Round #17  time:       52 521 ns
+Round #18  time:       52 242 ns
+Round #19  time:       55 594 ns
+Total time: 38 550 705 ns
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Je JIT překladač typu server vždy nejvýhodnější?</h2>
+
+<p>Připomeňme si nyní, jak vlastně JIT překladače pracují. Velmi důležité je,
+že oba typy překladačů se spouští <i>až na základě požadavku interpretru</i>
+&ndash; bajtkód každé metody je tedy nejdříve relativně pomalu interpretován a
+teprve poté, pokud se daná metoda volá často nebo pokud se některá smyčka
+v&nbsp;metodě opakuje po zadanou mez, se metoda či jen její často opakovaná
+smyčka přeloží. Přitom platí, že překladač typu <i>client</i> je navržen
+takovým způsobem, že velmi jednoduše a tudíž i rychle danou sekvenci instrukcí
+bajtkódu přeloží na základě &bdquo;šablony&ldquo; obsahující (velmi
+zjednodušeně řečeno) sekvenci strojových instrukcí pro každou instrukci
+bajtkódu. Provádí se přitom je minimální množství optimalizací, takže od tohoto
+typu překladače nelze čekat žádné zázraky. To jsme ostatně viděli již
+z&nbsp;měření v&nbsp;předchozí kapitole &ndash; první běh benchmarku proběhl
+v&nbsp;režimu interpretru, poté byl proveden překlad (během druhého volání
+benchmarku) a následně byl spouštěn již přeložený kód.</p>
+
+<p>Naproti tomu překladač typu <i>server</i> již dokáže provádět různé lokální
+i globální optimalizace a taktéž stráví větší množství času s&nbsp;alokací
+registrů mikroprocesoru pro potřeby uložení lokálních proměnných, mezivýsledků
+výpočtů atd. atd. Ovšem aby tento typ překladače pracoval skutečně efektivně,
+musí mít k&nbsp;dispozici větší množství informací o dynamických vlastnostech
+metody/smyčky &ndash; a tyto informace získá opět z&nbsp;interpretru.
+Zjednodušeně řečeno to znamená, že čím vícekrát je metoda/smyčka zpracována
+pomalým interpretrem, tím lepší informace má k&nbsp;dispozici optimalizující
+JIT překladač, takže se dostáváme do poněkud paradoxní situace, že pro
+dlouhotrvající aplikace je výhodnější, když jsou nějaký čas provozovány jen
+v&nbsp;režimu interpretru. Opět jsme to viděli v&nbsp;předchozí kapitole
+&ndash; JIT server má poněkud pomalejší a déle pracující interpret (ten totiž
+zaznamenává více informací), překlad taktéž trvá déle, ale výsledný přeložený
+kód je rychlejší, než při použití JIT klienta.</p>
+
+<p>Ovšem zde se dostáváme k&nbsp;důležité otázce &ndash; je skutečně vždy
+výhodnější, aby byl použit JIT server? Zkusme si náš demonstrační příklad
+spustit pro sto iterací a sledovat kumulativní časy běhu jednotlivých
+benchmarků (tj.&nbsp;vlastně jak dlouho aplikace běží, pokud odečteme vliv
+GC):</p>
+
+<table>
+<tr><th>Iter</th><th>Interpret</th><th>Client JIT</th><th>Server JIT</th></tr>
+<tr><td>  1</td><td>00&nbsp;359&nbsp;544</td><td>0&nbsp;379&nbsp;378</td><td>00&nbsp;463&nbsp;467</td></tr>
+<tr><td>  2</td><td>00&nbsp;719&nbsp;367</td><td>1&nbsp;383&nbsp;137</td><td>00&nbsp;940&nbsp;622</td></tr>
+<tr><td>  3</td><td>01&nbsp;081&nbsp;703</td><td>1&nbsp;446&nbsp;274</td><td>37&nbsp;659&nbsp;255</td></tr>
+<tr><td>  4</td><td>01&nbsp;445&nbsp;716</td><td>1&nbsp;510&nbsp;808</td><td>37&nbsp;713&nbsp;451</td></tr>
+<tr><td>  5</td><td>01&nbsp;806&nbsp;377</td><td>1&nbsp;575&nbsp;341</td><td>37&nbsp;771&nbsp;280</td></tr>
+<tr><td>  6</td><td>02&nbsp;165&nbsp;640</td><td>1&nbsp;639&nbsp;874</td><td>37&nbsp;829&nbsp;109</td></tr>
+<tr><td>  7</td><td>02&nbsp;524&nbsp;903</td><td>1&nbsp;703&nbsp;569</td><td>37&nbsp;873&nbsp;808</td></tr>
+<tr><td>  8</td><td>02&nbsp;890&nbsp;313</td><td>1&nbsp;767&nbsp;265</td><td>37&nbsp;931&nbsp;078</td></tr>
+<tr><td>  9</td><td>03&nbsp;248&nbsp;738</td><td>1&nbsp;829&nbsp;564</td><td>37&nbsp;987&nbsp;230</td></tr>
+<tr><td> 10</td><td>03&nbsp;609&nbsp;398</td><td>1&nbsp;892&nbsp;142</td><td>38&nbsp;042&nbsp;825</td></tr>
+<tr><td> 11</td><td>03&nbsp;972&nbsp;014</td><td>1&nbsp;955&nbsp;837</td><td>38&nbsp;100&nbsp;933</td></tr>
+<tr><td> 12</td><td>04&nbsp;330&nbsp;718</td><td>2&nbsp;019&nbsp;812</td><td>38&nbsp;156&nbsp;526</td></tr>
+<tr><td> 13</td><td>04&nbsp;692&nbsp;775</td><td>2&nbsp;084&nbsp;066</td><td>38&nbsp;216&nbsp;310</td></tr>
+<tr><td> 14</td><td>05&nbsp;052&nbsp;318</td><td>2&nbsp;135&nbsp;749</td><td>38&nbsp;271&nbsp;624</td></tr>
+<tr><td> 15</td><td>05&nbsp;415&nbsp;213</td><td>2&nbsp;199&nbsp;724</td><td>38&nbsp;328&nbsp;056</td></tr>
+<tr><td> 16</td><td>05&nbsp;775&nbsp;593</td><td>2&nbsp;263&nbsp;977</td><td>38&nbsp;386&nbsp;444</td></tr>
+<tr><td> 17</td><td>06&nbsp;134&nbsp;576</td><td>2&nbsp;327&nbsp;113</td><td>38&nbsp;435&nbsp;053</td></tr>
+<tr><td> 18</td><td>06&nbsp;494&nbsp;957</td><td>2&nbsp;392&nbsp;205</td><td>38&nbsp;489&nbsp;529</td></tr>
+<tr><td> 19</td><td>06&nbsp;856&nbsp;177</td><td>2&nbsp;453&nbsp;945</td><td>38&nbsp;542&nbsp;609</td></tr>
+<tr><td> 20</td><td>07&nbsp;128&nbsp;838</td><td>2&nbsp;517&nbsp;082</td><td>38&nbsp;597&nbsp;924</td></tr>
+<tr><td> 21</td><td>07&nbsp;489&nbsp;219</td><td>2&nbsp;581&nbsp;616</td><td>38&nbsp;655&nbsp;752</td></tr>
+<tr><td> 22</td><td>07&nbsp;848&nbsp;484</td><td>2&nbsp;646&nbsp;149</td><td>38&nbsp;708&nbsp;272</td></tr>
+<tr><td> 23</td><td>08&nbsp;125&nbsp;893</td><td>2&nbsp;710&nbsp;123</td><td>38&nbsp;762&nbsp;190</td></tr>
+<tr><td> 24</td><td>08&nbsp;485&nbsp;436</td><td>2&nbsp;773&nbsp;260</td><td>38&nbsp;816&nbsp;107</td></tr>
+<tr><td> 25</td><td>08&nbsp;845&nbsp;537</td><td>2&nbsp;836&nbsp;955</td><td>38&nbsp;873&nbsp;377</td></tr>
+<tr><td> 26</td><td>09&nbsp;204&nbsp;242</td><td>2&nbsp;901&nbsp;768</td><td>38&nbsp;927&nbsp;294</td></tr>
+<tr><td> 27</td><td>09&nbsp;565&nbsp;740</td><td>2&nbsp;963&nbsp;787</td><td>38&nbsp;980&nbsp;374</td></tr>
+<tr><td> 28</td><td>09&nbsp;928&nbsp;076</td><td>3&nbsp;027&nbsp;203</td><td>39&nbsp;035&nbsp;408</td></tr>
+<tr><td> 29</td><td>10&nbsp;287&nbsp;619</td><td>3&nbsp;090&nbsp;339</td><td>39&nbsp;091&nbsp;560</td></tr>
+<tr><td> 30</td><td>10&nbsp;648&nbsp;279</td><td>3&nbsp;155&nbsp;152</td><td>39&nbsp;145&nbsp;757</td></tr>
+<tr><td> 31</td><td>11&nbsp;011&nbsp;454</td><td>3&nbsp;217&nbsp;171</td><td>39&nbsp;199&nbsp;674</td></tr>
+<tr><td> 32</td><td>11&nbsp;370&nbsp;158</td><td>3&nbsp;282&nbsp;263</td><td>39&nbsp;253&nbsp;311</td></tr>
+<tr><td> 33</td><td>11&nbsp;731&nbsp;098</td><td>3&nbsp;346&nbsp;797</td><td>39&nbsp;311&nbsp;419</td></tr>
+<tr><td> 34</td><td>12&nbsp;091&nbsp;199</td><td>3&nbsp;411&nbsp;052</td><td>39&nbsp;365&nbsp;615</td></tr>
+<tr><td> 35</td><td>12&nbsp;455&nbsp;770</td><td>3&nbsp;475&nbsp;585</td><td>39&nbsp;419&nbsp;532</td></tr>
+<tr><td> 36</td><td>12&nbsp;815&nbsp;313</td><td>3&nbsp;540&nbsp;118</td><td>39&nbsp;472&nbsp;053</td></tr>
+<tr><td> 37</td><td>13&nbsp;174&nbsp;577</td><td>3&nbsp;604&nbsp;092</td><td>39&nbsp;529&nbsp;323</td></tr>
+<tr><td> 38</td><td>13&nbsp;541&nbsp;662</td><td>3&nbsp;668&nbsp;067</td><td>39&nbsp;582&nbsp;681</td></tr>
+<tr><td> 39</td><td>13&nbsp;902&nbsp;323</td><td>3&nbsp;730&nbsp;924</td><td>39&nbsp;636&nbsp;599</td></tr>
+<tr><td> 40</td><td>14&nbsp;175&nbsp;822</td><td>3&nbsp;794&nbsp;619</td><td>39&nbsp;690&nbsp;237</td></tr>
+<tr><td> 41</td><td>14&nbsp;535&nbsp;644</td><td>3&nbsp;859&nbsp;431</td><td>39&nbsp;748&nbsp;624</td></tr>
+<tr><td> 42</td><td>14&nbsp;894&nbsp;349</td><td>3&nbsp;923&nbsp;406</td><td>39&nbsp;803&nbsp;659</td></tr>
+<tr><td> 43</td><td>15&nbsp;256&nbsp;406</td><td>3&nbsp;986&nbsp;263</td><td>39&nbsp;858&nbsp;134</td></tr>
+<tr><td> 44</td><td>15&nbsp;616&nbsp;228</td><td>4&nbsp;049&nbsp;958</td><td>39&nbsp;911&nbsp;771</td></tr>
+<tr><td> 45</td><td>15&nbsp;977&nbsp;447</td><td>4&nbsp;108&nbsp;905</td><td>39&nbsp;967&nbsp;085</td></tr>
+<tr><td> 46</td><td>16&nbsp;336&nbsp;431</td><td>4&nbsp;173&nbsp;718</td><td>40&nbsp;020&nbsp;444</td></tr>
+<tr><td> 47</td><td>16&nbsp;700&nbsp;723</td><td>4&nbsp;236&nbsp;574</td><td>40&nbsp;076&nbsp;038</td></tr>
+<tr><td> 48</td><td>17&nbsp;060&nbsp;824</td><td>4&nbsp;299&nbsp;711</td><td>40&nbsp;130&nbsp;234</td></tr>
+<tr><td> 49</td><td>17&nbsp;420&nbsp;646</td><td>4&nbsp;361&nbsp;730</td><td>40&nbsp;187&nbsp;224</td></tr>
+<tr><td> 50</td><td>17&nbsp;781&nbsp;586</td><td>4&nbsp;425&nbsp;145</td><td>40&nbsp;242&nbsp;259</td></tr>
+<tr><td> 51</td><td>18&nbsp;143&nbsp;643</td><td>4&nbsp;490&nbsp;237</td><td>40&nbsp;295&nbsp;897</td></tr>
+<tr><td> 52</td><td>18&nbsp;503&nbsp;744</td><td>4&nbsp;553&nbsp;652</td><td>40&nbsp;350&nbsp;374</td></tr>
+<tr><td> 53</td><td>18&nbsp;863&nbsp;566</td><td>4&nbsp;618&nbsp;464</td><td>40&nbsp;407&nbsp;365</td></tr>
+<tr><td> 54</td><td>19&nbsp;223&nbsp;388</td><td>4&nbsp;682&nbsp;159</td><td>40&nbsp;458&nbsp;769</td></tr>
+<tr><td> 55</td><td>19&nbsp;586&nbsp;842</td><td>4&nbsp;746&nbsp;133</td><td>40&nbsp;515&nbsp;202</td></tr>
+<tr><td> 56</td><td>19&nbsp;947&nbsp;223</td><td>4&nbsp;811&nbsp;226</td><td>40&nbsp;568&nbsp;560</td></tr>
+<tr><td> 57</td><td>20&nbsp;307&nbsp;046</td><td>4&nbsp;873&nbsp;803</td><td>40&nbsp;625&nbsp;550</td></tr>
+<tr><td> 58</td><td>20&nbsp;669&nbsp;104</td><td>4&nbsp;938&nbsp;057</td><td>40&nbsp;680&nbsp;305</td></tr>
+<tr><td> 59</td><td>21&nbsp;031&nbsp;161</td><td>5&nbsp;001&nbsp;194</td><td>40&nbsp;732&nbsp;826</td></tr>
+<tr><td> 60</td><td>21&nbsp;394&nbsp;056</td><td>5&nbsp;066&nbsp;286</td><td>40&nbsp;790&nbsp;934</td></tr>
+<tr><td> 61</td><td>21&nbsp;754&nbsp;437</td><td>5&nbsp;130&nbsp;820</td><td>40&nbsp;845&nbsp;131</td></tr>
+<tr><td> 62</td><td>22&nbsp;114&nbsp;260</td><td>5&nbsp;195&nbsp;073</td><td>40&nbsp;899&nbsp;049</td></tr>
+<tr><td> 63</td><td>22&nbsp;476&nbsp;596</td><td>5&nbsp;258&nbsp;768</td><td>40&nbsp;952&nbsp;688</td></tr>
+<tr><td> 64</td><td>22&nbsp;836&nbsp;418</td><td>5&nbsp;321&nbsp;905</td><td>41&nbsp;008&nbsp;840</td></tr>
+<tr><td> 65</td><td>23&nbsp;197&nbsp;637</td><td>5&nbsp;386&nbsp;717</td><td>41&nbsp;062&nbsp;757</td></tr>
+<tr><td> 66</td><td>23&nbsp;557&nbsp;459</td><td>5&nbsp;449&nbsp;854</td><td>41&nbsp;114&nbsp;160</td></tr>
+<tr><td> 67</td><td>23&nbsp;919&nbsp;516</td><td>5&nbsp;513&nbsp;829</td><td>41&nbsp;168&nbsp;916</td></tr>
+<tr><td> 68</td><td>24&nbsp;286&nbsp;042</td><td>5&nbsp;577&nbsp;525</td><td>41&nbsp;224&nbsp;509</td></tr>
+<tr><td> 69</td><td>24&nbsp;645&nbsp;026</td><td>5&nbsp;641&nbsp;220</td><td>41&nbsp;277&nbsp;309</td></tr>
+<tr><td> 70</td><td>25&nbsp;007&nbsp;084</td><td>5&nbsp;706&nbsp;033</td><td>41&nbsp;330&nbsp;667</td></tr>
+<tr><td> 71</td><td>25&nbsp;369&nbsp;980</td><td>5&nbsp;769&nbsp;448</td><td>41&nbsp;384&nbsp;304</td></tr>
+<tr><td> 72</td><td>25&nbsp;729&nbsp;244</td><td>5&nbsp;820&nbsp;013</td><td>41&nbsp;441&nbsp;853</td></tr>
+<tr><td> 73</td><td>26&nbsp;091&nbsp;022</td><td>5&nbsp;883&nbsp;708</td><td>41&nbsp;494&nbsp;094</td></tr>
+<tr><td> 74</td><td>26&nbsp;450&nbsp;844</td><td>5&nbsp;948&nbsp;521</td><td>41&nbsp;547&nbsp;732</td></tr>
+<tr><td> 75</td><td>26&nbsp;814&nbsp;299</td><td>6&nbsp;013&nbsp;334</td><td>41&nbsp;605&nbsp;840</td></tr>
+<tr><td> 76</td><td>27&nbsp;174&nbsp;401</td><td>6&nbsp;076&nbsp;749</td><td>41&nbsp;652&nbsp;774</td></tr>
+<tr><td> 77</td><td>27&nbsp;535&nbsp;061</td><td>6&nbsp;140&nbsp;444</td><td>41&nbsp;707&nbsp;250</td></tr>
+<tr><td> 78</td><td>27&nbsp;895&nbsp;162</td><td>6&nbsp;204&nbsp;699</td><td>41&nbsp;760&nbsp;888</td></tr>
+<tr><td> 79</td><td>28&nbsp;257&nbsp;219</td><td>6&nbsp;265&nbsp;879</td><td>41&nbsp;814&nbsp;805</td></tr>
+<tr><td> 80</td><td>28&nbsp;617&nbsp;879</td><td>6&nbsp;330&nbsp;133</td><td>41&nbsp;872&nbsp;354</td></tr>
+<tr><td> 81</td><td>28&nbsp;977&nbsp;143</td><td>6&nbsp;393&nbsp;548</td><td>41&nbsp;925&nbsp;712</td></tr>
+<tr><td> 82</td><td>29&nbsp;337&nbsp;245</td><td>6&nbsp;457&nbsp;802</td><td>41&nbsp;972&nbsp;645</td></tr>
+<tr><td> 83</td><td>29&nbsp;702&nbsp;374</td><td>6&nbsp;520&nbsp;379</td><td>42&nbsp;020&nbsp;696</td></tr>
+<tr><td> 84</td><td>30&nbsp;061&nbsp;918</td><td>6&nbsp;583&nbsp;515</td><td>42&nbsp;076&nbsp;568</td></tr>
+<tr><td> 85</td><td>30&nbsp;422&nbsp;858</td><td>6&nbsp;647&nbsp;770</td><td>42&nbsp;133&nbsp;838</td></tr>
+<tr><td> 86</td><td>30&nbsp;782&nbsp;959</td><td>6&nbsp;793&nbsp;877</td><td>42&nbsp;189&nbsp;153</td></tr>
+<tr><td> 87</td><td>31&nbsp;145&nbsp;575</td><td>6&nbsp;858&nbsp;131</td><td>42&nbsp;246&nbsp;144</td></tr>
+<tr><td> 88</td><td>31&nbsp;506&nbsp;515</td><td>6&nbsp;921&nbsp;547</td><td>42&nbsp;305&nbsp;649</td></tr>
+<tr><td> 89</td><td>31&nbsp;866&nbsp;616</td><td>6&nbsp;986&nbsp;080</td><td>42&nbsp;353&nbsp;700</td></tr>
+<tr><td> 90</td><td>32&nbsp;226&nbsp;438</td><td>7&nbsp;050&nbsp;893</td><td>42&nbsp;411&nbsp;808</td></tr>
+<tr><td> 91</td><td>32&nbsp;589&nbsp;333</td><td>7&nbsp;114&nbsp;868</td><td>42&nbsp;466&nbsp;284</td></tr>
+<tr><td> 92</td><td>32&nbsp;951&nbsp;111</td><td>7&nbsp;179&nbsp;680</td><td>42&nbsp;524&nbsp;113</td></tr>
+<tr><td> 93</td><td>33&nbsp;310&nbsp;374</td><td>7&nbsp;243&nbsp;934</td><td>42&nbsp;578&nbsp;310</td></tr>
+<tr><td> 94</td><td>33&nbsp;672&nbsp;152</td><td>7&nbsp;308&nbsp;188</td><td>42&nbsp;633&nbsp;066</td></tr>
+<tr><td> 95</td><td>34&nbsp;033&nbsp;930</td><td>7&nbsp;372&nbsp;722</td><td>42&nbsp;688&nbsp;939</td></tr>
+<tr><td> 96</td><td>34&nbsp;393&nbsp;473</td><td>7&nbsp;436&nbsp;696</td><td>42&nbsp;744&nbsp;812</td></tr>
+<tr><td> 97</td><td>34&nbsp;759&nbsp;720</td><td>7&nbsp;499&nbsp;274</td><td>42&nbsp;799&nbsp;288</td></tr>
+<tr><td> 98</td><td>35&nbsp;119&nbsp;263</td><td>7&nbsp;561&nbsp;293</td><td>42&nbsp;854&nbsp;043</td></tr>
+<tr><td> 99</td><td>35&nbsp;482&nbsp;717</td><td>7&nbsp;625&nbsp;546</td><td>42&nbsp;906&nbsp;563</td></tr>
+<tr><td>100</td><td>35&nbsp;842&nbsp;819</td><td>7&nbsp;689&nbsp;241</td><td>42&nbsp;954&nbsp;055</td></tr>
+</table>
+
+<p>Výsledky jsou pro větší názornost převedeny do grafu:</p>
+
+***  image  ***
+
+<p>Z&nbsp;grafu plynou zajímavé údaje. Interpret pracuje stále stejným způsobem
+a čas běhu roste lineárně s&nbsp;počtem iterací, tedy nic překvapivého. JIT
+client je pro dvě iterace pomalejší než interpret (kvůli překladu), nicméně
+poté již interpret hravě překovává. U JIT serveru je situace odlišná &ndash;
+ten má sice (po překladu!) rychlejší smyčku benchmarku (menší sklon žlutého
+průběhu za kolenem), nicméně čas překladu je tak velký, že pro 100 iterací již
+JIT server nepřekoná ani pomalost interpretru! To je vhodné mít na paměti
+zejména při spouštění aplikací běžících po krátkou dobu.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Práh při němž se spustí JIT překlad</h2>
+
+<p><a href="#k03">Ve třetí</a> a <a href="#k04">ve čtvrté kapitole</a> jsme
+viděli, že každý kód je nejdříve interpretován a teprve poté může být proveden
+jeho překlad. Jak však JVM určí, který kód se má přeložit? Nepřekládá se
+všechen kód, protože (což jsme opět viděli) je to mnohdy velmi drahá operace,
+jenž se někdy ani nemusí vyplatit. Podrobnosti si řekneme někdy příště (i
+s&nbsp;ukázkami zdrojových kódu Hotspotu :-) ovšem zjednodušeně řečeno je možné
+říci, že interpret si počítá vstupy do metod, tj.&nbsp;počet volání metody a
+taktéž si u jednotlivých smyček pamatuje celkový počet iterací. Jakmile se
+metoda volá velmi často, popř.&nbsp;pokud se u některé smyčky dosáhne určité
+hranice, je proveden překlad. Nicméně aktuální běh metody je stále
+interpretován (až do instrukce <strong>return</strong>), stejně jako aktuální
+iterace smyčky. Implicitně je u smyček nastavena hranice 1500 iterací (JIT
+client), popř. 10000 iterací (JIT server). Tyto údaje lze získat
+následovně:</p>
+
+<pre>
+java -client -XX:+PrintFlagsFinal -version |grep "intx CompileThreshold"
+     intx CompileThreshold                          = 1500            {pd product}
+</pre>
+
+<pre>
+java -server -XX:+PrintFlagsFinal -version |grep "intx CompileThreshold"
+     intx CompileThreshold                          = 10000           {pd product}
+</pre>
+
+<p>Nyní již začínají předchozí výsledky dávat větší smysl. JIT klient provedl
+první volání benchmarku v&nbsp;režimu interpretru, kdy se dosáhl mezní počet
+iterací. Proto došlo k&nbsp;překladu testovací metody (druhý běh byl znatelně
+pomalejší) a další iterace již volaly přeložený kód. Naproti tomu u JIT serveru
+byl překlad odložen až na třetí iteraci, a to proto, že velikost pole a tím
+pádem i počet opakování vnitřní smyčky byl nastaven na 5000.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Nastavení prahu, při němž se spustí JIT překlad</h2>
+
+<p>Práh, při němž se spustí JIT překlad, je dokonce možné řídit, což se nám
+ještě bude v&nbsp;dalších částech tohoto seriálu hodit. Pro změnu hranice
+iterací, po jejímž dosažení se překlad spustí, se používá přepínač
+<strong>-XX:CompileThreshold=xxx</strong>. Podívejme se nyní, jak nastavení
+tohoto přepínače ovlivní místo, v&nbsp;němž dojde k&nbsp;překladu:</p>
+
+<p>Překlad bude proveden ihned, již při první iteraci, navíc se přeloží mnoho
+dalšího kódu:</p>
+
+<pre>
+java -client -XX:CompileThreshold=1 ArrayTest2 10 
+Round # 0  time:    1 491 530 ns
+Round # 1  time:       54 476 ns
+Round # 2  time:       58 667 ns
+Round # 3  time:       55 594 ns
+Round # 4  time:       55 034 ns
+Round # 5  time:       54 476 ns
+Round # 6  time:       55 035 ns
+Round # 7  time:       53 080 ns
+Round # 8  time:       53 359 ns
+Round # 9  time:       62 018 ns
+Total time: 1 993 269 ns
+</pre>
+
+<p>Dtto, ale některé další metody jsou přeloženy později:</p>
+
+<pre>
+java -client -XX:CompileThreshold=10 ArrayTest2 10 
+Round # 0  time:      836 140 ns
+Round # 1  time:      790 324 ns
+Round # 2  time:       61 181 ns
+Round # 3  time:       63 137 ns
+Round # 4  time:       48 609 ns
+Round # 5  time:       64 812 ns
+Round # 6  time:       62 857 ns
+Round # 7  time:       63 138 ns
+Round # 8  time:       54 756 ns
+Round # 9  time:       62 298 ns
+Total time: 2 107 252 ns
+</pre>
+
+<p>Podobné předchozímu:</p>
+
+<pre>
+java -client -XX:CompileThreshold=100 ArrayTest2 10 
+Round # 0  time:      884 470 ns
+Round # 1  time:      738 361 ns
+Round # 2  time:       63 695 ns
+Round # 3  time:       64 533 ns
+Round # 4  time:       64 254 ns
+Round # 5  time:       58 667 ns
+Round # 6  time:       64 533 ns
+Round # 7  time:       62 298 ns
+Round # 8  time:       61 739 ns
+Round # 9  time:       60 343 ns
+Total time: 2 122 893 ns
+</pre>
+
+<pre>
+java -client -XX:CompileThreshold=1000 ArrayTest2 10 
+Round # 0  time:      385 524 ns
+Round # 1  time:      982 806 ns
+Round # 2  time:       63 975 ns
+Round # 3  time:       65 930 ns
+Round # 4  time:       63 136 ns
+Round # 5  time:       63 416 ns
+Round # 6  time:       64 812 ns
+Round # 7  time:       64 813 ns
+Round # 8  time:       52 521 ns
+Round # 9  time:       64 253 ns
+Total time: 1 871 186 ns
+</pre>
+
+<p>Zde je již JIT překlad &bdquo;odsunut&ldquo; dále v&nbsp;čase:</p>
+
+<pre>
+java -client -XX:CompileThreshold=10000 ArrayTest2 10 
+Round # 0  time:      377 422 ns
+Round # 1  time:      378 540 ns
+Round # 2  time:    2 329 904 ns
+Round # 3  time:       64 813 ns
+Round # 4  time:       65 650 ns
+Round # 5  time:       65 092 ns
+Round # 6  time:       65 930 ns
+Round # 7  time:       64 534 ns
+Round # 8  time:       65 371 ns
+Round # 9  time:       65 651 ns
+Total time: 3 542 907 ns
+</pre>
+
+<pre>
+java -client -XX:CompileThreshold=20000 ArrayTest2 10 
+Round # 0  time:      386 641 ns
+Round # 1  time:      381 055 ns
+Round # 2  time:      383 847 ns
+Round # 3  time:      381 054 ns
+Round # 4  time:    2 318 172 ns
+Round # 5  time:       62 019 ns
+Round # 6  time:       60 343 ns
+Round # 7  time:       60 901 ns
+Round # 8  time:       63 416 ns
+Round # 9  time:       64 814 ns
+Total time: 4 162 262 ns
+</pre>
+
+<pre>
+java -client -XX:CompileThreshold=40000 ArrayTest2 10 
+Round # 0  time:      380 216 ns
+Round # 1  time:      386 362 ns
+Round # 2  time:      381 892 ns
+Round # 3  time:      381 055 ns
+Round # 4  time:      428 546 ns
+Round # 5  time:      292 217 ns
+Round # 6  time:      386 083 ns
+Round # 7  time:      381 613 ns
+Round # 8  time:    2 315 657 ns
+Round # 9  time:       66 489 ns
+Total time: 5 400 130 ns
+</pre>
+
+<p>Nyní je hranice nastavena na tak vysokou hodnotu, že se žádný JIT ani
+nestihne provést:</p>
+
+<pre>
+java -client -XX:CompileThreshold=100000 ArrayTest2 10 
+Round # 0  time:      379 098 ns
+Round # 1  time:      381 054 ns
+Round # 2  time:      381 332 ns
+Round # 3  time:      383 289 ns
+Round # 4  time:      381 053 ns
+Round # 5  time:      382 451 ns
+Round # 6  time:      382 730 ns
+Round # 7  time:      384 126 ns
+Round # 8  time:      379 936 ns
+Round # 9  time:      382 172 ns
+Total time: 3 817 241 ns
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Několik možností sledování JIT překladu</h2>
+
+<p>Bylo by zajisté vhodné mít k&nbsp;dispozici nějakou možnost sledování, kdy
+dojde k&nbsp;zavolání JIT překladače a jaké metody (či jejich části) vlastně
+budou přeloženy. I tuto funkci nám virtuální stroj Javy samozřejmě nabízí, a to
+dokonce v&nbsp;několika variantách, které si stručně popíšeme
+v&nbsp;navazujících kapitolách. Jen pro připomenutí si řekněme, že podobné
+funkce nám JVM nabízí i v&nbsp;oblasti sledování činnosti správce paměti, což
+je taktéž důležitá oblast, kterou je nutné při nasazování především
+dlouhotrvajících serverových aplikací monitorovat; viz též vybrané předchozí
+díly tohoto seriálu:</p>
+
+<table>
+<tr><th>Díl</th><th>Odkaz</th></tr>
+<tr><td> 7</td><td><a href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-jdk-7">Monitorování procesů a správa paměti v JDK 6 a JDK 7 (1)</a></td></tr>
+<tr><td> 8</td><td><a href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-jdk-7-2/">Monitorování procesů a správa paměti v JDK 6 a JDK 7 (2)</a></td></tr>
+<tr><td> 9</td><td><a href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-jdk-7-3/">Monitorování procesů a správa paměti v JDK 6 a JDK 7 (3)</a></td></tr>
+<tr><td>10</td><td><a href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-jdk-7-4/">Monitorování procesů a správa paměti v JDK 6 a JDK 7 (4)</a></td></tr>
+<tr><td>11</td><td><a href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-jdk-6-a-jdk-7-5/">Monitorování procesů a správa paměti v JDK 6 a JDK 7 (5)</a></td></tr>
+<tr><td>12</td><td><a href="http://www.root.cz/clanky/monitorovani-procesu-a-sprava-pameti-v-nbsp-jdk-6-a-jdk-7-vyuziti-large-pages/">Monitorování procesů a správa paměti v JDK 6 a JDK 7 (6)</a></td></tr>
+</table>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Použití volby <strong>-XX:+PrintCompilation</strong></h2>
+
+<p>Pro postupný tisk seznamu metod, které jsou JIT překladačem kompilovány, lze
+využít volbu <strong>-XX:+PrintCompilation</strong>; aby ovšem byla tato volba
+dostupná, je ji nutné zkombinovat s&nbsp;volbou
+<strong>-XX:+UnlockDiagnosticVMOptions</strong>, která všechny
+&bdquo;nadstandardní&ldquo; diagnostické výpisy povoluje. Podívejme se, jak
+vypadá výstup při použití této dvojice voleb:</p>
+
+<pre>
+java -client -XX:+UnlockDiagnosticVMOptions -XX:+PrintCompilation ArrayTest2 20 
+     86    1             java.lang.String::hashCode (55 bytes)
+     93    2             java.lang.String::charAt (29 bytes)
+     99    3             java.lang.String::indexOf (70 bytes)
+   1116    4             java.lang.Object::&lt;init&gt; (1 bytes)
+   1129    5             java.lang.String::indexOf (166 bytes)
+   1132    6             sun.nio.cs.SingleByte$Decoder::decode (11 bytes)
+   1134    7             java.lang.CharacterData::of (120 bytes)
+   1135    8             java.lang.CharacterDataLatin1::getProperties (11 bytes)
+   1136    9             java.lang.String::toLowerCase (472 bytes)
+   1141   10             java.lang.Character::toLowerCase (9 bytes)
+   1142   11             java.lang.CharacterDataLatin1::toLowerCase (39 bytes)
+   1143   12   !         java.io.BufferedReader::readLine (304 bytes)
+   1158   13             sun.nio.cs.SingleByte$Decoder::decodeArrayLoop (154 bytes)
+   1162   14             java.lang.String::lastIndexOf (52 bytes)
+   1163   15             java.lang.String::equals (81 bytes)
+   1164   16             java.lang.AbstractStringBuilder::ensureCapacityInternal (16 bytes)
+   1165   17             java.lang.AbstractStringBuilder::append (29 bytes)
+   1174   18             java.io.BufferedInputStream::getBufIfOpen (21 bytes)
+   1175   19  s          java.io.BufferedInputStream::read (49 bytes)
+Round # 0  time:      387 200 ns
+&nbsp;
+<strong>   2197   20             ArrayTest2::test (27 bytes)</strong>
+&nbsp;
+Round # 1  time:    1 061 029 ns
+Round # 2   3219   21     n       java.lang.System::arraycopy (0 bytes)   (static)
+  time:       64 254 ns
+Round # 3  time:       66 489 ns
+Round # 4  time:       64 813 ns
+Round # 5  time:    6264   22             java.lang.String::length (6 bytes)
+      64 533 ns
+Round # 6  time:       65 092 ns
+Round # 7  time:       52 799 ns
+Round # 8  time:       65 092 ns
+Round # 9  time:       63 416 ns
+Round #10  time:       65 092 ns
+Round #11  time:       63 695 ns
+Round #12  time:       64 813 ns
+Round #13  time:       65 092 ns
+  15378   23             java.util.regex.Matcher::reset (83 bytes)
+Round #14  time:       65 371 ns
+Round #15  time:       63 975 ns
+Round #16  time:       64 813 ns
+Round #17  time:       64 533 ns
+Round #18  time:       64 812 ns
+Round #19  time:   20447   24             java.lang.Math::min (11 bytes)
+      64 812 ns
+Total time: 2 601 725 ns
+</pre>
+
+<p>Z&nbsp;výpisu je patrné, že se kromě JIT překladu naší benchmarkové metody
+ArrayTest2.test() došlo i k&nbsp;překladu dalších metod, které se buď přímo či
+nepřímo v&nbsp;aplikaci používají.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Použití volby <strong>-XX:+LogCompilation</strong></h2>
+
+<p>Alternativně je možné použít volbu <strong>-XX:+LogCompilation</strong>,
+která však neprovede tisk informací o překladu na standardní výstup, ale
+vytvoří namísto toho soubor pojmenovaný <strong>hotspot.log</strong> (jméno i
+umístění souboru je však možné změnit). V&nbsp;tomto souboru jsou uloženy
+všechny důležité informace o JIT překladači ve formě vhodné pro zpracování
+dalšími nástroji:</p>
+
+<pre>
+java -client -XX:CompileThreshold=20000 -XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation ArrayTest2 10
+</pre>
+
+<p>Jak je z&nbsp;následujícího výpisu patrné, je celý soubor uložen
+v&nbsp;XML:</p>
+
+<pre>
+&lt;?xml version='1.0' encoding='UTF-8'?&gt;
+&lt;hotspot_log version='160 1' process='3000' time_ms='1379194481069'&gt;
+&lt;vm_version&gt;
+&lt;name&gt;
+Java HotSpot(TM) Client VM
+&lt;/name&gt;
+&lt;release&gt;
+23.25-b01
+&lt;/release&gt;
+&lt;info&gt;
+Java HotSpot(TM) Client VM (23.25-b01) x86 JRE (1.7.0_25-b17), built on Jun 21 2013 13:06:48 by &quot;java_re&quot;
+&lt;/info&gt;
+&lt;/vm_version&gt;
+&lt;vm_arguments&gt;
+&lt;args&gt;
+-XX:CompileThreshold=20000 -XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation 
+&lt;/args&gt;
+&lt;command&gt;
+ArrayTest2 10
+&lt;/command&gt;
+&lt;launcher&gt;
+SUN_STANDARD
+&lt;/launcher&gt;
+&lt;properties&gt;
+java.vm.specification.name=Java Virtual Machine Specification
+java.vm.version=23.25-b01
+java.vm.name=Java HotSpot(TM) Client VM
+java.vm.info=mixed mode, sharing
+java.vm.specification.vendor=Oracle Corporation
+java.vm.specification.version=1.7
+java.vm.vendor=Oracle Corporation
+sun.java.command=ArrayTest2 10
+sun.java.launcher=SUN_STANDARD
+&lt;/properties&gt;
+&lt;/vm_arguments&gt;
+&lt;tty&gt;
+&lt;writer thread='1972'/&gt;
+&lt;make_not_compilable thread='1972' method='java/lang/invoke/CallSite setTargetNormal (Ljava/lang/invoke/MethodHandle;)V' bytes='6' count='0' iicount='0' stamp='0.045'/&gt;
+&lt;make_not_compilable thread='1972' method='java/lang/invoke/CallSite setTargetVolatile (Ljava/lang/invoke/MethodHandle;)V' bytes='6' count='0' iicount='0' stamp='0.045'/&gt;
+&lt;writer thread='312'/&gt;
+&lt;thread_logfile thread='312' filename='hs_c312_pid3000.log'/&gt;
+&lt;writer thread='1972'/&gt;
+&nbsp;
+<strong>&lt;task_queued compile_id='1' method='ArrayTest2 test ()V' bytes='27' count='5' backedge_count='10000' iicount='0' stamp='5.245' comment='count' hot_count='5'/&gt;</strong>
+&nbsp;
+&lt;writer thread='312'/&gt;
+&nbsp;
+<strong>&lt;nmethod compile_id='1' compiler='C1' entry='0x00a00a00' size='668' address='0x00a00908' relocation_offset='208' insts_offset='248' stub_offset='504' scopes_data_offset='540' scopes_pcs_offset='584' dependencies_offset='664' oops_offset='536' method='ArrayTest2 test ()V' bytes='27' count='5' backedge_count='10000' iicount='0' stamp='5.247'/&gt;</strong>
+&nbsp;
+&lt;writer thread='3800'/&gt;
+&lt;destroy_vm stamp='10.325'/&gt;
+&lt;tty_done stamp='10.326'/&gt;
+&lt;/tty&gt;
+&lt;compilation_log thread='312'&gt;
+&lt;start_compile_thread thread='312' process='3000' stamp='0.113'/&gt;
+&nbsp;
+<strong>&lt;task compile_id='1' method='ArrayTest2 test ()V' bytes='27' count='5' backedge_count='10000' iicount='0' stamp='5.245'&gt;</strong>
+&nbsp;
+&lt;task_done success='1' nmsize='288' count='5' backedge_count='10000' stamp='5.247'/&gt;
+&lt;/task&gt;
+&lt;/compilation_log&gt;
+&lt;hotspot_log_done stamp='10.326'/&gt;
+&lt;/hotspot_log&gt;
+</pre>
+
+<p>Co všechna hlášení znamenají (nmethod...) si řekneme příště.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Využití nástroje <strong>jstat</strong></h2>
+
+<p>Další možnost, jak získat nějaké informace o JIT překladu, spočívá ve
+využití standardního nástroje <strong>jstat</strong>, s&nbsp;nímž jsme se již
+v&nbsp;tomto seriálu setkali. Tento nástroj použijeme na mírně modifikovaný
+benchmark nazvaný <strong>ArrayTest3</strong>. Jediný rozdíl oproti předchozímu
+příklad <strong>ArrayTest2</strong> spočívá v&nbsp;tom, že na konci běhu
+benchmarku se počká na stisk klávesy:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Velmi jednoduchy benchmark - pruchod polem</i>
+<i>  */</i>
+public class <strong>ArrayTest3</strong> {
+    <i>// velikost pole pouziteho v testu</i>
+    public static final int <strong>ARRAY_SIZE</strong> = 5000;
+&nbsp;
+    public static void <strong>main</strong>(String[] args) throws InterruptedException, java.io.IOException {
+        <i>// nacist pocet opakovani testu</i>
+        final int iter = Integer.parseInt(args[0]);
+&nbsp;
+        <i>// priblizny celkovy cas behu testu</i>
+        <i>// (bez GC a cekani na dokonceni GC)</i>
+        long total_time = 0;
+&nbsp;
+        <i>// provest zadany pocet testu</i>
+        for (int i = 0; i &lt; iter; i++) {
+            <i>// pro jistotu nejdrive provedeme GC</i>
+            <i>// a pockame na jeho dokonceni (nepresne!)</i>
+            System.gc();
+            Thread.sleep(1000);
+&nbsp;
+            <i>// provest test a zmerit cas behu testu</i>
+            long t1 = System.nanoTime();
+            test();
+            long t2 = System.nanoTime();
+            long delta_t = t2 - t1;
+&nbsp;
+            <i>// vypis casu pro jeden test</i>
+            System.out.format("Round #%2d  time: %,12d ns\n", i, delta_t);
+&nbsp;
+            <i>// vypocet celkoveho casu behu vsech testu</i>
+            total_time += delta_t;
+        }
+        System.out.format("Total time: %,d ns\n", total_time);
+&nbsp;
+        <i>// cekat na stisk klavesy</i>
+        System.in.read();
+&nbsp;
+    }
+&nbsp;
+<i>    /**</i>
+<i>      * Vlastni test, kde se prochazi polem a postupne se</i>
+<i>      * naplnuji jednotlive prvky tohoto pole.</i>
+<i>      */</i>
+    private static void <strong>test</strong>() {
+        int[] array = new int[ARRAY_SIZE];
+        final int length = array.length;
+        for (int i = 0; i &lt; length; i++) {
+            array[i] = i;
+        }
+    }
+&nbsp;
+}
+</pre>
+
+<p>Po překladu testovací příklad normálně spustíme:</p>
+
+<pre>
+java -client -XX:CompileThreshold=20000 ArrayTest3 10
+</pre>
+
+<p>Jakmile se objeví zpráva o celkovém času běhu, je nutné v&nbsp;jiném
+terminálu (konzoli) spustit příkaz <strong>jps</strong> a získat tak
+identifikátor procesu s&nbsp;JVM:</p>
+
+<pre>
+jps
+&nbsp;
+3088 Jps
+6502 ArrayTest3
+</pre>
+
+<p>Následně použijeme ono číslo 6502 při zavolání nástroje
+<strong>jstat</strong>:</p>
+
+<pre>
+jstat -compiler 6502
+&nbsp;
+Compiled Failed Invalid   Time   FailedType FailedMethod
+       1      0       0     0,00          0
+&nbsp;
+jstat -printcompilation 6502
+Compiled  Size  Type Method
+       1     27    1 ArrayTest3 test
+</pre>
+
+<p>Způsob dalšího &ndash; velmi podrobného &ndash; sledování funkce JIT
+překladače si uvedeme příště.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy. V&nbsp;následující tabulce najdete odkazy na
+prozatím nejnovější verze obou benchmarků i demonstračního příkladu použitého
+minule:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>ArrayTest1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest1.java</a></td></tr>
+<tr><td>2</td><td>ArrayTest2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest2.java</a></td></tr>
+<tr><td>3</td><td>ArrayTest3.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest3.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/83f13c381bc0/jit/ArrayTest3.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
