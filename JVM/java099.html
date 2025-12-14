@@ -1,0 +1,911 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si nejdříve řekneme, jak vyřešili autoři HotSpotu problematiku tvorby safe-pointů. Posléze se seznámíme s principem generování safe-pointů na platformě x86 a dále se budeme zabývat problematikou synchronizovaných metod a bloků.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</a></p>
+<p><a href="#k02">2. Vkládání safe-pointů do generovaného kódu</a></p>
+<p><a href="#k03">3. Způsob implementace safe-pointů na platformě x86</a></p>
+<p><a href="#k04">4. Ukázkový příklad</a></p>
+<p><a href="#k05">5. Synchronizované metody a synchronizované bloky</a></p>
+<p><a href="#k06">6. Demonstrační benchmark <strong>SynchronizationTest1</strong></a></p>
+<p><a href="#k07">7. Bajtkód testovacích metod</a></p>
+<p><a href="#k08">8. Výsledky spuštění benchmarku</a></p>
+<p><a href="#k09">9. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - základy optimalizace aplikací naprogramovaných v Javě (5)</h2>
+
+<p>V&nbsp;dnešní části seriálu o programovacím jazyce Java i o virtuálním
+stroji Javy si nejdříve řekneme, jakým způsobem vyřešili autoři HotSpotu
+problematiku dvou protichůdných hledisek, ke kterým je zapotřebí přihlížet při
+vytváření takzvaných <i>safe-pointů</i>. Posléze se seznámíme s&nbsp;principem
+generování safe-pointů na platformě x86 a x86_64; protože se jedná (alespoň
+podle mého názoru) o dosti elegantní řešení celé problematiky, které je
+&bdquo;optimistické&ldquo; v&nbsp;tom smyslu, že se může generovat poměrně
+velké množství safe-pointů, ovšem na druhou stranu se optimisticky předpokládá,
+že se těmito safe-pointy bude ve většině případů pouze procházet bez nutnosti
+pozastavení vlákna.</p>
+
+<p>Ve druhé části článku se budeme zabývat použitím synchronizovaných metod a
+synchronizovaných bloků. Zajímavé bude porovnání výkonnosti metod
+přistupujících k&nbsp;atributům objektu s&nbsp;využitím synchronizace,
+popř.&nbsp;alternativně metod přistupujících k&nbsp;volatilním atributům. Právě
+zde se ukáže jeden z&nbsp;důvodů, proč v&nbsp;Javě vůbec atributy
+s&nbsp;modifikátorem <strong>volatile</strong> existují, i když by se mohlo
+zdát, že jejich použití nám oproti explicitní synchronizaci nepřináší žádné
+viditelné výhody (i když sémantika synchronizovaného přístupu a využití
+volatilních atributů je odlišná!).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Vkládání safe-pointů do generovaného kódu</h2>
+
+<p>V&nbsp;předchozí části tohoto seriálu jsme si řekli základní informace o
+takzvaných <i>safe-pointech</i>. Připomeňme si, že se jedná o taková místa
+v&nbsp;generovaném strojovém kódu, v&nbsp;nichž je umožněno bezpečné zastavení
+vlákna či vláken. Safe pointy jsou představovány určitou instrukcí či sekvencí
+instrukcí, kterou si podrobněji popíšeme <a href="#k03">ve třetí kapitole</a>.
+Taktéž jsme si řekli, že je důležité správné určení těch oblastí kódu,
+v&nbsp;nichž mají být safe-pointy použity, přičemž je nutné brát ohled na dvě
+navzájem protichůdná hlediska. Na jednu stranu by mělo být <i>safe-pointů</i>
+vytvořeno co nejvíc, aby bylo možné vlákna pozastavit v&nbsp;prakticky každý
+okamžik, což je vyžadováno například správci paměti typu <i>stop-the-world
+(STW)</i> (taktéž se přesněji detekují deadlocky). Na stranu druhou je však
+vkládání safe-pointů náročné jak na operační paměť (pro nové instrukce i pro
+mapu referencí na objekty), tak i na rychlost běhu přeloženého (JITovaného)
+kódu.</p>
+
+<p>Aby se obě dvě protichůdná hlediska zmíněná v&nbsp;předchozím odstavci
+nějakým způsobem mohla vhodně zkombinovat a uplatnit v&nbsp;praxi, jsou
+<i>safe-pointy</i> vytvářeny na určitých významných místech v&nbsp;generovaném
+zdrojovém kódu. Například se jedná o instrukce umístěné před nepodmíněné i
+podmíněné skoky, taktéž před strojový kód představující vykonávání instrukcí
+<strong>tableswitch</strong> a <strong>lookupswitch</strong>, před návratem
+z&nbsp;metod (všechny instrukce typu <strong>return</strong>) apod. Když se nad
+tímto chováním zamyslíme, zjistíme, že je automaticky zajištěno i vkládání
+<i>safe-pointů</i> do programových smyček, které jsou na úrovni bajtkódu a
+posléze i na úrovni generovaného strojového kódu představovány kombinací
+podmíněných a nepodmíněných skoků, podobně jako Javovské jazykové konstrukce
+určené pro větvení běhu programu. Jakým způsobem jsou <i>safe-pointy</i>
+konkrétně generovány na platformě x86 si stručně popíšeme <a
+href="#k03">v&nbsp;navazující kapitole</a>.</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Způsob implementace safe-pointů na platformě x86</h2>
+
+<p>Způsob implementace <i>safe-pointů</i> je v&nbsp;moderních virtuálních
+strojích Javy založených na HotSpotu řešen zajímavou technikou zajišťující
+rychlý přesun přes safe-point ve chvíli, kdy není nutné vlákno zastavit. Každý
+safe-point je zde představován jedinou instrukcí, která načítá slovo
+z&nbsp;operační paměti z&nbsp;určité adresy, přičemž načtené slovo se ihned
+zahodí (přesněji řečeno se ignoruje). Na platformě x86 je načtení řešeno
+instrukcí <strong>test eax, [adresa]</strong> resp.&nbsp;<strong>test rax,
+[adresa]</strong>, což má tu výhodu, že se čtením nepřepíše obsah žádného
+registru, pouze se změní obsah příznakového bitu Z (<i>zero</i>), který je však
+v&nbsp;dalších instrukcích stejně ignorován. Poznámka &ndash; instrukce
+<strong>test A,B</strong> provádí stejnou operaci jako instrukce <strong>and
+A,B</strong>, výsledek výpočtu logického součinu bit po bitu se však nikam
+nezapisuje, což přibližně odpovídá rozdílům mezi instrukcemi <strong>sub
+A,B</strong> a <strong>cmp A,B</strong>.</p>
+
+<p>Adresa slova čteného instrukcí <strong>test</strong> je umístěna ve
+speciální stránce paměti nazývané <i>poll page</i>. Při normálním běhu vláken
+je čtení slova instrukcí <strong>test</strong> provedeno velmi rychle, protože
+je obsah <i>poll page</i> uložen ve vyrovnávacích pamětech všech procesorových
+jader. Ovšem ve chvíli, kdy je zapotřebí pozastavit všechna vlákna, odmapuje
+virtuální stroj Javy pomocí systémového volání <i>poll page</i>. To při pokusu
+o čtení slova instrukcí <strong>test</strong> povede ke vzniku výpadku stránky
+(<i>page fault</i>), která je ošetřena handlerem, jenž je součástí JVM.
+Vzhledem k&nbsp;tomu, že k&nbsp;safe-pointu dřív či později dojdou všechna
+aplikační vlákna, budou všechna pozastavena právě při výpadku stránky. Důležité
+je, že odmapování <i>poll page</i> je provedeno na globální úrovni &ndash;
+platí tedy pro všechna procesorová jádra.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Ukázkový příklad</h2>
+
+<p>Podívejme se nyní ještě jednou na výpis přeloženého strojového kódu metody
+<strong>ArrayTest3.test()</strong>. Nyní nás však nebude zajímat, jak přesně se
+přeložila programová smyčka v&nbsp;této metodě, ale kde jsou v&nbsp;ní umístěny
+<i>safe-pointy</i>. Ty jsou ve výpisu zvýrazněny:</p>
+
+<pre>
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'test' '()V' in 'ArrayTest3'
+  #           [sp+0x20]  (sp of caller)
+  0x00a00a00: mov    %eax,0xffffc000(%esp)
+  0x00a00a07: push   %ebp
+  0x00a00a08: sub    $0x18,%esp         ;*sipush
+                                        ; - ArrayTest3::test@0 (line 47)
+  0x00a00a0b: mov    $0x1388,%ebx
+  0x00a00a10: mov    $0x2fb1c6a8,%edx   ;   {oop({type array int})}
+  0x00a00a15: mov    %ebx,%edi
+  0x00a00a17: cmp    $0xffffff,%ebx
+  0x00a00a1d: ja     0x00a00ab7
+  0x00a00a23: mov    $0x13,%esi
+  0x00a00a28: lea    (%esi,%ebx,4),%esi
+  0x00a00a2b: and    $0xfffffff8,%esi
+  0x00a00a2e: mov    %fs:0x0,%ecx
+  0x00a00a36: mov    0xfffffff4(%ecx),%ecx
+  0x00a00a39: mov    0x34(%ecx),%eax
+  0x00a00a3c: lea    (%eax,%esi,1),%esi
+  0x00a00a3f: cmp    0x3c(%ecx),%esi
+  0x00a00a42: ja     0x00a00ab7
+  0x00a00a48: mov    %esi,0x34(%ecx)
+  0x00a00a4b: sub    %eax,%esi
+  0x00a00a4d: movl   $0x1,(%eax)
+  0x00a00a53: mov    %edx,0x4(%eax)
+  0x00a00a56: mov    %ebx,0x8(%eax)
+  0x00a00a59: sub    $0xc,%esi
+  0x00a00a5c: je     0x00a00a82
+  0x00a00a62: xor    %ebx,%ebx
+  0x00a00a64: shr    $0x3,%esi
+  0x00a00a67: jae    0x00a00a77
+  0x00a00a6d: mov    %ebx,0xc(%eax,%esi,8)
+  0x00a00a71: je     0x00a00a82
+  0x00a00a77: mov    %ebx,0x8(%eax,%esi,8)
+  0x00a00a7b: mov    %ebx,0x4(%eax,%esi,8)
+  0x00a00a7f: dec    %esi
+  0x00a00a80: jne    0x00a00a77         ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+  0x00a00a82: mov    $0x0,%esi
+  0x00a00a87: jmp    0x00a00aa4         ;*iload_2
+                                        ; - ArrayTest3::test@11 (line 49)
+  0x00a00a8c: mov    $0x1388,%edi
+  0x00a00a91: cmp    %esi,%edi
+  0x00a00a93: jbe    0x00a00abe
+  0x00a00a99: mov    %esi,0xc(%eax,%esi,4)  ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+  0x00a00a9d: inc    %esi               ; OopMap{eax=Oop off=158}
+                                        ;*goto
+                                        ; - ArrayTest3::test@23 (line 49)
+&nbsp;
+; -------------------------------------------------------------------
+  0x00a00a9e: <strong>test   %eax,0x940100</strong>      ;*goto
+                                        ; - ArrayTest3::test@23 (line 49)
+                                        ;   {poll}
+; -------------------------------------------------------------------
+&nbsp;
+  0x00a00aa4: cmp    $0x1388,%esi
+  0x00a00aaa: jl     0x00a00a8c         ;*if_icmpge
+                                        ; - ArrayTest3::test@13 (line 49)
+  0x00a00aac: add    $0x18,%esp
+  0x00a00aaf: pop    %ebp
+&nbsp;
+; -------------------------------------------------------------------
+  0x00a00ab0: <strong>test   %eax,0x940100</strong>      ;   {poll_return}
+; -------------------------------------------------------------------
+&nbsp;
+  0x00a00ab6: ret    
+  0x00a00ab7: call   0x009fef00         ; OopMap{off=188}
+                                        ;*newarray
+                                        ; - ArrayTest3::test@3 (line 47)
+                                        ;   {runtime_call}
+  0x00a00abc: jmp    0x00a00a82
+  0x00a00abe: mov    %esi,(%esp)
+  0x00a00ac1: call   0x009fe250         ; OopMap{eax=Oop off=198}
+                                        ;*iastore
+                                        ; - ArrayTest3::test@19 (line 50)
+                                        ;   {runtime_call}
+  0x00a00ac6: nop    
+  0x00a00ac7: nop    
+  0x00a00ac8: mov    %fs:0x0,%esi
+  0x00a00ad0: mov    0xfffffff4(%esi),%esi
+  0x00a00ad3: mov    0x188(%esi),%eax
+  0x00a00ad9: movl   $0x0,0x188(%esi)
+  0x00a00ae3: movl   $0x0,0x18c(%esi)
+  0x00a00aed: add    $0x18,%esp
+  0x00a00af0: pop    %ebp
+  0x00a00af1: jmp    0x009abb80         ;   {runtime_call}
+  0x00a00af6: hlt    
+  0x00a00af7: hlt    
+  0x00a00af8: hlt    
+  0x00a00af9: hlt    
+  0x00a00afa: hlt    
+  0x00a00afb: hlt    
+  0x00a00afc: hlt    
+  0x00a00afd: hlt    
+  0x00a00afe: hlt    
+  0x00a00aff: hlt    
+[Exception Handler]
+[Stub Code]
+  0x00a00b00: call   0x009ff880         ;   {no_reloc}
+  0x00a00b05: push   $0x6eb63690        ;   {external_word}
+  0x00a00b0a: call   0x00a00b0f
+  0x00a00b0f: pusha  
+  0x00a00b10: call   0x6ea45f60         ;   {runtime_call}
+  0x00a00b15: hlt    
+[Deopt Handler Code]
+  0x00a00b16: push   $0xa00b16          ;   {section_word}
+  0x00a00b1b: jmp    0x0099ca70         ;   {runtime_call}
+</pre>
+
+<p>Poznámka: načítaná adresa, popř.&nbsp;celá adresa <i>poll page</i> může být
+při každém novém spuštění JVM odlišná.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Synchronizované metody a synchronizované bloky</h2>
+
+<p>Další problematika, kterou se budeme v&nbsp;dnešním článku zabývat, souvisí
+s&nbsp;explicitní synchronizací vláken v&nbsp;Javě. Programovací jazyk Java již
+od svého vzniku podporoval provádění synchronizace vláken s&nbsp;využitím
+takzvaných synchronizovaných metod a synchronizovaných bloků. Připomeňme si
+krátce, že synchronizované metody lze snadno poznat podle modifikátoru
+<strong>synchronized</strong> uvedeného v&nbsp;deklaraci metody.
+Synchronizované bloky začínají taktéž klíčovým slovem
+<strong>synchronized</strong>, za nímž se uvádí identifikátor objektu použitého
+pro synchronizaci. V&nbsp;Javě lze pro synchronizaci použít prakticky každý
+objekt, protože každý objekt vytvořený na haldě obsahuje (ve své hlavičce
+neviditelné javovskému programátorovi) zámek, jenž může nějaké vlákno získat,
+vrátit ho či čekat na jeho uvolnění. U synchronizovaných metod, u nichž se
+žádný objekt nezadává, se pro synchronizaci použije <strong>this</strong>
+(nestatické metody) či přímo objekt představující obraz třídy (statické
+metody).</p>
+
+<p>V&nbsp;diskusi pod předchozím článkem zazněl zajímavý (a na školeních
+poměrně často pokládaný) dotaz &ndash; když přihlédneme k&nbsp;tomu, jaké
+problémy způsobuje použití volatilních atributů, není lepší se zcela od
+modifikátoru <strong>volatile</strong> odvrátit a používat pouze explicitní
+synchronizaci při přístupu k&nbsp;atributům? Pokud odhlédneme od toho, že
+sémantika volatilních atributů a synchronizace přístupu k&nbsp;nevolatilním
+atributům je odlišná (což někdy může a někdy nemusí vadit), ukazuje se, že
+problém může nastat především v&nbsp;oblasti výpočetního výkonu.
+V&nbsp;navazujících kapitolách se pokusíme tento problém ilustrovat na velmi
+jednoduchém demonstračním příkladu.</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační benchmark <strong>SynchronizationTest1</strong></h2>
+
+<p>Test rychlosti provádění základních operací s&nbsp;atributy typu
+<strong>int</strong> budeme provádět s&nbsp;využitím velmi jednoduchého
+demonstračního příkladu nazvaného <strong>SynchronizationTest1</strong>.
+V&nbsp;této třídě jsou deklarovány čtyři celočíselné atributy
+<strong>x</strong>, <strong>y</strong>, <strong>z</strong> a
+<strong>v</strong>, přičemž poslední atribut je volatilní. Dále jsou
+v&nbsp;této třídě deklarovány čtyři metody <strong>testX()</strong>,
+<strong>testY()</strong>, <strong>testZ()</strong> a <strong>testV()</strong>,
+které pouze zvýší obsah příslušného atributu (metoda <strong>testX()</strong>
+zvýší hodnotu atributu <strong>x</strong> atd.). Důležité je, že metoda
+<strong>testX()</strong> nepoužívá žádnou formu synchronizace, metoda
+<strong>testY()</strong> je synchronizovaná, metoda <strong>testZ()</strong>
+obsahuje synchronizovaný blok a konečně metoda <strong>testV()</strong>
+přistupuje k&nbsp;volatilnímu atributu:</p>
+
+<pre>
+<i>/**</i>
+<i>  * Jednoduchy benchmark pro porovnani rychlostnich</i>
+<i>  * rozdilu mezi pouzitim synchronizovanych metod</i>
+<i>  * a synchronizovanych bloku.</i>
+<i>  */</i>
+public class <strong>SynchronizationTest1</strong> {
+<i>    // dostatecny pocet iteraci pro spusteni JITu</i>
+    private final static int ITERATIONS = 5000000;
+&nbsp;
+<i>    // zamezime tomu, aby se do casu behu benchmarku</i>
+<i>    // zapocital i cas JITu</i>
+    private final static int WARMUP = 3;
+&nbsp;
+    public int x = 0;
+    public int y = 0;
+    public int z = 0;
+    public volatile int v = 0;
+&nbsp;
+<i>    // test s nesynchronizovanou metodou</i>
+    private void <strong>testX</strong>() {
+        x++;
+    }
+&nbsp;
+<i>    // test se synchronizovanou metodou</i>
+    private synchronized void <strong>testY</strong>() {
+        y++;
+    }
+&nbsp;
+<i>    // test s metodou se synchronizovanym blokem</i>
+    private void <strong>testZ</strong>() {
+        synchronized(this) {
+            z++;
+        }
+    }
+&nbsp;
+<i>    // test s metodou vyuzivajici volatilni atribut</i>
+    private void <strong>testV</strong>() {
+        v++;
+    }
+&nbsp;
+<i>    // spusteni benchmarku</i>
+    public static void <strong>main</strong>(String[] args) {
+        SynchronizationTest1 test = new SynchronizationTest1();
+        long t1, t2, delta_t;
+        long sumTestX=0, sumTestY=0, sumTestZ=0, sumTestV=0;
+&nbsp;
+<i>        // provest zadany pocet testu</i>
+        for (int i = 0; i &lt; 10; i++) {
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            for (int j = 0; j &lt; ITERATIONS; j++) {
+                test.testX();
+            }
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            if (i &gt; WARMUP) {
+                sumTestX += delta_t;
+            }
+&nbsp;
+<i>            // vypis casu pro prvni test</i>
+            System.out.format("Round #%2d testX() time: %,12d ns\n", i, delta_t);
+&nbsp;
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            for (int j = 0; j &lt; ITERATIONS; j++) {
+                test.testY();
+            }
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            if (i &gt; WARMUP) {
+                sumTestY += delta_t;
+            }
+&nbsp;
+<i>            // vypis casu pro druhy test</i>
+            System.out.format("Round #%2d testY() time: %,12d ns\n", i, delta_t);
+&nbsp;
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            for (int j = 0; j &lt; ITERATIONS; j++) {
+                test.testZ();
+            }
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            if (i &gt; WARMUP) {
+                sumTestZ += delta_t;
+            }
+&nbsp;
+<i>            // vypis casu pro treti test</i>
+            System.out.format("Round #%2d testZ() time: %,12d ns\n", i, delta_t);
+&nbsp;
+<i>            // provest test a zmerit cas behu testu</i>
+            t1 = System.nanoTime();
+            for (int j = 0; j &lt; ITERATIONS; j++) {
+                test.testV();
+            }
+            t2 = System.nanoTime();
+            delta_t = t2 - t1;
+            if (i &gt; WARMUP) {
+                sumTestV += delta_t;
+            }
+&nbsp;
+<i>            // vypis casu pro treti test</i>
+            System.out.format("Round #%2d testV() time: %,12d ns\n", i, delta_t);
+        }
+&nbsp;
+<i>        // vypis vsech ctyr kumulativnich casu</i>
+        System.out.format("Cumulative time for testX(): %,12d ns\n", sumTestX);
+        System.out.format("Cumulative time for testY(): %,12d ns\n", sumTestY);
+        System.out.format("Cumulative time for testZ(): %,12d ns\n", sumTestZ);
+        System.out.format("Cumulative time for testV(): %,12d ns\n", sumTestV);
+    }
+&nbsp;
+}
+</pre>
+
+<p>Otázka #1 pro vážené čtenáře: povšimněte si, že se v&nbsp;metodách
+<strong>testY()</strong> a <strong>testZ()</strong> čte a zapisuje do
+nevolatilního atributu. Co se stane v&nbsp;případě, že tyto metody budou volány
+z&nbsp;většího množství vláken &ndash; budou jednotlivá vlákna skutečně načítat
+a zapisovat korektní hodnotu?</p>
+
+<p>Otázka #2: pokud budeme mít dvě souběžně běžící vlákna, z&nbsp;nichž každé
+zavolá 10000&times; metody <strong>testX()</strong>, <strong>testY()</strong>,
+<strong>testZ()</strong> a <strong>testV()</strong>, lze na konci běhu obou
+vláken přesně říci, jaké budou hodnoty jednotlivých atributů
+<strong>x</strong>, <strong>y</strong>, <strong>z</strong> a
+<strong>v</strong>? Bude skutečně v&nbsp;každém atributu uložena hodnota
+20000?</p>
+
+<p>Otázka #3: jak se liší sémantika zápisu <strong>synchronized(this)
+{z++;}</strong> od zápisu <strong>v++;</strong> v&nbsp;případě, že
+<strong>z</strong> je běžný nevolatilní celočíselný atribut, zatímco
+<strong>v</strong> je volatilní celočíselný atribut? A jaký by byl rozdíl
+v&nbsp;případě <strong>synchronized(this) {z++;z++;}</strong> versus
+<strong>v++;v++;</strong>? (předpokládejme, že oba atributy sleduje
+další vlákno)</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Bajtkód testovacích metod</h2>
+
+<p>Pro zajímavost se podívejme, jak se liší (popř.&nbsp;jak se neliší) bajtkódy
+všech čtyř testovacích metod <strong>testX()</strong>,
+<strong>testY()</strong>, <strong>testZ()</strong> a
+<strong>testV()</strong>:</p>
+
+<pre>
+<strong>private void testX()</strong>;
+  Code:
+   0:   aload_0
+   1:   dup
+   2:   getfield        #2; <i>//Field x:I</i>
+   5:   iconst_1
+   6:   iadd
+   7:   putfield        #2; <i>//Field x:I</i>
+   10:  return
+&nbsp;
+<strong>private synchronized void testY()</strong>;
+  Code:
+   0:   aload_0
+   1:   dup
+   2:   getfield        #3; <i>//Field y:I</i>
+   5:   iconst_1
+   6:   iadd
+   7:   putfield        #3; <i>//Field y:I</i>
+   10:  return
+&nbsp;
+<strong>private void testZ()</strong>;
+  Code:
+   0:   aload_0
+   1:   dup
+   2:   astore_1
+   3:   monitorenter
+   4:   aload_0
+   5:   dup
+   6:   getfield        #4; <i>//Field z:I</i>
+   9:   iconst_1
+   10:  iadd
+   11:  putfield        #4; <i>//Field z:I</i>
+   14:  aload_1
+   15:  monitorexit
+   16:  goto    24
+   19:  astore_2
+   20:  aload_1
+   21:  monitorexit
+   22:  aload_2
+   23:  athrow
+   24:  return
+  Exception table:
+   from   to  target type
+     4    16    19   any
+    19    22    19   any
+&nbsp;
+<strong>private void testV()</strong>;
+  Code:
+   0:   aload_0
+   1:   dup
+   2:   getfield        #5; <i>//Field v:I</i>
+   5:   iconst_1
+   6:   iadd
+   7:   putfield        #5; <i>//Field v:I</i>
+   10:  return
+</pre>
+
+<p>Zajímavé je, že se metody <strong>testX()</strong>, <strong>testY()</strong>
+a <strong>testV()</strong> liší pouze minimálně &ndash; u jedné metody je
+nastaven modifikátor <strong>synchronized</strong> a poslední zmíněná metoda
+přistupuje k&nbsp;volatilnímu atributu:</p>
+
+<a href="http://i.iinfo.cz/images/273/java1.png"><img src="http://i.iinfo.cz/images/273/java1-prev.png" class="image-147439" width="370" height="73" alt="&#160;" /></a>
+
+<p>Naproti tomu je bajtkód metody <strong>testZ()</strong> velmi odlišný a to
+kvůli tomu, že bylo nutné implementovat celou logiku zamykání pomocí instrukcí
+<strong>monitorenter</strong> a <strong>monitorexit</strong>, logiku vyhození
+výjimky atd. Jak uvidíme dále, je tento složitější bajtkód důvodem pro
+pomalejší běh této metody v&nbsp;režimu interpretru.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výsledky spuštění benchmarku</h2>
+
+<p>Podívejme se nyní, jak vypadají výsledky po spuštění našeho jednoduchého
+testovacího benchmarku <strong>SynchronizationTest1</strong>.</p>
+
+<p>Spuštění <strong>java -Xint SynchronizationTest1</strong> (interpret):</p>
+
+<pre>
+Round # 0 testX() time:   970,466,598 ns
+Round # 0 testY() time: 1,190,523,646 ns
+Round # 0 testZ() time: 1,846,322,309 ns
+Round # 0 testV() time:   969,063,736 ns
+Round # 1 testX() time:   968,999,480 ns
+Round # 1 testY() time: 1,192,601,985 ns
+Round # 1 testZ() time: 1,844,591,292 ns
+Round # 1 testV() time:   972,872,389 ns
+Round # 2 testX() time:   968,367,626 ns
+Round # 2 testY() time: 1,188,980,578 ns
+Round # 2 testZ() time: 1,851,114,044 ns
+Round # 2 testV() time:   971,430,517 ns
+Round # 3 testX() time:   963,871,942 ns
+Round # 3 testY() time: 1,187,272,614 ns
+Round # 3 testZ() time: 1,865,358,870 ns
+Round # 3 testV() time:   972,481,696 ns
+Round # 4 testX() time:   966,426,457 ns
+Round # 4 testY() time: 1,190,325,657 ns
+Round # 4 testZ() time: 1,847,068,764 ns
+Round # 4 testV() time:   975,294,205 ns
+Round # 5 testX() time:   967,144,284 ns
+Round # 5 testY() time: 1,189,177,957 ns
+Round # 5 testZ() time: 1,849,168,609 ns
+Round # 5 testV() time:   969,951,276 ns
+Round # 6 testX() time:   973,176,547 ns
+Round # 6 testY() time: 1,188,013,079 ns
+Round # 6 testZ() time: 1,848,092,352 ns
+Round # 6 testV() time:   975,289,734 ns
+Round # 7 testX() time:   967,232,774 ns
+Round # 7 testY() time: 1,190,537,843 ns
+Round # 7 testZ() time: 1,847,953,645 ns
+Round # 7 testV() time:   971,987,707 ns
+Round # 8 testX() time:   966,804,510 ns
+Round # 8 testY() time: 1,192,591,317 ns
+Round # 8 testZ() time: 1,852,017,638 ns
+Round # 8 testV() time:   973,211,397 ns
+Round # 9 testX() time:   966,083,888 ns
+Round # 9 testY() time: 1,189,510,967 ns
+Round # 9 testZ() time: 1,863,161,440 ns
+Round # 9 testV() time:   971,858,433 ns
+Cumulative time for testX():  5,806,868,460 ns
+Cumulative time for testY():  7,140,156,820 ns
+Cumulative time for testZ(): 11,107,462,448 ns
+Cumulative time for testV():  5,837,592,752 ns
+</pre>
+
+<img src="http://i.iinfo.cz/images/122/javagraph1.png" class="image-147440" width="300" height="270" alt="&#160;" />
+<p><i>Graf porovnávající běh benchmarku v&nbsp;režimu interpretru.</i></p>
+
+<p>Spuštění <strong>java -client SynchronizationTest1</strong> (JIT typu
+client):</p>
+
+<pre>
+Round # 0 testX() time:   25,535,787 ns
+Round # 0 testY() time:  170,192,150 ns
+Round # 0 testZ() time:  170,291,063 ns
+Round # 0 testV() time:   18,921,960 ns
+Round # 1 testX() time:   12,644,486 ns
+Round # 1 testY() time:  170,186,085 ns
+Round # 1 testZ() time:  170,131,391 ns
+Round # 1 testV() time:   18,969,451 ns
+Round # 2 testX() time:   12,676,542 ns
+Round # 2 testY() time:  170,352,807 ns
+Round # 2 testZ() time:  170,173,507 ns
+Round # 2 testV() time:   18,927,892 ns
+Round # 3 testX() time:   12,628,769 ns
+Round # 3 testY() time:  170,211,789 ns
+Round # 3 testZ() time:  170,345,333 ns
+Round # 3 testV() time:   19,061,081 ns
+Round # 4 testX() time:   12,685,341 ns
+Round # 4 testY() time:  170,127,126 ns
+Round # 4 testZ() time:  170,114,853 ns
+Round # 4 testV() time:   19,011,776 ns
+Round # 5 testX() time:   12,646,790 ns
+Round # 5 testY() time:  170,341,274 ns
+Round # 5 testZ() time:  170,141,727 ns
+Round # 5 testV() time:   18,927,686 ns
+Round # 6 testX() time:   12,680,313 ns
+Round # 6 testY() time:  170,430,819 ns
+Round # 6 testZ() time:  170,134,745 ns
+Round # 6 testV() time:   18,957,994 ns
+Round # 7 testX() time:   12,640,432 ns
+Round # 7 testY() time:  170,161,573 ns
+Round # 7 testZ() time:  170,323,892 ns
+Round # 7 testV() time:   18,975,037 ns
+Round # 8 testX() time:   12,688,902 ns
+Round # 8 testY() time:  170,140,885 ns
+Round # 8 testZ() time:  170,309,781 ns
+Round # 8 testV() time:   19,195,668 ns
+Round # 9 testX() time:   12,670,815 ns
+Round # 9 testY() time:  170,174,283 ns
+Round # 9 testZ() time:  170,151,784 ns
+Round # 9 testV() time:   18,913,577 ns
+Cumulative time for testX():    76,012,593 ns
+Cumulative time for testY(): 1,021,375,960 ns
+Cumulative time for testZ(): 1,021,176,782 ns
+Cumulative time for testV():   113,981,738 ns
+</pre>
+
+<img src="http://i.iinfo.cz/images/156/javagraph2.png" class="image-147441" width="300" height="270" alt="&#160;" />
+<p><i>Graf porovnávající běh benchmarku v&nbsp;režimu JIT typu client.</i></p>
+
+<p>Spuštění <strong>java -server SynchronizationTest1</strong> (JIT typu
+server):</p>
+
+<pre>
+Round # 0 testX() time:   33,652,879 ns
+Round # 0 testY() time:  266,652,180 ns
+Round # 0 testZ() time:  209,171,145 ns
+Round # 0 testV() time:   56,007,392 ns
+Round # 1 testX() time:    1,592,033 ns
+Round # 1 testY() time:  198,658,486 ns
+Round # 1 testZ() time:  201,845,495 ns
+Round # 1 testV() time:   54,062,106 ns
+Round # 2 testX() time:    1,569,053 ns
+Round # 2 testY() time:  198,625,726 ns
+Round # 2 testZ() time:  202,127,167 ns
+Round # 2 testV() time:   53,543,955 ns
+Round # 3 testX() time:    1,588,749 ns
+Round # 3 testY() time:  198,679,778 ns
+Round # 3 testZ() time:  201,813,998 ns
+Round # 3 testV() time:   53,580,972 ns
+Round # 4 testX() time:    1,586,934 ns
+Round # 4 testY() time:  198,617,617 ns
+Round # 4 testZ() time:  201,815,044 ns
+Round # 4 testV() time:   53,593,757 ns
+Round # 5 testX() time:    1,568,915 ns
+Round # 5 testY() time:  198,653,379 ns
+Round # 5 testZ() time:  201,862,810 ns
+Round # 5 testV() time:   53,540,260 ns
+Round # 6 testX() time:    1,606,140 ns
+Round # 6 testY() time:  198,669,451 ns
+Round # 6 testZ() time:  201,775,362 ns
+Round # 6 testV() time:   53,868,930 ns
+Round # 7 testX() time:    1,569,053 ns
+Round # 7 testY() time:  198,726,169 ns
+Round # 7 testZ() time:  201,812,234 ns
+Round # 7 testV() time:   53,610,097 ns
+Round # 8 testX() time:    1,588,959 ns
+Round # 8 testY() time:  198,997,647 ns
+Round # 8 testZ() time:  201,845,334 ns
+Round # 8 testV() time:   53,576,644 ns
+Round # 9 testX() time:    1,607,328 ns
+Round # 9 testY() time:  198,666,182 ns
+Round # 9 testZ() time:  201,817,256 ns
+Round # 9 testV() time:   53,561,208 ns
+Cumulative time for testX():     9,527,329 ns
+Cumulative time for testY(): 1,192,330,445 ns
+Cumulative time for testZ(): 1,210,928,040 ns
+Cumulative time for testV():   321,750,896 ns
+</pre>
+
+<img src="http://i.iinfo.cz/images/150/javagraph3.png" class="image-147442" width="300" height="270" alt="&#160;" />
+<p><i>Graf porovnávající běh benchmarku v&nbsp;režimu JIT typu server.</i></p>
+
+<p>Co z&nbsp;těchto dat vyplývá? Nejrychlejší (a sémanticky odlišná!) je
+samozřejmě nesynchronizovaná modifikace nevolatilního atributu, protože zde se
+může při překladu JIT náležitě věnovat optimalizacím, rozbalovat smyčky atd.
+atd. Nemusí přitom brát ohled na to, jaké hodnoty atributu uvidí ostatní
+vlákna. Druhou nejrychlejší metodou je zde použití volatilního atributu, ovšem
+musíme se smířit s&nbsp;tím, že sémantika je zde odlišná. Rozdíl mezi použitím
+synchronizovaných metod a synchronizovaných bloků je viditelný pouze
+v&nbsp;režimu interpretru, což ale dává smysl, protože zde musí interpret
+správně vyhodnotit instrukce <strong>monitorenter</strong> a
+<strong>monitorexit</strong>, zatímco synchronizované metody implicitně
+obsahují zámek přímo na svém vstupu.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Repositář se zdrojovými kódy všech demonstračních i testovacích příkladů</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitého jednoduchého benchmarku:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>SynchronizationTest1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/eceb6e722485/sync/SynchronizationTest1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/eceb6e722485/sync/SynchronizationTest1.java</a></td></tr>
+<tr><td>2</td><td>run.sh</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/eceb6e722485/sync/run.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/eceb6e722485/sync/run.sh</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
