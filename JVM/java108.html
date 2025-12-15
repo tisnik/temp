@@ -1,0 +1,1691 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - vykreslování bitmap typu BufferedImage a VolatileImage</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - vykreslování bitmap typu BufferedImage a VolatileImage</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si řekneme, jaké výkonnostní problémy mohou doprovázet použití bitmap typu BufferedImage při vykreslování na obrazovku a jak lze výkonnost grafické aplikace (typicky hry) v některých případech vylepšit použitím bitmap typu VolatileImage.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Vykreslení bitmap typu <strong>BufferedImage</strong></a></p>
+<p><a href="#k02">2. Demonstrační příklad &ndash; vykreslení bitmapy typu <strong>BufferedImage</strong> do okna</a></p>
+<p><a href="#k03">3. Výsledky běhu demonstračního příkladu na systému Linux (X)</a></p>
+<p><a href="#k04">4. Výsledky běhu demonstračního příkladu na systému Windows při použití šířky obrázku 511 a 512 pixelů</a></p>
+<p><a href="#k05">5. Proč je práce s&nbsp;některými bitmapami výrazně pomalejší?</a></p>
+<p><a href="#k06">6. Zdrojový kód nativní funkce <strong>sun.java2d.windows.GDIBlitLoops()</strong></a></p>
+<p><a href="#k07">7. &bdquo;Kompatibilní&ldquo; bitmapy typu <strong>BufferedImage</strong></a></p>
+<p><a href="#k08">8. Výsledky běhu upraveného demonstračního příkladu na systému Windows při použití šířky obrázku 511 a 512 pixelů</strong></a></p>
+<p><a href="#k09">9. Bitmapy typu <strong>VolatileImage</strong></a></p>
+<p><a href="#k10">10. Možné stavy bitmap typu <strong>VolatileImage</strong></a></p>
+<p><a href="#k11">11. Repositář se zdrojovými soubory dnešního demonstračního příkladu</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Vykreslení bitmap typu <strong>BufferedImage</strong></h2>
+
+<p>V&nbsp;dnešní části seriálu o programovacím jazyku Java i o virtuálním
+stroji Javy se budeme zabývat problematikou vykreslování bitmap na obrazovku.
+Částečně jsme se tímto problémem zabývali již minule a předminule při popisu
+možností, jak zapisovat pixely do bitmap i při vysvětlování principu takzvaných
+exkluzivních celoobrazovkových grafických režimů. Ve skutečnosti se ovšem
+problém vykreslování bitmap týká i aplikací, které svůj grafický výstup
+provádějí do běžného okna a nikoli v&nbsp;celoobrazovkovém režimu
+(<i>fullscreen mode</i>).</p>
+
+<p>Především z&nbsp;historických důvodů je v&nbsp;Javě možné pracovat
+s&nbsp;rastrovými obrázky (bitmapami) třemi různými způsoby založenými na třech
+modelech. Nejstarší je takzvaný &bdquo;push model&ldquo; založený na třídách a
+rozhraních <strong>java.awt.Image</strong> (abstraktní třída),
+<strong>java.awt.image.ImageProducer</strong>,
+<strong>java.awt.image.ImageConsumer</strong> a
+<strong>java.awt.image.ImageObserver</strong>. Tento model byl navržen
+především s&nbsp;ohledem na to, že celé obrázky (velké bitmapy) nemusí být vždy
+dostupné již ve chvíli, kdy dochází k&nbsp;jejich konstrukci, typicky
+z&nbsp;toho důvodu, že se pixely tvořící obrázek začínají přenášet po síti.</p>
+
+<p>Pro potřeby her je však tento model zbytečně složitý, takže se většinou dává
+přednost takzvanému &bdquo;immediate modelu&ldquo; založeného především na
+třídě <strong>java.awt.image.BufferedImage</strong>. Tento model je na použití
+nejjednodušší a navíc mohou být některé operace s&nbsp;bitmapami akcelerovány,
+což je problematika vysvětlená v&nbsp;dalších kapitolách. Existuje ještě třetí
+&bdquo;pull model&ldquo;, kterým se budeme zabývat někdy příště.</p>
+
+<p>Instance třídy <strong>java.awt.image.BufferedImage</strong> mohou
+reprezentovat obrázky libovolných rozměrů a několika typů, v&nbsp;závislosti na
+tom, jakým způsobem je bitmapa vytvořena. Tu lze načíst z&nbsp;externího
+souboru s&nbsp;využitím statické metody
+<strong>javax.imageio.ImageIO.read()</strong>, vytvořit prázdnou bitmapu přes
+konstruktor <strong>java.awt.image.BufferedImage(parametry)</strong> či je
+možné (což je, jak si ukážeme, mnohdy nejvýhodnější) využít jednu z&nbsp;metod
+<strong>java.awt.GraphicsConfiguration.createCompatibleImage(int, int)</strong>
+či <strong>java.awt.GraphicsConfiguration.createCompatibleImage(int, int,
+int)</strong>. Důležité je, že způsob vzniku bitmapy má velký vliv na to, jak
+rychle bude bitmapa vykreslována na obrazovku.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Demonstrační příklad &ndash; vykreslení bitmapy typu <strong>BufferedImage</strong> do okna</h2>
+
+<p>Způsob tvorby a následného vykreslování bitmap typu
+<strong>BufferedImage</strong> si ukážeme na dnešním (jediném) demonstračním
+příkladu, v&nbsp;němž je nejdříve rastrový obrázek vytvořen buď konstruktorem
+<strong>new BufferedImage(šířka, výška,typ)</strong> nebo voláním metody
+<strong>java.awt.GraphicsConfiguration.createCompatibleImage(šířka,výška)</strong>.
+Rozměry bitmapy i způsob jejího vytvoření lze řídit konstantami
+<strong>IMAGE_WIDTH</strong>, <strong>IMAGE_HEIGHT</strong> a
+<strong>CREATE_COMPATIBLE_IMAGE</strong>. Do bitmapy se vykreslí jednoduchý
+obrazec a následně je vytvořeno okno bez dekorací (okrajů, titulkového pruhu,
+ikon) a do tohoto okna je bitmapa ve smyčce vykreslena v&nbsp;překryté metodě
+<strong>public void paint(Graphics g)</strong>, která existuje pro každou
+komponentu grafického uživatelského rozhraní (zavoláním metody
+<strong>super.paint()</strong> je mj.&nbsp;zaručeno vymazání původního obsahu
+okna barvou pozadí &ndash; ostatně můžete se sami pokusit tuto metodu nevolat,
+což se někdy ve hrách skutečně využívá).</p>
+
+<p>Výpis zdrojového kódu dnešního demonstračního příkladu:</p>
+
+<pre>
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+&nbsp;
+import javax.swing.JFrame;
+import javax.swing.WindowConstants;
+&nbsp;
+<i>/**</i>
+ <i>* Jednoduchy test metody Graphics.drawImage().</i>
+ <i>*/</i>
+public class <strong>BlitTest1</strong> extends <strong>JFrame</strong> {
+&nbsp;
+    <i>/**</i>
+    <i> * Generated serial version UID.</i>
+    <i> */</i>
+    private static final long serialVersionUID = -6455857608125974217L;
+&nbsp;
+    <i>/**</i>
+    <i> * Ma se volat metoda super.paint(Graphics)?</i>
+    <i> */</i>
+    private static final boolean <strong>CALL_SUPER_PAINT</strong> = true;
+&nbsp;
+    <i>/**</i>
+    <i> * Ma se pouzit GraphicsConfiguration().createCompatibleImage()</i>
+    <i> * namisto new BufferedImage()?</i>
+    <i> */</i>
+    private static final boolean <strong>CREATE_COMPATIBLE_IMAGE</strong> = false;
+&nbsp;
+    <i>/**</i>
+    <i> * Sirka testovaciho obrazku.</i>
+    <i> */</i>
+    private static final int <strong>IMAGE_WIDTH</strong> = 512;
+&nbsp;
+    <i>/**</i>
+    <i> * Vyska testovaciho obrazku.</i>
+    <i> */</i>
+    private static final int <strong>IMAGE_HEIGHT</strong> = 512;
+&nbsp;
+    <i>/**</i>
+    <i> * Sirka okna.</i>
+    <i> */</i>
+    private static final int <strong>FRAME_WIDTH</strong> = 500;
+&nbsp;
+    <i>/**</i>
+    <i> * Vyska okna.</i>
+    <i> */</i>
+    private static final int <strong>FRAME_HEIGHT</strong> = 500;
+&nbsp;
+    <i>/**</i>
+    <i> * Obrazek, ktery se bude prenaset do okna.</i>
+    <i> */</i>
+    BufferedImage image;
+&nbsp;
+    <i>/**</i>
+    <i> * Horizontalni souradnice obrazku.</i>
+    <i> */</i>
+    private int imageX;
+&nbsp;
+    <i>/**</i>
+    <i> * Vertikalni souradnice obrazku.</i>
+    <i> */</i>
+    private int imageY;
+&nbsp;
+    <i>/**</i>
+    <i> * Pocet skutecnych volani metody paint()</i>
+    <i> */</i>
+    private int repaintCount = 0;
+&nbsp;
+    <i>/**</i>
+    <i> * Spusteni testu.</i>
+    <i> */</i>
+    private void <strong>run</strong>() {
+        createImage();
+        showJFrame();
+        runBenchmark();
+        this.dispose();
+        System.out.println("Repaint count: " + this.repaintCount);
+        System.exit(0);
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Spusteni vlastniho benchmarku.</i>
+    <i> */</i>
+    private void <strong>runBenchmark</strong>() {
+        for (int y = 0; y &lt; FRAME_HEIGHT; y += 10) {
+            for (int x = 0; x &lt; FRAME_WIDTH; x += 10) {
+                setImageX(x);
+                setImageY(y);
+                repaint();
+                try {
+                    Thread.sleep(10);
+                }
+                catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vytvoreni testovaciho obrazku.</i>
+    <i> */</i>
+    private void <strong>createImage</strong>() {
+        if (CREATE_COMPATIBLE_IMAGE) {
+            this.image = getGraphicsConfiguration().createCompatibleImage(IMAGE_WIDTH, IMAGE_HEIGHT);
+        }
+        else {
+            this.image = new BufferedImage(IMAGE_WIDTH, IMAGE_HEIGHT, BufferedImage.TYPE_3BYTE_BGR);
+        }
+        drawIntoImage(this.image);
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Vykresleni vzorku do obrazku.</i>
+    <i> */</i>
+    private void <strong>drawIntoImage</strong>(BufferedImage image) {
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        Graphics2D g = image.createGraphics();
+&nbsp;
+        <i>// smazeme pozadi obrazku</i>
+        g.setColor(Color.white);
+        g.fillRect(0, 0, width-1, height-1);
+&nbsp;
+        <i>// vykresleni cerveneho ctverce</i>
+        g.setColor(Color.red);
+        g.drawRect(0, 0, width-1, height-1);
+&nbsp;
+        <i>// vykresleni krize</i>
+        g.setColor(Color.blue);
+        g.drawLine(width &gt;&gt; 1, height/3, width &gt;&gt; 1, 2*height/3);
+        g.drawLine(width/3, height &gt;&gt; 1, 2*width/3, height &gt;&gt; 1);
+        g.dispose();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Nastaveni parametru okna a zobrazeni.</i>
+    <i> */</i>
+    private void <strong>showJFrame</strong>() {
+        <i>// vypneme okraje a dalsi zbytecnosti :)</i>
+        this.setUndecorated(true);
+        this.setLocation(100, 100);
+        this.setSize(FRAME_WIDTH, FRAME_HEIGHT);
+        this.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        this.setVisible(true);
+    }
+&nbsp;
+    @Override
+    public void <strong>paint</strong>(Graphics g) {
+        if (CALL_SUPER_PAINT) {
+            super.paint(g);
+        }
+        final BufferedImage img = getImage();
+        final int imageX = getImageX() - img.getWidth()/2;
+        final int imageY = getImageY() - img.getHeight()/2;
+        g.drawImage(img, imageX, imageY, null);
+        g.dispose();
+        this.repaintCount ++;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Nastaveni horizontalni souradnice obrazku.</i>
+    <i> *</i>
+    <i> * @param x</i>
+    <i> */</i>
+    void <strong>setImageX</strong>(int x) {
+        this.imageX = x;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Nastaveni vertikalni souradnice obrazku.</i>
+    <i> *</i>
+    <i> * @param y</i>
+    <i> */</i>
+    void <strong>setImageY</strong>(int y) {
+        this.imageY = y;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Getter pro atribut imageX.</i>
+    <i> */</i>
+    int <strong>getImageX</strong>() {
+        return this.imageX;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Getter pro atribut imageY.</i>
+    <i> */</i>
+    int <strong>getImageY</strong>() {
+        return this.imageY;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Getter pro atribut image.</i>
+    <i> */</i>
+    BufferedImage <strong>getImage</strong>() {
+        return this.image;
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Spusteni testu.</i>
+    <i> * @param args</i>
+    <i> */</i>
+    public static void <strong>main</strong>(String[] args) {
+        new BlitTest1().run();
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Výsledky běhu demonstračního příkladu na systému Linux (X)</h2>
+
+<p>U dnešního demonstračního příkladu nás bude zajímat především informace o
+tom, které metody a nativní funkce jsou spuštěny při vykreslování bitmap. Tuto
+informaci lze zjistit mnoha způsoby, přičemž nejjednodušší bude využití
+profileru, jenž je přímo součástí virtuálního stroje Javy. Aby byl profiler
+spuštěn, postačuje při startu JVM zadat přepínač <strong>-Xprof</strong>, který
+způsobí, že si virtuální stroj bude vytvářet statistiku volání metod a
+nativních funkcí pro každé vlákno aplikace a následně se (těsně před ukončením
+JVM) tyto informace vypíšou na standardní výstup. Podívejme se nyní, jaké
+informace vypíše profiler při spuštění našeho demonstračního příkladu na Linuxu
+s&nbsp;X Window:</p>
+
+<h3>Výsledky pro OpenJDK6 (Ubuntu):</h3>
+
+<pre>
+Flat profile of 26.14 secs (2514 total ticks): AWT-EventQueue-0
+&nbsp;
+  Interpreted + native   Method                        
+ 23.2%     0  +    22    sun.awt.X11.XInputMethod.openXIMNative
+  7.4%     0  +     7    sun.misc.Unsafe.unpark
+  <strong>5.3%     0  +     5    sun.java2d.loops.Blit.Blit</strong>
+  2.1%     2  +     0    java.util.ArrayList.remove
+  2.1%     2  +     0    javax.swing.LayoutFocusTraversalPolicy.accept
+  2.1%     2  +     0    java.util.HashMap.removeEntryForKey
+  1.1%     0  +     1    java.lang.Object.clone
+  1.1%     0  +     1    java.lang.Class.getComponentType
+  1.1%     0  +     1    sun.awt.X11.XlibWrapper.XFlush
+  1.1%     1  +     0    javax.swing.JLayeredPane.isOptimizedDrawingEnabled
+  1.1%     1  +     0    javax.swing.JFrame.getGraphics
+  1.1%     1  +     0    java.awt.im.InputContext.getInstance
+  <strong>1.1%     1  +     0    sun.java2d.x11.X11PMBlitLoops.nativeBlit</strong>
+  1.1%     1  +     0    java.util.ArrayList.rangeCheck
+  1.1%     1  +     0    sun.reflect.Label.&lt;init&gt;
+  1.1%     1  +     0    sun.reflect.UnsafeFieldAccessorImpl.ensureObj
+  1.1%     1  +     0    java.util.HashSet.remove
+  1.1%     1  +     0    java.util.ArrayList.add
+  1.1%     1  +     0    sun.awt.ComponentAccessor.getForeground
+  1.1%     1  +     0    sun.awt.im.CompositionAreaHandler.&lt;clinit&gt;
+  1.1%     1  +     0    java.util.ArrayList.&lt;init&gt;
+  1.1%     1  +     0    javax.swing.RepaintManager$ProcessingRunnable.run
+  1.1%     1  +     0    java.awt.EventQueue.getAccessControlContextFrom
+  1.1%     1  +     0    java.awt.Container.paint
+  1.1%     1  +     0    javax.swing.BufferStrategyPaintManager$BufferInfo.getBufferStrategy
+ 75.8%    35  +    37    Total interpreted (including elided)
+&nbsp;
+     Compiled + native   Method                        
+  3.2%     2  +     1    java.awt.EventQueue.getNextEvent
+  1.1%     1  +     0    sun.java2d.pipe.ValidatePipe.validate
+  1.1%     1  +     0    sun.java2d.SurfaceData.pixelFor
+  1.1%     1  +     0    sun.java2d.x11.X11SurfaceData$X11WindowSurfaceData.getBounds
+  1.1%     1  +     0    java.util.concurrent.ConcurrentHashMap.get
+  1.1%     0  +     1    java.awt.Component$BltBufferStrategy.showSubRegion
+  1.1%     1  +     0    javax.swing.JComponent.paintChildren
+  9.5%     7  +     2    Total compiled
+&nbsp;
+         Stub + native   Method                        
+  4.2%     0  +     4    java.lang.Object.clone
+  3.2%     0  +     3    java.security.AccessController.getStackAccessControlContext
+  <strong>3.2%     0  +     3    sun.java2d.x11.X11Renderer.XFillRect</strong>
+ 10.5%     0  +    10    Total stub
+&nbsp;
+  Thread-local ticks:
+ 96.2%  2419             Blocked (of total)
+  4.2%     4             Class loader
+&nbsp;
+&nbsp;
+Flat profile of 26.21 secs (2518 total ticks): AWT-Shutdown
+&nbsp;
+         Stub + native   Method                        
+100.0%     0  +     1    java.lang.Object.wait
+100.0%     0  +     1    Total stub
+&nbsp;
+  Thread-local ticks:
+100.0%  2517             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 26.77 secs (2554 total ticks): AWT-XAWT
+&nbsp;
+&nbsp;
+  Interpreted + native   Method                        
+ 99.0%     0  +  2497    sun.awt.X11.XToolkit.waitForEvents
+  0.4%     0  +     9    sun.awt.X11.XlibWrapper.XGetInputFocus
+  0.1%     0  +     3    sun.awt.X11.XlibWrapper.getScreenOfWindow
+  0.0%     0  +     1    sun.misc.Unsafe.unpark
+  0.0%     1  +     0    sun.reflect.NativeMethodAccessorImpl.invoke0
+  0.0%     1  +     0    sun.awt.X11.XToolkit.getDisplay
+  0.0%     1  +     0    java.util.Vector.iterator
+  0.0%     1  +     0    java.util.logging.Logger.finest
+  0.0%     1  +     0    sun.awt.X11.XWindowPeer.removeTransientForHint
+  0.0%     1  +     0    java.lang.Class.searchMethods
+ 99.8%     6  +  2510    Total interpreted
+&nbsp;
+  Thread-local ticks:
+  1.3%    33             Blocked (of total)
+  0.2%     5             Class loader
+&nbsp;
+&nbsp;
+Flat profile of 27.41 secs (2606 total ticks): Java2D Disposer
+&nbsp;
+  Thread-local ticks:
+100.0%  2606             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 28.04 secs (2648 total ticks): main
+&nbsp;
+  Interpreted + native   Method                        
+  6.7%     0  +     9    java.lang.ClassLoader$NativeLibrary.load
+  5.2%     0  +     7    java.io.UnixFileSystem.checkAccess
+  5.2%     0  +     7    java.io.FileInputStream.readBytes
+  4.5%     0  +     6    java.io.UnixFileSystem.canonicalize0
+  3.0%     0  +     4    sun.font.FontManager.getFontConfig
+  1.5%     2  +     0    java.awt.Component.initIDs
+  1.5%     0  +     2    java.lang.ClassLoader.findBootstrapClass
+  1.5%     2  +     0    java.lang.Class.forName0
+  1.5%     0  +     2    java.util.zip.ZipFile.read
+  1.5%     2  +     0    java.util.Arrays.mergeSort
+  0.7%     0  +     1    sun.java2d.loops.GraphicsPrimitiveMgr.registerNativeLoops
+  0.7%     0  +     1    sun.awt.X11.XlibWrapper.XSupportsLocale
+  0.7%     0  +     1    sun.font.FontManager.getFontPath
+  0.7%     0  +     1    sun.font.NativeFont.fontExists
+  0.7%     0  +     1    java.lang.Object.hashCode
+  0.7%     0  +     1    java.lang.Class.getClassLoader0
+  0.7%     0  +     1    sun.java2d.pipe.SpanClipRenderer.initIDs
+  0.7%     1  +     0    sun.awt.X11GraphicsConfig.pGetBounds
+  0.7%     0  +     1    java.lang.Class.getDeclaredMethods0
+  0.7%     0  +     1    java.lang.Class.getDeclaredFields0
+  0.7%     0  +     1    java.lang.ClassLoader$NativeLibrary.find
+  0.7%     0  +     1    sun.misc.Unsafe.unpark
+  0.7%     0  +     1    java.lang.Thread.sleep
+  0.7%     1  +     0    java.net.URL.getRef
+  0.7%     1  +     0    java.lang.ref.WeakReference.&lt;init&gt;
+ 82.8%    61  +    50    Total interpreted (including elided)
+&nbsp;
+     Compiled + native   Method                        
+  0.7%     1  +     0    java.io.UnixFileSystem.normalize
+  0.7%     1  +     0    Total compiled
+&nbsp;
+  Thread-local ticks:
+ 94.9%  2514             Blocked (of total)
+ 16.4%    22             Class loader
+&nbsp;
+&nbsp;
+Global summary of 28.04 seconds:
+100.0%  2655             Received ticks
+  0.2%     6             Received GC ticks
+  3.2%    84             Compilation
+  1.2%    31             Class loader
+</pre>
+
+<p>Vlastní vykreslování je zde realizováno v&nbsp;následujících blocích:</p>
+
+<pre>
+5.3%     0  +     5    sun.java2d.loops.Blit.Blit
+1.1%     1  +     0    sun.java2d.x11.X11PMBlitLoops.nativeBlit
+</pre>
+
+<p>Vymazání plochy okna zajišťuje metoda:</p>
+
+<pre>
+3.2%     0  +     3    sun.java2d.x11.X11Renderer.XFillRect
+</pre>
+
+<h3>Výsledky pro OpenJDK7 (Fedora 19):</h3>
+
+<pre>
+Flat profile of 25.62 secs (2519 total ticks): AWT-EventQueue-0
+&nbsp;
+  Interpreted + native   Method                        
+ 13.3%     0  +    27    java.lang.Object.clone
+ 10.3%     0  +    21    sun.java2d.x11.XSurfaceData.XSetClip
+  <strong>8.4%     0  +    17    sun.java2d.x11.X11Renderer.XFillRect</strong>
+  6.9%     0  +    14    java.lang.Object.hashCode
+  5.9%     5  +     7    java.security.AccessController.doPrivileged
+  5.9%     0  +    12    java.lang.Object.getClass
+  5.4%     0  +    11    java.security.AccessController.getStackAccessControlContext
+  <strong>4.9%     8  +     2    sun.java2d.x11.X11PMBlitLoops.nativeBlit</strong>
+  2.5%     5  +     0    java.util.ArrayList.&lt;init&gt;
+  2.0%     0  +     4    java.lang.Class.getInterfaces
+  2.0%     0  +     4    java.lang.System.identityHashCode
+  1.5%     0  +     3    sun.awt.X11.XInputMethod.openXIMNative
+  1.0%     0  +     2    java.lang.reflect.Array.newArray
+  1.0%     0  +     2    sun.misc.Unsafe.compareAndSwapInt
+  1.0%     0  +     2    sun.misc.Unsafe.putObject
+  1.0%     2  +     0    java.util.Arrays.copyOf
+  1.0%     2  +     0    javax.swing.JComponent.paint
+  0.5%     0  +     1    java.lang.Thread.isInterrupted
+  0.5%     0  +     1    java.lang.Thread.currentThread
+  0.5%     0  +     1    java.security.AccessController.getInheritedAccessControlContext
+  0.5%     0  +     1    java.lang.Class.getComponentType
+  0.5%     1  +     0    java.util.concurrent.atomic.AtomicInteger.get
+  0.5%     0  +     1    sun.misc.Unsafe.park
+  0.5%     1  +     0    sun.java2d.pipe.Region.getLoX
+  <strong>0.5%     0  +     1    sun.java2d.loops.Blit.Blit</strong>
+ 81.3%    31  +   134    Total interpreted (including elided)
+&nbsp;
+         Stub + native   Method                        
+  9.9%     0  +    20    java.lang.Thread.currentThread
+  5.4%     0  +    11    java.lang.Object.clone
+  3.4%     0  +     7    java.lang.Object.hashCode
+ 18.7%     0  +    38    Total stub
+&nbsp;
+  Thread-local ticks:
+ 91.9%  2316             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.63 secs (2520 total ticks): AWT-Shutdown
+&nbsp;
+  Thread-local ticks:
+100.0%  2520             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.67 secs (2524 total ticks): AWT-XAWT
+&nbsp;
+  Interpreted + native   Method                        
+ 99.8%     1  +  2514    sun.awt.X11.XToolkit.waitForEvents
+  0.1%     0  +     3    sun.awt.X11.XlibWrapper.XEventsQueued
+  0.0%     0  +     1    sun.awt.X11.XlibWrapper.XGetInputFocus
+  0.0%     0  +     1    sun.awt.X11.XlibWrapper.XFilterEvent
+  0.0%     1  +     0    java.awt.EventDispatchThread.&lt;init&gt;
+100.0%     2  +  2519    Total interpreted
+&nbsp;
+  Thread-local ticks:
+  0.1%     3             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.68 secs (2525 total ticks): Java2D Disposer
+&nbsp;
+  Thread-local ticks:
+100.0%  2525             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.74 secs (2530 total ticks): main
+&nbsp;
+  Interpreted + native   Method                        
+ 26.7%     0  +     8    java.lang.System.identityHashCode
+ 13.3%     0  +     4    java.lang.Object.hashCode
+  6.7%     0  +     2    java.security.AccessController.getStackAccessControlContext
+  6.7%     0  +     2    sun.misc.Unsafe.compareAndSwapObject
+  3.3%     0  +     1    java.lang.ClassLoader$NativeLibrary.load
+  3.3%     0  +     1    sun.misc.Unsafe.unpark
+  3.3%     0  +     1    sun.awt.X11.XlibWrapper.XSupportsLocale
+  3.3%     0  +     1    java.security.AccessController.getInheritedAccessControlContext
+  3.3%     0  +     1    java.lang.System.currentTimeMillis
+  3.3%     1  +     0    sun.java2d.Disposer.addRecord
+  3.3%     1  +     0    java.util.Arrays.copyOfRange
+  3.3%     1  +     0    javax.swing.JFrame.frameInit
+  3.3%     1  +     0    sun.java2d.loops.GraphicsPrimitiveMgr.&lt;clinit&gt;
+  3.3%     1  +     0    java.util.Arrays.binarySearch0
+  3.3%     1  +     0    sun.awt.AWTAutoShutdown.notifyThreadBusy
+  3.3%     1  +     0    java.awt.Font.&lt;clinit&gt;
+ 93.3%     7  +    21    Total interpreted
+&nbsp;
+  Thread-local ticks:
+ 98.8%  2500             Blocked (of total)
+  6.7%     2             Class loader
+&nbsp;
+&nbsp;
+Global summary of 25.74 seconds:
+100.0%  2530             Received ticks
+  0.8%    19             Compilation
+  0.1%     2             Class loader
+</pre>
+
+<p>Opět zde můžeme nalézt trojici zajímavých metod a nativních funkcí:</p>
+
+<pre>
+8.4%     0  +    17    sun.java2d.x11.X11Renderer.XFillRect
+4.9%     8  +     2    sun.java2d.x11.X11PMBlitLoops.nativeBlit
+0.5%     0  +     1    sun.java2d.loops.Blit.Blit
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výsledky běhu demonstračního příkladu na systému Windows při použití šířky obrázku 511 a 512 pixelů</h2>
+
+<p>Profiler si vyzkoušíme spustit i na systému Windows (opět na starých Windows
+XP bez updatů, ovšem s&nbsp;nejnovější verzí JDK 7:-), a to konkrétně pro
+bitmapu s&nbsp;šířkou 511 pixelů a 512 pixelů.  Nejprve si prohlédněte oba
+výpisy profileru s&nbsp;vyznačenými zajímavými metodami a pokuste se sami
+uhodnout, proč je vykreslení bitmapy s&nbsp;šířkou 511 pixelů značně pomalejší,
+než je tomu v&nbsp;případě větší (!) bitmapy s&nbsp;šířkou 512 pixelů.
+Vysvětlení tohoto problému si ukážeme v&nbsp;následujících dvou kapitolách:</p>
+
+<h3>Šířka bitmapy 512 pixelů</h3>
+
+<pre>
+Flat profile of 26.05 secs (2554 total ticks): AWT-Windows
+&nbsp;
+  Interpreted + native   Method                        
+ 99.9%     0  +  2552    sun.awt.windows.WToolkit.eventLoop
+  0.0%     1  +     0    sun.awt.PostEventQueue.postEvent
+  0.0%     0  +     1    sun.awt.windows.WToolkit.init
+100.0%     1  +  2553    Total interpreted
+&nbsp;
+&nbsp;
+Flat profile of 0.01 secs (1 total ticks): Thread-0
+&nbsp;
+  Interpreted + native   Method                        
+100.0%     0  +     1    sun.awt.windows.WToolkit.shutdown
+100.0%     0  +     1    Total interpreted
+&nbsp;
+&nbsp;
+Flat profile of 25.89 secs (2542 total ticks): AWT-EventQueue-0
+&nbsp;
+  Interpreted + native   Method                        
+<strong> 17.3%     0  +     9    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+  3.8%     0  +     2    sun.awt.windows.WInputMethod.getConversionStatus
+  1.9%     1  +     0    java.util.HashMap$KeySet.iterator
+  1.9%     0  +     1    sun.java2d.loops.FillRect.FillRect
+  1.9%     0  +     1    sun.awt.windows.WComponentPeer.hide
+  1.9%     1  +     0    sun.java2d.windows.GDIWindowSurfaceData.getBounds
+  1.9%     1  +     0    sun.java2d.SunGraphics2D.clipRect
+  1.9%     1  +     0    java.awt.image.DataBufferInt.&lt;init&gt;
+  1.9%     1  +     0    sun.util.locale.LanguageTag.parseLanguage
+  1.9%     1  +     0    javax.swing.JComponent.fetchRectangle
+  1.9%     1  +     0    java.util.ArrayList.remove
+  1.9%     1  +     0    java.awt.Component$BltBufferStrategy.getDrawGraphics
+  1.9%     1  +     0    javax.swing.RepaintManager.paint
+  1.9%     1  +     0    sun.java2d.loops.RenderCache.get
+  1.9%     1  +     0    java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await
+  1.9%     1  +     0    javax.swing.BufferStrategyPaintManager.flushAccumulatedRegion
+  1.9%     1  +     0    sun.java2d.SurfaceData.getSourceSurfaceData
+  1.9%     1  +     0    sun.java2d.SunGraphics2D.setFont
+  1.9%     1  +     0    sun.java2d.pipe.DrawImage.copyImage
+  1.9%     1  +     0    sun.java2d.SurfaceData.getTextPipe
+  1.9%     1  +     0    java.awt.DefaultKeyboardFocusManager.sendMessage
+  1.9%     1  +     0    sun.awt.SunGraphicsCallback.runOneComponent
+  1.9%     1  +     0    java.awt.EventDispatchThread.pumpOneEventForFilters
+  1.9%     1  +     0    javax.swing.BufferStrategyPaintManager.prepare
+  1.9%     1  +     0    javax.swing.JComponent.paint
+ 67.3%    22  +    13    Total interpreted (including elided)
+&nbsp;
+         Stub + native   Method                        
+<strong> 21.2%     0  +    11    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+<strong>  9.6%     0  +     5    sun.java2d.loops.FillRect.FillRect</strong>
+ 30.8%     0  +    16    Total stub
+&nbsp;
+  Thread-local ticks:
+ 98.0%  2490             Blocked (of total)
+  1.9%     1             Unknown: no last frame
+&nbsp;
+&nbsp;
+Flat profile of 26.06 secs (2556 total ticks): AWT-Shutdown
+&nbsp;
+  Thread-local ticks:
+100.0%  2556             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 26.06 secs (2556 total ticks): Java2D Disposer
+&nbsp;
+  Thread-local ticks:
+100.0%  2556             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 26.19 secs (2565 total ticks): main
+&nbsp;
+  Interpreted + native   Method                        
+ 40.0%     0  +    24    sun.misc.Unsafe.unpark
+  1.7%     0  +     1    java.io.WinNTFileSystem.canonicalize0
+  1.7%     0  +     1    sun.awt.windows.WFramePeer.createAwtFrame
+  1.7%     0  +     1    sun.awt.windows.WWindowPeer.setFocusableWindow
+  1.7%     0  +     1    sun.awt.windows.WComponentPeer.pShow
+  1.7%     0  +     1    sun.awt.windows.WDesktopProperties.getWindowsParameters
+  1.7%     0  +     1    sun.font.SunFontManager.initIDs
+  1.7%     0  +     1    java.io.WinNTFileSystem.canonicalizeWithPrefix0
+  1.7%     1  +     0    sun.misc.URLClassPath$3.run
+  1.7%     0  +     1    java.lang.System.arraycopy
+  1.7%     1  +     0    java.util.concurrent.atomic.AtomicLong.get
+  1.7%     1  +     0    java.util.LinkedList.&lt;init&gt;
+  1.7%     1  +     0    sun.awt.windows.WToolkit.createKeyboardFocusManagerPeer
+  1.7%     1  +     0    sun.awt.windows.WToolkit.getInputMethodAdapterDescriptor
+  1.7%     1  +     0    java.util.ResourceBundle.getBundle
+  1.7%     0  +     1    sun.java2d.loops.GraphicsPrimitiveMgr.initIDs
+  1.7%     1  +     0    java.util.HashMap.keySet
+  1.7%     1  +     0    sun.java2d.loops.GraphicsPrimitiveMgr$1.compare
+  1.7%     1  +     0    sun.awt.windows.WPanelPeer.initialize
+  1.7%     1  +     0    java.lang.ClassLoader.findNative
+  1.7%     1  +     0    java.util.HashMap$HashIterator.nextEntry
+  1.7%     1  +     0    java.lang.ProcessEnvironment.&lt;clinit&gt;
+  1.7%     1  +     0    sun.nio.cs.FastCharsetProvider.lookup
+  1.7%     1  +     0    sun.net.www.ParseUtil.encodePath
+  1.7%     1  +     0    sun.awt.FontConfiguration.initAllComponentFonts
+ 83.3%    17  +    33    Total interpreted (including elided)
+&nbsp;
+         Stub + native   Method                        
+ 11.7%     0  +     7    sun.misc.Unsafe.unpark
+ 11.7%     0  +     7    Total stub
+&nbsp;
+  Thread-local ticks:
+ 97.7%  2505             Blocked (of total)
+  5.0%     3             Class loader
+&nbsp;
+&nbsp;
+Global summary of 26.19 seconds:
+100.0%  2565             Received ticks
+  0.1%     3             Compilation
+  0.1%     3             Class loader
+  0.0%     1             Unknown code
+</pre>
+
+<h3>Šířka bitmapy 511 pixelů</h3>
+
+<pre>
+Flat profile of 35.72 secs (3006 total ticks): AWT-Windows
+&nbsp;
+  Interpreted + native   Method                        
+100.0%     0  +  3005    sun.awt.windows.WToolkit.eventLoop
+  0.0%     0  +     1    sun.awt.windows.WToolkit.init
+100.0%     0  +  3006    Total interpreted
+&nbsp;
+&nbsp;
+Flat profile of 0.01 secs (1 total ticks): Thread-1
+&nbsp;
+  Thread-local ticks:
+100.0%     1             Unknown: no last frame
+&nbsp;
+&nbsp;
+Flat profile of 35.58 secs (2998 total ticks): AWT-EventQueue-0
+&nbsp;
+  Interpreted + native   Method                        
+<strong> 30.4%     0  +   664    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+  0.6%     0  +    13    sun.java2d.loops.FillRect.FillRect
+  0.2%     4  +     0    sun.awt.AWTAutoShutdown.notifyThreadFree
+  0.2%     4  +     0    java.util.HashMap.removeEntryForKey
+  0.1%     3  +     0    sun.awt.PostEventQueue.flush
+  0.1%     2  +     0    java.util.Random.next
+  0.1%     2  +     0    sun.java2d.SurfaceData.getSourceSurfaceData
+  0.1%     0  +     2    sun.misc.Unsafe.park
+  0.1%     2  +     0    java.lang.Thread.isInterrupted
+  0.1%     2  +     0    sun.awt.EventQueueDelegate.getDelegate
+  0.0%     1  +     0    java.util.Random.nextInt
+  0.0%     0  +     1    sun.misc.Unsafe.putObject
+  0.0%     1  +     0    sun.misc.VM.isBooted
+  0.0%     0  +     1    sun.misc.Unsafe.compareAndSwapInt
+  0.0%     1  +     0    java.util.Collections.emptyIterator
+  0.0%     1  +     0    java.util.concurrent.atomic.AtomicLong.get
+  0.0%     1  +     0    java.util.IdentityHashMap$IdentityHashMapIterator.&lt;init&gt;
+  0.0%     1  +     0    java.util.HashMap$KeySet.&lt;init&gt;
+  0.0%     1  +     0    java.util.HashMap$KeySet.iterator
+  0.0%     1  +     0    java.awt.Component.isLightweight
+  0.0%     1  +     0    java.util.AbstractCollection.&lt;init&gt;
+  0.0%     1  +     0    java.lang.Thread.interrupted
+  0.0%     1  +     0    java.util.ArrayList.contains
+  0.0%     1  +     0    java.util.concurrent.locks.AbstractQueuedSynchronizer$Node.&lt;init&gt;
+  0.0%     1  +     0    java.util.concurrent.locks.AbstractOwnableSynchronizer.setExclusiveOwnerThread
+ 34.2%    64  +   683    Total interpreted (including elided)
+&nbsp;
+     Compiled + native   Method                        
+  0.1%     2  +     0    java.awt.EventQueue.getNextEventPrivate
+  0.1%     2  +     0    java.util.IdentityHashMap$KeySet.iterator
+  0.0%     1  +     0    java.util.concurrent.locks.ReentrantLock.unlock
+  0.0%     1  +     0    java.util.IdentityHashMap$KeyIterator.next
+  0.0%     1  +     0    java.util.IdentityHashMap.clear
+  0.0%     1  +     0    java.util.Random.next
+  0.0%     1  +     0    javax.swing.RepaintManager.prePaintDirtyRegions
+  0.0%     1  +     0    javax.swing.RepaintManager.updateWindows
+  0.0%     1  +     0    sun.awt.windows.WComponentPeer.getGraphics
+  0.5%    11  +     0    Total compiled
+&nbsp;
+         Stub + native   Method                        
+<strong> 63.9%     0  +  1398    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+  1.0%     0  +    22    sun.java2d.loops.FillRect.FillRect
+  0.2%     1  +     3    java.security.AccessController.doPrivileged
+  0.1%     0  +     2    java.lang.Object.clone
+  0.0%     0  +     1    java.lang.Thread.isInterrupted
+  0.0%     0  +     1    java.lang.Thread.currentThread
+ 65.3%     1  +  1427    Total stub
+&nbsp;
+  Thread-local ticks:
+ 27.1%   811             Blocked (of total)
+  0.0%     1             Unknown: no last frame
+&nbsp;
+&nbsp;
+Flat profile of 35.73 secs (3008 total ticks): AWT-Shutdown
+&nbsp;
+  Thread-local ticks:
+100.0%  3008             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 35.73 secs (3008 total ticks): Java2D Disposer
+&nbsp;
+  Thread-local ticks:
+100.0%  3008             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 35.85 secs (3017 total ticks): main
+&nbsp;
+  Interpreted + native   Method                        
+ 94.6%     0  +   457    sun.misc.Unsafe.unpark
+  0.2%     0  +     1    sun.awt.windows.WComponentPeer.pShow
+  0.2%     0  +     1    java.lang.ClassLoader$NativeLibrary.load
+  0.2%     0  +     1    sun.awt.windows.WFramePeer.createAwtFrame
+  0.2%     0  +     1    sun.awt.windows.WWindowPeer.setFocusableWindow
+  0.2%     0  +     1    sun.awt.windows.WDesktopProperties.getWindowsParameters
+  0.2%     1  +     0    sun.font.SunFontManager.initIDs
+  0.2%     1  +     0    java.lang.Short.hashCode
+  0.2%     0  +     1    sun.awt.windows.WWindowPeer.setIconImagesData
+  0.2%     1  +     0    sun.awt.windows.WToolkit.createFrame
+  0.2%     1  +     0    sun.net.www.URLConnection.&lt;init&gt;
+  0.2%     1  +     0    java.util.Hashtable$Entry.&lt;init&gt;
+  0.2%     1  +     0    java.lang.String.charAt
+  0.2%     1  +     0    sun.java2d.SurfaceDataProxy.&lt;init&gt;
+  0.2%     1  +     0    java.util.IdentityHashMap$IdentityHashMapIterator.hasNext
+  0.2%     1  +     0    java.util.Arrays.copyOfRange
+  0.2%     1  +     0    java.util.HashMap.getEntry
+  0.2%     1  +     0    java.lang.String.substring
+  0.2%     1  +     0    sun.awt.AWTAutoShutdown.notifyThreadBusy
+  0.2%     1  +     0    java.lang.CharacterData.of
+  0.2%     1  +     0    java.awt.KeyboardFocusManager.&lt;clinit&gt;
+  0.2%     1  +     0    java.util.TimSort.binarySort
+  0.2%     1  +     0    java.io.Win32FileSystem.resolve
+  0.2%     1  +     0    java.awt.Color.&lt;clinit&gt;
+  0.2%     1  +     0    sun.java2d.SurfaceData.&lt;clinit&gt;
+ 99.8%    19  +   463    Total interpreted (including elided)
+&nbsp;
+  Thread-local ticks:
+ 84.0%  2534             Blocked (of total)
+  0.2%     1             Class loader
+&nbsp;
+&nbsp;
+Global summary of 35.85 seconds:
+100.0%  3017             Received ticks
+  0.1%     3             Compilation
+  0.0%     1             Class loader
+  0.1%     2             Unknown code
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Proč je práce s&nbsp;některými bitmapami výrazně pomalejší?</h2>
+
+<p>Při prozkoumání výsledku profileru lze snadno zjistit, že vykreslení bitmapy
+s&nbsp;šířkou 511 pixelů je znatelně pomalejší, než je tomu v&nbsp;případě
+bitmapy s&nbsp;šířkou 512 pixelů (dokonce lze zjistit i pohledem, že i po
+vizuální stránce se bitmapa s&nbsp;šířkou 511 pixelů vykresluje pomaleji a
+navíc bez synchronizace s&nbsp;obrazem). Jedná se konkrétně o následující dva
+rozdílné údaje:</p>
+
+<pre>
+ /* 512 pixelů */
+ 17.3%     0  +     9    sun.java2d.windows.GDIBlitLoops.nativeBlit
+ 21.2%     0  +    11    sun.java2d.windows.GDIBlitLoops.nativeBlit
+&nbsp;
+ /* 511 pixelů */
+ 30.4%     0  +   664    sun.java2d.windows.GDIBlitLoops.nativeBlit
+ 63.9%     0  +  1398    sun.java2d.windows.GDIBlitLoops.nativeBlit
+</pre>
+
+<p>Pozorný čtenář patrně již tuší, že problém spočívá v&nbsp;zarovnání
+resp.&nbsp;přesněji řečeno v&nbsp;nezarovnání obrazového řádku na násobky čtyř
+bajtů. Bitmapa je totiž typu <strong>TYPE_3BYTE_BGR</strong>, což znamená, že
+při šířce 511 pixelů má obrazový řádek 511&times;3=1533 bajtů, což zcela jistě
+není číslo dělitelné čtyřmi (a samotné JVM s&nbsp;tímto faktem nedokáže nic
+dělat, dokonce i vkládání bajtů na konec obrazového řádku nemá velký význam).
+Z&nbsp;jakého důvodu je však vhodné mít obrazové řádky zarovnané na násobky
+čtyř bajtů? To nám prozradí pohled do zdrojového kódu <i>OpenJDK</i>, protože
+měření sice bylo provedeno na <i>Oracle JDK</i>, nicméně v&nbsp;tomto případě
+platí známá hláška &bdquo;stejné chyby-stejné známky&ldquo; (neboli zdrojové
+kódy obou JDK jsou prakticky shodné).</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Zdrojový kód nativní funkce <strong>sun.java2d.windows.GDIBlitLoops()</strong></h2>
+
+<p>Profiler nám přesně prozradil, kde se s&nbsp;velkou pravděpodobností bude
+skrývat problém s&nbsp;výkonností vykreslování bitmap s&nbsp;šířkou
+nedělitelnou čtyřmi: jedná se o nativní funkci
+<strong>sun.java2d.windows.GDIBlitLoops()</strong>. Tato funkce při
+vykreslování používá volání WinAPI <strong>SetDIBitsToDevice</strong>, což je
+funkce, která může potenciálně využívat možností grafické akcelerace. DI
+v&nbsp;názvu této funkce znamená &bdquo;Device Independent&ldquo;, což značí
+bitmapy nezávislé na konkrétním formátu používaném grafickou kartou. Je zde
+ovšem jeden problém &ndash; v&nbsp;případě, že délka obrazového řádku vyjádřená
+v&nbsp;bajtech není dělitelná čtyřmi, rozhodli se autoři JDK, že se bude
+bitmapa přenášet a zobrazovat <i>po jednotlivých řádcích</i>, což je velmi
+neefektivní způsob, který nemá s&nbsp;případnou grafickou akcelerací příliš
+společného! Ostatně se o tom můžeme přesvědčit sami pohledem do zdrojových
+kódů:</p>
+
+<pre>
+<i>/*</i>
+<i> * Class:     sun_java2d_windows_GDIBlitLoops</i>
+<i> * Method:    nativeBlit</i>
+<i> * Signature: (Lsun/java2d/SurfaceData;Lsun/java2d/SurfaceData;IIIIIIZ)V</i>
+<i> */</i>
+JNIEXPORT void JNICALL
+Java_sun_java2d_windows_GDIBlitLoops_nativeBlit
+    (JNIEnv *env, jobject joSelf,
+     jobject srcData, jobject dstData,
+     jobject clip,
+     jint srcx, jint srcy,
+     jint dstx, jint dsty,
+     jint width, jint height,
+     jint rmask, jint gmask, jint bmask,
+     jboolean needLut)
+{
+    J2dTraceLn(J2D_TRACE_INFO, "GDIBlitLoops_nativeBlit");
+&nbsp;
+    SurfaceDataRasInfo srcInfo;
+    SurfaceDataOps *srcOps = SurfaceData_GetOps(env, srcData);
+    GDIWinSDOps *dstOps = GDIWindowSurfaceData_GetOps(env, dstData);
+    jint lockFlags;
+&nbsp;
+    srcInfo.bounds.x1 = srcx;
+    srcInfo.bounds.y1 = srcy;
+    srcInfo.bounds.x2 = srcx + width;
+    srcInfo.bounds.y2 = srcy + height;
+    if (needLut) {
+        lockFlags = (SD_LOCK_READ | SD_LOCK_LUT);
+    } else {
+        lockFlags = SD_LOCK_READ;
+    }
+<i>    // This method is used among other things for on-screen copyArea, in which</i>
+<i>    // case the source and destination surfaces are the same. It is important</i>
+<i>    // to first lock the source and then get the hDC for the destination</i>
+<i>    // surface because the same per-thread hDC will be used for both</i>
+<i>    // and we need to have the correct clip set to the hDC</i>
+<i>    // used with the SetDIBitsToDevice call.</i>
+    if (srcOps-&gt;Lock(env, srcOps, &amp;srcInfo, lockFlags) != SD_SUCCESS) {
+        return;
+    }
+&nbsp;
+    SurfaceDataBounds dstBounds = {dstx, dsty, dstx + width, dsty + height};
+<i>    // Intersect the source and dest rects. Note that the source blit bounds</i>
+<i>    // will be adjusted to the surfaces's bounds if needed.</i>
+    SurfaceData_IntersectBlitBounds(&amp;(srcInfo.bounds), &amp;dstBounds,
+                                    dstx - srcx, dsty - srcy);
+&nbsp;
+    srcx = srcInfo.bounds.x1;
+    srcy = srcInfo.bounds.y1;
+    dstx = dstBounds.x1;
+    dsty = dstBounds.y1;
+    width = srcInfo.bounds.x2 - srcInfo.bounds.x1;
+    height = srcInfo.bounds.y2 - srcInfo.bounds.y1;
+&nbsp;
+    if (width &gt; 0 &amp;&amp; height &gt; 0)
+    {
+        BmiType bmi;
+<i>        // REMIND: A performance tweak here would be to make some of this</i>
+<i>        // data static.  For example, we could have one structure that is</i>
+<i>        // always used for ByteGray copies and we only change dynamic data</i>
+<i>        // in the structure with every new copy.  Also, we could store</i>
+<i>        // structures with Ops or with the Java objects so that surfaces</i>
+<i>        // could retain their own DIB info and we would not need to</i>
+<i>        // recreate it every time.</i>
+&nbsp;
+<i>        // GetRasInfo implicitly calls GetPrimitiveArrayCritical</i>
+<i>        // and since GetDC uses JNI it needs to be called first.</i>
+        HDC hDC = dstOps-&gt;GetDC(env, dstOps, 0, NULL, clip, NULL, 0);
+        if (hDC == NULL) {
+            SurfaceData_InvokeUnlock(env, srcOps, &amp;srcInfo);
+            return;
+        }
+        srcOps-&gt;GetRasInfo(env, srcOps, &amp;srcInfo);
+        if (srcInfo.rasBase == NULL) {
+            dstOps-&gt;ReleaseDC(env, dstOps, hDC);
+            SurfaceData_InvokeUnlock(env, srcOps, &amp;srcInfo);
+            return;
+        }
+        void *rasBase = ((char *)srcInfo.rasBase) + srcInfo.scanStride * srcy +
+                        srcInfo.pixelStride * srcx;
+&nbsp;
+<i>        // If scanlines are DWORD-aligned (scanStride is a multiple of 4),</i>
+<i>        // then we can do the work much faster.  This is due to a constraint</i>
+<i>        // in the way DIBs are structured and parsed by GDI</i>
+        jboolean fastBlt = ((srcInfo.scanStride &amp; 0x03) == 0);
+&nbsp;
+        bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+        bmi.bmiHeader.biWidth = srcInfo.scanStride/srcInfo.pixelStride;
+<i>        // fastBlt copies whole image in one call; else copy line-by-line</i>
+        LONG dwHeight = srcInfo.bounds.y2 - srcInfo.bounds.y1;
+        bmi.bmiHeader.biHeight = (fastBlt) ? -dwHeight : -1;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = (WORD)srcInfo.pixelStride * 8;
+<i>        // 1,3,4 byte use BI_RGB, 2 byte use BI_BITFIELD...</i>
+<i>        // 4 byte _can_ use BI_BITFIELD, but this seems to cause a performance</i>
+<i>        // penalty.  Since we only ever have one format (xrgb) for 32-bit</i>
+<i>        // images that enter this function, just use BI_RGB.</i>
+<i>        // Could do BI_RGB for 2-byte 555 format, but no perceived</i>
+<i>        // performance benefit.</i>
+        bmi.bmiHeader.biCompression = (srcInfo.pixelStride != 2)
+                ? BI_RGB : BI_BITFIELDS;
+        bmi.bmiHeader.biSizeImage = (bmi.bmiHeader.biWidth * dwHeight *
+                                     srcInfo.pixelStride);
+        bmi.bmiHeader.biXPelsPerMeter = 0;
+        bmi.bmiHeader.biYPelsPerMeter = 0;
+        bmi.bmiHeader.biClrUsed = 0;
+        bmi.bmiHeader.biClrImportant = 0;
+        if (srcInfo.pixelStride == 1) {
+<i>            // Copy palette info into bitmap for 8-bit image</i>
+            if (needLut) {
+                memcpy(bmi.colors.palette, srcInfo.lutBase, srcInfo.lutSize * sizeof(RGBQUAD));
+                if (srcInfo.lutSize != 256) {
+                    bmi.bmiHeader.biClrUsed = srcInfo.lutSize;
+                }
+            } else {
+<i>                // If no LUT needed, must be ByteGray src.  If we have not</i>
+<i>                // yet created the byteGrayPalette, create it now and copy</i>
+<i>                // it into our temporary bmi structure.</i>
+<i>                // REMIND: byteGrayPalette is a leak since we do not have</i>
+<i>                // a mechansim to free it up.  This should be fine, since it</i>
+<i>                // is only 256 bytes for any process and only gets malloc'd</i>
+<i>                // when using ByteGray surfaces.  Eventually, we should use</i>
+<i>                // the new Disposer mechanism to delete this native memory.</i>
+                if (byteGrayPalette == NULL) {
+<i>                    // assert (256 * sizeof(RGBQUAD)) &lt;= SIZE_MAX</i>
+                    byteGrayPalette = (RGBQUAD *)safe_Malloc(256 * sizeof(RGBQUAD));
+                    for (int i = 0; i &lt; 256; ++i) {
+                        byteGrayPalette[i].rgbRed = i;
+                        byteGrayPalette[i].rgbGreen = i;
+                        byteGrayPalette[i].rgbBlue = i;
+                    }
+                }
+                memcpy(bmi.colors.palette, byteGrayPalette, 256 * sizeof(RGBQUAD));
+            }
+        } else if (srcInfo.pixelStride == 2) {
+<i>            // For 16-bit case, init the masks for the pixel depth</i>
+            bmi.colors.dwMasks[0] = rmask;
+            bmi.colors.dwMasks[1] = gmask;
+            bmi.colors.dwMasks[2] = bmask;
+        }
+&nbsp;
+        if (fastBlt) {
+<i>            // Window could go away at any time, leaving bits on the screen</i>
+<i>            // from this GDI call, so make sure window still exists</i>
+            if (::IsWindowVisible(dstOps-&gt;window)) {
+<i>                // Could also call StretchDIBits.  Testing showed slight</i>
+<i>                // performance advantage of SetDIBits instead, so since we</i>
+<i>                // have no need of scaling, might as well use SetDIBits.</i>
+<strong>                SetDIBitsToDevice(hDC, dstx, dsty, width, height,
+                    0, 0, 0, height, rasBase,
+                    (BITMAPINFO*)&amp;bmi, DIB_RGB_COLORS);
+</strong>            }
+        } else {
+<i>            // Source scanlines not DWORD-aligned - copy each scanline individually</i>
+<strong>            for (int i = 0; i &lt; height; i += 1) {
+                if (::IsWindowVisible(dstOps-&gt;window)) {
+                    SetDIBitsToDevice(hDC, dstx, dsty+i, width, 1,
+                        0, 0, 0, 1, rasBase,
+                        (BITMAPINFO*)&amp;bmi, DIB_RGB_COLORS);
+                    rasBase = (void*)((char*)rasBase + srcInfo.scanStride);
+                } else {
+                    break;
+                }
+            }
+</strong>        }
+        dstOps-&gt;ReleaseDC(env, dstOps, hDC);
+        SurfaceData_InvokeRelease(env, srcOps, &amp;srcInfo);
+    }
+    SurfaceData_InvokeUnlock(env, srcOps, &amp;srcInfo);
+&nbsp;
+    return;
+}
+</pre>
+
+<p>Závěr: došlo zde ke kolizi dvou světů &ndash; Javovského a Windowsovského
+(omezení funkce <strong>SetDIBitsToDevice()</strong>, přesněji řečeno omezení
+formátu DIB se zarovnáním na 32bitů), ovšem potenciálním poraženým zde může být
+jen uživatel :-)</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. &bdquo;Kompatibilní&ldquo; bitmapy typu <strong>BufferedImage</strong></h2>
+
+<p>Jedním ze způsobů, jak urychlit vykreslování bitmap typu
+<strong>BufferedImage</strong> je vytvoření a použití takzvaných
+&bdquo;kompatibilních bitmap&ldquo;. Jedná se o bitmapy, jejichž formát
+(přesněji řečeno způsob uložení pixelů) je shodný s&nbsp;formátem používaným
+v&nbsp;aktuálně nastaveném grafickém režimu. V&nbsp;praxi to znamená, že se
+bitmapa nevytváří pomocí konstruktoru <strong>BufferedImage(šířka, výška,
+typ)</strong>, ale s&nbsp;využitím následujících dvou metod nabízených třídou
+<strong>GraphicsConfiguration</strong>:</p>
+
+<table>
+<tr><th>Metoda</th><th>Popis</th></tr>
+<tr><td>GraphicsConfiguration.createCompatibleImage(int width, int height)</td><td>základní metoda pro vytvoření bitmapy o zadaných rozměrech</td></tr>
+<tr><td>GraphicsConfiguration.createCompatibleImage(int width, int height, int transparency)</td><td>dtto ale s&nbsp;volbou, jak se má reprezentovat průhlednost/průsvitnost</td></tr>
+</table>
+
+<p>Způsob použití je ukázán v&nbsp;demonstračním příkladu:</p>
+
+<pre>
+    <i>/**</i>
+    <i> * Vytvoreni testovaciho obrazku.</i>
+    <i> */</i>
+    private void <strong>createImage</strong>() {
+        if (CREATE_COMPATIBLE_IMAGE) {
+            this.image = getGraphicsConfiguration().createCompatibleImage(IMAGE_WIDTH, IMAGE_HEIGHT);
+        }
+        else {
+            this.image = new BufferedImage(IMAGE_WIDTH, IMAGE_HEIGHT, BufferedImage.TYPE_3BYTE_BGR);
+        }
+        drawIntoImage(this.image);
+    }
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výsledky běhu upraveného demonstračního příkladu na systému Windows při použití šířky obrázku 511 a 512 pixelů</h2>
+
+<p>Zkusme si opět spustit profiler, tentokrát při použití &bdquo;kompatibilních
+bitmap&ldquo; s&nbsp;šířkou 512 a 511 pixelů:</p>
+
+<h3>Šířka bitmapy 512 pixelů</h3>
+
+<pre>
+Flat profile of 25.87 secs (2544 total ticks): AWT-Windows
+&nbsp;
+  Interpreted + native   Method                        
+ 99.9%     0  +  2542    sun.awt.windows.WToolkit.eventLoop
+  0.0%     1  +     0    sun.awt.ExtendedKeyCodes.&lt;clinit&gt;
+  0.0%     1  +     0    sun.awt.windows.WToolkit.registerShutdownHook
+100.0%     2  +  2542    Total interpreted
+&nbsp;
+&nbsp;
+Flat profile of 25.71 secs (2533 total ticks): AWT-EventQueue-0
+&nbsp;
+  Interpreted + native   Method                        
+<strong> 10.3%     0  +     4    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+  5.1%     2  +     0    javax.swing.BufferStrategyPaintManager.prepare
+  2.6%     1  +     0    java.text.AttributedString.getIterator
+  2.6%     1  +     0    java.util.HashMap$HashIterator.hasNext
+  2.6%     0  +     1    sun.awt.windows.WComponentPeer.hide
+  2.6%     1  +     0    java.awt.Image.getAccelerationPriority
+  2.6%     0  +     1    sun.java2d.loops.FillRect.FillRect
+  2.6%     1  +     0    sun.awt.image.SurfaceManager.getManager
+  2.6%     1  +     0    sun.java2d.SunGraphics2D.translate
+  2.6%     1  +     0    java.awt.Component$BltBufferStrategy.getDrawGraphics
+  2.6%     1  +     0    javax.swing.BufferStrategyPaintManager$BufferInfo.getBufferStrategy
+  2.6%     1  +     0    sun.java2d.SunGraphics2D.setFont
+  2.6%     1  +     0    sun.java2d.loops.Blit.getFromCache
+  2.6%     1  +     0    java.awt.Component$BltBufferStrategy.showSubRegion
+  2.6%     1  +     0    java.awt.EventDispatchThread.pumpOneEventForFilters
+  2.6%     1  +     0    javax.swing.RepaintManager.collectDirtyComponents
+  2.6%     1  +     0    javax.swing.JComponent.paint
+  2.6%     1  +     0    sun.util.locale.LanguageTag.&lt;clinit&gt;
+  2.6%     1  +     0    javax.swing.JComponent.paintChildren
+  2.6%     1  +     0    sun.java2d.SurfaceData.validatePipe
+ 61.5%    18  +     6    Total interpreted
+&nbsp;
+     Compiled + native   Method                        
+  2.6%     0  +     1    javax.swing.JComponent.paintComponent
+  2.6%     0  +     1    Total compiled
+&nbsp;
+         Stub + native   Method                        
+<strong> 20.5%     0  +     8    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+ 10.3%     0  +     4    sun.java2d.loops.FillRect.FillRect
+  2.6%     0  +     1    java.lang.Object.clone
+ 33.3%     0  +    13    Total stub
+&nbsp;
+  Thread-local ticks:
+ 98.5%  2494             Blocked (of total)
+  2.6%     1             Unknown: no last frame
+&nbsp;
+&nbsp;
+Flat profile of 25.87 secs (2545 total ticks): AWT-Shutdown
+&nbsp;
+  Thread-local ticks:
+100.0%  2545             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.87 secs (2545 total ticks): Java2D Disposer
+&nbsp;
+  Thread-local ticks:
+100.0%  2545             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 26.00 secs (2555 total ticks): main
+&nbsp;
+  Interpreted + native   Method                        
+ 37.3%     0  +    19    sun.misc.Unsafe.unpark
+  3.9%     0  +     2    sun.awt.windows.WFramePeer.createAwtFrame
+  2.0%     0  +     1    sun.awt.windows.WComponentPeer.pShow
+  2.0%     0  +     1    java.io.WinNTFileSystem.canonicalize0
+  2.0%     1  +     0    sun.awt.windows.WColor.getDefaultColor
+  2.0%     0  +     1    sun.awt.windows.WDesktopProperties.getWindowsParameters
+  2.0%     0  +     1    java.security.AccessController.doPrivileged
+  2.0%     1  +     0    java.awt.Component.initIDs
+  2.0%     1  +     0    java.lang.Class.forName0
+  2.0%     1  +     0    sun.nio.cs.SingleByte$Decoder.decode
+  2.0%     1  +     0    sun.awt.image.PixelConverter$Ushort555Rgb.&lt;clinit&gt;
+  2.0%     1  +     0    java.lang.String.lastIndexOf
+  2.0%     1  +     0    sun.java2d.loops.GraphicsPrimitiveMgr.initIDs
+  2.0%     1  +     0    java.util.Arrays.sort
+  2.0%     1  +     0    javax.swing.JComponent.getDefaultLocale
+  2.0%     1  +     0    javax.swing.plaf.basic.BasicPanelUI.installDefaults
+  2.0%     1  +     0    java.awt.Component.getSiblingIndexAbove
+  2.0%     1  +     0    java.awt.image.DataBufferInt.&lt;init&gt;
+  2.0%     1  +     0    java.lang.System.getenv
+  2.0%     1  +     0    java.lang.String.equalsIgnoreCase
+  2.0%     1  +     0    java.lang.String.indexOf
+  2.0%     1  +     0    java.awt.Window$Type.&lt;clinit&gt;
+  2.0%     1  +     0    sun.util.CoreResourceBundleControl.&lt;init&gt;
+  2.0%     1  +     0    java.util.concurrent.ConcurrentHashMap.ensureSegment
+  2.0%     1  +     0    java.io.BufferedReader.readLine
+ 90.2%    21  +    25    Total interpreted (including elided)
+&nbsp;
+         Stub + native   Method                        
+  7.8%     0  +     4    sun.misc.Unsafe.unpark
+  7.8%     0  +     4    Total stub
+&nbsp;
+  Thread-local ticks:
+ 98.0%  2504             Blocked (of total)
+  2.0%     1             Class loader
+&nbsp;
+&nbsp;
+Global summary of 26.00 seconds:
+100.0%  2556             Received ticks
+  0.0%     1             Received GC ticks
+  0.0%     1             Compilation
+  0.0%     1             Class loader
+  0.0%     1             Unknown code
+</pre>
+
+
+
+<h3>Šířka bitmapy 511 pixelů</h3>
+
+<pre>
+Flat profile of 25.85 secs (2543 total ticks): AWT-Windows
+&nbsp;
+  Interpreted + native   Method                        
+ 99.9%     0  +  2540    sun.awt.windows.WToolkit.eventLoop
+  0.0%     0  +     1    sun.java2d.windows.GDIBlitLoops.nativeBlit
+  0.0%     0  +     1    sun.awt.windows.WToolkit.init
+100.0%     0  +  2542    Total interpreted
+&nbsp;
+  Thread-local ticks:
+  0.0%     1             Class loader
+&nbsp;
+&nbsp;
+Flat profile of 25.72 secs (2535 total ticks): AWT-EventQueue-0
+&nbsp;
+  Interpreted + native   Method                        
+<strong> 18.9%     0  +     7    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+  2.7%     0  +     1    sun.awt.windows.WInputMethod.getOpenStatus
+  2.7%     1  +     0    sun.awt.image.SunVolatileImage.getHeight
+  2.7%     0  +     1    sun.awt.windows.WWindowPeer.requestWindowFocus
+  2.7%     0  +     1    sun.awt.windows.WComponentPeer.hide
+  2.7%     1  +     0    sun.awt.image.SurfaceManager.getManager
+  2.7%     1  +     0    java.util.Random.next
+  2.7%     1  +     0    sun.java2d.pipe.Region.isInsideQuickCheck
+  2.7%     1  +     0    java.util.ArrayList.indexOf
+  2.7%     1  +     0    javax.swing.RepaintManager.endPaint
+  2.7%     1  +     0    java.awt.geom.Rectangle2D.intersects
+  2.7%     1  +     0    sun.java2d.SurfaceData.getSourceSurfaceData
+  2.7%     1  +     0    sun.java2d.SunGraphics2D.setFont
+  2.7%     1  +     0    java.awt.EventDispatchThread.pumpOneEventForFilters
+  2.7%     1  +     0    javax.swing.BufferStrategyPaintManager.prepare
+  2.7%     1  +     0    javax.swing.JComponent.paint
+  2.7%     1  +     0    javax.swing.JComponent.paintChildren
+  2.7%     1  +     0    sun.java2d.SurfaceData.validatePipe
+ 64.9%    14  +    10    Total interpreted
+&nbsp;
+         Stub + native   Method                        
+<strong> 27.0%     0  +    10    sun.java2d.windows.GDIBlitLoops.nativeBlit</strong>
+  2.7%     0  +     1    sun.java2d.loops.FillRect.FillRect
+  2.7%     0  +     1    java.lang.Object.clone
+ 32.4%     0  +    12    Total stub
+&nbsp;
+  Thread-local ticks:
+ 98.5%  2498             Blocked (of total)
+  2.7%     1             Unknown: no last frame
+&nbsp;
+&nbsp;
+Flat profile of 25.87 secs (2544 total ticks): AWT-Shutdown
+&nbsp;
+  Thread-local ticks:
+100.0%  2544             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.87 secs (2544 total ticks): Java2D Disposer
+&nbsp;
+  Thread-local ticks:
+100.0%  2544             Blocked (of total)
+&nbsp;
+&nbsp;
+Flat profile of 25.99 secs (2554 total ticks): main
+&nbsp;
+  Interpreted + native   Method                        
+ 36.0%     0  +    18    sun.misc.Unsafe.unpark
+  4.0%     0  +     2    java.lang.System.arraycopy
+  2.0%     0  +     1    sun.awt.windows.WWindowPeer.setFocusableWindow
+  2.0%     0  +     1    sun.awt.windows.WFramePeer.createAwtFrame
+  2.0%     0  +     1    java.lang.ClassLoader$NativeLibrary.load
+  2.0%     0  +     1    sun.awt.windows.WComponentPeer.pShow
+  2.0%     0  +     1    sun.awt.windows.WWindowPeer.setIconImagesData
+  2.0%     0  +     1    sun.misc.Unsafe.compareAndSwapLong
+  2.0%     1  +     0    sun.font.Font2DHandle.&lt;init&gt;
+  2.0%     1  +     0    sun.awt.SunToolkit.checkAndSetPolicy
+  2.0%     1  +     0    sun.awt.windows.WToolkit.createFrame
+  2.0%     1  +     0    sun.nio.cs.ThreadLocalCoders.&lt;clinit&gt;
+  2.0%     1  +     0    sun.java2d.loops.GraphicsPrimitive.makeUniqueID
+  2.0%     1  +     0    sun.java2d.loops.GraphicsPrimitiveMgr$1.compare
+  2.0%     1  +     0    java.util.Vector.addElement
+  2.0%     1  +     0    sun.util.logging.PlatformLogger$LoggerProxy.&lt;init&gt;
+  2.0%     1  +     0    java.lang.Short$ShortCache.&lt;clinit&gt;
+  2.0%     1  +     0    java.net.URLStreamHandler.getHostAddress
+  2.0%     1  +     0    java.awt.EventQueue.cacheEQItem
+  2.0%     1  +     0    sun.java2d.loops.GraphicsPrimitiveMgr.&lt;clinit&gt;
+  2.0%     1  +     0    sun.awt.windows.WDesktopProperties.setSoundProperty
+  2.0%     1  +     0    java.awt.Container.&lt;clinit&gt;
+  2.0%     1  +     0    java.awt.Color.&lt;clinit&gt;
+  2.0%     1  +     0    java.awt.Cursor.&lt;clinit&gt;
+  2.0%     1  +     0    sun.java2d.SurfaceData.&lt;clinit&gt;
+ 90.0%    19  +    26    Total interpreted (including elided)
+&nbsp;
+         Stub + native   Method                        
+ 10.0%     0  +     5    sun.misc.Unsafe.unpark
+ 10.0%     0  +     5    Total stub
+&nbsp;
+  Thread-local ticks:
+ 98.0%  2504             Blocked (of total)
+&nbsp;
+&nbsp;
+Global summary of 25.99 seconds:
+100.0%  2554             Received ticks
+  0.0%     1             Compilation
+  0.0%     1             Class loader
+  0.0%     1             Unknown code
+</pre>
+
+<p>Opět zde můžeme vidět rozdílnou rychlost vykreslování, ovšem v&nbsp;tomto
+případě se nejedná o tak závažné zpomalení, jako v&nbsp;případě použití
+&bdquo;nekompatibilních bitmap&ldquo;:</p>
+
+<pre>
+ 10.3%     0  +     4    sun.java2d.windows.GDIBlitLoops.nativeBlit
+ 20.5%     0  +     8    sun.java2d.windows.GDIBlitLoops.nativeBlit
+&nbsp;
+ 18.9%     0  +     7    sun.java2d.windows.GDIBlitLoops.nativeBlit
+ 27.0%     0  +    10    sun.java2d.windows.GDIBlitLoops.nativeBlit
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Bitmapy typu <strong>VolatileImage</strong></h2>
+
+<p>Největší předností bitmap typu <strong>BufferedImage</strong> je snadnost
+jejich použití, zejména v&nbsp;případě, že se do bitmapy vykreslují obrazce
+s&nbsp;využitím tříd <strong>Graphics</strong> či <strong>Graphics2D</strong>.
+S&nbsp;těmito bitmapami lze taktéž provádět různé rastrové operace typu
+rozmazání či naopak zvýraznění hran apod. Samotné vykreslování bitmap může být
+v&nbsp;některých případech akcelerováno, ovšem v&nbsp;dalších případech (týká
+se to opět her) můžeme zjistit, že <strong>BufferedImage</strong> nejsou vhodné
+pro všechny operace. Jeden z&nbsp;problémů spočívá v&nbsp;tom, že do bitmapy
+lze neustále vykreslovat, což ovšem znamená, že bitmapa je (většinou) uložena
+v&nbsp;operační paměti a nikoli ve video paměti &ndash; jakákoli operace, která
+změní obsah bitmapy ji automaticky ve video paměti znevalidní, což při
+požadavku na vykreslení bitmapy znamená nutnost přenosu dat po sběrnici.</p>
+
+<p>Snadno lze vypočítat, kolik dat by se muselo přenést v&nbsp;případě, že by
+hra vždy vykreslovala na pozadí obrázek o rozměrech 1024&times;768 pixelů. Při
+30 snímcích za sekundu a bitové hloubce 24bpp by bylo nutné za sekundu
+přenést:</p>
+
+<pre>
+30&times;24&times;1024&times;768/8=67,5 MB
+</pre>
+
+<p>Řešením jsou takzvané &bdquo;volatilní bitmapy&ldquo; reprezentované třídou
+<strong>VolatileImage</strong>. Tyto bitmapy jsou navrženy a implementovány
+takovým způsobem, aby mohly být uloženy přímo ve video paměti, čímž se omezí
+nutné přenosy dat (pixelů) po sběrnici. Ovšem za tento luxus musíme něco
+zaplatit &ndash; volatilní bitmapy získaly svůj název z&nbsp;toho důvodu, že
+jejich obsah může být v&nbsp;jakémkoli okamžiku přemazán, což znamená nutnost
+obnovy obsahu této bitmapy. To ovšem znamená i nutnost změny logiky
+v&nbsp;programu, protože nelze předpokládat, že obrazec/graf jednou zapsaný do
+bitmapy již zůstane beze změny a bude možné ho kdykoli znovu vykreslit. Navíc
+je problematické i samotné vykreslování do volatilních bitmap, které by mělo
+být omezeno jen na operace typu <strong>Graphics.drawImage()</strong> (opět
+z&nbsp;důvodu minimalizace přenosů po sběrnici).</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Možné stavy bitmap typu <strong>VolatileImage</strong></h2>
+
+<p>Volatilní bitmapy se typicky používají společně s&nbsp;celoobrazovkovými
+grafickými režimy popsanými v&nbsp;předchozí části tohoto seriálu. Ovšem i při
+použití exkluzivního celoobrazovkového režimu mohou nastat situace, kdy dojde
+k&nbsp;poškození obrazových dat (a v&nbsp;důsledku toho i volatilních bitmap).
+Může se například jednat o zobrazení zprávy z&nbsp;task manageru (ten má
+vysokou prioritu), spuštění screensaveru, přechodu systému z/do režimu spánku
+či režimu uspání, spuštění či přepnutí do další aplikace vyžadující
+celoobrazovkový režim atd. Z&nbsp;tohoto důvodu JVM sleduje stav volatilních
+bitmap a ukládá tento stav do atributu dostupného přes metodu
+<strong>validate()</strong> (ta má ještě další význam). Volatilní bitmapa se
+může nacházet v&nbsp;jednom ze tří stavů:</p>
+
+<ol>
+<li><strong>IMAGE_OK</strong>: validní bitmapa, obsah se neztratil.</li>
+<li><strong>IMAGE_INCOMPATIBLE</strong>: pravděpodobně se změnil grafický režim (i ukončení celoobrazovkového režimu).</li>
+<li><strong>IMAGE_RESTORED</strong>: bitmapu je nutno překreslit.</li>
+</ol>
+
+<p>Jak konkrétně se s&nbsp;volatilními bitmapami pracuje si řekneme a na
+demonstračních příkladech ukážeme příště.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými soubory dnešního demonstračního příkladu</h2>
+
+<p>Následují již tradiční odkazy na zdrojové kódy uložené do Mercurial
+repositáře. V&nbsp;následující tabulce najdete linky na prozatím nejnovější
+verzi dnes popsaného demonstračního příkladu vykreslujícího bitmapy typu
+<strong>BufferedImage</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>BlitTest1.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/3acaa89b0dc7/jvm/gfx/BlitTest1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/3acaa89b0dc7/jvm/gfx/BlitTest1.java</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Javadoc - třída GraphicsDevice<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsDevice.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsDevice.html</a>
+</li>
+
+<li>Javadoc - třída GraphicsEnvironment<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsEnvironment.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsEnvironment.html</a>
+</li>
+
+<li>Javadoc - třída GraphicsConfiguration<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsConfiguration.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsConfiguration.html</a>
+</li>
+
+<li>Javadoc - třída DisplayMode<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/DisplayMode.html">http://docs.oracle.com/javase/7/docs/api/java/awt/DisplayMode.html</a>
+</li>
+
+<li>Lesson: Full-Screen Exclusive Mode API<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/">http://docs.oracle.com/javase/tutorial/extra/fullscreen/</a>
+</li>
+
+<li>Full-Screen Exclusive Mode<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/exclusivemode.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/exclusivemode.html</a>
+</li>
+
+<li>Display Mode<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/displaymode.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/displaymode.html</a>
+</li>
+
+<li>Using the Full-Screen Exclusive Mode API in Java<br />
+<a href="http://www.developer.com/java/other/article.php/3609776/Using-the-Full-Screen-Exclusive-Mode-API-in-Java.htm">http://www.developer.com/java/other/article.php/3609776/Using-the-Full-Screen-Exclusive-Mode-API-in-Java.htm</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
