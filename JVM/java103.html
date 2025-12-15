@@ -1,0 +1,1243 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o jazyce Java i o virtuálním stroji Javy si řekneme, jaké přednosti ale i zápory může přinést využití rozhraní JNI při optimalizaci javovských aplikací. Díky existenci JNI lze část aplikačního kódu napsat v některém jazyku (C, C++) překládaném do nativního kódu, což však nemusí být ve všech případech výhodné.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích</a></p>
+<p><a href="#k02">2. První demonstrační příklad <strong>JNITest1</strong></a></p>
+<p><a href="#k03">3. Překlad a spuštění prvního demonstračního příkladu</a></p>
+<p><a href="#k04">4. Výsledky běhu prvního demonstračního příkladu při použití interpretru, JIT typu klient i JIT typu server</a></p>
+<p><a href="#k05">5. Druhý demonstrační příklad <strong>JNITest2</strong>: rekurzivní výpočet prvků Fibonacciho řady</a></p>
+<p><a href="#k06">6. Výsledky běhu druhého demonstračního příkladu</a></p>
+<p><a href="#k07">7. Třetí demonstrační příklad <strong>JNITest3</strong>: nerekurzivní výpočet prvků Fibonacciho řady</a></p>
+<p><a href="#k08">8. Výsledky běhu třetího demonstračního příkladu</a></p>
+<p><a href="#k09">9. Repositář se zdrojovými soubory i se skripty pro překlad</a></p>
+<p><a href="#k10">10. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích</h2>
+
+<p>V&nbsp;předchozích částech seriálu o programovacím jazyku Java i o
+virtuálním stroji Javy jsme si popsali některé možnosti optimalizace aplikací
+naprogramovaných v&nbsp;Javě. Ještě jsme se však nezmínili o možnosti využití
+rozhraní <i>JNI (Java Native Interface)</i>, díky jehož existenci je možné
+z&nbsp;Javy relativně jednoduše volat nativní funkce a metody,
+tj.&nbsp;programový kód, který byl přeložen přímo do strojového kódu cílového
+mikroprocesoru. Využití <i>JNI</i> s&nbsp;sebou nese klady, ale samozřejmě i
+zápory. Mezi kladné vlastnosti patří možnost využití nepřeberného množství
+nativních sdílených knihoven dostupných v&nbsp;operačním systému i fakt, že
+kritickou část aplikace je možné (po implementaci v&nbsp;C, C++ atd.) přeložit
+takovým překladačem, který produkuje rychlejší či menší strojový kód, než JIT
+překladače typu klient i server. Příkladem, kdy by bylo využití rozhraní
+<i>JNI</i> vhodné, je například nějaké výpočetní jádro přeložené pomocí
+<i>gcc</i> či <i>icc</i>.</p>
+
+<p><i>JNI</i> však není a ani nemůže být samospasitelná technologie. Při jeho
+využití je totiž nutné, aby virtuální stroj Javy spojil dva nesourodé světy
+&ndash; svět Javy s&nbsp;automatickým správcem paměti a nepřímo používanými
+referencemi se světem jazyků C/C++ s&nbsp;manuální či poloautomatickou správou
+paměti, ukazateli a dalšími nízkoúrovňovými operacemi. Problémy nastávají
+zejména při předávání parametrů nativním funkcím a metodám &ndash; je totiž
+nutné zajistit buď kopii těchto parametrů, nebo je nutné příslušné Javovské
+objekty označit takovým způsobem, aby s&nbsp;nimi nebylo v&nbsp;průběhu
+spuštění nativní funkce manipulováno například při správě paměti. Ani samotné
+volání nativní funkce či metody není zcela jednoduché, takže se může stát, že
+nativní kód přeložený optimalizujícím překladačem bude ve skutečnosti
+pomalejší, než obdobný kód naprogramovaný v&nbsp;Javě a přeložený někdy poněkud
+naivním JIT překladačem. Podrobnosti si ukážeme na poněkud extrémním
+demonstračním příkladu popsaném v&nbsp;následujících kapitolách.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. První demonstrační příklad <strong>JNITest1</strong></h2>
+
+<p>V&nbsp;dnešním prvním demonstračním příkladu je ukázáno, jakým způsobem je
+možné zajistit překlad a následné volání nativní funkce (resp.&nbsp;statické
+metody), která sečte své dva celočíselné parametry a vrátí výsledek tohoto
+součtu. Aby bylo možné porovnat rychlost volání a běhu této nativní metody
+s&nbsp;obdobnou Javovskou metodou, najdeme v&nbsp;demonstračním příkladu jak
+hlavičku nativní metody <strong>native public static int nativeAdd(int x, int
+y)</strong>, tak i implementaci podobného Javovského kódu <strong>public static
+int javaAdd(int x, int y)</strong>. Tyto dvě metody jsou následně volány
+v&nbsp;jednoduchém benchmarku a následně je vypsán výsledek tohoto testu.</p>
+
+<pre>
+<i>/**</i>
+<i> * Jednoduchy benchmark pro porovnani rychlosti nativni funkce a JITovane metody.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JNITest1</strong> {
+<i>    /**</i>
+<i>     * Pocet opakovani zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>WARMUP_ITERS</strong> = 200000;
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani merene faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>BENCHMARK_ITERS</strong> = 200000;
+&nbsp;
+<i>    /**</i>
+<i>     * Nativni metoda, ktera vrati soucet svych dvou argumentu.</i>
+<i>     */</i>
+    <strong>native public static int nativeAdd(int x, int y)</strong>;
+&nbsp;
+<i>    /**</i>
+<i>     * Javovska metoda, ktera vrati soucet svych dvou argumentu.</i>
+<i>     */</i>
+    public static int <strong>javaAdd</strong>(int x, int y) {
+        return x+y;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runJNIBenchmarks</strong>() {
+        warmup();
+        benchmark();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis vypocteneho vysledku (jen pro kontrolu).</i>
+<i>     */</i>
+    private static void <strong>printResult</strong>(int result) {
+        System.out.print("    result=");
+        System.out.println(result);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>() {
+        System.out.println("Warmup phase...");
+&nbsp;
+        int result = 0;
+<i>        // donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result += javaAdd(i, i);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+<i>        // taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result += nativeAdd(i, i);
+        }
+        printResult(result);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vlastni mereny benchmark.</i>
+<i>     */</i>
+    private static void <strong>benchmark</strong>() {
+        System.out.println("Benchmark phase...");
+        long t1, t2, delta_t;
+&nbsp;
+<i>        // provest test a zmerit cas behu prvniho testu</i>
+        t1 = System.nanoTime();
+        int result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result += javaAdd(i, i);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+<i>        // vypis casu pro prvni test</i>
+        System.out.format("JITted method time:   %,12d ns\n", delta_t);
+&nbsp;
+<i>        // provest test a zmerit cas behu druheho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result += nativeAdd(i, i);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+<i>        // vypis casu pro druhy test</i>
+        System.out.format("native function time: %,12d ns\n", delta_t);
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.loadLibrary("JNITest1");
+        runJNIBenchmarks();
+    }
+}
+</pre>
+
+<p>Povšimněte si ještě prvního příkazu ve funkci <strong>main()</strong>, který
+zajistí načtení a inicializaci sdílené nativní knihovny obsahující implementaci
+metody <strong>nativeAdd()</strong>:</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Překlad a spuštění prvního demonstračního příkladu</h2>
+
+<p>Zdrojový kód prvního demonstračního příkladu se, jak je to běžné, přeloží
+překladačem <strong>javac</strong>:</p>
+
+<pre>
+javac JNITest1.java
+</pre>
+
+<p>Po tomto překladu však ještě není možné benchmark spustit, protože nám chybí
+implementace nativní funkce <strong>nativeAdd()</strong>. Nejdříve si tedy
+necháme vytvořit hlavičkový soubor nazvaný <strong>JNITest1.h</strong>,
+v&nbsp;němž bude uvedena přesná hlavička této funkce (s&nbsp;ošetřením jejího
+názvu při použití jazyka C++ namísto céčka):</p>
+
+<pre>
+javah JNITest1
+</pre>
+
+<p>Hlavičkový soubor <strong>JNITest1.h</strong> může vypadat následovně:</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest1 */</i>
+&nbsp;
+#ifndef _Included_JNITest1
+#define _Included_JNITest1
+#ifdef __cplusplus
+extern "C" {
+#endif
+#undef JNITest1_WARMUP_ITERS
+#define JNITest1_WARMUP_ITERS 200000L
+#undef JNITest1_BENCHMARK_ITERS
+#define JNITest1_BENCHMARK_ITERS 200000L
+<i>/*</i>
+<i> * Class:     JNITest1</i>
+<i> * Method:    nativeAdd</i>
+<i> * Signature: (II)I</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Java_JNITest1_nativeAdd</strong>
+  (JNIEnv *, jclass, jint, jint);
+&nbsp;
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p>Povšimněte si způsobu přejmenování nativní metody, kterou musíme
+implementovat.</p>
+
+<p>Na základě tohoto hlavičkového souboru již můžeme vytvořit zdrojový soubor
+nazvaný <strong>JNITest1.c</strong>, v&nbsp;němž bude funkce
+implementována:</p>
+
+<pre>
+#include &lt;jni.h&gt;
+#include "JNITest1.h"
+&nbsp;
+JNIEXPORT jint JNICALL <strong>Java_JNITest1_nativeAdd</strong>
+  (JNIEnv *jni_env, jclass klass, jint x, jint y)
+{
+    return x+y;
+}
+</pre>
+
+<p>Následuje překlad tohoto souboru, což může v&nbsp;případě Linuxu vypadat
+následovně (cestu k&nbsp;<strong>jni.h</strong> a dalším potřebným souborům
+bude samozřejmě nutné upravit na základě konfigurace konkrétní distribuce
+Linuxu):</p>
+
+<pre>
+gcc -shared -I/usr/lib/jvm/java-7-openjdk/include/ -o libJNITest1.so JNITest1.c
+</pre>
+
+<p>Na systému Windows s&nbsp;nainstalovanou JDK 7 by mohl překlad
+s&nbsp;využitím <strong>mingw</strong> vypadat následovně:</p>
+
+<pre>
+gcc -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest1.dll JNITest1.c
+</pre>
+
+<p>V&nbsp;obou případech by měla vzniknout sdílená dynamicky linkovaná knihovna
+pojmenovaná v&nbsp;závislosti na použitém operačním systému buď
+<strong>libJNITest1.so</strong> či <strong>JNITest1.dll</strong>. Tyto názvy je
+zapotřebí zkontrolovat a dodržet, protože v&nbsp;případě jejich změny by došlo
+k&nbsp;chybě při volání <strong>System.loadLibrary("JNITest1")</strong>!</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výsledky běhu prvního demonstračního příkladu při použití interpretru, JIT typu klient i JIT typu server</h2>
+
+<p>Nyní si vyzkoušíme, zda bude nativní metoda <strong>nativeAdd()</strong>
+skutečně rychlejší než metoda <strong>javaAdd()</strong>, která bude buď
+intepretovaná či přeložená JIT překladačem typu klient a server.</p>
+
+<p><strong>Interpret:</strong></p>
+
+<p>Interpret se na Linuxu i Windows spustí stejným příkazem, ovšem na Linuxu je
+navíc nutné nastavit i proměnnou prostředí <strong>LD_LIBRARY_PATH</strong>
+takovým způsobem, aby virtuální stroj Javy našel sdílenou knihovnu
+<strong>libJNITest1.so</strong>:</p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java -Xint JNITest1
+</pre>
+
+<p>Výsledky jsou poměrně zajímavé, neboť volání nativní knihovny je
+pomalejší:</p>
+
+<pre>
+Warmup phase...
+    result=1345094336
+    result=1345094336
+done
+Benchmark phase...
+    result=1345094336
+JITted method time:     32 152 970 ns
+    result=1345094336
+native function time:   43 650 520 ns
+done
+</pre>
+
+<p><strong>JIT Client:</strong></p>
+
+<p>Spuštění proběhne následovně:</p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java -client JNITest1
+</pre>
+
+<p>I zde je volání nativní metody pomalejší:</p>
+
+<pre>
+Warmup phase...
+    result=1345094336
+    result=1345094336
+done
+Benchmark phase...
+    result=1345094336
+JITted method time:      6 236 268 ns
+    result=1345094336
+native function time:    9 170 438 ns
+done
+</pre>
+
+<p><strong>JIT Server:</strong></p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java -server JNITest1
+</pre>
+
+<p>Zde do času běhu benchmarku zasáhl relativně pomalý JIT překladač typu
+server:</p>
+
+<pre>
+Warmup phase...
+    result=1345094336
+    result=1345094336
+done
+Benchmark phase...
+    result=1345094336
+JITted method time:     41 682 394 ns
+    result=1345094336
+native function time:   19 539 912 ns
+done
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Druhý demonstrační příklad <strong>JNITest2</strong>: rekurzivní výpočet prvků Fibonacciho řady</h2>
+
+<p>Výsledky představené <a href="#k04">v&nbsp;předchozí kapitole</a> jsou dosti
+zajímavé, neboť ukazují, že při volání velmi jednoduché nativní metody
+(v&nbsp;níž není implementována žádná programová smyčka a podobné
+dlouhotrvající operace) je samotná režie volání velmi velká, což znamená, že
+vlastně nemá smysl se pokoušet podobné nativní metody implementovat (pokud
+k&nbsp;tomu nejsme donuceni například kvůli použití externí nativní knihovny
+atd.). Podívejme se tedy na poněkud složitější metodu &ndash; rekurzivní
+výpočet <i>n</i>-tého prvku Fibonacciho řady. Tato metoda bude opět
+implementována dvakrát &ndash; jednou v&nbsp;nativním kódu
+(<strong>nativeFibonacci</strong>) a podruhé ve formě klasické javovské metody
+(<strong>fibonacci</strong>):</p>
+
+<pre>
+<i>/**</i>
+<i> * Jednoduchy benchmark pro porovnani rychlosti nativni funkce a JITovane metody.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JNITest2</strong> {
+<i>    /**</i>
+<i>     * Pocet opakovani zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>WARMUP_ITERS</strong> = 20000;
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani merene faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>BENCHMARK_ITERS</strong> = 20000;
+&nbsp;
+<i>    /**</i>
+<i>     * Nativni metoda pro vypocet n-teho prvku Fibonacciho posloupnosti.</i>
+<i>     * Pro vypocet je pouzit rekurzivni algoritmus.</i>
+<i>     */</i>
+    <strong>native public static int nativeFibonacci(int n)</strong>;
+&nbsp;
+<i>    /**</i>
+<i>     * Javovska metoda pro vypocet n-teho prvku Fibonacciho posloupnosti.</i>
+<i>     * Pro vypocet je pouzit rekurzivni algoritmus.</i>
+<i>     */</i>
+    public static int <strong>fibonacci</strong>(int n) {
+        return n&lt;2 ? n : fibonacci(n-2) + fibonacci(n-1);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runJNIBenchmarks</strong>(int n) {
+        warmup(n);
+        benchmark(n);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis vypocteneho vysledku (jen pro kontrolu).</i>
+<i>     */</i>
+    private static void <strong>printResult</strong>(int result) {
+        System.out.print("    result=");
+        System.out.println(result);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>(int n) {
+        System.out.println("Warmup phase...");
+&nbsp;
+        int result = 0;
+<i>        // donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = fibonacci(n);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+<i>        // taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = nativeFibonacci(n);
+        }
+        printResult(result);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vlastni mereny benchmark.</i>
+<i>     */</i>
+    private static void <strong>benchmark</strong>(int n) {
+        System.out.println("Benchmark phase...");
+        long t1, t2, delta_t;
+&nbsp;
+<i>        // provest test a zmerit cas behu prvniho testu</i>
+        t1 = System.nanoTime();
+        int result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = fibonacci(n);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+<i>        // vypis casu pro prvni test</i>
+        System.out.format("JITted method time:   %,12d ns\n", delta_t);
+&nbsp;
+<i>        // provest test a zmerit cas behu druheho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = nativeFibonacci(n);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+<i>        // vypis casu pro druhy test</i>
+        System.out.format("native function time: %,12d ns\n", delta_t);
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.loadLibrary("JNITest2");
+        for (int n = 1; n &lt; 20; n++) {
+            System.out.println("------------------------");
+            System.out.println("n=" + n);
+            runJNIBenchmarks(n);
+        }
+    }
+}
+</pre>
+
+<p>Opět si necháme vygenerovat hlavičkový soubor, jehož název bude tentokrát
+<strong>JNITest2.h</strong>:</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest2 */</i>
+&nbsp;
+#ifndef _Included_JNITest2
+#define _Included_JNITest2
+#ifdef __cplusplus
+extern "C" {
+#endif
+#undef JNITest2_WARMUP_ITERS
+#define JNITest2_WARMUP_ITERS 20000L
+#undef JNITest2_BENCHMARK_ITERS
+#define JNITest2_BENCHMARK_ITERS 20000L
+<i>/*</i>
+<i> * Class:     JNITest2</i>
+<i> * Method:    nativeFibonacci</i>
+<i> * Signature: (I)I</i>
+<i> */</i>
+JNIEXPORT jint JNICALL Java_JNITest2_nativeFibonacci
+  (JNIEnv *, jclass, jint);
+&nbsp;
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p>Samotnou nativní metodu budeme implementovat velmi jednoduše (soubor
+<strong>JNITest2.c</strong>):</p>
+
+<pre>
+#include &lt;jni.h&gt;
+#include "JNITest2.h"
+&nbsp;
+jint <strong>fibonacci</strong>(jint n)
+{
+    return n&lt;2 ? n : fibonacci(n-2) + fibonacci(n-1);
+}
+&nbsp;
+JNIEXPORT jint JNICALL <strong>Java_JNITest2_nativeFibonacci</strong>
+  (JNIEnv *jni_env, jclass klass, jint n)
+{
+    return fibonacci(n);
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Výsledky běhu druhého demonstračního příkladu</h2>
+
+<p>Překlad nyní provedeme dvakrát &ndash; jednou bez optimalizací a podruhé
+s&nbsp;několika optimalizacemi.</p>
+
+<p>Překlad bez optimalizací na Linuxu a na Windows
+s&nbsp;<strong>mingw</strong>:</p>
+
+<pre>
+gcc -O0 -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest2.dll JNITest2.c
+&nbsp;
+gcc -shared -I/usr/lib/jvm/java-7-openjdk/include/ -o libJNITest2.so JNITest2.c
+</pre>
+
+<p>Překlad s&nbsp;optimalizacemi na Linuxu a na Windows
+s&nbsp;<strong>mingw</strong>:</p>
+
+<pre>
+gcc -O3 -fold-unroll-all-loops -floop-optimize -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest2.dll JNITest2.c
+&nbsp;
+gcc -O3 -shared -I/usr/lib/jvm/java-7-openjdk/include/ -o libJNITest2.so JNITest2.c
+</pre>
+
+<p>Samotný benchmark se spustí následovně:</p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java -Xcomp JNITest2
+</pre>
+
+<p>Podívejme se nyní na výsledky běhu tohoto benchmarku při vypnutí
+optimalizací při překladu nativní metody:</p>
+
+<pre>
+n       JIT    native
+=====================
+1       152    1071
+2       277    1605
+3       996    3948
+4      1743    5474
+5      2230    9068
+6      4645   13760
+7      9964   21679
+8     15302   35106
+9     26647   53639
+10    44890   86215
+11    78455  138448
+12   127187  228011
+13   200884  366488
+14   342134  616792
+15   534243  984997
+16   875859 1576525
+17  1410611 2603379
+18  2288594 4188336
+19  3685208 6719390
+</pre>
+
+<img src="http://i.iinfo.cz/images/371/java-graphs-1.png" class="image-151065" width="550" height="450" alt="&#160;" />
+
+<p>Zde tedy JIT &bdquo;vyhrál&ldquo; nad voláním JNI funkce.</p>
+
+<p>Při použití optimalizací při překladu nativní metody dosáhneme jen
+nepatrného vylepšení:</p>
+
+<pre>
+n      JIT     native
+=====================
+1      152      923
+2      277     1446
+3     1243     1946
+4     1622     4394
+5     2218     6777
+6     4644    11728
+7     9868    18542
+8    15458    29869
+9    29031    48274
+10   46052    79005
+11   76271   126847
+12  128107   206372
+13  202225   332576
+14  338846   549137
+15  535432   888210
+16  877552  1440197
+17 1410780  2313733
+18 2277419  3780225
+19 3672948  6098898
+</pre>
+
+<img src="http://i.iinfo.cz/images/371/java-graphs-2.png" class="image-151066" width="550" height="450" alt="&#160;" />
+
+<p>I zde je patrné, že JIT &bdquo;vyhrál&ldquo; nad voláním JNI funkce.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Třetí demonstrační příklad <strong>JNITest3</strong>: nerekurzivní výpočet prvků Fibonacciho řady</h2>
+
+<p>Problémem v&nbsp;předchozím benchmarku byla rekurzivní povaha algoritmu,
+s&nbsp;nímž se <strong>gcc</strong> nevyrovnal zcela dobře &ndash; což
+pravděpodobně bude námět na diskuzi pod článkem ;-). Proto se na závěr pokusme
+změřit, jestli nebude výhodnější přepsat původní rekurzivní algoritmus na
+nerekurzivní podobu. To je v&nbsp;případě výpočtu prvků Fibonacciho řady
+poměrně jednoduché &ndash; ostatně se sami můžete podívat na těla metod
+<strong>nativeFibonacci()</strong> a <strong>fibonacci()</strong>
+implementovaných v&nbsp;dnešním třetím benchmarku nazvaném
+<strong>JNITest3</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Jednoduchy benchmark pro porovnani rychlosti nativni funkce a JITovane metody.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JNITest3</strong> {
+<i>    /**</i>
+<i>     * Pocet opakovani zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>WARMUP_ITERS</strong> = 20000;
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani merene faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>BENCHMARK_ITERS</strong> = 20000;
+&nbsp;
+<i>    /**</i>
+<i>     * Nativni metoda pro vypocet n-teho prvku Fibonacciho posloupnosti.</i>
+<i>     * Pro vypocet je pouzit nerekurzivni algoritmus.</i>
+<i>     */</i>
+    native public static int <strong>nativeFibonacci</strong>(int n);
+&nbsp;
+<i>    /**</i>
+<i>     * Javovska metoda pro vypocet n-teho prvku Fibonacciho posloupnosti.</i>
+<i>     * Pro vypocet je pouzit nerekurzivni algoritmus.</i>
+<i>     */</i>
+    public static int <strong>fibonacci</strong>(int n) {
+        if (n&lt;2) return n;
+        int n0 = 1;
+        int n1 = 1;
+        for (int i = 1; i &lt; n - 1; i++) {
+            int n2 = n0 + n1;
+            n0 = n1;
+            n1 = n2;
+        }
+        return n1;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runJNIBenchmarks</strong>(int n) {
+        warmup(n);
+        benchmark(n);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis vypocteneho vysledku (jen pro kontrolu).</i>
+<i>     */</i>
+    private static void <strong>printResult</strong>(int result) {
+        System.out.print("    result=");
+        System.out.println(result);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>(int n) {
+        System.out.println("Warmup phase...");
+&nbsp;
+        int result = 0;
+<i>        // donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = fibonacci(n);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+<i>        // taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = nativeFibonacci(n);
+        }
+        printResult(result);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vlastni mereny benchmark.</i>
+<i>     */</i>
+    private static void <strong>benchmark</strong>(int n) {
+        System.out.println("Benchmark phase...");
+        long t1, t2, delta_t;
+        int result;
+&nbsp;
+<i>        // provest test a zmerit cas behu prvniho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = fibonacci(n);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+<i>        // vypis casu pro prvni test</i>
+        System.out.format("JITted method time:   %,12d ns\n", delta_t);
+&nbsp;
+<i>        // provest test a zmerit cas behu druheho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = nativeFibonacci(n);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+<i>        // vypis casu pro druhy test</i>
+        System.out.format("native function time: %,12d ns\n", delta_t);
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.loadLibrary("JNITest3");
+        for (int n = 1; n &lt; 47; n++) {
+            System.out.println("------------------------");
+            System.out.println("n=" + n);
+            runJNIBenchmarks(n);
+        }
+    }
+}
+</pre>
+
+<p>Vygenerovaný hlavičkový soubor:</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest3 */</i>
+&nbsp;
+#ifndef _Included_JNITest3
+#define _Included_JNITest3
+#ifdef __cplusplus
+extern "C" {
+#endif
+#undef JNITest3_WARMUP_ITERS
+#define JNITest3_WARMUP_ITERS 20000L
+#undef JNITest3_BENCHMARK_ITERS
+#define JNITest3_BENCHMARK_ITERS 20000L
+<i>/*</i>
+<i> * Class:     JNITest3</i>
+<i> * Method:    nativeFibonacci</i>
+<i> * Signature: (I)I</i>
+<i> */</i>
+JNIEXPORT jint JNICALL Java_JNITest3_nativeFibonacci
+  (JNIEnv *, jclass, jint);
+&nbsp;
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p>Zdrojový soubor <strong>JNITest3.c</strong> s&nbsp;implementací nativní
+metody pro výpočet prvků Fibonacciho řady:</p>
+
+<pre>
+#include &lt;jni.h&gt;
+#include "JNITest3.h"
+&nbsp;
+JNIEXPORT jint JNICALL <strong>Java_JNITest3_nativeFibonacci</strong>
+  (JNIEnv *jni_env, jclass klass, jint n)
+{
+    if (n &lt; 2) return n;
+    jint n0 = 1;
+    jint n1 = 1;
+    jint i;
+    for (i = 1; i &lt; n - 1; i++) {
+        jint n2 = n0 + n1;
+        n0 = n1;
+        n1 = n2;
+    }
+    return n1;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Výsledky běhu třetího demonstračního příkladu</h2>
+
+<p>Při překladu nativní metody byla nejprve opět zakázána jakákoli
+optimalizace:</p>
+
+<pre>
+gcc -O0 -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest3.dll JNITest3.c
+&nbsp;
+gcc -O0 -shared -I/usr/lib/jvm/java-7-openjdk/include/ -o libJNITest3.so JNITest3.c
+</pre>
+
+<p>Posléze byla optimalizace naopak provedena, a to i se žádostí o rozbalení
+smyčky atd.:</p>
+
+<pre>
+gcc -O3 -funroll-all-loops -floop-optimize -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest3.dll JNITest3.c
+&nbsp;
+gcc -O3 -funroll-all-loops -floop-optimize -shared -I/usr/lib/jvm/java-7-openjdk/include/ -o libJNITest3.so JNITest3.c
+</pre>
+
+<p>Výsledky při nepoužití optimalizace při překladu opět mluví
+<strong>proti</strong> použití <i>JNI</i>:</p>
+
+<pre>
+n      JIT     native
+=====================
+1      415      942
+2      438     1019
+3      498     1236
+4      621     1492
+5      757     1762
+6      882     2119
+7     1005     2376
+8     1138     2751
+9     1278     3029
+10    1896     3328
+11    1672     3621
+12    1712     3881
+13    2745     4232
+14    1987     4447
+15    2065     4765
+16    2260     5171
+17    2679     5325
+18    2518     5655
+19    2896     5951
+20    3653     6110
+21    3490     6469
+22    3134     6616
+23    3161     6981
+24    3515     7385
+25    3403     7530
+26    3678     7963
+27    3693     8016
+28    3941     8349
+29    4619     8661
+30    4694     9055
+31    4266     9262
+32    4267     9464
+33    4503     9555
+34    5335     9810
+35    5373    10414
+36    4825    10656
+37    5229    10696
+38    5129    11184
+39    5238    11208
+40    5662    11615
+41    5549    11838
+42    5728    12129
+43    5815    12398
+44    6013    12621
+45    6085    13006
+46    6734    13109
+</pre>
+
+<a href="http://i.iinfo.cz/images/371/java-graphs-3.png"><img src="http://i.iinfo.cz/images/371/java-graphs-3-prev.png" class="image-151067" width="370" height="213" alt="&#160;" /></a>
+
+<p>Pokud byly optimalizace zapnuty, jsou již výsledky pro <i>JNI</i> mnohem
+příznivější:</p>
+
+<pre>
+n      JIT     native
+=====================
+1      415      901
+2      438      955
+3      498     1111
+4      634     1184
+5      753     1208
+6      879     1104
+7     1005     1242
+8     1138     1311
+9     1268     1310
+10    2324     1192
+11    1666     1351
+12    1712     1406
+13    2751     1435
+14    2624     1349
+15    2065     1451
+16    2260     1509
+17    2678     1533
+18    2517     1377
+19    2902     1576
+20    6558     1631
+21    3563     1661
+22    3134     1494
+23    3143     1689
+24    3456     1735
+25    3403     1759
+26    3672     1611
+27    3693     1809
+28    3932     1877
+29    4626     1882
+30    4682     1745
+31    4202     1929
+32    4267     1969
+33    4792     2013
+34    5335     1853
+35    5378     2087
+36    4825     2090
+37    5197     2126
+38    5122     2057
+39    5244     2181
+40    5599     2789
+41    5565     2612
+42    5725     2361
+43    5815     2745
+44    6013     2863
+45    6082     2445
+46    6831     2245
+</pre>
+
+<a href="http://i.iinfo.cz/images/371/java-graphs-4.png"><img src="http://i.iinfo.cz/images/371/java-graphs-4-prev.png" class="image-151068" width="370" height="213" alt="&#160;" /></a>
+
+<p>Na předchozím grafu stojí za povšimnutí fakt, že volání nativní metody
+začíná být výhodnější až ve chvíli, kdy se programová smyčka opakuje přibližně
+desetkrát. Při menším počtu opakování jsou veškeré výhody nativní
+optimalizované metody převáženy režií při volání <i>JNI</i>:</p>
+
+<a href="http://i.iinfo.cz/images/371/java-graphs-5.png"><img src="http://i.iinfo.cz/images/371/java-graphs-5-prev.png" class="image-151069" width="370" height="213" alt="&#160;" /></a>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Repositář se zdrojovými soubory i se skripty pro překlad</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitých benchmarků i skripty určené pro jejich překlad a spuštění:</p>
+
+<table>
+<tr><th> #</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td> 1</td><td>JNITest1.c         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/JNITest1.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/JNITest1.c</a></td></tr>
+<tr><td> 2</td><td>JNITest1.h         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/JNITest1.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/JNITest1.h</a></td></tr>
+<tr><td> 3</td><td>JNITest1.java      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/JNITest1.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/JNITest1.java</a></td></tr>
+<tr><td> 4</td><td>compileJNITest1.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/compileJNITest1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/compileJNITest1.sh</a></td></tr>
+<tr><td> 5</td><td>compileJNITest1.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/compileJNITest1.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/compileJNITest1.bat</a></td></tr>
+<tr><td> 6</td><td>runJNITest1.sh     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/runJNITest1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/runJNITest1.sh</a></td></tr>
+<tr><td> 7</td><td>runJNITest1.bat    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/runJNITest1.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest1/runJNITest1.bat</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>JNITest2.c           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/JNITest2.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/JNITest2.c</a></td></tr>
+<tr><td> 9</td><td>JNITest2.h           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/JNITest2.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/JNITest2.h</a></td></tr>
+<tr><td>10</td><td>JNITest2.java        </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/JNITest2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/JNITest2.java</a></td></tr>
+<tr><td>11</td><td>compileJNITest2_1.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_1.sh</a></td></tr>
+<tr><td>12</td><td>compileJNITest2_2.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_2.sh</a></td></tr>
+<tr><td>13</td><td>compileJNITest2_1.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_1.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_1.bat</a></td></tr>
+<tr><td>14</td><td>compileJNITest2_2.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_2.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/compileJNITest2_2.bat</a></td></tr>
+<tr><td>15</td><td>runJNITest2.sh       </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/runJNITest2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/runJNITest2.sh</a></td></tr>
+<tr><td>16</td><td>runJNITest2.bat      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/runJNITest2.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest2/runJNITest2.bat</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>17</td><td>JNITest3.c           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/JNITest3.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/JNITest3.c</a></td></tr>
+<tr><td>18</td><td>JNITest3.h           </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/JNITest3.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/JNITest3.h</a></td></tr>
+<tr><td>19</td><td>JNITest3.java        </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/JNITest3.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/JNITest3.java</a></td></tr>
+<tr><td>20</td><td>compileJNITest3_1.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_1.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_1.sh</a></td></tr>
+<tr><td>21</td><td>compileJNITest3_2.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_2.sh</a></td></tr>
+<tr><td>22</td><td>compileJNITest3_1.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_1.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_1.bat</a></td></tr>
+<tr><td>23</td><td>compileJNITest3_2.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_2.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/compileJNITest3_2.bat</a></td></tr>
+<tr><td>24</td><td>runJNITest3.sh       </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/runJNITest3.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/runJNITest3.sh</a></td></tr>
+<tr><td>25</td><td>runJNITest3.bat      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/runJNITest3.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/a321b8265e6a/jit/JNITest3/runJNITest3.bat</a></td></tr>
+</table>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
