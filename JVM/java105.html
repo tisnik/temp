@@ -1,0 +1,2162 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (3)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (3)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy se podruhé budeme zabývat problematikou polí vytvořených v javovské části aplikace a předávaných do nativní (většinou céčkové) funkce. Na dvojici benchmarků si ukážeme, jaké JNI funkce je vhodné využít a které funkce jsou naopak z časového a paměťového hlediska nevýhodné.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (3)</a></p>
+<p><a href="#k02">2. Benchmark měřící rychlost výpočtu průměrné hodnoty všech prvků v&nbsp;poli</a></p>
+<p><a href="#k03">3. Překlad a spuštění benchmarku</a></p>
+<p><a href="#k04">4. Výsledky prvního benchmarku</a></p>
+<p><a href="#k05">5. Strojový kód generovaný JIT překladačem</a></p>
+<p><a href="#k06">6. Strojový kód generovaný překladačem GCC</a></p>
+<p><a href="#k07">7. Částečné řešení problému při sdílení polí &ndash; využití regionů</a></p>
+<p><a href="#k08">8. Benchmark pracující pouze s&nbsp;částí sdíleného pole</a></p>
+<p><a href="#k09">9. Překlad a spuštění benchmarku</a></p>
+<p><a href="#k10">10. Výsledky benchmarku</a></p>
+<p><a href="#k11">11. Repositář se zdrojovými soubory i se skripty pro překlad a spuštění</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (3)</h2>
+
+<p>V&nbsp;předchozí části seriálu o programovacím jazyku Java i o virtuálním
+stroji Javy jsme si vysvětlili, jaké problémy na vývojáře čekají ve chvíli, kdy
+potřebují sdílet pole (jehož prvky jsou většinou primitivního datového typu)
+mezi javovskou částí aplikace a částí nativní, s&nbsp;níž se komunikuje přes
+rozhraní <i>JNI (Java Native Interface)</i>. Víme již, že většina současných
+virtuálních strojů Javy při předání pole do nativní funkce a při přístupu
+k&nbsp;tomuto poli provede kopii všech prvků pole, aby se zajistila práce
+správce paměti (<i>garbage collector</i>). Ten může být spuštěn zcela nezávisle
+na nativní funkci (která může trvat libovolně dlouho) a teprve při ukončení
+práce s&nbsp;polem je možné provést zpětnou kopii prvků a tím i synchronizaci
+dat. Tato technologie je zajištěna několika funkcemi <i>JNI</i> vypsanými
+v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th><th>Popis</th></tr>
+<tr><td>1</td><td>jboolean *</td><td>GetBooleanArrayElements(JNIEnv *env, jbooleanArray array, jboolean *isCopy)</td><td>vrátí ukazatel na první prvek v&nbsp;poli typu boolean[]</td></tr>
+<tr><td>2</td><td>jbyte *   </td><td>GetByteArrayElements(JNIEnv *env, jbyteArray array, jboolean *isCopy)      </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu byte[]</td></tr>
+<tr><td>3</td><td>jchar *   </td><td>GetCharArrayElements(JNIEnv *env, jcharArray array, jboolean *isCopy)      </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu char[]</td></tr>
+<tr><td>4</td><td>jshort *  </td><td>GetShortArrayElements(JNIEnv *env, jshortArray array, jboolean *isCopy)    </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu short[]</td></tr>
+<tr><td>5</td><td>jint *    </td><td>GetIntArrayElements(JNIEnv *env, jintArray array, jboolean *isCopy)        </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu int[]</td></tr>
+<tr><td>6</td><td>jlong *   </td><td>GetLongArrayElements(JNIEnv *env, jlongArray array, jboolean *isCopy)      </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu long[]</td></tr>
+<tr><td>7</td><td>jfloat *  </td><td>GetFloatArrayElements(JNIEnv *env, jfloatArray array, jboolean *isCopy)    </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu float[]</td></tr>
+<tr><td>8</td><td>jdouble * </td><td>GetDoubleArrayElements(JNIEnv *env, jdoubleArray array, jboolean *isCopy)  </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu double[]</td></tr>
+</table>
+
+<p>Uvolnění pole a případnou zpětnou kopii zajišťují funkce:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th><th>Popis</th></tr>
+<tr><td>1</td><td>void</td><td>ReleaseBooleanArrayElements(JNIEnv *env, jbooleanArray array, jboolean *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetBooleanArrayElements</td></tr>
+<tr><td>2</td><td>void</td><td>ReleaseByteArrayElements(JNIEnv *env, jbyteArray array, jbyte *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetByteArrayElements</td></tr>
+<tr><td>3</td><td>void</td><td>ReleaseCharArrayElements(JNIEnv *env, jcharArray array, jchar *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetCharArrayElements</td></tr>
+<tr><td>4</td><td>void</td><td>ReleaseShortArrayElements(JNIEnv *env, jshortArray array, jshort *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetShortArrayElements</td></tr>
+<tr><td>5</td><td>void</td><td>ReleaseIntArrayElements(JNIEnv *env, jintArray array, jint *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetIntArrayElements</td></tr>
+<tr><td>6</td><td>void</td><td>ReleaseLongArrayElements(JNIEnv *env, jlongArray array, jlong *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetLongArrayElements</td></tr>
+<tr><td>7</td><td>void</td><td>ReleaseFloatArrayElements(JNIEnv *env, jfloatArray array, jfloat *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetFloatArrayElements</td></tr>
+<tr><td>8</td><td>void</td><td>ReleaseDoubleArrayElements(JNIEnv *env, jdoubleArray array, jdouble *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetDoubleArrayElements</td></tr>
+</table>
+
+<p>Vzhledem k&nbsp;tomu, že kopie celého pole může být nevýhodná jak kvůli
+vyšší časové složitosti, tak i paměťových nároků, byla do rozhraní <i>JNI</i>
+přidána další dvojice funkcí, které se (opět na většině implementací) snaží
+<strong>ne</strong>provádět kopii pole, protože se počítá s&nbsp;tím, že mezi
+oběma funkcemi bude pouze krátký kód, který navíc nesmí volat další funkce
+<i>JNI</i>:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th></tr>
+<tr><td>1</td><td>void *</td><td>GetPrimitiveArrayCritical(JNIEnv *env, jarray array, jboolean *isCopy)</td></tr>
+<tr><td>2</td><td>void  </td><td>ReleasePrimitiveArrayCritical(JNIEnv *env, jarray array, void *carray, jint mode)</td></tr>
+</table>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Benchmark měřící rychlost výpočtu průměrné hodnoty všech prvků v&nbsp;poli</h2>
+
+<p>Jakým způsobem se projeví kopie (popř.&nbsp;i zpětná kopie) polí
+v&nbsp;nativních funkcích si ukážeme na benchmarku. Tento benchmark provádí
+několikrát stejnou operaci &ndash; výpočet průměru všech prvků pole typu
+<strong>float[]</strong> &ndash; a to čtyřmi různými způsoby. První výpočet je
+založen na nativní metodě používající <i>JNI</i> funkce
+<strong>GetFloatArrayElements()</strong> a
+<strong>ReleaseFloatArrayElements()</strong> se zpětnou kopií pole (což je
+zbytečné). Druhý výpočet používá tytéž funkce, ovšem již neprovádí zpětnou
+kopii. Třetí nativní funkce využívá volání
+<strong>GetPrimitiveArrayCritical()</strong> a
+<strong>ReleasePrimitiveArrayCritical()</strong> a čtvrtý výpočet průměru je
+implementován přímo v&nbsp;Javě:</p>
+
+<p><strong>JNITest6.java</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Jednoduchy benchmark pro porovnani rychlosti pristupu k polim</i>
+<i> * v nativnich metodach/funkcich.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JNITest6</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>WARMUP_ITERS</strong> = 15000;
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani merene faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>BENCHMARK_ITERS</strong> = 15000;
+&nbsp;
+<i>    /**</i>
+<i>     * Velikost pole, ktere bude pouzito v benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>ARRAY_SIZE</strong> = 200000;
+&nbsp;
+<i>    /**</i>
+<i>     * Testovaci pole.</i>
+<i>     */</i>
+    static float[] array = new float[ARRAY_SIZE];
+&nbsp;
+<i>    /**</i>
+<i>     * Naplneni pole daty.</i>
+<i>     */</i>
+    static {
+        for (int i=0; i&lt;ARRAY_SIZE; i++) {
+            array[i] = (float)(i+1);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nativni metody testovane benchmarkem.</i>
+<i>     */</i>
+    native public static float <strong>averageN1</strong>(float[] array);
+    native public static float <strong>averageN2</strong>(float[] array);
+    native public static float <strong>averageN3</strong>(float[] array);
+&nbsp;
+<i>    /**</i>
+<i>     * Obdobna metoda napsana v Jave.</i>
+<i>     */</i>
+    public static float <strong>averageJ</strong>(float[] array) {
+        float average = 0;
+        <i>// ziskat delku pole</i>
+        int length = array.length;
+&nbsp;
+        <i>// pruchod polem a vypocet sumy prvku</i>
+        for (int i=0; i&lt;length; i++) {
+            average += array[i];
+        }
+&nbsp;
+        <i>// vypocet prumeru</i>
+        return average/length;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runJNIBenchmarks</strong>() {
+        warmup();
+        benchmark();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis vypocteneho vysledku (jen pro kontrolu).</i>
+<i>     */</i>
+    private static void <strong>printResult</strong>(float result) {
+        System.out.print("    result=");
+        System.out.println(result);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>() {
+        System.out.println("Warmup phase...");
+        float result;
+&nbsp;
+        result = 0;
+        <i>// donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = averageJ(array);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = averageN1(array);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = averageN2(array);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = averageN3(array);
+        }
+        printResult(result);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vlastni mereny benchmark.</i>
+<i>     */</i>
+    private static void <strong>benchmark</strong>() {
+        System.out.println("Benchmark phase...");
+        long t1, t2, delta_t;
+        float result;
+&nbsp;
+        <i>// provest test a zmerit cas behu prvniho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = averageJ(array);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro prvni test</i>
+        System.out.format("JITted method time:      %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu druheho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = averageN1(array);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro druhy test</i>
+        System.out.format("native function #1 time: %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu tretiho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = averageN2(array);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro treti test</i>
+        System.out.format("native function #2 time: %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu ctvrteho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = averageN3(array);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro ctvrty test</i>
+        System.out.format("native function #3 time: %,12d ns\n", delta_t);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.loadLibrary("JNITest6");
+        runJNIBenchmarks();
+    }
+}
+</pre>
+
+<p><strong>JNITest6.h</strong> (generovaný přes nástroj javah):</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest6 */</i>
+&nbsp;
+#ifndef _Included_JNITest6
+#define _Included_JNITest6
+#ifdef __cplusplus
+extern "C" {
+#endif
+#undef JNITest6_WARMUP_ITERS
+#define JNITest6_WARMUP_ITERS 15000L
+#undef JNITest6_BENCHMARK_ITERS
+#define JNITest6_BENCHMARK_ITERS 15000L
+#undef JNITest6_ARRAY_SIZE
+#define JNITest6_ARRAY_SIZE 100000L
+<i>/*</i>
+<i> * Class:     JNITest6</i>
+<i> * Method:    averageN1</i>
+<i> * Signature: ([F)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN1</strong>
+  (JNIEnv *, jclass, jfloatArray);
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest6</i>
+<i> * Method:    averageN2</i>
+<i> * Signature: ([F)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN2</strong>
+  (JNIEnv *, jclass, jfloatArray);
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest6</i>
+<i> * Method:    averageN2</i>
+<i> * Signature: ([F)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN3</strong>
+  (JNIEnv *, jclass, jfloatArray);
+&nbsp;
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p><strong>JNITest6.c</strong> (nativní část aplikace):</p>
+
+<pre>
+#include "JNITest6.h"
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN1</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = 0;
+    jfloat average = 0;
+&nbsp;
+<i>    /* ziskat delku pole */</i>
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+    {
+        average += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+&nbsp;
+<i>    /* vypocet prumeru */</i>
+    return average/length;
+}
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN2</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+&nbsp;
+<i>    /* ziskat delku pole */</i>
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+    {
+        average += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+&nbsp;
+<i>    /* vypocet prumeru */</i>
+    return average/length;
+}
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN3</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+&nbsp;
+<i>    /* ziskat delku pole */</i>
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+    {
+        average += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;ReleasePrimitiveArrayCritical(jni_env, (jarray)array, (void*)f, release_mode);
+&nbsp;
+<i>    /* vypocet prumeru */</i>
+    return average/length;
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Překlad a spuštění benchmarku</h2>
+
+<p>Překlad javovské části benchmarku je velmi snadný a není rozdílný od
+překladu všech pěti předchozích příkladů, které jsme si v&nbsp;rámci popisu
+rozhraní <i>JNI</i> již vyzkoušeli:</p>
+
+<pre>
+javac JNITest6.java
+</pre>
+
+<p>Následně, tj.&nbsp;ve chvíli, kdy již existuje soubor
+<strong>JNITest6.class</strong> obsahující přeloženou třídu
+<strong>JNITest6</strong>, je nutné vygenerovat hlavičkový soubor
+<strong>JNITest6.h</strong>:</p>
+
+<pre>
+javah JNITest6
+</pre>
+
+<p>Překlad nativní části benchmarku se provede obdobným způsobem, jako tomu
+bylo u obou předchozích demonstračních příkladů uvedených minule (včetně voleb
+pro optimalizaci):</p>
+
+<pre>
+gcc -O3 -funroll-all-loops -shared \
+                 -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+                 -o libJNITest6.so JNITest6.c
+</pre>
+
+<p>Popř.&nbsp;na platformách vyžadujících PIC (<i>position independent
+code</i>) v&nbsp;knihovnách:</p>
+
+<pre>
+gcc -O3 -funroll-all-loops -shared -fPIC \
+                  -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+                  -I/usr/lib/jvm/java-1.7.0-openjdk/include/linux \
+                  -o libJNITest6.so JNITest6.c
+</pre>
+
+<p>Na systému Windows s&nbsp;nainstalovanou OpenJDK 7 či Oracle JDK 7 by mohl
+překlad s&nbsp;využitím <strong>mingw</strong> vypadat následovně:</p>
+
+<pre>
+gcc -O3 -funroll-all-loops -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest4.dll JNITest4.c
+</pre>
+
+<p>Povšimněte si, že při překladu byly povoleny optimalizace, aby se výsledný
+nativní strojový kód co nejvíce přiblížil kódu vygenerovanému JIT
+překladačem.</p>
+
+<p>Aby bylo měření spravedlivé, je nutné při spuštění benchmarku povolit JIT
+překlad:</p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java -Xcomp JNITest6
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Výsledky prvního benchmarku</h2>
+
+<p>Po spuštění benchmarku se na standardní výstup vypíšou informace o běhu i
+dosažené časy výpočtu. Na 64bitovém systému s&nbsp;procesorem Intel i7 byly
+získány následující hodnoty:</p>
+
+<pre>
+Warmup phase...
+    result=100001.3
+    result=100001.3
+    result=100001.3
+    result=100001.3
+done
+Benchmark phase...
+    result=100001.3
+JITted method time:      2,533,364,426 ns
+    result=100001.3
+native function #1 time: 6,630,523,834 ns
+    result=100001.3
+native function #2 time: 5,727,310,449 ns
+    result=100001.3
+native function #3 time: 2,511,554,841 ns
+done
+</pre>
+
+<p>Tyto výsledky jsou velmi zajímavé a možná i poněkud neočekávané. Ukazuje se
+totiž, že javovská varianta není (resp.&nbsp;v&nbsp;obecném případě nemusí být)
+nejpomalejší, ale naopak soupeří s&nbsp;nejrychlejší céčkovou variantou.
+Nejpomalejší je nativní funkce používající volání
+<strong>GetFloatArrayElements()</strong> a
+<strong>ReleaseFloatArrayElements()</strong> se zpětnou kopií, nejrychlejší je
+nativní funkce využívající <strong>GetPrimitiveArrayCritical()</strong> a
+<strong>ReleasePrimitiveArrayCritical()</strong>, z&nbsp;čehož je možné
+usuzovat, že JVM neprovedlo defenzivní kopii pole. Zde se tedy ukazuje, že se
+při použití nativních funkcí volaných přes rozhraní <i>JNI</i> vyplatí sledovat
+profiler a popř.&nbsp;se snažit zamezit zbytečné kopii polí, nebo (pokud je to
+možné) využít kopii jen části pole, což je problematika, kterou se budeme
+podrobněji zabývat v&nbsp;navazujících kapitolách.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Strojový kód generovaný JIT překladačem</h2>
+
+<p>Zajímavé bude porovnání strojového kódu generovaného JIT překladačem (typu
+server) se strojovým kódem vytvořeným céčkovým překladačem. Nejprve si uveďme,
+jak bude vypadat výstup JITu v&nbsp;případě, že byl benchmark spuštěn na
+64bitovém procesoru s&nbsp;architekturou x86_64 s&nbsp;podporou rozšíření
+instrukčních sad MMX, SSE i SSE2. Zajímá nás samozřejmě pouze tvar metody
+<strong>JNITest6.averageJ()</strong>. Výstup JITu získáme následujícím
+způsobem:</p>
+
+<pre>
+java -server -XX:CompileThreshold=10000 -XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly JNITest6
+</pre>
+
+<pre>
+Decoding compiled method 0x009b8188:
+Code:
+[Entry Point]
+[Verified Entry Point]
+[Constants]
+  # {method} 'averageJ' '([F)F' in 'JNITest6'
+  0x009b8280: int3   
+  0x009b8281: xchg   %ax,%ax
+  0x009b8284: mov    %eax,0xffffc000(%esp)
+  0x009b828b: push   %ebp
+  0x009b828c: sub    $0x18,%esp
+  0x009b828f: mov    (%ecx),%ebx
+  0x009b8291: mov    0xc(%ecx),%esi
+  0x009b8294: movss  0x8(%ecx),%xmm0
+  0x009b8299: movss  %xmm0,0x8(%esp)
+  0x009b829f: mov    0x4(%ecx),%ebp
+  0x009b82a2: mov    %ecx,(%esp)
+  0x009b82a5: call   0x6ee57140         ;   {runtime_call}
+  0x009b82aa: test   %esi,%esi
+  0x009b82ac: je     0x009b839e
+  0x009b82b2: mov    0x4(%esi),%ecx
+  0x009b82b5: cmp    $0xbb30510,%ecx    ;   {oop({type array float})}
+  0x009b82bb: jne    0x009b83bd         ;*iload_3
+                                        ; - JNITest6::averageJ@7 (line 41)
+  0x009b82c1: cmp    %ebp,%ebx
+  0x009b82c3: jge    0x009b83d1         ;*if_icmpge
+                                        ; - JNITest6::averageJ@9 (line 41)
+  0x009b82c9: mov    0x8(%esi),%ecx     ;*faload
+                                        ; - JNITest6::averageJ@15 (line 42)
+                                        ; implicit exception: dispatches to 0x009b83a8
+  0x009b82cc: cmp    %ecx,%ebx
+  0x009b82ce: jae    0x009b83a8
+  0x009b82d4: mov    %ebp,%edi
+  0x009b82d6: dec    %edi
+  0x009b82d7: cmp    %ecx,%edi
+  0x009b82d9: jae    0x009b83a8
+  0x009b82df: mov    %ebx,%edi
+  0x009b82e1: inc    %edi               ;*fload_1
+                                        ; - JNITest6::averageJ@12 (line 42)
+  0x009b82e2: movss  0x8(%esp),%xmm1
+  0x009b82e8: addss  0xc(%esi,%ebx,4),%xmm1  ;*fadd
+                                        ; - JNITest6::averageJ@16 (line 42)
+  0x009b82ee: inc    %ebx               ;*iinc
+                                        ; - JNITest6::averageJ@18 (line 41)
+  0x009b82ef: cmp    %edi,%ebx
+  0x009b82f1: jge    0x009b82fb         ;*if_icmpge
+                                        ; - JNITest6::averageJ@9 (line 41)
+  0x009b82f3: movss  %xmm1,0x8(%esp)
+  0x009b82f9: jmp    0x009b82e2
+  0x009b82fb: mov    %ebp,%edi
+  0x009b82fd: add    $0xfffffff1,%edi
+  0x009b8300: mov    $0x80000000,%eax
+  0x009b8305: cmp    %edi,%ebp
+  0x009b8307: cmovl  %eax,%edi
+  0x009b830a: cmp    %edi,%ebx
+  0x009b830c: jge    0x009b8377
+  0x009b830e: xchg   %ax,%ax            ;*fload_1
+                                        ; - JNITest6::averageJ@12 (line 42)
+  0x009b8310: addss  0xc(%esi,%ebx,4),%xmm1
+  0x009b8316: addss  0x10(%esi,%ebx,4),%xmm1
+  0x009b831c: addss  0x14(%esi,%ebx,4),%xmm1
+  0x009b8322: addss  0x18(%esi,%ebx,4),%xmm1
+  0x009b8328: addss  0x1c(%esi,%ebx,4),%xmm1
+  0x009b832e: addss  0x20(%esi,%ebx,4),%xmm1
+  0x009b8334: addss  0x24(%esi,%ebx,4),%xmm1
+  0x009b833a: addss  0x28(%esi,%ebx,4),%xmm1
+  0x009b8340: addss  0x2c(%esi,%ebx,4),%xmm1
+  0x009b8346: addss  0x30(%esi,%ebx,4),%xmm1
+  0x009b834c: addss  0x34(%esi,%ebx,4),%xmm1
+  0x009b8352: addss  0x38(%esi,%ebx,4),%xmm1
+  0x009b8358: addss  0x3c(%esi,%ebx,4),%xmm1
+  0x009b835e: addss  0x40(%esi,%ebx,4),%xmm1
+  0x009b8364: addss  0x44(%esi,%ebx,4),%xmm1
+  0x009b836a: addss  0x48(%esi,%ebx,4),%xmm1  ;*fadd
+                                        ; - JNITest6::averageJ@16 (line 42)
+  0x009b8370: add    $0x10,%ebx         ;*iinc
+                                        ; - JNITest6::averageJ@18 (line 41)
+  0x009b8373: cmp    %edi,%ebx
+  0x009b8375: jl     0x009b8310         ;*if_icmpge
+                                        ; - JNITest6::averageJ@9 (line 41)
+  0x009b8377: cmp    %ebp,%ebx
+  0x009b8379: jge    0x009b8387
+  0x009b837b: nop                       ;*fload_1
+                                        ; - JNITest6::averageJ@12 (line 42)
+  0x009b837c: addss  0xc(%esi,%ebx,4),%xmm1  ;*fadd
+                                        ; - JNITest6::averageJ@16 (line 42)
+  0x009b8382: inc    %ebx               ;*iinc
+                                        ; - JNITest6::averageJ@18 (line 41)
+  0x009b8383: cmp    %ebp,%ebx
+  0x009b8385: jl     0x009b837c         ;*iload_3
+                                        ; - JNITest6::averageJ@7 (line 41)
+  0x009b8387: cvtsi2ss %ebp,%xmm0
+  0x009b838b: divss  %xmm0,%xmm1        ;*fdiv
+                                        ; - JNITest6::averageJ@27 (line 46)
+  0x009b838f: movss  %xmm1,%xmm0
+  0x009b8393: add    $0x18,%esp
+  0x009b8396: pop    %ebp
+  0x009b8397: test   %eax,0x940000      ;   {poll_return}
+  0x009b839d: ret    
+  0x009b839e: mov    $0x0,%esi
+  0x009b83a3: jmp    0x009b82c1
+  0x009b83a8: mov    $0xffffff86,%ecx
+  0x009b83ad: mov    %esi,0x4(%esp)
+  0x009b83b1: mov    %ebx,0xc(%esp)
+  0x009b83b5: xchg   %ax,%ax
+  0x009b83b7: call   0x0099dd00         ; OopMap{[4]=Oop off=316}
+                                        ;*fload_1
+                                        ; - JNITest6::averageJ@12 (line 42)
+                                        ;   {runtime_call}
+  0x009b83bc: int3   
+  0x009b83bd: mov    $0xffffffad,%ecx
+  0x009b83c2: mov    %esi,0x4(%esp)
+  0x009b83c6: mov    %ebx,0xc(%esp)
+  0x009b83ca: nop    
+  0x009b83cb: call   0x0099dd00         ; OopMap{[4]=Oop off=336}
+                                        ;*iload_3
+                                        ; - JNITest6::averageJ@7 (line 41)
+                                        ;   {runtime_call}
+  0x009b83d0: int3                      ;*iload_3
+                                        ; - JNITest6::averageJ@7 (line 41)
+  0x009b83d1: movss  0x8(%esp),%xmm1
+  0x009b83d7: jmp    0x009b8387
+  0x009b83d9: hlt    
+  0x009b83da: hlt    
+  0x009b83db: hlt    
+  0x009b83dc: hlt    
+  0x009b83dd: hlt    
+  0x009b83de: hlt    
+  0x009b83df: hlt    
+[Exception Handler]
+[Stub Code]
+  0x009b83e0: jmp    0x009b7240         ;   {no_reloc}
+[Deopt Handler Code]
+  0x009b83e5: push   $0x9b83e5          ;   {section_word}
+  0x009b83ea: jmp    0x0099e280         ;   {runtime_call}
+  0x009b83ef: hlt    
+</pre>
+
+<p>Nejdůležitější je tělo smyčky, v&nbsp;níž se prochází polem a počítá se suma
+všech prvků tohoto pole. JIT překladač typu server se v&nbsp;tomto případě
+pokusil o rozbalení smyčky, i když poněkud naivním způsobem (hodnoty před
+závorkou jsou offsety):</p>
+
+<pre>
+                                        ; - JNITest6::averageJ@12 (line 42)
+  0x009b8310: addss  0xc(%esi,%ebx,4),%xmm1
+  0x009b8316: addss  0x10(%esi,%ebx,4),%xmm1
+  0x009b831c: addss  0x14(%esi,%ebx,4),%xmm1
+  0x009b8322: addss  0x18(%esi,%ebx,4),%xmm1
+  0x009b8328: addss  0x1c(%esi,%ebx,4),%xmm1
+  0x009b832e: addss  0x20(%esi,%ebx,4),%xmm1
+  0x009b8334: addss  0x24(%esi,%ebx,4),%xmm1
+  0x009b833a: addss  0x28(%esi,%ebx,4),%xmm1
+  0x009b8340: addss  0x2c(%esi,%ebx,4),%xmm1
+  0x009b8346: addss  0x30(%esi,%ebx,4),%xmm1
+  0x009b834c: addss  0x34(%esi,%ebx,4),%xmm1
+  0x009b8352: addss  0x38(%esi,%ebx,4),%xmm1
+  0x009b8358: addss  0x3c(%esi,%ebx,4),%xmm1
+  0x009b835e: addss  0x40(%esi,%ebx,4),%xmm1
+  0x009b8364: addss  0x44(%esi,%ebx,4),%xmm1
+  0x009b836a: addss  0x48(%esi,%ebx,4),%xmm1  ;*fadd
+                                        ; - JNITest6::averageJ@16 (line 42)
+  0x009b8370: add    $0x10,%ebx         ;*iinc
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Strojový kód generovaný překladačem GCC</h2>
+
+<p>Nyní si ukažme, jak vypadají nativní metody přeložené překladačem <i>GCC</i>
+při použití voleb -O3 a -funroll-all-loops. Překlad do assembleru lze provést
+dvěma způsoby: buď volbou -S (základní možnost), popř.&nbsp;(podrobnější výpis)
+použitím -Wa,-ahl (-Wa posílá následující přepínače do assembleru):</p>
+
+<pre>
+gcc -Wall -ansi -O3 -funroll-all-loops \
+    -g -Wa,-ahl=out.asm \
+    -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+    -I/usr/lib/jvm/java-1.7.0-openjdk/include/linux \
+    -o libJNITest6.so JNITest6.c
+</pre>
+
+<p>Osobně ale preferuji jiný způsob získání čitelného kódu v&nbsp;assembleru.
+Nejprve se provede překlad společně s&nbsp;vygenerováním informací o symbolech
+používaných debuggery (-g). Následně se objektový kód zpracuje utilitou
+<strong>objdump</strong> s&nbsp;parametry -d, -S a popř.&nbsp;i -M intel (to
+pro ty z&nbsp;nás, kteří zrovna nemilují AT&amp;T syntaxi :-p):</p>
+
+<pre>
+gcc -Wall -ansi -O3 -funroll-all-loops \
+    -g -c \
+    -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+    -I/usr/lib/jvm/java-1.7.0-openjdk/include/linux \
+    JNITest6.c
+&nbsp;
+objdump -d -M intel -S JNITest6.o &gt; out2.asm
+</pre>
+
+<p>Výsledek si můžete prohlédnout pod tímto odstavcem:</p>
+
+<pre>
+JNITest6.o:     file format elf64-x86-64
+&nbsp;
+&nbsp;
+Disassembly of section .text:
+&nbsp;
+0000000000000000 &lt;Java_JNITest6_averageN1&gt;:
+#include "JNITest6.h"
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN1</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+   0:   41 54                   push   r12
+    jint release_mode = 0;
+    jfloat average = 0;
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+   2:   48 89 d6                mov    rsi,rdx
+#include "JNITest6.h"
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN1</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+   5:   49 89 d4                mov    r12,rdx
+   8:   55                      push   rbp
+   9:   53                      push   rbx
+   a:   48 89 fb                mov    rbx,rdi
+   d:   48 83 ec 10             sub    rsp,0x10
+    jint release_mode = 0;
+    jfloat average = 0;
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+  11:   48 8b 07                mov    rax,QWORD PTR [rdi]
+  14:   ff 90 58 05 00 00       call   QWORD PTR [rax+0x558]
+  1a:   89 c5                   mov    ebp,eax
+&nbsp;
+    /* prevod na "ceckove" pole prvku typu float */
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+  1c:   48 8b 03                mov    rax,QWORD PTR [rbx]
+  1f:   31 d2                   xor    edx,edx
+  21:   4c 89 e6                mov    rsi,r12
+  24:   48 89 df                mov    rdi,rbx
+  27:   ff 90 e8 05 00 00       call   QWORD PTR [rax+0x5e8]
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+  2d:   85 ed                   test   ebp,ebp
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+&nbsp;
+    /* prevod na "ceckove" pole prvku typu float */
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+  2f:   48 89 c2                mov    rdx,rax
+#include "JNITest6.h"
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN1</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = 0;
+    jfloat average = 0;
+  32:   0f 57 c0                xorps  xmm0,xmm0
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+  35:   0f 8e be 00 00 00       jle    f9 &lt;Java_JNITest6_averageN1+0xf9&gt;
+  3b:   44 8d 4d ff             lea    r9d,[rbp-0x1]
+    {
+        average += *item;
+  3f:   f3 0f 58 00             addss  xmm0,DWORD PTR [rax]
+  43:   b9 01 00 00 00          mov    ecx,0x1
+  48:   41 83 e1 07             and    r9d,0x7
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+  4c:   83 fd 01                cmp    ebp,0x1
+  4f:   0f 8e a4 00 00 00       jle    f9 &lt;Java_JNITest6_averageN1+0xf9&gt;
+  55:   45 85 c9                test   r9d,r9d
+  58:   74 68                   je     c2 &lt;Java_JNITest6_averageN1+0xc2&gt;
+  5a:   41 83 f9 01             cmp    r9d,0x1
+  5e:   74 55                   je     b5 &lt;Java_JNITest6_averageN1+0xb5&gt;
+  60:   41 83 f9 02             cmp    r9d,0x2
+  64:   74 46                   je     ac &lt;Java_JNITest6_averageN1+0xac&gt;
+  66:   41 83 f9 03             cmp    r9d,0x3
+  6a:   74 37                   je     a3 &lt;Java_JNITest6_averageN1+0xa3&gt;
+  6c:   41 83 f9 04             cmp    r9d,0x4
+  70:   74 28                   je     9a &lt;Java_JNITest6_averageN1+0x9a&gt;
+  72:   41 83 f9 05             cmp    r9d,0x5
+  76:   74 19                   je     91 &lt;Java_JNITest6_averageN1+0x91&gt;
+  78:   41 83 f9 06             cmp    r9d,0x6
+  7c:   74 0a                   je     88 &lt;Java_JNITest6_averageN1+0x88&gt;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+  be:   39 cd                   cmp    ebp,ecx
+  c0:   7e 37                   jle    f9 &lt;Java_JNITest6_averageN1+0xf9&gt;
+    {
+        average += *item;
+  c2:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+  c7:   f3 0f 58 44 8a 04       addss  xmm0,DWORD PTR [rdx+rcx*4+0x4]
+  cd:   f3 0f 58 44 8a 08       addss  xmm0,DWORD PTR [rdx+rcx*4+0x8]
+  d3:   f3 0f 58 44 8a 0c       addss  xmm0,DWORD PTR [rdx+rcx*4+0xc]
+  d9:   f3 0f 58 44 8a 10       addss  xmm0,DWORD PTR [rdx+rcx*4+0x10]
+  df:   f3 0f 58 44 8a 14       addss  xmm0,DWORD PTR [rdx+rcx*4+0x14]
+  e5:   f3 0f 58 44 8a 18       addss  xmm0,DWORD PTR [rdx+rcx*4+0x18]
+  eb:   f3 0f 58 44 8a 1c       addss  xmm0,DWORD PTR [rdx+rcx*4+0x1c]
+  f1:   48 83 c1 08             add    rcx,0x8
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+  f5:   39 cd                   cmp    ebp,ecx
+  f7:   7f c9                   jg     c2 &lt;Java_JNITest6_averageN1+0xc2&gt;
+    {
+        average += *item;
+    }
+&nbsp;
+    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+  f9:   4c 8b 03                mov    r8,QWORD PTR [rbx]
+  fc:   f3 0f 11 44 24 0c       movss  DWORD PTR [rsp+0xc],xmm0
+ 102:   4c 89 e6                mov    rsi,r12
+ 105:   48 89 df                mov    rdi,rbx
+ 108:   31 c9                   xor    ecx,ecx
+ 10a:   41 ff 90 28 06 00 00    call   QWORD PTR [r8+0x628]
+&nbsp;
+    /* vypocet prumeru */
+    return average/length;
+ 111:   f3 0f 2a cd             cvtsi2ss xmm1,ebp
+ 115:   f3 0f 10 44 24 0c       movss  xmm0,DWORD PTR [rsp+0xc]
+}
+ 11b:   48 83 c4 10             add    rsp,0x10
+ 11f:   5b                      pop    rbx
+ 120:   5d                      pop    rbp
+ 121:   41 5c                   pop    r12
+&nbsp;
+    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+&nbsp;
+    /* vypocet prumeru */
+    return average/length;
+ 123:   f3 0f 5e c1             divss  xmm0,xmm1
+}
+ 127:   c3                      ret    
+ 128:   0f 1f 84 00 00 00 00    nop    DWORD PTR [rax+rax*1+0x0]
+ 12f:   00 
+&nbsp;
+0000000000000130 &lt;Java_JNITest6_averageN2&gt;:
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN2</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+ 130:   41 54                   push   r12
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+ 132:   48 89 d6                mov    rsi,rdx
+    /* vypocet prumeru */
+    return average/length;
+}
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN2</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+ 135:   49 89 d4                mov    r12,rdx
+ 138:   55                      push   rbp
+ 139:   53                      push   rbx
+ 13a:   48 89 fb                mov    rbx,rdi
+ 13d:   48 83 ec 10             sub    rsp,0x10
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+ 141:   48 8b 07                mov    rax,QWORD PTR [rdi]
+ 144:   ff 90 58 05 00 00       call   QWORD PTR [rax+0x558]
+ 14a:   89 c5                   mov    ebp,eax
+&nbsp;
+    /* prevod na "ceckove" pole prvku typu float */
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+ 14c:   48 8b 03                mov    rax,QWORD PTR [rbx]
+ 14f:   31 d2                   xor    edx,edx
+ 151:   4c 89 e6                mov    rsi,r12
+ 154:   48 89 df                mov    rdi,rbx
+ 157:   ff 90 e8 05 00 00       call   QWORD PTR [rax+0x5e8]
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 15d:   85 ed                   test   ebp,ebp
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+&nbsp;
+    /* prevod na "ceckove" pole prvku typu float */
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+ 15f:   48 89 c2                mov    rdx,rax
+}
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN2</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+ 162:   0f 57 c0                xorps  xmm0,xmm0
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 165:   0f 8e be 00 00 00       jle    229 &lt;Java_JNITest6_averageN2+0xf9&gt;
+ 16b:   44 8d 4d ff             lea    r9d,[rbp-0x1]
+    {
+        average += *item;
+ 16f:   f3 0f 58 00             addss  xmm0,DWORD PTR [rax]
+ 173:   b9 01 00 00 00          mov    ecx,0x1
+ 178:   41 83 e1 07             and    r9d,0x7
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 17c:   83 fd 01                cmp    ebp,0x1
+ 17f:   0f 8e a4 00 00 00       jle    229 &lt;Java_JNITest6_averageN2+0xf9&gt;
+ 185:   45 85 c9                test   r9d,r9d
+ 188:   74 68                   je     1f2 &lt;Java_JNITest6_averageN2+0xc2&gt;
+ 18a:   41 83 f9 01             cmp    r9d,0x1
+ 18e:   74 55                   je     1e5 &lt;Java_JNITest6_averageN2+0xb5&gt;
+ 190:   41 83 f9 02             cmp    r9d,0x2
+ 194:   74 46                   je     1dc &lt;Java_JNITest6_averageN2+0xac&gt;
+ 196:   41 83 f9 03             cmp    r9d,0x3
+ 19a:   74 37                   je     1d3 &lt;Java_JNITest6_averageN2+0xa3&gt;
+ 19c:   41 83 f9 04             cmp    r9d,0x4
+ 1a0:   74 28                   je     1ca &lt;Java_JNITest6_averageN2+0x9a&gt;
+ 1a2:   41 83 f9 05             cmp    r9d,0x5
+ 1a6:   74 19                   je     1c1 &lt;Java_JNITest6_averageN2+0x91&gt;
+ 1a8:   41 83 f9 06             cmp    r9d,0x6
+ 1ac:   74 0a                   je     1b8 &lt;Java_JNITest6_averageN2+0x88&gt;
+    {
+        average += *item;
+ 1ae:   f3 0f 58 40 04          addss  xmm0,DWORD PTR [rax+0x4]
+ 1b3:   b9 02 00 00 00          mov    ecx,0x2
+ 1b8:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1bd:   48 83 c1 01             add    rcx,0x1
+ 1c1:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1c6:   48 83 c1 01             add    rcx,0x1
+ 1ca:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1cf:   48 83 c1 01             add    rcx,0x1
+ 1d3:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1d8:   48 83 c1 01             add    rcx,0x1
+ 1dc:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1e1:   48 83 c1 01             add    rcx,0x1
+ 1e5:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1ea:   48 83 c1 01             add    rcx,0x1
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 1ee:   39 cd                   cmp    ebp,ecx
+ 1f0:   7e 37                   jle    229 &lt;Java_JNITest6_averageN2+0xf9&gt;
+    {
+        average += *item;
+ 1f2:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 1f7:   f3 0f 58 44 8a 04       addss  xmm0,DWORD PTR [rdx+rcx*4+0x4]
+ 1fd:   f3 0f 58 44 8a 08       addss  xmm0,DWORD PTR [rdx+rcx*4+0x8]
+ 203:   f3 0f 58 44 8a 0c       addss  xmm0,DWORD PTR [rdx+rcx*4+0xc]
+ 209:   f3 0f 58 44 8a 10       addss  xmm0,DWORD PTR [rdx+rcx*4+0x10]
+ 20f:   f3 0f 58 44 8a 14       addss  xmm0,DWORD PTR [rdx+rcx*4+0x14]
+ 215:   f3 0f 58 44 8a 18       addss  xmm0,DWORD PTR [rdx+rcx*4+0x18]
+ 21b:   f3 0f 58 44 8a 1c       addss  xmm0,DWORD PTR [rdx+rcx*4+0x1c]
+ 221:   48 83 c1 08             add    rcx,0x8
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 225:   39 cd                   cmp    ebp,ecx
+ 227:   7f c9                   jg     1f2 &lt;Java_JNITest6_averageN2+0xc2&gt;
+    {
+        average += *item;
+    }
+&nbsp;
+    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+ 229:   4c 8b 03                mov    r8,QWORD PTR [rbx]
+ 22c:   f3 0f 11 44 24 0c       movss  DWORD PTR [rsp+0xc],xmm0
+ 232:   4c 89 e6                mov    rsi,r12
+ 235:   48 89 df                mov    rdi,rbx
+ 238:   b9 02 00 00 00          mov    ecx,0x2
+ 23d:   41 ff 90 28 06 00 00    call   QWORD PTR [r8+0x628]
+&nbsp;
+    /* vypocet prumeru */
+    return average/length;
+ 244:   f3 0f 2a cd             cvtsi2ss xmm1,ebp
+ 248:   f3 0f 10 44 24 0c       movss  xmm0,DWORD PTR [rsp+0xc]
+}
+ 24e:   48 83 c4 10             add    rsp,0x10
+ 252:   5b                      pop    rbx
+ 253:   5d                      pop    rbp
+ 254:   41 5c                   pop    r12
+&nbsp;
+    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+&nbsp;
+    /* vypocet prumeru */
+    return average/length;
+ 256:   f3 0f 5e c1             divss  xmm0,xmm1
+}
+ 25a:   c3                      ret    
+ 25b:   0f 1f 44 00 00          nop    DWORD PTR [rax+rax*1+0x0]
+&nbsp;
+0000000000000260 &lt;Java_JNITest6_averageN3&gt;:
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN3</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+ 260:   41 54                   push   r12
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+ 262:   48 89 d6                mov    rsi,rdx
+    /* vypocet prumeru */
+    return average/length;
+}
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN3</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+ 265:   49 89 d4                mov    r12,rdx
+ 268:   55                      push   rbp
+ 269:   53                      push   rbx
+ 26a:   48 89 fb                mov    rbx,rdi
+ 26d:   48 83 ec 10             sub    rsp,0x10
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+ 271:   48 8b 07                mov    rax,QWORD PTR [rdi]
+ 274:   ff 90 58 05 00 00       call   QWORD PTR [rax+0x558]
+ 27a:   89 c5                   mov    ebp,eax
+&nbsp;
+    /* prevod na "ceckove" pole prvku typu float */
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+ 27c:   48 8b 03                mov    rax,QWORD PTR [rbx]
+ 27f:   31 d2                   xor    edx,edx
+ 281:   4c 89 e6                mov    rsi,r12
+ 284:   48 89 df                mov    rdi,rbx
+ 287:   ff 90 f0 06 00 00       call   QWORD PTR [rax+0x6f0]
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 28d:   85 ed                   test   ebp,ebp
+&nbsp;
+    /* ziskat delku pole */
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+&nbsp;
+    /* prevod na "ceckove" pole prvku typu float */
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+ 28f:   48 89 c2                mov    rdx,rax
+}
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest6_averageN3</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = JNI_ABORT;
+    jfloat average = 0;
+ 292:   0f 57 c0                xorps  xmm0,xmm0
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 295:   0f 8e be 00 00 00       jle    359 &lt;Java_JNITest6_averageN3+0xf9&gt;
+ 29b:   44 8d 4d ff             lea    r9d,[rbp-0x1]
+    {
+        average += *item;
+ 29f:   f3 0f 58 00             addss  xmm0,DWORD PTR [rax]
+ 2a3:   b9 01 00 00 00          mov    ecx,0x1
+ 2a8:   41 83 e1 07             and    r9d,0x7
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 2ac:   83 fd 01                cmp    ebp,0x1
+ 2af:   0f 8e a4 00 00 00       jle    359 &lt;Java_JNITest6_averageN3+0xf9&gt;
+ 2b5:   45 85 c9                test   r9d,r9d
+ 2b8:   74 68                   je     322 &lt;Java_JNITest6_averageN3+0xc2&gt;
+ 2ba:   41 83 f9 01             cmp    r9d,0x1
+ 2be:   74 55                   je     315 &lt;Java_JNITest6_averageN3+0xb5&gt;
+ 2c0:   41 83 f9 02             cmp    r9d,0x2
+ 2c4:   74 46                   je     30c &lt;Java_JNITest6_averageN3+0xac&gt;
+ 2c6:   41 83 f9 03             cmp    r9d,0x3
+ 2ca:   74 37                   je     303 &lt;Java_JNITest6_averageN3+0xa3&gt;
+ 2cc:   41 83 f9 04             cmp    r9d,0x4
+ 2d0:   74 28                   je     2fa &lt;Java_JNITest6_averageN3+0x9a&gt;
+ 2d2:   41 83 f9 05             cmp    r9d,0x5
+ 2d6:   74 19                   je     2f1 &lt;Java_JNITest6_averageN3+0x91&gt;
+ 2d8:   41 83 f9 06             cmp    r9d,0x6
+ 2dc:   74 0a                   je     2e8 &lt;Java_JNITest6_averageN3+0x88&gt;
+    {
+        average += *item;
+ 2de:   f3 0f 58 40 04          addss  xmm0,DWORD PTR [rax+0x4]
+ 2e3:   b9 02 00 00 00          mov    ecx,0x2
+ 2e8:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 2ed:   48 83 c1 01             add    rcx,0x1
+ 2f1:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 2f6:   48 83 c1 01             add    rcx,0x1
+ 2fa:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 2ff:   48 83 c1 01             add    rcx,0x1
+ 303:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 308:   48 83 c1 01             add    rcx,0x1
+ 30c:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 311:   48 83 c1 01             add    rcx,0x1
+ 315:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 31a:   48 83 c1 01             add    rcx,0x1
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 31e:   39 cd                   cmp    ebp,ecx
+ 320:   7e 37                   jle    359 &lt;Java_JNITest6_averageN3+0xf9&gt;
+    {
+        average += *item;
+ 322:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 327:   f3 0f 58 44 8a 04       addss  xmm0,DWORD PTR [rdx+rcx*4+0x4]
+ 32d:   f3 0f 58 44 8a 08       addss  xmm0,DWORD PTR [rdx+rcx*4+0x8]
+ 333:   f3 0f 58 44 8a 0c       addss  xmm0,DWORD PTR [rdx+rcx*4+0xc]
+ 339:   f3 0f 58 44 8a 10       addss  xmm0,DWORD PTR [rdx+rcx*4+0x10]
+ 33f:   f3 0f 58 44 8a 14       addss  xmm0,DWORD PTR [rdx+rcx*4+0x14]
+ 345:   f3 0f 58 44 8a 18       addss  xmm0,DWORD PTR [rdx+rcx*4+0x18]
+ 34b:   f3 0f 58 44 8a 1c       addss  xmm0,DWORD PTR [rdx+rcx*4+0x1c]
+ 351:   48 83 c1 08             add    rcx,0x8
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+&nbsp;
+    /* pruchod polem a vypocet sumy prvku */
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+ 355:   39 cd                   cmp    ebp,ecx
+ 357:   7f c9                   jg     322 &lt;Java_JNITest6_averageN3+0xc2&gt;
+    {
+        average += *item;
+    }
+&nbsp;
+    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */
+    (*jni_env)-&gt;ReleasePrimitiveArrayCritical(jni_env, (jarray)array, (void*)f, release_mode);
+ 359:   4c 8b 03                mov    r8,QWORD PTR [rbx]
+ 35c:   f3 0f 11 44 24 0c       movss  DWORD PTR [rsp+0xc],xmm0
+ 362:   4c 89 e6                mov    rsi,r12
+ 365:   48 89 df                mov    rdi,rbx
+ 368:   b9 02 00 00 00          mov    ecx,0x2
+ 36d:   41 ff 90 f8 06 00 00    call   QWORD PTR [r8+0x6f8]
+&nbsp;
+    /* vypocet prumeru */
+    return average/length;
+ 374:   f3 0f 2a cd             cvtsi2ss xmm1,ebp
+ 378:   f3 0f 10 44 24 0c       movss  xmm0,DWORD PTR [rsp+0xc]
+}
+ 37e:   48 83 c4 10             add    rsp,0x10
+ 382:   5b                      pop    rbx
+ 383:   5d                      pop    rbp
+ 384:   41 5c                   pop    r12
+&nbsp;
+    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */
+    (*jni_env)-&gt;ReleasePrimitiveArrayCritical(jni_env, (jarray)array, (void*)f, release_mode);
+&nbsp;
+    /* vypocet prumeru */
+    return average/length;
+ 386:   f3 0f 5e c1             divss  xmm0,xmm1
+}
+ 38a:   c3                      ret    
+</pre>
+
+<p>Opět je zajímavé se podívat na to, jak se překladači (který nyní neměl žádné
+informace o délce pole, na rozdíl od JITu!) podařilo rozbalit kritickou část
+kódu, tj.&nbsp;programovou smyčku pro výpočet sumy všech prvků pole. Kvůli
+rozbalení smyčky je poněkud složitější test na ukončení průchodu:</p>
+
+<pre>
+ 2ac:   83 fd 01                cmp    ebp,0x1
+ 2af:   0f 8e a4 00 00 00       jle    359 &lt;Java_JNITest6_averageN3+0xf9&gt;
+ 2b5:   45 85 c9                test   r9d,r9d
+ 2b8:   74 68                   je     322 &lt;Java_JNITest6_averageN3+0xc2&gt;
+ 2ba:   41 83 f9 01             cmp    r9d,0x1
+ 2be:   74 55                   je     315 &lt;Java_JNITest6_averageN3+0xb5&gt;
+ 2c0:   41 83 f9 02             cmp    r9d,0x2
+ 2c4:   74 46                   je     30c &lt;Java_JNITest6_averageN3+0xac&gt;
+ 2c6:   41 83 f9 03             cmp    r9d,0x3
+ 2ca:   74 37                   je     303 &lt;Java_JNITest6_averageN3+0xa3&gt;
+ 2cc:   41 83 f9 04             cmp    r9d,0x4
+ 2d0:   74 28                   je     2fa &lt;Java_JNITest6_averageN3+0x9a&gt;
+ 2d2:   41 83 f9 05             cmp    r9d,0x5
+ 2d6:   74 19                   je     2f1 &lt;Java_JNITest6_averageN3+0x91&gt;
+ 2d8:   41 83 f9 06             cmp    r9d,0x6
+ 2dc:   74 0a                   je     2e8 &lt;Java_JNITest6_averageN3+0x88&gt;
+</pre>
+
+<p>...což je kombinováno s&nbsp;kódem pro přičtení posledních 0 až 7 prvků
+(povšimněte si cílů skoků v&nbsp;předchozím bloku instrukcí
+<strong>cmp</strong> (<i>compare</i>) a <strong>je</strong> (<i>jump if
+equal</i>):</p>
+
+<pre>
+ 2de:   f3 0f 58 40 04          addss  xmm0,DWORD PTR [rax+0x4]
+ 2e3:   b9 02 00 00 00          mov    ecx,0x2
+ 2e8:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 2ed:   48 83 c1 01             add    rcx,0x1
+ 2f1:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 2f6:   48 83 c1 01             add    rcx,0x1
+ 2fa:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 2ff:   48 83 c1 01             add    rcx,0x1
+ 303:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 308:   48 83 c1 01             add    rcx,0x1
+ 30c:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 311:   48 83 c1 01             add    rcx,0x1
+ 315:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 31a:   48 83 c1 01             add    rcx,0x1
+</pre>
+
+<p>Vlastní smyčka je potom osmkrát rozbalena, takže vypadá prakticky stejně
+jako výsledek JITu (ten však rozbalil smyčku 16&times;, což už je ale zbytečně
+mnoho):</p>
+
+<pre>
+ 322:   f3 0f 58 04 8a          addss  xmm0,DWORD PTR [rdx+rcx*4]
+ 327:   f3 0f 58 44 8a 04       addss  xmm0,DWORD PTR [rdx+rcx*4+0x4]
+ 32d:   f3 0f 58 44 8a 08       addss  xmm0,DWORD PTR [rdx+rcx*4+0x8]
+ 333:   f3 0f 58 44 8a 0c       addss  xmm0,DWORD PTR [rdx+rcx*4+0xc]
+ 339:   f3 0f 58 44 8a 10       addss  xmm0,DWORD PTR [rdx+rcx*4+0x10]
+ 33f:   f3 0f 58 44 8a 14       addss  xmm0,DWORD PTR [rdx+rcx*4+0x14]
+ 345:   f3 0f 58 44 8a 18       addss  xmm0,DWORD PTR [rdx+rcx*4+0x18]
+ 34b:   f3 0f 58 44 8a 1c       addss  xmm0,DWORD PTR [rdx+rcx*4+0x1c]
+ 351:   48 83 c1 08             add    rcx,0x8
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Částečné řešení problému při sdílení polí &ndash; využití regionů</h2>
+
+<p>I přes optimalizace provedené <i>GCC</i> je však zřejmé, že kopie celých
+polí není a ani nemůže být optimálním řešením. Navíc platí, že u <i>JNI</i>
+funkcí <strong>GetPrimitiveArrayCritical()</strong> a
+<strong>ReleasePrimitiveArrayCritical()</strong> není zaručeno, že se kopie
+neprovede. Ovšem v&nbsp;případě, že nativní část aplikace nemusí přistupovat
+k&nbsp;celému poli, ale pouze k&nbsp;jeho části, je možné provést kopii pouze
+této vybrané části, a to s&nbsp;využitím následujících <i>JNI</i> funkcí:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th><th>Popis</th></tr>
+<td>1</td><td>void</td><td>GetBooleanArrayRegion(JNIEnv *env, jbooleanArray array, jsize start, jsize l, jboolean *buf)</td><td>kopie prvků typu jboolean</td></tr>
+<td>2</td><td>void</td><td>GetByteArrayRegion(JNIEnv *env, jbyteArray array, jsize start, jsize len, jbyte *buf)</td><td>kopie prvků typu jbyte</td></tr>
+<td>3</td><td>void</td><td>GetCharArrayRegion(JNIEnv *env, jcharArray array, jsize start, jsize len, jchar *buf)</td><td>kopie prvků typu jchar</td></tr>
+<td>4</td><td>void</td><td>GetShortArrayRegion(JNIEnv *env, jshortArray array, jsize start, jsize len, jshort *buf)</td><td>kopie prvků typu jshort</td></tr>
+<td>5</td><td>void</td><td>GetIntArrayRegion(JNIEnv *env, jintArray array, jsize start, jsize len, jint *buf)</td><td>kopie prvků typu jint</td></tr>
+<td>6</td><td>void</td><td>GetLongArrayRegion(JNIEnv *env, jlongArray array, jsize start, jsize len, jlong *buf)</td><td>kopie prvků typu jlong</td></tr>
+<td>7</td><td>void</td><td>GetFloatArrayRegion(JNIEnv *env, jfloatArray array, jsize start, jsize len, jfloat *buf)</td><td>kopie prvků typu jfloat</td></tr>
+<td>8</td><td>void</td><td>GetDoubleArrayRegion(JNIEnv *env, jdoubleArray array, jsize start, jsize len, jdouble *buf)</td><td>kopie prvků typu jdouble</td></tr>
+</table>
+
+<p>Největším rozdílem oproti všem výše popsaným funkcím je fakt, že se
+programátor musí sám postarat (funkcí <strong>malloc()</strong> apod.) o
+alokaci paměti dostatečně velká na to, aby pojala <strong>len</strong> prvků
+daného typu a samozřejmě je nutné tento paměťový region opět uvolnit funkcí
+<strong>free()</strong>.</p>
+
+<p>Pokud je nutné prvky zapsat zpět do pole sdíleného s&nbsp;javovskou částí
+aplikace, použijí se následující funkce:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th><th>Popis</th></tr>
+<td>1</td><td>void</td><td>SetBooleanArrayRegion(JNIEnv *env, jbooleanArray array, jsize start, jsize l, const jboolean *buf)</td><td>kopie prvků typu jboolean</td></tr>
+<td>2</td><td>void</td><td>SetByteArrayRegion(JNIEnv *env, jbyteArray array, jsize start, jsize len, const jbyte *buf)</td><td>kopie prvků typu jbyte</td></tr>
+<td>3</td><td>void</td><td>SetCharArrayRegion(JNIEnv *env, jcharArray array, jsize start, jsize len, const jchar *buf)</td><td>kopie prvků typu jchar</td></tr>
+<td>4</td><td>void</td><td>SetShortArrayRegion(JNIEnv *env, jshortArray array, jsize start, jsize len, const jbyte jshort *buf)</td><td>kopie prvků typu jshort</td></tr>
+<td>5</td><td>void</td><td>SetIntArrayRegion(JNIEnv *env, jintArray array, jsize start, jsize len, const jbyte jint *buf)</td><td>kopie prvků typu jint</td></tr>
+<td>6</td><td>void</td><td>SetLongArrayRegion(JNIEnv *env, jlongArray array, jsize start, jsize len, const jbyte jlong *buf)</td><td>kopie prvků typu jlong</td></tr>
+<td>7</td><td>void</td><td>SetFloatArrayRegion(JNIEnv *env, jfloatArray array, jsize start, jsize len, const jbyte jfloat *buf)</td><td>kopie prvků typu jfloat</td></tr>
+<td>8</td><td>void</td><td>SetDoubleArrayRegion(JNIEnv *env, jdoubleArray array, jsize start, jsize len, const jbyte jdouble *buf)</td><td>kopie prvků typu jdouble</td></tr>
+</table>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Benchmark pracující pouze s&nbsp;částí sdíleného pole</h2>
+
+<p>Nyní si již můžeme na dalším benchmarku vyzkoušet, co se stane, pokud budeme
+chtít vypočítat sumu jen z&nbsp;těch prvků, které tvoří pouze část pole. Tato
+situace nastává poměrně často, například při zpracování obrazu či jiného
+signálu. Dnešní druhý benchmark se v&nbsp;mnoha ohledech podobá benchmarku
+prvnímu, větší změny však nastanou v&nbsp;nativní části aplikace:</p>
+
+<pre>
+<i>/**</i>
+<i> * Jednoduchy benchmark pro porovnani rychlosti pristupu k vybranym</i>
+<i> * prvkum poli v nativnich metodach/funkcich.</i>
+<i> *</i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>JNITest7</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>WARMUP_ITERS</strong> = 15000;
+&nbsp;
+<i>    /**</i>
+<i>     * Pocet opakovani merene faze benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>BENCHMARK_ITERS</strong> = 15000;
+&nbsp;
+<i>    /**</i>
+<i>     * Velikost pole, ktere bude pouzito v benchmarku.</i>
+<i>     */</i>
+    private static final int <strong>ARRAY_SIZE</strong> = 200000;
+&nbsp;
+<i>    /**</i>
+<i>     * Prvni zpracovavany prvek pole.</i>
+<i>     */</i>
+    private static final int <strong>FIRST_ARRAY_ITEM</strong> = <strong>ARRAY_SIZE</strong> / 2;
+&nbsp;
+<i>    /**</i>
+<i>     * Posledni zpracovavany prvek pole.</i>
+<i>     */</i>
+    private static final int <strong>LAST_ARRAY_ITEM</strong> = 2 * ARRAY_SIZE / 3;
+    //private static final int <strong>LAST_ARRAY_ITEM</strong> = <strong>FIRST_ARRAY_ITEM</strong> + 100;
+&nbsp;
+<i>    /**</i>
+<i>     * Testovaci pole.</i>
+<i>     */</i>
+    static float[] array = new float[ARRAY_SIZE];
+&nbsp;
+<i>    /**</i>
+<i>     * Naplneni pole daty.</i>
+<i>     */</i>
+    static {
+        for (int i=0; i &lt; ARRAY_SIZE; i++) {
+            array[i] = (float)(i+1);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Nativni metody testovane benchmarkem.</i>
+<i>     */</i>
+    <strong>native public static float sumN1(float[] array, int first_item, int last_item);</strong>
+    <strong>native public static float sumN2(float[] array, int first_item, int last_item);</strong>
+    <strong>native public static float sumN3(float[] array, int first_item, int last_item);</strong>
+    <strong>native public static float sumN4(float[] array, int first_item, int last_item);</strong>
+&nbsp;
+<i>    /**</i>
+<i>     * Obdobna metoda napsana v Jave.</i>
+<i>     */</i>
+    public static float <strong>sumJ</strong>(float[] array, int first_item, int last_item) {
+        float sum = 0;
+&nbsp;
+        <i>// pruchod polem a vypocet sumy prvku</i>
+        for (int i=first_item; i &lt; last_item; i++) {
+            sum += array[i];
+        }
+&nbsp;
+        <i>// vraceni vysledku</i>
+        return sum;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    private static void <strong>runJNIBenchmarks</strong>() {
+        warmup();
+        benchmark();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis vypocteneho vysledku (jen pro kontrolu).</i>
+<i>     */</i>
+    private static void <strong>printResult</strong>(float result) {
+        System.out.print("    result=");
+        System.out.println(result);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Zahrivaci faze benchmarku.</i>
+<i>     */</i>
+    private static void <strong>warmup</strong>() {
+        System.out.println("Warmup phase...");
+        float result;
+&nbsp;
+        result = 0;
+        <i>// donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = sumJ(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = sumN1(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = sumN2(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = sumN3(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        printResult(result);
+&nbsp;
+        result = 0;
+        <i>// taktez zde donutime JIT k prekladu</i>
+        for (int i = 0; i &lt; WARMUP_ITERS; i++) {
+            result = sumN4(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        printResult(result);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vlastni mereny benchmark.</i>
+<i>     */</i>
+    private static void <strong>benchmark</strong>() {
+        System.out.println("Benchmark phase...");
+        long t1, t2, delta_t;
+        float result;
+&nbsp;
+        <i>// provest test a zmerit cas behu prvniho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = sumJ(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro prvni test</i>
+        System.out.format("JITted method time:      %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu druheho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = sumN1(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro druhy test</i>
+        System.out.format("native function #1 time: %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu tretiho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = sumN2(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro treti test</i>
+        System.out.format("native function #2 time: %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu ctvrteho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = sumN3(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro ctvrty test</i>
+        System.out.format("native function #3 time: %,12d ns\n", delta_t);
+&nbsp;
+        <i>// provest test a zmerit cas behu pateho testu</i>
+        t1 = System.nanoTime();
+        result = 0;
+        for (int i = 0; i &lt; BENCHMARK_ITERS; i++) {
+            result = sumN4(array, FIRST_ARRAY_ITEM, LAST_ARRAY_ITEM);
+        }
+        t2 = System.nanoTime();
+        delta_t = t2 - t1;
+        printResult(result);
+        <i>// vypis casu pro paty test</i>
+        System.out.format("native function #4 time: %,12d ns\n", delta_t);
+&nbsp;
+        System.out.println("done");
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Spusteni benchmarku.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        System.loadLibrary("JNITest7");
+        runJNIBenchmarks();
+    }
+}
+</pre>
+
+<p>Hlavičkový soubor pro nativní metody:</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest7 */</i>
+&nbsp;
+#ifndef _Included_JNITest7
+#define _Included_JNITest7
+#ifdef __cplusplus
+extern "C" {
+#endif
+#undef JNITest7_WARMUP_ITERS
+#define JNITest7_WARMUP_ITERS 15000L
+#undef JNITest7_BENCHMARK_ITERS
+#define JNITest7_BENCHMARK_ITERS 15000L
+#undef JNITest7_ARRAY_SIZE
+#define JNITest7_ARRAY_SIZE 200000L
+#undef JNITest7_FIRST_ARRAY_ITEM
+#define JNITest7_FIRST_ARRAY_ITEM 100000L
+#undef JNITest7_LAST_ARRAY_ITEM
+#define JNITest7_LAST_ARRAY_ITEM 200000L
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN1</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN1</strong>
+  (JNIEnv *, jclass, jfloatArray, jint, jint);
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN2</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN2</strong>
+  (JNIEnv *, jclass, jfloatArray, jint, jint);
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN3</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN3</strong>
+  (JNIEnv *, jclass, jfloatArray, jint, jint);
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN4</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN4</strong>
+  (JNIEnv *, jclass, jfloatArray, jint, jint);
+&nbsp;
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p>Nativní metody měřené benchmarkem jsou čtyři a mají následující vlastnosti:</p>
+
+<table>
+<tr><th>Metoda</th><th>Popis</th></tr>
+<tr><td>sumN1()</td><td>používá <strong>GetFloatArrayElements()</strong> a <strong>ReleaseFloatArrayElements()</strong> se zpětnou kopií prvků</td></tr>
+<tr><td>sumN2()</td><td>používá <strong>GetFloatArrayElements()</strong> a <strong>ReleaseFloatArrayElements()</strong> bez zpětné kopie prvků</td></tr>
+<tr><td>sumN3()</td><td>používá <strong>GetPrimitiveArrayCritical()</strong> a <strong>ReleasePrimitiveArrayCritical()</strong></td></tr>
+<tr><td>sumN4()</td><td>používá <strong>GetFloatArrayRegion()</strong> s&nbsp;ruční alokací a dealokací paměti</td></tr>
+</table>
+
+<p>Podívejme se tedy na celý kód nativní části aplikace:</p>
+
+<pre>
+#include &lt;stdlib.h&gt;
+#include "JNITest7.h"
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN1</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat <strong>JNICALL Java_JNITest7_sumN1</strong>(
+        JNIEnv      *jni_env,
+        jclass      klass,
+        jfloatArray array,
+        jint        first_item,
+        jint        last_item)
+{
+    jint release_mode = 0;
+    jfloat sum = 0;
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f+first_item;
+    int i;
+    for (i=first_item; i&lt;last_item; i++, item++)
+    {
+        sum += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+&nbsp;
+<i>    /* vraceni vypoctene sumy */</i>
+    return sum;
+}
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN2</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN2</strong>(
+        JNIEnv      *jni_env,
+        jclass      klass,
+        jfloatArray array,
+        jint        first_item,
+        jint        last_item)
+{
+    jint release_mode = JNI_ABORT;
+    jfloat sum = 0;
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (*jni_env)-&gt;GetFloatArrayElements(jni_env, array, NULL);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f+first_item;
+    int i;
+    for (i=first_item; i&lt;last_item; i++, item++)
+    {
+        sum += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;ReleaseFloatArrayElements(jni_env, array, f, release_mode);
+&nbsp;
+<i>    /* vraceni vypoctene sumy */</i>
+    return sum;
+}
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN3</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN3</strong>(
+        JNIEnv      *jni_env,
+        jclass      klass,
+        jfloatArray array,
+        jint        first_item,
+        jint        last_item)
+{
+    jint release_mode = JNI_ABORT;
+    jfloat sum = 0;
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (jfloat*) (*jni_env)-&gt;GetPrimitiveArrayCritical(jni_env, (jarray)array, NULL);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f+first_item;
+    int i;
+    for (i=first_item; i&lt;last_item; i++, item++)
+    {
+        sum += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;ReleasePrimitiveArrayCritical(jni_env, (jarray)array, (void*)f, release_mode);
+&nbsp;
+<i>    /* vraceni vypoctene sumy */</i>
+    return sum;
+}
+&nbsp;
+<i>/*</i>
+<i> * Class:     JNITest7</i>
+<i> * Method:    sumN4</i>
+<i> * Signature: ([FII)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest7_sumN4</strong>(
+        JNIEnv      *jni_env,
+        jclass      klass,
+        jfloatArray array,
+        jint        first_item,
+        jint        last_item)
+{
+    jfloat sum = 0;
+&nbsp;
+<i>    /* alokace pole */</i>
+    jfloat *c_array = (jfloat*)malloc((sizeof(jfloat)) * (last_item-first_item));
+&nbsp;
+<i>    /* kopie pole */</i>
+    (*jni_env)-&gt;GetFloatArrayRegion(jni_env, array, first_item, last_item-first_item, c_array);
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = c_array;
+    int i;
+    for (i=first_item; i&lt;last_item; i++, item++)
+    {
+        sum += *item;
+    }
+&nbsp;
+<i>    /* alokovane pole je zapotrebi uvolnit */</i>
+    free(c_array);
+&nbsp;
+<i>    /* vraceni vypoctene sumy */</i>
+    return sum;
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Překlad a spuštění benchmarku</h2>
+
+<p>V&nbsp;rychlosti si řekněme jak probíhá překlad.</p>
+
+<p>Javovská část aplikace:</p>
+
+<pre>
+javac JNITest7.java
+</pre>
+
+<p>Vygenerování hlavičkového souboru:</p>
+
+<pre>
+javah JNITest7
+</pre>
+
+<p>Překlad nativní části aplikace (jeden ze způsobů):</p>
+
+<pre>
+gcc -O3 -funroll-all-loops -shared \
+                 -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+                 -o libJNITest7.so JNITest7.c
+&nbsp;
+gcc -O3 -funroll-all-loops -shared -fPIC \
+                  -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+                  -I/usr/lib/jvm/java-1.7.0-openjdk/include/linux \
+                  -o libJNITest7.so JNITest7.c
+&nbsp;
+gcc -O3 -funroll-all-loops -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest4.dll JNITest4.c
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Výsledky benchmarku</h2>
+
+<p>Výsledky benchmarku si uvedeme pro dva případy. V&nbsp;prvním případě se
+suma počítala pro poměrně velkou část pole, kde první a poslední prvek byly
+určeny konstantami:</p>
+
+<pre>
+    private static final int <strong>FIRST_ARRAY_ITEM</strong> = <strong>ARRAY_SIZE</strong> / 2;
+    private static final int <strong>LAST_ARRAY_ITEM</strong> = 2 * ARRAY_SIZE / 3;
+</pre>
+
+<pre>
+Warmup phase...
+    result=1.49999555E10
+    result=1.49999555E10
+    result=1.49999555E10
+    result=1.49999555E10
+    result=1.49999555E10
+done
+Benchmark phase...
+    result=1.49999555E10
+JITted method time:      1,255,174,174 ns
+    result=1.49999555E10
+native function #1 time: 5,426,085,733 ns
+    result=1.49999555E10
+native function #2 time: 4,423,321,655 ns
+    result=1.49999555E10
+native function #3 time: 1,256,383,554 ns
+    result=1.49999555E10
+native function #4 time: 2,448,692,621 ns
+done
+</pre>
+
+<p>Již zde je patrné, jak je kopie celých polí ve funkcích
+<strong>sumN1()</strong> a <strong>sumN2()</strong>, poměrně neefektivní je i
+kopie části pole ve funkci <strong>sumN4</strong>.</p>
+
+<p>Pro porovnání se podívejme na to, co se stane v&nbsp;případě, že se suma bude počítat pro pouhých sto prvků pole:</p>
+
+<pre>
+    private static final int <strong>FIRST_ARRAY_ITEM</strong> = <strong>ARRAY_SIZE</strong> / 2;
+    private static final int <strong>LAST_ARRAY_ITEM</strong> = <strong>FIRST_ARRAY_ITEM</strong> + 100;
+</pre>
+
+<p>Zde již samozřejmě budou časy mnohem odlišnější, a to u těch metod a funkcí,
+které nemusí kopírovat celá pole:</p>
+
+<pre>
+Warmup phase...
+    result=1.000505E7
+    result=1.000505E7
+    result=1.000505E7
+    result=1.000505E7
+    result=1.000505E7
+done
+Benchmark phase...
+    result=1.000505E7
+JITted method time:            922,809 ns
+    result=1.000505E7
+native function #1 time: 4,163,715,458 ns
+    result=1.000505E7
+native function #2 time: 3,151,356,483 ns
+    result=1.000505E7
+native function #3 time:     1,676,210 ns
+    result=1.000505E7
+native function #4 time:     2,357,485 ns
+done
+</pre>
+
+<p>Ponaučení: rozhraní <i>JNI</i> sice může v&nbsp;některých případech pomoci
+při optimalizaci aplikací, ale nelze se v&nbsp;žádném případě spoléhat na to,
+že jeho použití je samospasitelné. Problematickým místem je například přenos
+polí mezi javovskou a nativní částí aplikace, kdy (mnohdy vynucená) kopie prvků
+polí zcela znehodnotí jakékoli výhody, které by z&nbsp;použití nativního kódu
+mohly vyplynout.</p>
+
+<p>Ponaučení<sup>2</sup>: používat mikrobencharky a profiler jako základní
+nástroje ještě před prováděním jakýchkoli optimalizací.</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými soubory i se skripty pro překlad a spuštění</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitých demonstračních příkladů (benchmarků):</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td> 1</td><td>JNITest6.c         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/JNITest6.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/JNITest6.c</a></td></tr>
+<tr><td> 2</td><td>JNITest6.h         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/JNITest6.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/JNITest6.h</a></td></tr>
+<tr><td> 3</td><td>JNITest6.java      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/JNITest6.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/JNITest6.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 4</td><td>compileJNITest6.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/compileJNITest6.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/compileJNITest6.sh</a></td></tr>
+<tr><td> 5</td><td>compileJNITest6.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/compileJNITest6.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/compileJNITest6.bat</a></td></tr>
+<tr><td> 6</td><td>runJNITest6.sh     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/runJNITest6.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/runJNITest6.sh</a></td></tr>
+<tr><td> 7</td><td>runJNITest6.bat    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/runJNITest6.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest6/runJNITest6.bat</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>toAssembly.sh      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest6/toAssembly.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest6/toAssembly.sh</a></td></tr>
+<tr><td> 9</td><td>toAssembly2.sh     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest6/toAssembly2.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest6/toAssembly2.sh</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>10</td><td>JNITest7.c         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/JNITest7.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/JNITest7.c</a></td></tr>
+<tr><td>11</td><td>JNITest7.h         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/JNITest7.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/JNITest7.h</a></td></tr>
+<tr><td>12</td><td>JNITest7.java      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/JNITest7.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/JNITest7.java</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>compileJNITest7.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/compileJNITest7.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/compileJNITest7.sh</a></td></tr>
+<tr><td>14</td><td>compileJNITest7.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/compileJNITest7.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/compileJNITest7.bat</a></td></tr>
+<tr><td>15</td><td>runJNITest7.sh     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/runJNITest7.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/runJNITest7.sh</a></td></tr>
+<tr><td>16</td><td>runJNITest7.bat    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/runJNITest7.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/be339062ceed/jit/JNITest7/runJNITest7.bat</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
