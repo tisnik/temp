@@ -1,0 +1,833 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (2)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (2)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy budeme pokračovat v popisu rozhraní JNI. Řekneme si, jakým způsobem mohou nativní (céčkové) funkce pracovat s poli vytvořenými v javovské části aplikace a jaké problémy mohou při práci s poli v nativních funkcích nastat.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (2)</a></p>
+<p><a href="#k02">2. Instrukce bajtkódu JVM určené pro práci s&nbsp;poli</a></p>
+<p><a href="#k03">3. Základní JNI funkce pro práci s&nbsp;poli primitivních datových typů</a></p>
+<p><a href="#k04">4. První demonstrační příklad: předání pole nativní funkci a zjištění délky pole</a></p>
+<p><a href="#k05">5. Překlad a spuštění prvního demonstračního příkladu</a></p>
+<p><a href="#k06">6. Získání ukazatele na prvky pole vytvořeného v&nbsp;javovské části aplikace</a></p>
+<p><a href="#k07">7. Druhý demonstrační příklad: získání ukazatele na prvky pole a výpočet průměrné hodnoty</a></p>
+<p><a href="#k08">8. Problematika práce s&nbsp;poli v&nbsp;nativních funkcích s&nbsp;ohledem na automatickou správu paměti</a></p>
+<p><a href="#k09">9. JNI funkce <strong>GetPrimitiveArrayCritical()</strong> a <strong>ReleasePrimitiveArrayCritical()</strong></a></p>
+<p><a href="#k10">10. Obsah následující části seriálu</strong></a></p>
+<p><a href="#k11">11. Repositář se zdrojovými soubory i se skripty pro překlad a spuštění</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - přednosti a zápory využití JNI při optimalizacích (2)</h2>
+
+<p>V&nbsp;předchozí části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+jazyce Java i o virtuálním stroji Javy</a> jsme si ukázali základní způsob
+využití rozhraní <i>JNI (Java Native Interface)</i>, díky jehož existenci je
+možné přímo z&nbsp;Javy relativně jednoduše volat nativní funkce a metody,
+tj.&nbsp;programový kód, který byl ještě před spuštěním JVM přeložen přímo do
+strojového kódu cílového mikroprocesoru. Víme již, že volání nativních funkcí
+z&nbsp;virtuálního stroje Javy je časově poměrně náročné, což znamená, že
+v&nbsp;mnoha případech ani nemá smysl se snažit o reimplementaci některých
+částí algoritmů v&nbsp;jazyce C či C++, protože dokonce může nastat situace,
+kdy bude volání nativního kódu pomalejší, než ekvivalentní část algoritmu
+naprogramovaná přímo v&nbsp;Javě a přeložená JIT překladačem (ať již typu
+<i>client</i> či častěji typu <i>server</i>). Ovšem samotná zvýšená režie
+volání nativních funkcí není jediný problém, s&nbsp;nímž se můžeme při použití
+<i>JNI</i> v&nbsp;praxi setkat.</p>
+
+<p>Další problémy nastávají zejména při předávání parametrů nativním funkcím a
+metodám. Je totiž nutné zajistit buď kopii těchto parametrů, nebo je nutné
+příslušné Javovské objekty označit takovým způsobem, aby s&nbsp;nimi nebylo
+v&nbsp;průběhu spuštění nativní funkce manipulováno například při správě
+paměti. Tento problém se stává palčivým především ve chvíli, kdy nativní funkce
+musí manipulovat s&nbsp;polem vytvořeným v&nbsp;Javě. I přes podobnou syntaxi,
+která je při práci s&nbsp;poli použita v&nbsp;Javě na jedné straně a
+v&nbsp;jazycích C/C++ na straně druhé, je práce s&nbsp;poli v&nbsp;těchto
+jazycích odlišná, což si ostatně ukážeme na demonstračních příkladech.
+V&nbsp;Javě se k&nbsp;prvkům polí nepřistupuje přes ukazatel, dokonce se ani
+v&nbsp;bajtkódu nemusí složitě počítat adresy jednotlivých prvků. Namísto toho
+bajtkód JVM obsahuje několik instrukcí, které práci s&nbsp;poli zjednodušují
+(což je mimochodem jeden z&nbsp;důvodů, proč je práce s&nbsp;poli v&nbsp;mnoha
+případech velmi efektivní).</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Instrukce bajtkódu JVM určené pro práci s&nbsp;poli</h2>
+
+<p>Pro zajímavost si ukažme, jaké instrukce v&nbsp;bajtkódu JVM jsou určeny pro
+práci s&nbsp;poli. U instrukcí bez operandů je důležité si uvědomit, že
+příslušná data (hodnoty, indexy) musí být před zavoláním těchto instrukcí
+uloženy na zásobníku operandů:</p>
+
+<table>
+<tr><th>#</th><th>Instrukce</th><th>Opkód</th><th>Operandy</th><th>Prováděná operace</th></tr>
+<tr><td>1</td><td>newarray</td><td>0xBC</td><td>arraytype</td><td>vytvoří nové pole s prvky primitivního datového typu</td></tr>
+<tr><td>2</td><td>anewarray</td><td>0xBD</td><td>highbyte, lowbyte</td><td>vytvoří nové pole objektů</td></tr>
+<tr><td>3</td><td>multianewarray</td><td>0xC5</td><td>highbyte, lowbyte, dimensions</td><td>vytvoří vícedimenzionální pole o <i>dimensions</i> dimenzích</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>4</td><td>iaload</td><td>0x2E</td><td>&times;</td><td>přečtení prvku z pole typu int[]</td></tr>
+<tr><td>5</td><td>laload</td><td>0x2F</td><td>&times;</td><td>přečtení prvku z pole typu long[]</td></tr>
+<tr><td>6</td><td>faload</td><td>0x30</td><td>&times;</td><td>přečtení prvku z pole typu float[]</td></tr>
+<tr><td>7</td><td>daload</td><td>0x31</td><td>&times;</td><td>přečtení prvku z pole typu double[]</td></tr>
+<tr><td>8</td><td>aaload</td><td>0x32</td><td>&times;</td><td>přečtení prvku z pole typu reference[]</td></tr>
+<tr><td>9</td><td>baload</td><td>0x33</td><td>&times;</td><td>přečtení prvku z pole typu byte[] nebo boolean[]</td></tr>
+<tr><td>10</td><td>caload</td><td>0x34</td><td>&times;</td><td>přečtení prvku z pole typu char[]</td></tr>
+<tr><td>11</td><td>saload</td><td>0x35</td><td>&times;</td><td>přečtení prvku z pole typu short[]</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>12</td><td>iastore</td><td>0x4F</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu int[]</td></tr>
+<tr><td>13</td><td>lastore</td><td>0x50</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu long[]</td></tr>
+<tr><td>14</td><td>fastore</td><td>0x51</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu float[]</td></tr>
+<tr><td>15</td><td>dastore</td><td>0x52</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu double[]</td></tr>
+<tr><td>16</td><td>aastore</td><td>0x53</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu reference[]</td></tr>
+<tr><td>17</td><td>bastore</td><td>0x54</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu byte[] nebo boolean[]</td></tr>
+<tr><td>18</td><td>castore</td><td>0x55</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu char[]</td></tr>
+<tr><td>19</td><td>sastore</td><td>0x56</td><td>&times;</td><td>zápis nové hodnoty prvku do pole typu short[]</td></tr>
+</table>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Základní JNI funkce pro práci s&nbsp;poli primitivních datových typů</h2>
+
+<p>Rozhraní <i>JNI</i> obsahuje několik funkcí určených pro práci s&nbsp;poli
+primitivních datových typů, které byly vytvořeny (zkonstruovány)
+v&nbsp;javovské části aplikace. Před popisem těchto funkcí si však musíme říci,
+jak se mapují javovské primitivní datové typy (ty jsou nezávislé na platformě)
+s&nbsp;datovými typy deklarovanými v&nbsp;<strong>jni.h</strong>. I tyto typy
+jsou nezávislé na platformě, na rozdíl od základních céčkových datových typů
+(<strong>int</strong>, <strong>short int</strong>, <strong>long
+int</strong>...):</p>
+
+<table>
+<tr><th>#</th><th>Typ v Javě</th><th>Typ v JNI</th><th>Velikost a formát</th></tr>
+<tr><td>1</td><td>boolean</td><td>jboolean</td><td>unsigned 8 bits</td></tr>
+<tr><td>2</td><td>byte   </td><td>jbyte   </td><td>signed 8 bits</td></tr>
+<tr><td>3</td><td>char   </td><td>jchar   </td><td>unsigned 16 bits</td></tr>
+<tr><td>4</td><td>short  </td><td>jshort  </td><td>signed 16 bits</td></tr>
+<tr><td>5</td><td>int    </td><td>jint    </td><td>signed 32 bits</td></tr>
+<tr><td>6</td><td>long   </td><td>jlong   </td><td>signed 64 bits</td></tr>
+<tr><td>7</td><td>float  </td><td>jfloat  </td><td>32 bits</td></tr>
+<tr><td>8</td><td>double </td><td>jdouble </td><td>64 bits</td></tr>
+</table>
+
+<p>Pole jsou do nativních funkcí předávány ve formě speciálního referenčního
+typu odvozeného od obecného typu pole <strong>jarray</strong>:</p>
+
+<table>
+<tr><th>#</th><th>Typ v Javě</th><th>Typ v JNI</th></tr>
+<tr><td>1</td><td>boolean[]</td><td>jbooleanArray</td></tr>
+<tr><td>2</td><td>byte[]   </td><td>jbyteArray   </td></tr>
+<tr><td>3</td><td>char[]   </td><td>jcharArray   </td></tr>
+<tr><td>4</td><td>short[]  </td><td>jshortArray  </td></tr>
+<tr><td>5</td><td>int[]    </td><td>jintArray    </td></tr>
+<tr><td>6</td><td>long[]   </td><td>jlongArray   </td></tr>
+<tr><td>7</td><td>float[]  </td><td>jfloatArray  </td></tr>
+<tr><td>8</td><td>double[] </td><td>jdoubleArray </td></tr>
+<tr><td>9</td><td>Object[] </td><td>jobjectArray </td></tr>
+</table>
+
+<p>Nyní již následuje slíbený seznam základních funkcí použitých
+v&nbsp;rozhraní <i>JNI</i> pro práci s&nbsp;poli:</p>
+
+<table>
+<tr><th>#</th><th>Funkce</th><th>Význam</th></tr>
+<tr><td>1</td><td>jsize GetArrayLength(JNIEnv *env, jarray array)</td><td>vrátí délku pole</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>2</td><td>jobjectArray NewObjectArray(JNIEnv *env, jsize len, jclass clazz, jobject init)</td><td>vytvoří nové pole libovolných objektů</td></tr>
+<tr><td>3</td><td>jbooleanArray NewBooleanArray(JNIEnv *env, jsize len)</td><td>vytvoří nové pole s prvky typu boolean</td></tr>
+<tr><td>4</td><td>jbyteArray NewByteArray(JNIEnv *env, jsize len)      </td><td>vytvoří nové pole s prvky typu byte</td></tr>
+<tr><td>5</td><td>jcharArray NewCharArray(JNIEnv *env, jsize len)      </td><td>vytvoří nové pole s prvky typu char</td></tr>
+<tr><td>6</td><td>jshortArray NewShortArray(JNIEnv *env, jsize len)    </td><td>vytvoří nové pole s prvky typu short</td></tr>
+<tr><td>7</td><td>jintArray NewIntArray(JNIEnv *env, jsize len)        </td><td>vytvoří nové pole s prvky typu int</td></tr>
+<tr><td>8</td><td>jlongArray NewLongArray(JNIEnv *env, jsize len)      </td><td>vytvoří nové pole s prvky typu long</td></tr>
+<tr><td>9</td><td>jfloatArray NewFloatArray(JNIEnv *env, jsize len)    </td><td>vytvoří nové pole s prvky typu float</td></tr>
+<tr><td>10</td><td>jdoubleArray NewDoubleArray(JNIEnv *env, jsize len)  </td><td>vytvoří nové pole s prvky typu double</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>jobject GetObjectArrayElement(JNIEnv *env, jobjectArray array, jsize index)</td><td>přečtení objektu z pole</td></tr>
+<tr><td>12</td><td>void SetObjectArrayElement(JNIEnv *env, jobjectArray array, jsize index, jobject val)</td><td>zápis do pole objektů</td></tr>
+</table>
+
+<p>Další důležité funkce (pracující s&nbsp;poli prvků primitivních datových
+typů) si popíšeme v&nbsp;navazujících kapitolách.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. První demonstrační příklad: předání pole nativní funkci a zjištění délky pole</h2>
+
+<p>V&nbsp;dnešním prvním demonstračním příkladu si ukážeme, jakým způsobem je
+možné do nativní funkce předat javovské pole a jak lze využít JNI pro získání
+počtu prvků v&nbsp;tomto poli. Příklad je skutečně velmi jednoduchý, protože
+(prozatím) nepotřebujeme číst ani zapisovat jednotlivé prvky uložené
+v&nbsp;poli.</p>
+
+<p><strong>JNITest4.java</strong>:</p>
+
+<pre>
+<i>/**</i>
+<i> * Jednoduchy test na predavani poli do nativni funkce/metody.</i>
+<i> */</i>
+public class <strong>JNITest4</strong> {
+<i>    // hlavicka ntivni funkce</i>
+    native public static int <strong>arrayLength</strong>(int[] array);
+
+    public static void <strong>main</strong>(String[] args) {
+<i>        // nacist sdilenou knihovnu s nativni funkci arrayLength</i>
+        System.loadLibrary("JNITest4");
+&nbsp;
+        int[] array = new int[10];
+&nbsp;
+<i>        // zavolat nativni funkci</i>
+        int length = arrayLength(array);
+        System.out.println("Array length = " + length);
+    }
+}
+</pre>
+
+<p><strong>JNITest4.h</strong> (generovaný přes nástroj javah):</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest4 */</i>
+&nbsp;
+#ifndef _Included_JNITest4
+#define _Included_JNITest4
+#ifdef __cplusplus
+extern "C" {
+#endif
+<i>/*</i>
+<i> * Class:     JNITest4</i>
+<i> * Method:    arrayLength</i>
+<i> * Signature: ([I)I</i>
+<i> */</i>
+JNIEXPORT jint JNICALL <strong>Java_JNITest4_arrayLengt</strong>h
+  (JNIEnv *, jclass, jintArray);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p><strong>JNITest4.c</strong>:</p>
+
+<pre>
+#include "JNITest4.h"
+&nbsp;
+JNIEXPORT jint JNICALL <strong>Java_JNITest4_arrayLength</strong>(JNIEnv *jni_env, jclass klass, jintArray array)
+{
+    <i>/* ziskat delku pole */</i>
+    jint length = (*jni_env)-&gt;GetArrayLength(jni_env, (jarray)array);
+    return length;
+}
+</pre>
+
+<p>Povšimněte si, že všechny <i>JNI</i> funkce je nutné volat přes ukazatel
+typu <strong>JNIEnv*</strong>.</p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Překlad a spuštění prvního demonstračního příkladu</h2>
+
+<p>Zdrojový kód dnešního prvního demonstračního příkladu se, jak je to běžné,
+přeloží překladačem <strong>javac</strong>:</p>
+
+<pre>
+javac JNITest4.java
+</pre>
+
+<p>Následně je nutné vygenerovat hlavičkový soubor
+<strong>JNITest4.h</strong>:</p>
+
+<pre>
+javah JNITest4
+</pre>
+
+<p>Následuje překlad souboru <strong>JNITest4.c</strong> uvedeného
+v&nbsp;předchozí kapitole, což může v&nbsp;případě Linuxu vypadat následovně
+(cestu k&nbsp;<strong>jni.h</strong> a dalším potřebným souborům bude
+samozřejmě nutné upravit na základě konfigurace konkrétní distribuce
+Linuxu):</p>
+
+<pre>
+gcc -shared -I/usr/lib/jvm/java-1.7.0-openjdk/include/ -o libJNITest4.so JNITest4.c
+</pre>
+
+<p>Popř.&nbsp;na platformách vyžadujících PIC (position independent code)
+v&nbsp;knihovnách:</p>
+
+<pre>
+gcc -shared -fPIC -I/usr/lib/jvm/java-1.7.0-openjdk/include/ \
+                  -I/usr/lib/jvm/java-1.7.0-openjdk/include/linux \
+                  -o libJNITest4.so JNITest4.c
+</pre>
+
+<p>Na systému Windows s&nbsp;nainstalovanou JDK 7 by mohl překlad
+s&nbsp;využitím <strong>mingw</strong> vypadat následovně:</p>
+
+<pre>
+gcc -shared -I"c:\Program Files\Java\jdk1.7.0_25\include" -o JNITest4.dll JNITest4.c
+</pre>
+
+<p>V&nbsp;obou případech by měla vzniknout sdílená dynamicky linkovaná knihovna
+pojmenovaná v&nbsp;závislosti na použitém operačním systému buď
+<strong>libJNITest4.so</strong> či <strong>JNITest4.dll</strong>. Tyto názvy je
+zapotřebí zkontrolovat a dodržet, protože v&nbsp;případě jejich změny by došlo
+k&nbsp;chybě při volání <strong>System.loadLibrary("JNITest4")</strong>!</p>
+
+<p>Spuštění testu na Linuxu je snadné:</p>
+
+<pre>
+export LD_LIBRARY_PATH=.
+java JNITest4
+</pre>
+
+<p>Na Windows taktéž:</p>
+
+<pre>
+java JNITest4
+</pre>
+
+<p>Pokud překlad i spuštění proběhlo v&nbsp;pořádku, měl by se na standardní
+výstup vypsat následující řádek:</p>
+
+<pre>
+Array length = 10
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Získání ukazatele na prvky pole vytvořeného v&nbsp;javovské části aplikace</h2>
+
+<p>Když se podíváme na hlavičku nativní funkce
+<strong>JNITest4.arrayLength()</strong>, uvidíme, že se pole celých čísel do
+této funkce předává ve formě parametru typu <strong>jintArray</strong>:</p>
+
+<pre>
+JNIEXPORT jint JNICALL <strong>Java_JNITest4_arrayLength</strong>(JNIEnv *jni_env, jclass klass, jintArray array)
+</pre>
+
+<p>My ovšem v&nbsp;programovacím jazyku C či C++ potřebujeme k&nbsp;prvkům pole
+přistupovat jako k&nbsp;nativním polím, tj.&nbsp;přes ukazatel na první prvek
+pole. K&nbsp;tomuto účelu lze v&nbsp;rozhraní <i>JNI</i> použít následující
+osmici funkcí, které kýžený ukazatel vrátí:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th><th>Popis</th></tr>
+<tr><td>1</td><td>jboolean *</td><td>GetBooleanArrayElements(JNIEnv *env, jbooleanArray array, jboolean *isCopy)</td><td>vrátí ukazatel na první prvek v&nbsp;poli typu boolean[]</td></tr>
+<tr><td>2</td><td>jbyte *   </td><td>GetByteArrayElements(JNIEnv *env, jbyteArray array, jboolean *isCopy)      </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu byte[]</td></tr>
+<tr><td>3</td><td>jchar *   </td><td>GetCharArrayElements(JNIEnv *env, jcharArray array, jboolean *isCopy)      </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu char[]</td></tr>
+<tr><td>4</td><td>jshort *  </td><td>GetShortArrayElements(JNIEnv *env, jshortArray array, jboolean *isCopy)    </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu short[]</td></tr>
+<tr><td>5</td><td>jint *    </td><td>GetIntArrayElements(JNIEnv *env, jintArray array, jboolean *isCopy)        </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu int[]</td></tr>
+<tr><td>6</td><td>jlong *   </td><td>GetLongArrayElements(JNIEnv *env, jlongArray array, jboolean *isCopy)      </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu long[]</td></tr>
+<tr><td>7</td><td>jfloat *  </td><td>GetFloatArrayElements(JNIEnv *env, jfloatArray array, jboolean *isCopy)    </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu float[]</td></tr>
+<tr><td>8</td><td>jdouble * </td><td>GetDoubleArrayElements(JNIEnv *env, jdoubleArray array, jboolean *isCopy)  </td><td>vrátí ukazatel na první prvek v&nbsp;poli typu double[]</td></tr>
+</table>
+
+<p>Zajímavý je poslední parametr těchto funkcí, jenž je typu <strong>jboolean
+*</strong>. Přes tento parametr se budeme moci dozvědět, zda se provedla kopie
+celého pole či nikoli. O této velmi důležité problematice se ještě zmíním
+v&nbsp;navazujících kapitolách. V&nbsp;případě, že nás informace o provedené či
+neprovedené kopii nezajímá, lze do posledního parametru předat hodnotu
+<strong>NULL</strong> (potom informaci o kopii nezískáme, což však někdy nemusí
+vadit).</p>
+
+<p>Důležité je nezapomenout získané pole uvolnit, a to opět s&nbsp;využitím
+jedné z&nbsp;osmi funkcí deklarovaných v&nbsp;rozhraní <i>JNI</i>. Pokud se
+totiž při volání <strong>Get*ArrayElements</strong> celé pole zkopíruje, je
+nutné je ručně z&nbsp;paměti uvolnit, jinak by došlo k&nbsp;memory leaku (ten
+většina JVM nedokáže správně detekovat):</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th><th>Popis</th></tr>
+<tr><td>1</td><td>void</td><td>ReleaseBooleanArrayElements(JNIEnv *env, jbooleanArray array, jboolean *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetBooleanArrayElements</td></tr>
+<tr><td>2</td><td>void</td><td>ReleaseByteArrayElements(JNIEnv *env, jbyteArray array, jbyte *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetByteArrayElements</td></tr>
+<tr><td>3</td><td>void</td><td>ReleaseCharArrayElements(JNIEnv *env, jcharArray array, jchar *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetCharArrayElements</td></tr>
+<tr><td>4</td><td>void</td><td>ReleaseShortArrayElements(JNIEnv *env, jshortArray array, jshort *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetShortArrayElements</td></tr>
+<tr><td>5</td><td>void</td><td>ReleaseIntArrayElements(JNIEnv *env, jintArray array, jint *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetIntArrayElements</td></tr>
+<tr><td>6</td><td>void</td><td>ReleaseLongArrayElements(JNIEnv *env, jlongArray array, jlong *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetLongArrayElements</td></tr>
+<tr><td>7</td><td>void</td><td>ReleaseFloatArrayElements(JNIEnv *env, jfloatArray array, jfloat *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetFloatArrayElements</td></tr>
+<tr><td>8</td><td>void</td><td>ReleaseDoubleArrayElements(JNIEnv *env, jdoubleArray array, jdouble *elems, jint mode)</td><td>uvolnění pole získaného funkcí GetDoubleArrayElements</td></tr>
+</table>
+
+<p>V&nbsp;posledním parametru těchto funkcí lze určit, zda se má provést zpětná
+kopie změněných prvků céčkového (nativního) pole do pole viditelného
+v&nbsp;javovské části aplikace. Pokud se žádný prvek nezměnil (pole se jen
+četlo), lze právě tímto parametrem provést optimalizaci a nezatěžovat
+mikroprocesor zbytečným přesunem dat.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Druhý demonstrační příklad: získání ukazatele na prvky pole a výpočet průměrné hodnoty</h2>
+
+<p>V&nbsp;dnešním druhém demonstračním příkladu si ukážeme, jak je možné
+s&nbsp;využitím <i>JNI</i> funkcí popsaných <a href="#k06">v&nbsp;předchozí
+kapitole</a> přistupovat k&nbsp;prvkům javovských polí. Úkolem nativní funkce
+bude vypočítat průměrnou hodnotu všech prvků pole typu
+<strong>float[]</strong>.</p>
+
+<p><strong>JNITest5.java</strong>:</p>
+
+<p>Javovská část aplikace je jednoduchá &ndash; pouze vytvoří pole, předá ho do
+nativní funkce a vytiskne výsledek výpočtu:</p>
+
+<pre>
+<i>/**</i>
+<i> * Test s nativni metodou, ktera vrati prumer hodnot ulozenych</i>
+<i> * v poli.</i>
+<i> */</i>
+public class <strong>JNITest5 </strong>{
+<i>    // hlavicka ntivni funkce</i>
+    native public static float <strong>average</strong>(float[] array);
+&nbsp;
+    public static void <strong>main</strong>(String[] args) {
+<i>        // nacist sdilenou knihovnu s nativni funkci average()</i>
+        System.loadLibrary("JNITest5");
+&nbsp;
+        float[] array = {1f, 2f, 3f, 4f, 5f};
+&nbsp;
+<i>        // zavolat nativni funkci</i>
+        float average = average(array);
+        System.out.println("Average = " + average);
+    }
+}
+</pre>
+
+<p><strong>JNITest5.h</strong> (generovaný přes nástroj javah):</p>
+
+<pre>
+<i>/* DO NOT EDIT THIS FILE - it is machine generated */</i>
+#include &lt;jni.h&gt;
+<i>/* Header for class JNITest5 */</i>
+&nbsp;
+#ifndef _Included_JNITest5
+#define _Included_JNITest5
+#ifdef __cplusplus
+extern "C" {
+#endif
+<i>/*</i>
+<i> * Class:     JNITest5</i>
+<i> * Method:    average</i>
+<i> * Signature: ([F)F</i>
+<i> */</i>
+JNIEXPORT jfloat JNICALL Java_JNITest5_average
+  (JNIEnv *, jclass, jfloatArray);
+&nbsp;
+#ifdef __cplusplus
+}
+#endif
+#endif
+</pre>
+
+<p><strong>JNITest5.c</strong>:</p>
+
+<p>V&nbsp;nativní části aplikace je nutné nejprve přečíst délku pole, následně
+získat ukazatel na první prvek, provést výpočet a posléze celé pole uvolnit,
+aby nedošlo k&nbsp;memory leaku:</p>
+
+<pre>
+#include "JNITest5.h"
+&nbsp;
+JNIEXPORT jfloat JNICALL <strong>Java_JNITest5_average</strong>(JNIEnv *jni_env, jclass klass, jfloatArray array)
+{
+    jint release_mode = 0; <i>/* JNI_ABORT */</i>
+    jboolean is_copy;
+    jfloat average = 0;
+&nbsp;
+<i>    /* ziskat delku pole */</i>
+    jint length = (*jni_env)-&gt;<strong>GetArrayLength</strong>(jni_env, (jarray)array);
+&nbsp;
+<i>    /* prevod na "ceckove" pole prvku typu float */</i>
+    jfloat *f = (*jni_env)-&gt;<strong>GetFloatArrayElements</strong>(jni_env, array, &amp;is_copy);
+&nbsp;
+<i>    /* vypsat informaci o tom, zda muselo byt pole zkopirovano */</i>
+    puts(is_copy ? "copy array" : "no copy");
+&nbsp;
+<i>    /* pruchod polem a vypocet sumy prvku */</i>
+    jfloat *item = f;
+    int i;
+    for (i=0; i&lt;length; i++, item++)
+    {
+        average += *item;
+    }
+&nbsp;
+<i>    /* uvolnit ceckove pole s pripadnou zpetnou kopii prvku */</i>
+    (*jni_env)-&gt;<strong>ReleaseFloatArrayElements</strong>(jni_env, array, f, release_mode);
+&nbsp;
+<i>    /* vypocet prumeru */</i>
+    return average/length;
+}
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Problematika práce s&nbsp;poli v&nbsp;nativních funkcích s&nbsp;ohledem na automatickou správu paměti</h2>
+
+<p>Pokud předchozí demonstrační příklad vypsal na standardní výstup následující
+text:</p>
+
+<pre>
+Average = 3.0
+copy array
+</pre>
+
+<p>znamená to, že se při volání <i>JNI</i> funkce
+<strong>GetFloatArrayElements()</strong> provedla kopie prvků pole do nově
+naalokované paměti. Mnoho JVM tuto kopii provádí, a to z&nbsp;toho důvodu, aby
+se při automatické správě paměti (GC) nemuselo čekat na dokončení nativní
+funkce. Připomeňme si, že javovské programy nemohou získat ukazatel na žádný
+objekt, tj.&nbsp;ani na pole, takže si případného přesunu celého pole na jiné
+místo na haldě &bdquo;nevšimnout&ldquo;, což však v&nbsp;žádném případě neplatí
+pro céčkový program, který již získal ukazatel na pole. Při volání funkce
+<strong>ReleaseFloatArrayElements()</strong> se naopak může (ale nemusí)
+provést zpětná kopie prvků z&nbsp;céčkového pole do pole javovského &ndash; vše
+záleží na posledním parametru této funkce, kde se většinou ponechává nula
+(provést zpětnou kopii) či konstanta <strong>JNI_ABORT</strong> (neprovádět
+kopii).</p>
+
+<p><u>Poznámka:</u> to, že se provádí kopie prvků pole znamená, že obsah pole
+viditelného z&nbsp;Javy a z&nbsp;nativní funkce se může lišit a navíc může při
+uvolňování pole dojít k&nbsp;přepisu pole viditelného z&nbsp;Javy. To se sice
+může zdát poněkud problematické, ve skutečnosti je však toto chování zcela
+korektní a případné kolize je nutné ošetřit například synchronizačními
+mechanismy.</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. JNI funkce <strong>GetPrimitiveArrayCritical()</strong> a <strong>ReleasePrimitiveArrayCritical()</strong></h2>
+
+<p>Vzhledem k&nbsp;tomu, že se kopie a zpětné kopie pole mohou stát kritickým
+místem aplikací, v&nbsp;nichž bude docházet k&nbsp;velkému zpomalení, byly do
+rozhraní <i>JNI</i> přidány další dvě funkce, které mohou (ale nutně nemusí!!!)
+tento problém řešit. Tyto dvě funkce se jmenují
+<strong>GetPrimitiveArrayCritical()</strong> a
+<strong>ReleasePrimitiveArrayCritical()</strong>, viz též následující
+tabulku:</p>
+
+<table>
+<tr><th>#</th><th>Návratový typ</th><th>Funkce</th></tr>
+<tr><td>1</td><td>void *</td><td>GetPrimitiveArrayCritical(JNIEnv *env, jarray array, jboolean *isCopy)</td></tr>
+<tr><td>2</td><td>void  </td><td>ReleasePrimitiveArrayCritical(JNIEnv *env, jarray array, void *carray, jint mode)</td></tr>
+</table>
+
+<p>Základní sémantika těchto funkcí je shodná se skupinou
+<strong>Get*ArrayElements()</strong> a
+<strong>Release*ArrayElements()</strong>, ovšem s&nbsp;tím rozdílem, že se
+předpokládá, že kód mezi voláním obou funkcí bude velmi krátký a nebudou se zde
+volat další <i>JNI</i> funkce, které by například mohly způsobit výjimku atd.
+Pokud virtuální stroj Javy předpokládá jen (relativně) krátkou dobu běhu
+nativního kódu mezi <strong>GetPrimitiveArrayCritical()</strong> a
+<strong>ReleasePrimitiveArrayCritical()</strong>, může upustit od provedení
+kopie prvků pole (a popř.&nbsp;navíc pozdržet běh GC). Toto chování ovšem není
+zaručeno pro všechny implementace JVM, takže je nutné otestovat hodnotu
+vrácenou přes poslední parametr <strong>isCopy</strong>, zda ke kopii prvků
+dochází či nikoli.</p>
+
+<p><u>Poznámka:</u> povšimněte si, původních funkcí pro získání pole je celkem
+osm (pro každý primitivní datový typ jedna funkce), zatímco funkce
+<strong>GetPrimitiveArrayCritical()</strong> je pouze jediná. To je dosti
+nesystematické řešení, které pravděpodobně vychází z&nbsp;toho, že funkce
+<strong>GetPrimitiveArrayCritical()</strong> a
+<strong>ReleasePrimitiveArrayCritical()</strong> byly do rozhraní <i>JNI</i>
+přidány až později.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Obsah následující části seriálu</h2>
+
+<p>V&nbsp;následující části tohoto seriálu si na benchmarku vyzkoušíme, jak se
+v&nbsp;praxi bude odlišovat chování nativních funkcí v&nbsp;případě využití
+dvojice <strong>Get*ArrayElements()+Release*ArrayElements()</strong>
+v&nbsp;porovnání s&nbsp;funkcemi
+<strong>GetPrimitiveArrayCritical()+ReleasePrimitiveArrayCritical()</strong>.
+Taktéž si, podobně jako tomu bylo i v&nbsp;předchozí části tohoto seriálu,
+porovnáme rychlost nativních funkcí volaných přes <i>JNI</i> s&nbsp;obdobnou
+metodou implementovanou v&nbsp;Javě. Výsledky budou velmi zajímavé (a nutno
+říci, že pro nativní funkce nepříliš povzbudivé :-).</p>
+
+<p>Taktéž nezapomeneme ani na problematiku předávání řetězců do nativních
+funkcí přes rozhraní <i>JNI</i>, protože i zde může docházet k&nbsp;procesům,
+které mohou celé využití <i>JNI</i> do značné míry zpomalit. Navíc je nutné si
+dát pozor na způsob kódování znaků v&nbsp;řetězci i na případné memory leaky,
+které mohou při použití <i>JNI</i> nastat (tyto memory leaky jsou o to
+zákeřnější, že řetězce jsou většinou krátké, takže se na případný problém
+přijde například až poté, co aplikace běží několik týdnů zdánlivě bez
+chyby).</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář se zdrojovými soubory i se skripty pro překlad a spuštění</h2>
+
+<p>Následuje &ndash; v&nbsp;tomto seriálu již tradiční &ndash; kapitola
+s&nbsp;odkazy na zdrojové kódy uložené do Mercurial repositáře.
+V&nbsp;následující tabulce najdete odkazy na prozatím nejnovější verzi dnes
+použitých demonstračních příkladů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td> 1</td><td>JNITest4.c         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/JNITest4.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/JNITest4.c</a></td></tr>
+<tr><td> 2</td><td>JNITest4.h         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/JNITest4.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/JNITest4.h</a></td></tr>
+<tr><td> 3</td><td>JNITest4.java      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/JNITest4.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/JNITest4.java</a></td></tr>
+<tr><td> 4</td><td>compileJNITest4.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/compileJNITest4.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/compileJNITest4.sh</a></td></tr>
+<tr><td> 5</td><td>compileJNITest4.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/compileJNITest4.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/compileJNITest4.bat</a></td></tr>
+<tr><td> 6</td><td>runJNITest4.sh     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/runJNITest4.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/runJNITest4.sh</a></td></tr>
+<tr><td> 7</td><td>runJNITest4.bat    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/runJNITest4.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest4/runJNITest4.bat</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 8</td><td>JNITest5.c         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/JNITest5.c">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/JNITest5.c</a></td></tr>
+<tr><td> 9</td><td>JNITest5.h         </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/JNITest5.h">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/JNITest5.h</a></td></tr>
+<tr><td>10</td><td>JNITest5.java      </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/JNITest5.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/JNITest5.java</a></td></tr>
+<tr><td>11</td><td>compileJNITest5.sh </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/compileJNITest5.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/compileJNITest5.sh</a></td></tr>
+<tr><td>12</td><td>compileJNITest5.bat</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/compileJNITest5.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/compileJNITest5.bat</a></td></tr>
+<tr><td>13</td><td>runJNITest5.sh     </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/runJNITest5.sh">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/runJNITest5.sh</a></td></tr>
+<tr><td>14</td><td>runJNITest5.bat    </td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/runJNITest5.bat">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/c78270233554/jit/JNITest5/runJNITest5.bat</a></td></tr>
+</table>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
