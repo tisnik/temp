@@ -1,0 +1,1151 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Pohled pod kapotu JVM - double buffering v praxi</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Pohled pod kapotu JVM - double buffering v&nbsp;praxi</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o programovacím jazyce Java i o virtuálním stroji Javy si popíšeme a na několika demonstračních příkladech ukážeme, jakým způsobem je možné při vykreslování využívat double buffering, což může vést ke značnému urychlení celé graficky náročné aplikace.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Pohled pod kapotu JVM - double buffering v&nbsp;praxi</a></p>
+<p><a href="#k02">2. Využití většího množství zadních bufferů</a></p>
+<p><a href="#k03">3. Zjištění konfigurace bufferů u všech nainstalovaných grafických subsystémů</a></p>
+<p><a href="#k04">4. První demonstrační příklad: výpis informací o předním a zadním bufferu</a></p>
+<p><a href="#k05">5. Výsledek prvního demonstračního příkladu na Windows XP s&nbsp;integrovanou grafickou kartou</a></p>
+<p><a href="#k06">6. Výsledek prvního demonstračního příkladu na Linuxu se samostatným grafickým akcelerátorem</a></p>
+<p><a href="#k07">7. Double buffering využívaný při vykreslování komponent knihovny <i>Swing</i></a></p>
+<p><a href="#k08">8. Druhý demonstrační příklad: zapnutí a vypnutí double bufferingu při práci s&nbsp;komponentami knihovny <i>Swing</i></a></p>
+<p><a href="#k09">9. Využití třídy <strong>BufferStrategy</strong> pro řízení double bufferingu</a></p>
+<p><a href="#k10">10. Repositář se zdrojovými kódy obou dnešních demonstračních příkladů</a></p>
+<p><a href="#k11">11. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Pohled pod kapotu JVM - double buffering v&nbsp;praxi</h2>
+
+<p>V&nbsp;dnešní části <a
+href="http://www.root.cz/serialy/programovaci-jazyk-java-a-jvm/">seriálu o
+programovacím jazyce Java i o virtuálním stroji Javy</a> si řekneme, jakým
+způsobem je možné v&nbsp;praxi využít takzvaný <i>double buffering</i>.
+Připomeňme si, že se tímto názvem označuje známý a v&nbsp;počítačové grafice
+již velmi dlouho využívaný postup, při němž se vykreslování grafického
+uživatelského rozhraní aplikace popř.&nbsp;prostředí hry neprovádí přímo na
+obrazovku, ale do pomocné bitmapy označované termínem <i>zadní buffer (back
+buffer)</i>. Obrazovka, resp.&nbsp;přesněji řečeno bitmapa zobrazená na
+obrazovce a tedy viditelná uživateli, je při použití double bufferingu
+označována termínem <i>přední buffer (front buffer) </i>. Vykreslování je do
+neviditelného zadního bufferu prováděno z&nbsp;toho důvodu, aby uživatel
+neviděl nepříjemné poblikávání obrazu při mazání/kreslení pozadí a taktéž při
+postupném přikreslování všech dalších grafických prvků, které mají být na
+obrazovce viditelné.</p>
+
+<p>Po dokončení vykreslení všech grafických objektů do zadního bufferu je však
+nutné tento buffer učinit viditelným. To lze provést dvěma způsoby.
+V&nbsp;případě, že je zadní buffer uložen v&nbsp;paměti grafické karty, je
+většinou možné jednoduše prohodit role předního a zadního bufferu, a to velmi
+jednoduchou operací nevyžadující žádné přenosy dat. Tento způsob se nazývá
+<i>page flipping</i> a je samozřejmě podporován i v&nbsp;JVM, ovšem
+v&nbsp;mnoha případech pouze při použití exkluzivního celoobrazovkového režimu
+(prohození obsahu obou bufferů se typicky provádí ve chvíli takzvaného
+vertikálního zatemnění &ndash; <i>vertical blank (VBLANK)</i>).</p>
+
+<p>Druhý způsob spočívá v&nbsp;blokovém přenosu obsahu celého zadního bufferu
+do bufferu předního, a to operací typu <i>BitBlt (BLIT)</i>. Opět záleží na
+možnostech konkrétního grafického subsystému i na způsobu uložení zadního
+bufferu, zda je tato operace provedena přímo na grafickém akcelerátoru (což je
+samozřejmě rychlejší řešení) či zda je nutné přenášet obsah zadního bufferu do
+bufferu předního přes systémovou sběrnici. Poněkud předběhneme, ale už zde je
+zapotřebí říci, že v&nbsp;případě použití double bufferingu a uložení zadního
+bufferu v&nbsp;operační paměti nemusí aplikace pracovat optimálně, což typicky
+nastává u některých aplikací využívajících knihovnu <i>Swing</i>.</p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Využití většího množství zadních bufferů</h2>
+
+<p>V&nbsp;předchozí kapitole jsme si řekli, že <i>double buffering</i> může být
+realizován minimálně dvěma způsoby &ndash; operací typu <i>BitBlt</i> či
+<i>page flippingem</i>. Ve skutečnosti se však v&nbsp;některých případech
+nepoužívají pouze dva buffery (tj.&nbsp;jeden přední a jeden zadní buffer), ale
+dokonce i větší množství zadních bufferů. V&nbsp;některých hrách či dalších
+graficky náročných aplikacích se typicky používají tři buffery: přední
+(viditelný) buffer, první zadní (neviditelný) buffer s&nbsp;již připravenou
+scénou a třetí (taktéž neviditelný) buffer, do něhož se právě provádí
+vykreslování. Výhoda této konfigurace spočívá v&nbsp;tom, že aplikace může
+provádět vykreslování nejvyšší možnou rychlostí a nemusí čekat na synchronizaci
+s&nbsp;vertikálním zatemněním obrazu, kdy je možné a vhodné prohodit obsah
+předního a zadního bufferu (jen v&nbsp;tomto okamžiku totiž nebudou patrné
+rušivé elementy v&nbsp;obrazu &ndash; typický je horizontální
+&bdquo;zlom&ldquo; ve chvíli, kdy se obraz přenáší bez synchronizace).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Zjištění konfigurace bufferů u všech nainstalovaných grafických subsystémů</h2>
+
+<p>Pro vývoj aplikací, které mají využívat možnosti grafického subsystému
+optimálním způsobem, je nutné zjistit, kolik zadních bufferů lze použít a jakým
+způsobem je vlastně double buffering na daném systému implementován (či zda je
+vůbec podporován). K&nbsp;tomuto účelu lze v&nbsp;Javě použít metodu
+<strong>GraphicsConfiguration.getBufferCapabilities()</strong> vracející objekt
+typu <strong>BufferCapabilities</strong>. Ve třídě
+<strong>BufferCapabilities</strong> najdeme několik důležitých metod:</p>
+
+<table>
+<tr><th>#</th><th>Metoda</th><th>Význam</th></tr>
+<tr><td>1</td><td>boolean isMultiBufferAvailable()</td><td>vrací pravdivostní hodnotu <i>true</i>, když existuje více než jeden zadní buffer</td></tr>
+<tr><td>2</td><td>boolean isPageFlipping()</td><td>vrací pravdivostní hodnotu <i>true</i>, když je podporováno prohazování předního a zadního bufferu</td></tr>
+<tr><td>3</td><td>boolean isFullScreenRequired()</td><td>vrací pravdivostní hodnotu <i>true</i>, když je nutné se přepnout do exkluzivního režimu pro využití double bufferingu</td></tr>
+</table>
+
+<p>Dále je možné s&nbsp;využitím dvou metod
+<strong>BufferCapabilities.getFrontBufferCapabilities()</strong> a
+<strong>BufferCapabilities.getBackBufferCapabilities()</strong> zjistit
+přesnější informace o předním a zadním bufferu:</p>
+
+<table>
+<tr><th>#</th><th>Metoda</th><th>Význam</th></tr>
+<tr><td>1</td><td>boolean isAccelerated()</td><td>vrací pravdivostní hodnotu <i>true</i>, když je práce s&nbsp;bufferem realizována na grafickém akcelerátoru</td></tr>
+<tr><td>2</td><td>boolean isTrueVolatile()</td><td>vrací pravdivostní hodnotu <i>true</i>, když se může obsah bufferu ztratit například při přepnutí aplikace</td></tr>
+</table>
+
+<p>Obecně platí, že volatilní budou pouze ty buffery, které jsou současně
+akcelerované; opačná implikace však nemusí být splněna, což znamená, že lze mít
+nevolatilní a současně i akcelerované buffery, což je z&nbsp;hlediska
+programátora ideální situace.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. První demonstrační příklad: výpis informací o předním a zadním bufferu</h2>
+
+<p>Metody pro zjištění schopností grafického subsystému, které byly stručně
+popsány <a href="#k03">v&nbsp;předchozí kapitole</a>, budou použity
+v&nbsp;dnešním prvním demonstračním příkladu nazvaném
+<strong>GraphicsDevicesTest2</strong>, jenž je založen na starším příkladu
+<strong>GraphicsDevicesTest</strong>. Tento příklad po svém překladu a spuštění
+nejdříve zjistí, jaká grafická zařízení jsou na daném operačním systému
+dostupná a posléze vypíše jak základní konfiguraci každého zařízení, tak i
+podporované celoobrazovkové grafické režimy. Kromě toho jsou vypsány i
+informace o podpoře <i>double bufferingu</i>, především to, zda je podporováno
+větší množství zadních bufferů, zda je podporován rychlý <i>page flipping</i>
+(prohození funkcí předního a zadního bufferu) i to, zda je nutné pro využití
+double bufferingu provést přepnutí do exkluzivního celoobrazovkového grafického
+režimu. Dále se vypíšou i základní informace o předním i zadním bufferu &ndash;
+zejména zda je jejich vykreslování řešeno grafickým akcelerátorem a zde se může
+obsah bufferu v&nbsp;některém okamžiku poškodit (<i>volatile</i>).</p>
+
+<p>Následuje výpis celého zdrojového kódu dnešního prvního demonstračního
+příkladu:</p>
+
+<pre>
+import java.awt.BufferCapabilities;
+import java.awt.DisplayMode;
+import java.awt.GraphicsConfiguration;
+import java.awt.GraphicsDevice;
+import java.awt.GraphicsEnvironment;
+import java.awt.ImageCapabilities;
+import java.awt.GraphicsDevice.WindowTranslucency;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/**</i>
+<i> * Vypis zakladnich vlastnosti grafickych zarizeni, ktere lze vyuzit primo</i>
+<i> * z Javy. Vypisou se i informace o prednim a zadnim bufferu.</i>
+<i> */</i>
+public class <strong>GraphicsDevicesTest2</strong> {
+&nbsp;
+<i>    /**</i>
+<i>     * Vstupni bod do tohoto testu.</i>
+<i>     */</i>
+    public static void <strong>main</strong>(String[] args) {
+        GraphicsDevice[] graphicsDevices = getScreenGraphicsDevices();
+        printInfoAboutEachGraphicsDevice(graphicsDevices);
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Ziska pole se vsemi dostupnymi grafickymi zarizenimi.</i>
+<i>     *</i>
+<i>     * @return pole se vsemi dostupnymi grafickymi zarizenimi</i>
+<i>     */</i>
+    private static GraphicsDevice[] <strong>getScreenGraphicsDevices</strong>() {
+        GraphicsEnvironment graphicsEnvironment = GraphicsEnvironment.getLocalGraphicsEnvironment();
+        GraphicsDevice[] graphicsDevices = graphicsEnvironment.getScreenDevices();
+        return graphicsDevices;
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypise informaci o vsech grafickych zarizenich predanych v parametru</i>
+<i>     * graphicsDevices.</i>
+<i>     *</i>
+<i>     * @param graphicsDevices</i>
+<i>     *            pole se vsemi dostupnymi grafickymi zarizenimi</i>
+<i>     */</i>
+    private static void <strong>printInfoAboutEachGraphicsDevice</strong>(GraphicsDevice[] graphicsDevices) {
+        for (int j = 0; j &lt; graphicsDevices.length; j++) { 
+           GraphicsDevice graphicsDevice = graphicsDevices[j];
+           printGraphicsDeviceInfo(graphicsDevice);
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypise informaci o grafickem zarizeni predanem v parametru</i>
+<i>     * graphicsDevice.</i>
+<i>     *</i>
+<i>     * @param graphicsDevice</i>
+<i>     *            objekt reprezentujici dostupne graficke zarizeni.</i>
+<i>     */</i>
+    private static void <strong>printGraphicsDeviceInfo</strong>(GraphicsDevice graphicsDevice) {
+        System.out.println("Device ID: " + graphicsDevice.getIDstring());
+        System.out.println("Type:      " + getDeviceType(graphicsDevice));
+        System.out.println("Accelerated memory size:  " + graphicsDevice.getAvailableAcceleratedMemory());
+        System.out.println("Display change supported: " + graphicsDevice.isDisplayChangeSupported());
+        System.out.println("Full screen supported:    " + graphicsDevice.isFullScreenSupported());
+        printTransparencyInfo(graphicsDevice);
+        printBuffersConfiguration(graphicsDevice);
+        System.out.println("Graphics modes:");
+        DisplayMode[] modes = graphicsDevice.getDisplayModes();
+        printAvailableDisplayModes(modes);
+        System.out.println();
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis zda zarizeni podporuje pruhlednost a/nebo prusvitnost.</i>
+<i>     *</i>
+<i>     * @param graphicsDevice</i>
+<i>     *            objekt reprezentujici dostupne graficke zarizeni.</i>
+<i>     */</i>
+    private static void <strong>printTransparencyInfo</strong>(GraphicsDevice graphicsDevice) {
+        System.out.println("Transparency/translucency support:");
+        System.out.println("    Per pixel transparency:  " + graphicsDevice.isWindowTranslucencySupported(WindowTranslucency.PERPIXEL_TRANSPARENT));
+        System.out.println("    Per pixel translucency:  " + graphicsDevice.isWindowTranslucencySupported(WindowTranslucency.PERPIXEL_TRANSLUCENT));
+        System.out.println("    Per window translucency: " + graphicsDevice.isWindowTranslucencySupported(WindowTranslucency.TRANSLUCENT));
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypis informace o bufferech (prednim a zadnim bufferu atd.).</i>
+<i>     *</i>
+<i>     * @param graphicsDevice</i>
+<i>     *            objekt reprezentujici dostupne graficke zarizeni.</i>
+<i>     */</i>
+    private static void <strong>printBuffersConfiguration</strong>(GraphicsDevice graphicsDevice) {
+<i>        // ziskat vsechny dostupne graficke konfigurace</i>
+        GraphicsConfiguration[] graphicsConfigurations = graphicsDevice.getConfigurations();
+        for (GraphicsConfiguration graphicsConfiguration : graphicsConfigurations) {
+            System.out.println("Graphics configuration: " + graphicsConfiguration.toString());
+            BufferCapabilities bufferCapabilities = graphicsConfiguration.getBufferCapabilities();
+            System.out.println("    Buffers configuration:");
+            System.out.println("        Multi buffer available:   " + bufferCapabilities.isMultiBufferAvailable());
+            System.out.println("        Page flipping supported:  " + bufferCapabilities.isPageFlipping());
+            System.out.println("        Full screen required:     " + bufferCapabilities.isFullScreenRequired());
+            <i>// moznosti predniho bufferu</i>
+            ImageCapabilities frontBuffer = bufferCapabilities.getFrontBufferCapabilities();
+            <i>// moznosti zadniho bufferu</i>
+            ImageCapabilities backBuffer = bufferCapabilities.getBackBufferCapabilities();
+            System.out.println("        Front buffer accelerated: " + frontBuffer.isAccelerated());
+            System.out.println("        Front buffer volatile:    " + frontBuffer.isTrueVolatile());
+            System.out.println("        Back buffer accelerated:  " + backBuffer.isAccelerated());
+            System.out.println("        Back buffer volatile:     " + backBuffer.isTrueVolatile());
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vrati typ grafickeho zarizeni.</i>
+<i>     *</i>
+<i>     * @param graphicsDevice</i>
+<i>     *            objekt reprezentujici dostupne graficke zarizeni.</i>
+<i>     * @return typ zarizeni (textova reprezentace)</i>
+<i>     */</i>
+    private static String <strong>getDeviceType</strong>(GraphicsDevice graphicsDevice) {
+        switch (graphicsDevice.getType()) {
+        case GraphicsDevice.TYPE_RASTER_SCREEN:
+            return "raster screen";
+        case GraphicsDevice.TYPE_PRINTER:
+            return "printer";
+        case GraphicsDevice.TYPE_IMAGE_BUFFER:
+            return "image buffer";
+        default: // nemelo by nastat
+            return "???";
+        }
+    }
+&nbsp;
+<i>    /**</i>
+<i>     * Vypise dostupne graficke rezimy a jejich zakladni vlastnosti.</i>
+<i>     *</i>
+<i>     * @param modes pole s grafickymi rezimy pro dane zarizeni.</i>
+<i>     */</i>
+    private static void <strong>printAvailableDisplayModes</strong>(DisplayMode[] modes) {
+        for (DisplayMode mode : modes) {
+            final int width = mode.getWidth();
+            final int height = mode. getHeight();
+            final int bpp = mode.getBitDepth();
+            final int refreshRate = mode.getRefreshRate();
+            System.out.println("    " +
+                    width + "x" + height +
+                    "@" + bpp + " bpp\t(" + refreshRate + " Hz)");
+        }
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Výsledek prvního demonstračního příkladu na Windows XP s&nbsp;integrovanou grafickou kartou</h2>
+
+<p>Podívejme se nyní na výsledky získané po spuštění demonstračního příkladu
+<i>GraphicsDevicesTest2</i> na několika počítačích vybavených různými
+operačními systémy a samozřejmě i rozdílnými grafickými kartami. Prvním
+počítačem je již několikrát zmiňovaný starobylý (více než desetiletý) notebook
+s&nbsp;nainstalovaným Oracle JDK7 a neaktualizovaným :-) systémem Microsoft
+Windows XP vybavený čipsetem Intel 855 GME. Zajímavé je, že na tomto systému
+není (alespoň v&nbsp;aktuální konfiguraci) podporován <i>page flipping</i>, což
+znamená, že double buffering zde bude realizován fyzickým přenosem dat. Taktéž
+zde není dostupné větší množství zadních bufferů, což může způsobit problémy
+při běhu některých aplikací vyžadujících například dva zadní buffery:</p>
+
+<pre>
+Device ID: \Display0
+Type:      raster screen
+Accelerated memory size:  -1
+Display change supported: false
+Full screen supported:    true
+Transparency/translucency support:
+    Per pixel transparency:  true
+    Per pixel translucency:  true
+    Per window translucency: true
+Graphics configuration: sun.awt.Win32GraphicsConfig@2a15cd[dev=Win32GraphicsDevice[screen=0],pixfmt=0]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  false
+        Full screen required:     false
+        Front buffer accelerated: false
+        Front buffer volatile:    false
+        Back buffer accelerated:  false
+        Back buffer volatile:     false
+Graphics modes:
+    320x200@8 bpp   (70 Hz)
+    320x200@16 bpp  (70 Hz)
+    320x200@32 bpp  (70 Hz)
+    320x240@8 bpp   (70 Hz)
+    320x240@16 bpp  (70 Hz)
+    320x240@32 bpp  (70 Hz)
+    400x300@8 bpp   (70 Hz)
+    400x300@16 bpp  (70 Hz)
+    400x300@32 bpp  (70 Hz)
+    512x384@8 bpp   (70 Hz)
+    512x384@16 bpp  (70 Hz)
+    512x384@32 bpp  (70 Hz)
+    640x480@8 bpp   (60 Hz)
+    640x400@8 bpp   (70 Hz)
+    800x600@8 bpp   (60 Hz)
+    1024x768@8 bpp  (60 Hz)
+    640x480@16 bpp  (60 Hz)
+    800x600@16 bpp  (60 Hz)
+    1024x768@16 bpp (60 Hz)
+    640x480@32 bpp  (60 Hz)
+    800x600@32 bpp  (60 Hz)
+    1024x768@32 bpp (60 Hz)
+    640x400@16 bpp  (70 Hz)
+    640x400@32 bpp  (70 Hz)
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Výsledek prvního demonstračního příkladu na Linuxu se samostatným grafickým akcelerátorem</h2>
+
+<p>Při spuštění demonstračního příkladu <strong>GraphicsDevicesTest2</strong>
+na počítači s&nbsp;OpenJDK (Linux, X Window) a samostatným grafickým
+akcelerátorem získáme poněkud odlišné výsledky. Grafická karta zde podporuje
+více grafických konfigurací a navíc &ndash; což je mnohem důležitější &ndash;
+podporuje i rychlý <i>page flipping</i>, což je ostatně patrné i
+z&nbsp;následujícího výpisu:</p>
+
+<pre>
+Device ID: :0.0
+Type:      raster screen
+Accelerated memory size:  -1
+Display change supported: false
+Full screen supported:    true
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x21]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x23]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x24]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x25]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x26]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x27]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x28]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x29]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x2a]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x2b]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x2c]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x2d]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x2e]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x2f]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x30]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0x31]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics configuration: X11GraphicsConfig[dev=X11GraphicsDevice[screen=0],vis=0xa7]
+    Buffers configuration:
+        Multi buffer available:   false
+        Page flipping supported:  true
+        Full screen required:     false
+        Front buffer accelerated: true
+        Front buffer volatile:    false
+        Back buffer accelerated:  true
+        Back buffer volatile:     false
+Graphics modes:
+    1280x1024@-1 bpp    (50 Hz)
+    1280x1024@-1 bpp    (51 Hz)
+    1280x960@-1 bpp     (52 Hz)
+    1152x864@-1 bpp     (53 Hz)
+    1152x864@-1 bpp     (54 Hz)
+    1152x864@-1 bpp     (55 Hz)
+    1152x864@-1 bpp     (56 Hz)
+    1024x768@-1 bpp     (57 Hz)
+    1024x768@-1 bpp     (58 Hz)
+    1024x768@-1 bpp     (59 Hz)
+    960x600@-1 bpp      (60 Hz)
+    960x540@-1 bpp      (61 Hz)
+    840x525@-1 bpp      (62 Hz)
+    840x525@-1 bpp      (63 Hz)
+    840x525@-1 bpp      (64 Hz)
+    832x624@-1 bpp      (65 Hz)
+    800x600@-1 bpp      (66 Hz)
+    800x600@-1 bpp      (67 Hz)
+    800x600@-1 bpp      (68 Hz)
+    800x600@-1 bpp      (69 Hz)
+    800x600@-1 bpp      (70 Hz)
+    800x600@-1 bpp      (71 Hz)
+    800x512@-1 bpp      (72 Hz)
+    720x450@-1 bpp      (73 Hz)
+    680x384@-1 bpp      (74 Hz)
+    680x384@-1 bpp      (75 Hz)
+    640x512@-1 bpp      (76 Hz)
+    640x512@-1 bpp      (77 Hz)
+    640x480@-1 bpp      (78 Hz)
+    640x480@-1 bpp      (79 Hz)
+    640x480@-1 bpp      (80 Hz)
+    640x480@-1 bpp      (81 Hz)
+    576x432@-1 bpp      (82 Hz)
+    576x432@-1 bpp      (83 Hz)
+    576x432@-1 bpp      (84 Hz)
+    576x432@-1 bpp      (85 Hz)
+    512x384@-1 bpp      (86 Hz)
+    512x384@-1 bpp      (87 Hz)
+    512x384@-1 bpp      (88 Hz)
+    416x312@-1 bpp      (89 Hz)
+    400x300@-1 bpp      (90 Hz)
+    400x300@-1 bpp      (91 Hz)
+    400x300@-1 bpp      (92 Hz)
+    400x300@-1 bpp      (93 Hz)
+    320x240@-1 bpp      (94 Hz)
+    320x240@-1 bpp      (95 Hz)
+    320x240@-1 bpp      (96 Hz)
+</pre>
+
+<p>Poznámka: o tom, že v&nbsp;některých případech (typicky na Linuxu s&nbsp;X
+Window) se nevrátí kompletní informace o podporovaných grafických režimech,
+popř.&nbsp;se vrátí obecnější informace, než jakou by programátor mnohdy
+potřeboval znát, jsme se již zmiňovali. Ve výše zobrazeném výpisu se například
+nevrátila přesná informace o bitové hloubce, ale hodnota -1, která odpovídá
+konstantě <strong>BIT_DEPTH_MULTI</strong>.</p>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Double buffering využívaný při vykreslování komponent knihovny <i>Swing</i></h2>
+
+<p>Double buffering se používá i v&nbsp;knihovně <i>Swing</i> při vykreslování
+všech komponent, tj.&nbsp;ovládacích prvků grafického uživatelského rozhraní.
+Díky použití double bufferingu se vykreslování i složitějších komponent,
+například tabulek či stromů, obejde bez nepříjemného poblikávání, a to i
+v&nbsp;případě, že je Javovská aplikace spuštěna na pomalejších počítačích.
+Ovšem právě na méně výkonných strojích může double buffering využívaný
+knihovnou <i>Swing</i> způsobit jiné problémy &ndash; pomalou odezvu na příkazy
+zadávané uživatelem. S&nbsp;určitou (ale ne moc velkou) nadsázkou je dokonce
+možné říci, že double buffering ve Swingu nemalou měrou přispěl k&nbsp;tomu, že
+je Java považována za nevhodnou platformu pro vývoj aplikací pro desktop. Proč
+tomu tak je? Již <a href="#k05">v&nbsp;páté kapitole</a> jsme viděli, že na
+některých typech počítačů a operačních systémů nemusí být podporováno
+hardwarově urychlené přepínání bufferů (<i>page flipping</i>) ani rychlý
+blokový přenos pixelů ze zadního bufferu do bufferu předního.</p>
+
+<p>V&nbsp;tomto případě může být double buffering aplikovaný na všechna okna a
+všechny dialogy skutečně kontraproduktivní, protože sice zamezí vzniku
+vizuálních chyb při překreslování okna/dialogu, ovšem veškeré reakce na příkazy
+zadávané uživatelem (stisk tlačítka, výběr jedné položky z&nbsp;listboxu,
+rozbalení stromu atd.) budou opožděny. Navíc se zvýší spotřeba operační paměti,
+protože se zadní buffer bude vytvářet pro každé okno či dialog, což například
+pro hlavní maximalizované okno o velikosti 1280&times;1024 pixelů může vést
+k&nbsp;alokaci dalších pěti megabajtů (ty je navíc nutné přenášet po sběrnici).
+Nicméně double buffering je možné vypnout, a to i selektivně pro každou
+komponentu. Praktický význam však má zapnutí či vypnutí double bufferingu jen
+při aplikaci na <strong>rootPane</strong> okna či dialogu. Zapnutí či vypnutí
+double bufferingu zajistí metoda
+<strong>JComponent.setDoubleBuffered(boolean)</strong>, na aktuální nastavení
+se lze kdykoli dotázat metodou
+<strong>JComponent.isDoubleBuffered()</strong>.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Druhý demonstrační příklad: zapnutí a vypnutí double bufferingu při práci s&nbsp;komponentami knihovny <i>Swing</i></h2>
+
+<p>To, jakým způsobem se může projevit vypnutí double bufferingu
+v&nbsp;knihovně <i>Swing</i>, si ukážeme na dnešním druhém demonstračním
+příkladu. Jedná se o dialog obsahující textový editor se zobrazenou HTML
+stránkou a zavírací tlačítko. HTML stránka je poměrně rozsáhlá (konkrétně se
+jedná o neupravený předchozí díl tohoto seriálu), což znamená, že <i>Swing</i>
+bude při překreslování celého dialogu volat velké množství svých interních
+metod pro zobrazení řetězce, výpočet mezer mezi znaky atd. S&nbsp;využitím
+atributu <strong>DOUBLE_BUFFERING</strong> je možné povolit či naopak zakázat
+double buffering celého dialogu. Změna se projeví jak při editaci HTML stránky
+(zde je však rozdíl viditelný jen na skutečně velmi pomalých strojích), tak
+zejména při zvětšování okna v&nbsp;případě, že je obsah okna neustále
+překreslován (je nutné správně nastavit správce oken, aby se kontinuální
+překreslování skutečně provádělo). Pokud je double buffering zapnutý, bude sice
+překreslování dokonalé a bez vizuálních vad, ovšem okno bude překresleno
+znatelně pomaleji, při vypnutém double bufferingu budou naproti tomu viditelné
+vizuální chyby a poblikávání částí dialogu.</p>
+
+<p>Následuje výpis zdrojového kódu dnešního druhého demonstračního
+příkladu:</p>
+
+<pre>
+import java.awt.BorderLayout;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStreamReader;
+&nbsp;
+import javax.swing.JButton;
+import javax.swing.JComponent;
+import javax.swing.JDialog;
+import javax.swing.JEditorPane;
+import javax.swing.JScrollPane;
+import javax.swing.WindowConstants;
+&nbsp;
+<i>/**</i>
+<i> * Jednoduchy dialog pro testovani moznosti double bufferingu.</i>
+<i> * </i>
+<i> * @author Pavel Tisnovsky</i>
+<i> */</i>
+public class <strong>TestDialog</strong> extends JDialog {
+&nbsp;
+    <i>/**</i>
+    <i> * Generated serial version UID.</i>
+    <i> */</i>
+    private static final long serialVersionUID = -6415126729773286780L;
+&nbsp;
+    <i>/**</i>
+    <i> * Povoleni ci naopak zakaz double bufferingu.</i>
+    <i> */</i>
+    private static final boolean <strong>DOUBLE_BUFFERING</strong> = false;
+&nbsp;
+    <i>/**</i>
+    <i> * Konstruktor testovaciho dialogu.</i>
+    <i> *</i>
+    <i> * @throws IOException</i>
+    <i> */</i>
+    public <strong>TestDialog</strong>() throws IOException {
+        setPreferredSize(new java.awt.Dimension(1024, 768));
+&nbsp;
+        <i>/* nastaveni double bufferingu */</i>
+        JComponent rootPane = this.rootPane;
+        System.out.println("double buffering enabled by default: " + rootPane.isDoubleBuffered());
+        rootPane.setDoubleBuffered(DOUBLE_BUFFERING);
+&nbsp;
+        addTextArea();
+        addCloseButton();
+        this.pack();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Pridani editoru s nactenou HTML strankou do dialogu.</i>
+    <i> *</i>
+    <i> * @throws FileNotFoundException</i>
+    <i> * @throws IOException</i>
+    <i> */</i>
+    private void <strong>addTextArea</strong>() throws FileNotFoundException, IOException {
+        StringBuilder htmlPage = new StringBuilder();
+        readHtmlFile(htmlPage);
+&nbsp;
+        this.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        JEditorPane textArea = new JEditorPane("text/html", htmlPage.toString());
+        textArea.setEditable(true);
+&nbsp;
+        this.add(new JScrollPane(textArea), BorderLayout.CENTER);
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Pridani zaviraciho tlacitka do dialogu.</i>
+    <i> */</i>
+    private void <strong>addCloseButton</strong>() {
+        JButton closeButton = new JButton("Close");
+        closeButton.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent e) {
+                dispose();
+            }
+        });
+        this.add(closeButton, BorderLayout.SOUTH);
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Nacteni HTML stranky.</i>
+    <i> *</i>
+    <i> * @param htmlPage</i>
+    <i> * @throws FileNotFoundException</i>
+    <i> * @throws IOException</i>
+    <i> */</i>
+    private void <strong>readHtmlFile</strong>(StringBuilder htmlPage) throws FileNotFoundException, IOException {
+        final FileInputStream fileInputStream = new FileInputStream("java109.html");
+        InputStreamReader inputStreamReader = new InputStreamReader(fileInputStream, "UTF-8");
+        BufferedReader reader = new BufferedReader(inputStreamReader);
+        String line;
+        while ((line = reader.readLine()) != null) {
+            htmlPage.append(line);
+        }
+        reader.close();
+    }
+&nbsp;
+    <i>/**</i>
+    <i> * Zobrazeni testovaciho dialogu.</i>
+    <i> *</i>
+    <i> * @param args</i>
+    <i> * @throws IOException</i>
+    <i> */</i>
+    public static void <strong>main</strong>(String[] args) throws IOException {
+        new TestDialog().setVisible(true);
+    }
+&nbsp;
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Využití třídy <strong>BufferStrategy</strong> pro řízení double bufferingu</h2>
+
+<p>Knihovna <i>Swing</i> sice provádí double buffering automaticky, ovšem při
+vykreslování prostředí hry či v&nbsp;dalších situacích je většinou nutné přední
+a zadní buffer řídit programově. K&nbsp;tomu slouží třída nazvaná poněkud
+zvláštně <strong>BufferStrategy</strong>. Instance této třídy se vytvoří
+zavoláním <strong>java.awt.Canvas.createBufferStrategy(int)</strong>
+popř.&nbsp;(což je asi méně časté) zavoláním metody
+<strong>java.awt.Window.createBufferStrategy(int)</strong>. Celočíselná
+hodnota, která se těmto metodám předává, reprezentuje celkový počet bufferů.
+Přitom je zaručeno, že se daný počet bufferů skutečně vytvoří, ale
+v&nbsp;závislosti na možnostech konkrétního počítače nemusí být podporován
+<i>page flipping</i> a dokonce ani akcelerované přenášení obsahu zadního
+bufferu do bufferu předního. Na to je zapotřebí dát pozor, protože na mnoha
+systémech není možné vytvořit více než dva akcelerované buffery a žádost o
+vytvoření většího množství bufferů zde tedy povede spíše ke snížení celkového
+výkonu.</p>
+
+<p>Jakmile je nastaven double buffering, změní se i vykreslovací rutina,
+protože ta již nebude provádět vykreslování přímo na canvas, ale do zadního
+bufferu:</p>
+
+<pre>
+BufferStrategy bufferStrategy = canvas.getBufferStrategy();
+&nbsp;
+while (!done) {
+    Graphics graphics;
+    try {
+        graphics = bufferStrategy.getDrawGraphics();
+        <i>... zde se provádí vykreslování ...</i>
+        <i>... s využitím objektu "graphics" ...</i>
+    } finally {
+        graphics.dispose();
+    }
+    bufferStrategy.show();
+}
+</pre>
+
+<p>Prakticky si tuto možnost otestujeme příště na dvojici demonstračních
+příkladů.</p>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Repositář se zdrojovými kódy obou dnešních demonstračních příkladů</h2>
+
+<p>Následují odkazy na zdrojové kódy uložené do Mercurial
+repositáře. V&nbsp;následující tabulce najdete linky na prozatím nejnovější
+verze obou dnes popsaných demonstračních příkladů:</p>
+
+<table>
+<tr><th>#</th><th>Zdrojový soubor/skript</th><th>Umístění souboru v&nbsp;repositáři</th></tr>
+<tr><td>1</td><td>GraphicsDevicesTest2.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/086ce0554efb/jvm/gfx/GraphicsDevicesTest2.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/086ce0554efb/jvm/gfx/GraphicsDevicesTest2.java</a></td></tr>
+<tr><td>2</td><td>TestDialog.java</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/086ce0554efb/jvm/gfx/TestDialog.java">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/086ce0554efb/jvm/gfx/TestDialog.java</a></td></tr>
+<tr><td>3</td><td>java109.html (datový soubor)</td><td><a href="http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/086ce0554efb/jvm/gfx/java109.html">http://icedtea.classpath.org/people/ptisnovs/jvm-tools/file/086ce0554efb/jvm/gfx/java109.html</a></td></tr>
+</table>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Class BufferStrategy<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/image/BufferStrategy.html">http://docs.oracle.com/javase/6/docs/api/java/awt/image/BufferStrategy.html</a>
+</li>
+
+<li>Class Graphics<br />
+<a href="http://docs.oracle.com/javase/1.5.0/docs/api/java/awt/Graphics.html">http://docs.oracle.com/javase/1.5.0/docs/api/java/awt/Graphics.html</a>
+</li>
+
+<li>Double Buffering and Page Flipping<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/doublebuf.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/doublebuf.html</a>
+</li>
+
+<li>BufferStrategy and BufferCapabilities<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/bufferstrategy.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/bufferstrategy.html</a>
+</li>
+
+<li>Java:Tutorials:Double Buffering<br />
+<a href="http://content.gpwiki.org/index.php/Java:Tutorials:Double_Buffering">http://content.gpwiki.org/index.php/Java:Tutorials:Double_Buffering</a>
+</li>
+
+<li>Double buffer in standard Java AWT<br />
+<a href="http://www.codeproject.com/Articles/2136/Double-buffer-in-standard-Java-AWT">http://www.codeproject.com/Articles/2136/Double-buffer-in-standard-Java-AWT</a>
+</li>
+
+<li>Java 2D: Hardware Accelerating - Part 1 - Volatile Images<br />
+<a href="http://www.javalobby.org/forums/thread.jspa?threadID=16840&tstart=0">http://www.javalobby.org/forums/thread.jspa?threadID=16840&tstart=0</a>
+</li>
+
+<li>Java 2D: Hardware Accelerating - Part 2 - Buffer Strategies<br />
+<a href="http://www.javalobby.org/java/forums/t16867.html">http://www.javalobby.org/java/forums/t16867.html</a>
+</li>
+
+<li>How does paintComponent work?<br />
+<a href="http://stackoverflow.com/questions/15544549/how-does-paintcomponent-work">http://stackoverflow.com/questions/15544549/how-does-paintcomponent-work</a>
+</li>
+
+<li>A Swing Architecture Overview<br />
+<a href="http://www.oracle.com/technetwork/java/architecture-142923.html">http://www.oracle.com/technetwork/java/architecture-142923.html</a>
+</li>
+
+<li>Class javax.swing.JComponent<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html">http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html</a>
+</li>
+
+<li>Class java.awt.Component<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html</a>
+</li>
+
+<li>Class java.awt.Component.BltBufferStrategy<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.BltBufferStrategy.html">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.BltBufferStrategy.html</a>
+</li>
+
+<li>Class java.awt.Component.FlipBufferStrategy<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.FlipBufferStrategy.html">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.FlipBufferStrategy.html</a>
+</li>
+
+<li>Metoda java.awt.Component.isDoubleBuffered()<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html#isDoubleBuffered()">http://docs.oracle.com/javase/6/docs/api/java/awt/Component.html#isDoubleBuffered()</a>
+</li>
+
+<li>Metoda javax.swing.JComponent.isDoubleBuffered()<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#isDoubleBuffered()">http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#isDoubleBuffered()</a>
+</li>
+
+<li>Metoda javax.swing.JComponent.setDoubleBuffered()<br />
+<a href="http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#setDoubleBuffered(boolean)">http://docs.oracle.com/javase/6/docs/api/javax/swing/JComponent.html#setDoubleBuffered(boolean)</a>
+</li>
+
+<li>Javadoc - třída GraphicsDevice<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsDevice.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsDevice.html</a>
+</li>
+
+<li>Javadoc - třída GraphicsEnvironment<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsEnvironment.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsEnvironment.html</a>
+</li>
+
+<li>Javadoc - třída GraphicsConfiguration<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsConfiguration.html">http://docs.oracle.com/javase/7/docs/api/java/awt/GraphicsConfiguration.html</a>
+</li>
+
+<li>Javadoc - třída DisplayMode<br />
+<a href="http://docs.oracle.com/javase/7/docs/api/java/awt/DisplayMode.html">http://docs.oracle.com/javase/7/docs/api/java/awt/DisplayMode.html</a>
+</li>
+
+<li>Lesson: Full-Screen Exclusive Mode API<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/">http://docs.oracle.com/javase/tutorial/extra/fullscreen/</a>
+</li>
+
+<li>Full-Screen Exclusive Mode<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/exclusivemode.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/exclusivemode.html</a>
+</li>
+
+<li>Display Mode<br />
+<a href="http://docs.oracle.com/javase/tutorial/extra/fullscreen/displaymode.html">http://docs.oracle.com/javase/tutorial/extra/fullscreen/displaymode.html</a>
+</li>
+
+<li>Using the Full-Screen Exclusive Mode API in Java<br />
+<a href="http://www.developer.com/java/other/article.php/3609776/Using-the-Full-Screen-Exclusive-Mode-API-in-Java.htm">http://www.developer.com/java/other/article.php/3609776/Using-the-Full-Screen-Exclusive-Mode-API-in-Java.htm</a>
+</li>
+
+<li>Java quick guide: JVM Instruction Set (tabulka všech instrukcí JVM)<br />
+<a href="http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html">http://www.mobilefish.com/tutorials/java/java_quickguide_jvm_instruction_set.html</a>
+</li>
+
+<li>The JVM Instruction Set<br />
+<a href="http://mpdeboer.home.xs4all.nl/scriptie/node14.html">http://mpdeboer.home.xs4all.nl/scriptie/node14.html</a>
+</li>
+
+<li>MultiMedia eXtensions<br />
+<a href="http://softpixel.com/~cwright/programming/simd/mmx.php">http://softpixel.com/~cwright/programming/simd/mmx.php</a>i
+</li>
+
+<li>SSE (Streaming SIMD Extentions)<br />
+<a href="http://www.songho.ca/misc/sse/sse.html">http://www.songho.ca/misc/sse/sse.html</a>
+</li>
+
+<li>Timothy A. Chagnon: SSE and SSE2<br />
+<a href="http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf">http://www.cs.drexel.edu/~tc365/mpi-wht/sse.pdf</a>
+</li>
+
+<li>Intel corporation: Extending the Worldr's Most Popular Processor Architecture<br />
+<a href="http://download.intel.com/technology/architecture/new-instructions-paper.pdf">http://download.intel.com/technology/architecture/new-instructions-paper.pdf</a>
+</li>
+
+<li>SIMD architectures:<br />
+<a href="http://arstechnica.com/old/content/2000/03/simd.ars/">http://arstechnica.com/old/content/2000/03/simd.ars/</a>
+</li>
+
+<li>GC safe-point (or safepoint) and safe-region<br />
+<a href="http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html">http://xiao-feng.blogspot.cz/2008/01/gc-safe-point-and-safe-region.html</a>
+</li>
+
+<li>Safepoints in HotSpot JVM<br />
+<a href="http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html">http://blog.ragozin.info/2012/10/safepoints-in-hotspot-jvm.html</a>
+</li>
+
+<li>Java theory and practice: Synchronization optimizations in Mustang<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-jtp10185/">http://www.ibm.com/developerworks/java/library/j-jtp10185/</a>
+</li>
+
+<li>How to build hsdis<br />
+<a href="http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README">http://hg.openjdk.java.net/jdk7/hotspot/hotspot/file/tip/src/share/tools/hsdis/README</a>
+</li>
+
+<li>Java SE 6 Performance White Paper<br />
+<a href="http://www.oracle.com/technetwork/java/6-performance-137236.html">http://www.oracle.com/technetwork/java/6-performance-137236.html</a>
+</li>
+
+<li>Lukas Stadler's Blog<br />
+<a href="http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html">http://classparser.blogspot.cz/2010/03/hsdis-i386dll.html</a>
+</li>
+
+<li>How to build hsdis-amd64.dll and hsdis-i386.dll on Windows<br />
+<a href="http://dropzone.nfshost.com/hsdis.htm">http://dropzone.nfshost.com/hsdis.htm</a>
+</li>
+
+<li>PrintAssembly<br />
+<a href="https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly">https://wikis.oracle.com/display/HotSpotInternals/PrintAssembly</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 3.14. Synchronization<br />
+<a href="http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14">http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-3.html#jvms-3.14</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 8.3.1.4. volatile Fields<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-8.html#jls-8.3.1.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.4. Memory Model<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4</a>
+</li>
+
+<li>The Java Virtual Machine Specification: 17.7. Non-atomic Treatment of double and long<br />
+<a href="http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7">http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.7</a>
+</li>
+
+<li>Open Source ByteCode Libraries in Java<br />
+<a href="http://java-source.net/open-source/bytecode-libraries">http://java-source.net/open-source/bytecode-libraries</a>
+</li>
+
+<li>ASM Home page<br />
+<a href="http://asm.ow2.org/">http://asm.ow2.org/</a>
+</li>
+
+<li>Seznam nástrojů využívajících projekt ASM<br />
+<a href="http://asm.ow2.org/users.html">http://asm.ow2.org/users.html</a>
+</li>
+
+<li>ObjectWeb ASM (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/ObjectWeb_ASM">http://en.wikipedia.org/wiki/ObjectWeb_ASM</a>
+</li>
+
+<li>Java Bytecode BCEL vs ASM<br />
+<a href="http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/">http://james.onegoodcookie.com/2005/10/26/java-bytecode-bcel-vs-asm/</a>
+</li>
+
+<li>BCEL Home page<br />
+<a href="http://commons.apache.org/bcel/">http://commons.apache.org/bcel/</a>
+</li>
+
+<li>Byte Code Engineering Library (před verzí 5.0)<br />
+<a href="http://bcel.sourceforge.net/">http://bcel.sourceforge.net/</a>
+</li>
+
+<li>Byte Code Engineering Library (verze &gt;= 5.0)<br />
+<a href="http://commons.apache.org/proper/commons-bcel/">http://commons.apache.org/proper/commons-bcel/</a>
+</li>
+
+<li>BCEL Manual<br />
+<a href="http://commons.apache.org/bcel/manual.html">http://commons.apache.org/bcel/manual.html</a>
+</li>
+
+<li>Byte Code Engineering Library (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/BCEL">http://en.wikipedia.org/wiki/BCEL</a>
+</li>
+
+<li>BCEL Tutorial<br />
+<a href="http://www.smfsupport.com/support/java/bcel-tutorial!/">http://www.smfsupport.com/support/java/bcel-tutorial!/</a>
+</li>
+
+<li>Bytecode Engineering<br />
+<a href="http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html">http://book.chinaunix.net/special/ebook/Core_Java2_Volume2AF/0131118269/ch13lev1sec6.html</a>
+</li>
+
+<li>Bytecode Outline plugin for Eclipse (screenshoty + info)<br />
+<a href="http://asm.ow2.org/eclipse/index.html">http://asm.ow2.org/eclipse/index.html</a>
+</li>
+
+<li>Javassist<br />
+<a href="http://www.jboss.org/javassist/">http://www.jboss.org/javassist/</a>
+</li>
+
+<li>Byteman<br />
+<a href="http://www.jboss.org/byteman">http://www.jboss.org/byteman</a>
+</li>
+
+<li>Java programming dynamics, Part 7: Bytecode engineering with BCEL<br />
+<a href="http://www.ibm.com/developerworks/java/library/j-dyn0414/">http://www.ibm.com/developerworks/java/library/j-dyn0414/</a>
+</li>
+
+<li>The Java<sup>TM</sup> Virtual Machine Specification, Second Edition<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/VMSpecTOC.doc.html</a>
+</li>
+
+<li>The class File Format<br />
+<a href="http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html">http://java.sun.com/docs/books/jvms/second_edition/html/ClassFile.doc.html</a>
+</li>
+
+<li>javap - The Java Class File Disassembler<br />
+<a href="http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html">http://docs.oracle.com/javase/1.4.2/docs/tooldocs/windows/javap.html</a>
+</li>
+
+<li>javap-java-1.6.0-openjdk(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/javap-java-1.6.0-openjdk">http://linux.die.net/man/1/javap-java-1.6.0-openjdk</a>
+</li>
+
+<li>Using javap<br />
+<a href="http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html">http://www.idevelopment.info/data/Programming/java/miscellaneous_java/Using_javap.html</a>
+</li>
+
+<li>Examine class files with the javap command<br />
+<a href="http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354">http://www.techrepublic.com/article/examine-class-files-with-the-javap-command/5815354</a>
+</li>
+
+<li>aspectj (Eclipse)<br />
+<a href="http://www.eclipse.org/aspectj/">http://www.eclipse.org/aspectj/</a>
+</li>
+
+<li>Aspect-oriented programming (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/Aspect_oriented_programming">http://en.wikipedia.org/wiki/Aspect_oriented_programming</a>
+</li>
+
+<li>AspectJ (Wikipedia)<br />
+<a href="http://en.wikipedia.org/wiki/AspectJ">http://en.wikipedia.org/wiki/AspectJ</a>
+</li>
+
+<li>EMMA: a free Java code coverage tool<br />
+<a href="http://emma.sourceforge.net/">http://emma.sourceforge.net/</a>
+</li>
+
+<li>Cobertura<br />
+<a href="http://cobertura.sourceforge.net/">http://cobertura.sourceforge.net/</a>
+</li>
+
+<li>jclasslib bytecode viewer<br />
+<a href="http://www.ej-technologies.com/products/jclasslib/overview.html">http://www.ej-technologies.com/products/jclasslib/overview.html</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2013</small></p>
+</body>
+</html>
+
