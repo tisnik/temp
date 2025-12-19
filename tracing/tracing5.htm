@@ -1,0 +1,1034 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Trasování a ladění nativních aplikací v Linuxu: jazyk používaný SystemTapem</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Trasování a ladění nativních aplikací v Linuxu: jazyk používaný SystemTapem</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Pátá část miniseriálu o problematice trasování a ladění nativních aplikací je věnována popisu dalších možností programovacího jazyka vestavěného do nástroje SystemTap. Na několika demonstračních příkladech si ukážeme použití funkcí, tvorbu histogramů či výpočet základních statistických veličin.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Trasování a ladění nativních aplikací v&nbsp;Linuxu: jazyk používaný SystemTapem</a></p>
+<p><a href="#k02">2. Globální a lokální proměnné</a></p>
+<p><a href="#k03">3. Automatické vytištění obsahu globálních proměnných</a></p>
+<p><a href="#k04">4. Demonstrační příklad &ndash; automatické vytištění počtu přečtených a zapsaných bajtů</a></p>
+<p><a href="#k05">5. Zápis uživatelských funkcí</a></p>
+<p><a href="#k06">6. Demonstrační příklad: použití uživatelských funkcí</a></p>
+<p><a href="#k07">7. Operátory a funkce pro práci s&nbsp;histogramem a statistickými veličinami</a></p>
+<p><a href="#k08">8. Demonstrační příklad: vytvoření histogramu čtení a zápisu do souborů</a></p>
+<p><a href="#k09">9. Výsledky demonstračního příkladu</a></p>
+<p><a href="#k10">10. Základní funkce pro získání statistických informací</a></p>
+<p><a href="#k11">11. Demonstrační příklad: získání statistických informací o čtení a zápisech do souborů</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Trasování a ladění nativních aplikací v&nbsp;Linuxu: jazyk používaný SystemTapem</h2>
+
+<p>V&nbsp;páté části (mini)seriálu o trasování a ladění nativních aplikací
+v&nbsp;Linuxu se podrobněji seznámíme s&nbsp;možnostmi programovacího jazyka,
+v&nbsp;němž se popisuje chování takzvaných &bdquo;sond&ldquo; (<i>probes</i>)
+používaných nástrojem <i>SystemTap</i>. Tento programovací jazyk je sice
+odvozen od klasického céčka (podobně jako jazyk D používaný v&nbsp;konkurenčním
+nástroji DTrace), ovšem některé jeho vlastnosti se od známého a široce
+používaného jazyka C odlišují. Jedná se především o rozdílný způsob práce
+s&nbsp;proměnnými (statické versus dynamické určování typů, ...), dále o
+podporu asociativních polí a taktéž podporu pro tvorbu histogramů a zjišťování
+dalších statistických veličin. Právě práce s&nbsp;histogramem a výpočty sumy,
+průměru, maximální či minimální hodnoty atd. jsou při ladění aplikací či při
+sledování chování systému velmi často používány. V&nbsp;případě potřeby je
+dokonce možné zkombinovat programovací jazyk SystemTapu s&nbsp;funkcemi
+zapsanými v&nbsp;céčku. V&nbsp;tomto případě ovšem přijdeme o některé kontroly
+zdrojového kódu, které se jinak provádějí automaticky.</p>
+
+<p>Kombinace obou jazyků může vypadat takto (podrobnosti si řekneme příště):</p>
+
+<pre>
+%{
+#include &lt;linux/in.h&gt;
+#include &lt;linux/ip.h&gt;
+%} /* &lt;-- top level */
+&nbsp;
+/* Reads the char value stored at a given address: */ 
+function __read_char:long(addr:long) %{ /* pure */
+         STAP_RETURN(kderef(sizeof(char), STAP_ARG_addr));
+         CATCH_DEREF_FAULT ();
+%} /* &lt;-- function body */
+&nbsp;
+/* Determines whether an IP packet is TCP, based on the iphdr: */
+function is_tcp_packet:long(iphdr) {
+         protocol = @cast(iphdr, "iphdr")-&gt;protocol
+         return (protocol == %{ IPPROTO_TCP %}) /* &lt;-- expression */
+}
+</pre>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Globální a lokální proměnné</h2>
+
+<p>V&nbsp;jazyce využívaném nástrojem SystemTap pro popis chování jednotlivých
+sond je možné používat jak globální tak i lokální proměnné. To pravděpodobně
+není pro většinu čtenářů příliš překvapivé, ovšem zajímavé jsou vlastnosti
+těchto proměnných. Globální proměnné musí být deklarovány klíčovým slovem
+<strong>global</strong> za nímž se uvede jméno proměnné a popř.&nbsp;i výraz,
+jehož výsledek je použit pro inicializaci proměnné. Nikde se však neuvádí typ
+proměnné, neboť ten je v&nbsp;případě potřeby zjišťován dynamicky. Zatímco
+globální proměnné je nutné deklarovat, u lokálních proměnných je tomu přesně
+naopak &ndash; žádná deklarace se neuvádí, protože při prvním použití nové
+proměnné se tato proměnná vytvoří automaticky, samozřejmě jako proměnná lokální
+(už z&nbsp;tohoto popisu je zřejmé, že ani u lokálních proměnných se explicitně
+neuvádí jejich typ). Podívejme se na velmi jednoduchý příklad, v&nbsp;němž se
+používají jak globální proměnné, tak i proměnné lokální:</p>
+
+<pre>
+global read_count=0
+global write_count=0
+&nbsp;
+probe begin(1) {
+    cnt=0
+    for (i = 0; i &lt; 50; i++)
+        if (isprime (i)) {
+            cnt++
+            printf("Prime number #%-2d is %2d\n", cnt, i)
+        }
+}
+</pre>
+
+<p>Ve skriptu jsou deklarovány a současně i inicializovány dvě globální
+proměnné nazvané <strong>read_count</strong> a <strong>write_count</strong>.
+Používají se zde i dvě proměnné lokální. První lokální proměnná pojmenovaná
+<strong>cnt</strong> je platná pro celou sondu, zatímco druhá proměnná nazvaná
+<strong>i</strong> je platná pouze uvnitř své smyčky typu <strong>for</strong>
+(platnost proměnných odpovídá jejich viditelnosti).</p>
+
+<p>Poznámka: i přesto, že se u deklarací proměnných neuvádí jejich typ, se
+jedná o silně typovaný jazyk. V&nbsp;případě potřeby lze typ uvést, což platí i
+pro argumenty funkcí či návratové hodnoty funkcí.</p>
+
+<p>Poznámka: výjimka platí pro pole, která mohou být pouze globální, nikoli
+lokální. Toto omezení pravděpodobně souvisí se způsobem správy paměti
+v&nbsp;nástroji SystemTap. Pro adresaci prvků v&nbsp;polích se používají jak
+celočíselné indexy, tak i jiné hodnoty (podporovány jsou tedy asociativní
+pole).</p>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Automatické vytištění obsahu globálních proměnných</h2>
+
+<p>Globální proměnné mají ještě dvě zajímavé a mnohdy velmi užitečné
+vlastnosti. Pokud se globální proměnná nikde ve skriptu nevyužívá (pouze se
+deklaruje na jeho začátku), je o tomto potenciálním problému uživatel
+informován ihned při spuštění nástroje <i>SystemTap</i> v&nbsp;průběhu analýzy
+a překladu skriptu. V&nbsp;tomto případě se ovšem jedná pouze o varování
+(Warning), nikoli o zásadní chybu, která by ihned ukončila práci skriptu.</p>
+
+<p>Zajímavější je však fakt, že hodnoty těch globálních proměnných, do nichž se
+pouze provádí zápis, jsou automaticky vypsány na standardní výstup při
+ukončování skriptu. To je velmi užitečná vlastnost, protože je tímto způsobem
+snadné do skriptu přidat další sledovanou veličinu, aniž by bylo nutné
+jakýmkoli způsobem upravovat sondu typu <strong>end</strong>, v&nbsp;níž se
+typicky provádí závěrečné vyhodnocení chování sledované aplikace či sledovaného
+systému. Úprava je samozřejmě nutná tehdy, pokud nám styl výchozího formátování
+nevyhovuje (hexadecimální hodnoty atd.)</p>
+
+<p>Jednoduchá sonda, která po svém ukončení vypíše počet volání systémové
+funkce <strong>sys_sync</strong>, tedy může vypadat následovně:</p>
+
+<pre>
+global count=0
+&nbsp;
+probe kernel.function("sys_sync") {
+    count++
+}
+</pre>
+
+<p>Nástroj sám rozpozná, že se globální proměnná používá pouze pro zápis nových
+hodnot a tudíž její výsledek vypíše při ukončování skriptu na standardní
+výstup.</p>
+
+<p>Poznámka: z&nbsp;proměnné se ve skutečnosti čte, protože
+<strong>count++</strong> lze napsat jako <strong>count = count + 1</strong>,
+ovšem žádné další operace se s&nbsp;hodnotou proměnné neprovádí.</p>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Demonstrační příklad &ndash; automatické vytištění počtu přečtených a zapsaných bajtů</h2>
+
+<p>Podívejme se nyní na jednoduchý demonstrační příklad, v&nbsp;němž jsou
+použity globální proměnné, do nichž se ve skriptu pouze zapisuje (nejsou
+například vypisovány příkazem <strong>printf/println</strong> atd.). Ve skriptu
+se do proměnných <strong>read_count</strong> a <strong>write_count</strong>
+průběžně zapisuje počet operací čtení či zápisu do souboru (přesněji řečeno do
+file deskriptoru), zatímco v&nbsp;proměnných <strong>read_bytes</strong> a
+<strong>write_bytes</strong> se počítá objem čtených a zapisovaných dat (pro
+celý systém!). Pátá globální proměnná není nikde využita, takže se při spuštění
+skriptu vypíše varování o potenciálním problému, který SystemTap nalezl:</p>
+
+<pre>
+global read_count=0
+global write_count=0
+global read_bytes=0
+global write_bytes=0
+global unused_variable=0
+&nbsp;
+probe begin
+{
+    println("STAP prepared");
+}
+&nbsp;
+probe process("ls").begin
+{
+    printf("ls with PID=%d started\n", pid());
+}
+&nbsp;
+probe process("ls").end
+{
+    printf("ls with PID=%d finished\n", pid());
+}
+&nbsp;
+probe syscall.open
+{
+    filename = user_string($filename);
+    printf("ls opened file %s\n", filename);
+}
+&nbsp;
+probe syscall.read
+{
+    bytes=$count
+    into=$fd
+    read_bytes += bytes
+    printf("read %d bytes from file descriptor %d\n", bytes, into);
+    read_count++
+    if (read_count&gt;10000) exit()
+}
+&nbsp;
+probe syscall.write
+{
+    bytes=$count
+    into=$fd
+    write_bytes += bytes
+    printf("write %d bytes to file descriptor %d\n", bytes, into);
+    write_count++
+    if (write_count&gt;10000) exit()
+}
+</pre>
+
+<p>Poznámky:</p>
+
+<ol>
+
+<li>Ve skutečnosti může při déletrvajícím běhu skriptu dojít k&nbsp;přetečení
+hodnot globálních proměnných <strong>read_bytes</strong> a
+<strong>write_bytes</strong>, podobně jako v&nbsp;programovacím jazyku C.</li>
+
+<li>Povšimněte si použití &bdquo;céčkových&ldquo; operátorů typu ++ a +=. Ty
+jsou v&nbsp;nástroji SystemTap samozřejmě podporovány, stejně jako ostatní
+podobné operátory (--, -=, *= atd.).</li>
+
+<li>I přesto, že se volá funkce <strong>exit()</strong> po provedení 10000
+zápisů či čtení, je před ukončením SystemTapu zavolána sonda
+<strong>end</strong>, pokud samozřejmě existuje. Exit tedy v&nbsp;tomto ohledu
+není destruktivní a ihned provedenou operací.</li>
+
+</ol>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Zápis uživatelských funkcí</h2>
+
+<p>Kromě sond se programové skripty používané nástrojem SystemTap mohou skládat
+z&nbsp;uživatelských funkcí. Deklarace těchto funkcí začíná klíčovým slovem
+<strong>function</strong> za nímž následuje jméno funkce a v&nbsp;kulatých
+závorkách pak jména parametrů (pokud funkce nějaké parametry akceptuje).
+Případné návratové hodnoty se vrací příkazem <strong>return</strong>, stejně
+jako v&nbsp;céčku:</p>
+
+<pre>
+function count_add(arg1, arg2) {
+    return arg1 + arg2
+}
+</pre>
+
+<p>V&nbsp;případě potřeby lze explicitně uvést i typ návratové hodnoty
+popř.&nbsp;typy parametrů, a to tímto stylem:</p>
+
+<pre>
+function concatenate:string(arg1:long, arg2) {
+    return sprintf("%d%s", arg1, arg2)
+}
+</pre>
+
+<p>Jak jsme si již řekli v&nbsp;předchozích kapitolách, každé jméno proměnné,
+které neodpovídá proměnné globální, povede k&nbsp;automatickému vzniku lokální
+proměnné. Podívejme se na příklad s&nbsp;lokální proměnnou pojmenovanou
+<strong>i</strong> platnou pouze uvnitř počítané programové smyčky
+<strong>for</strong> (v&nbsp;kódu je vidět i použití příkazu
+<strong>break</strong> pro okamžité ukončení smyčky):</p>
+
+<pre>
+function isprime (x) {
+    if (x &lt; 2) return 0
+    for (i = 2; i &lt; x; i++) {
+        if (x % i == 0)
+            return 0
+        if (i * i &gt; x)
+            break
+    }
+    return 1
+}
+</pre>
+
+<p>Použít je možné i rekurzi, samozřejmě se všemi důsledky, které to přináší
+(problémy s&nbsp;kapacitou zásobníku v&nbsp;případě hluboké či dokonce
+nekonečné rekurze atd.):</p>
+
+<pre>
+function fibonacci(i) {
+    if (i &lt; 1)
+        error("bad number")
+    if (i == 1)
+        return 1
+    if (i == 2)
+        return 2
+    return fibonacci (i-1) + fibonacci (i-2)
+}
+</pre>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Demonstrační příklad: použití uživatelských funkcí</h2>
+
+<p>Dvojici uživatelských funkcí nazvaných <strong>isprime</strong> a
+<strong>fibonacci</strong>, s&nbsp;nimiž jsme se seznámili v&nbsp;předchozí
+kapitole, použijeme v&nbsp;dalším demonstračním příkladu, v&nbsp;němž se
+nachází dvojice sond <strong>begin</strong> (o pořadových číslech jsme si řekli
+základní informace <a
+href="http://www.root.cz/clanky/trasovani-a-ladeni-nativnich-aplikaci-v-linuxu-pouziti-nastroje-systemtap/">minule</a>).
+Po spuštění tohoto skriptu se pouze vypíšou všechna prvočísla od 2 do 50 a
+následně prvních deset prvků Fibonacciho řady. Posléze je skript ukončen
+zavoláním funkce <strong>exit()</strong>:</p>
+
+<pre>
+function isprime (x) {
+    if (x &lt; 2) return 0
+    for (i = 2; i &lt; x; i++) {
+        if (x % i == 0)
+            return 0
+        if (i * i &gt; x)
+            break
+    }
+    return 1
+}
+&nbsp;
+probe begin(1) {
+    cnt=0
+    for (i = 0; i &lt; 50; i++)
+        if (isprime (i)) {
+            cnt++
+            printf("Prime number #%-2d is %2d\n", cnt, i)
+        }
+}
+&nbsp;
+function fibonacci(i) {
+    if (i &lt; 1)
+        error ("bad number")
+    if (i == 1)
+        return 1
+    if (i == 2)
+        return 2
+    return fibonacci (i-1) + fibonacci (i-2)
+}
+&nbsp;
+probe begin(2) {
+    for (i = 1; i &lt;= 10; i++)
+        printf ("Fibonacci number #%-2d is %2d\n", i, fibonacci(i))
+    exit ()
+}
+</pre>
+
+<p>Po spuštění příkazem <strong>stap</strong> by se na standardní výstup měly
+vypsat následující řádky s&nbsp;výsledky výpočtů:</p>
+
+<pre>
+Prime number #1  is  2
+Prime number #2  is  3
+Prime number #3  is  5
+Prime number #4  is  7
+Prime number #5  is 11
+Prime number #6  is 13
+Prime number #7  is 17
+Prime number #8  is 19
+Prime number #9  is 23
+Prime number #10 is 29
+Prime number #11 is 31
+Prime number #12 is 37
+Prime number #13 is 41
+Prime number #14 is 43
+Prime number #15 is 47
+Fibonacci number #1  is  1
+Fibonacci number #2  is  2
+Fibonacci number #3  is  3
+Fibonacci number #4  is  5
+Fibonacci number #5  is  8
+Fibonacci number #6  is 13
+Fibonacci number #7  is 21
+Fibonacci number #8  is 34
+Fibonacci number #9  is 55
+Fibonacci number #10 is 89
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Operátory a funkce pro práci s&nbsp;histogramem a statistickými veličinami</h2>
+
+<p>Programovací jazyk využívaný nástrojem SystemTap obsahuje užitečný operátor
+zapisovaný následovně: &lt;&lt;&lt;. Jedná se o binární operátor
+(s&nbsp;dvojicí operandů), přičemž levým operandem musí být pole, což je
+&ndash; jak již víme <a href="#k02">z&nbsp;předchozího textu</a> &ndash;
+globální proměnná (pole totiž nemohou být lokálními proměnnými) a pravým
+operandem je libovolný výraz, jehož výsledkem je číselná hodnota (nikoli
+řetězec či nějaké pole). Pomocí tohoto operátoru se do pole na levé straně
+operátoru přidává další hodnota, což má ten význam, že se následně může celé
+pole k&nbsp;tomu připravenými funkcemi zpracovat a získat z&nbsp;něho histogram
+či různé statistické veličiny typu suma, průměr, maximální hodnota a minimální
+hodnota. Podívejme se na jednoduchý příklad (používaný mj.&nbsp;i
+v&nbsp;dokumentaci), v&nbsp;němž se zjišťuje objem dat tekoucích přes síťové
+rozhraní:</p>
+
+<pre>
+global histogram
+&nbsp;
+probe begin {
+    printf("Capturing...\n")
+}
+&nbsp;
+probe netdev.transmit {
+    histogram &lt;&lt;&lt; length
+}
+&nbsp;
+probe netdev.receive {
+    histogram &lt;&lt;&lt; length
+}
+&nbsp;
+probe end {
+    printf( "\n" )
+    print( @hist_log(histogram) )
+}
+</pre>
+
+<p>Při ukončení SystemTapu se zavolá sonda <strong>end</strong>, která
+z&nbsp;pole hodnot získá histogram s&nbsp;logaritmickým měřítkem.</p>
+
+<p>Další příklad je již složitější a zaslouží si stručný popis:</p>
+
+<pre>
+global receive_stats
+global transmit_stats
+&nbsp;
+probe begin {
+    printf("Starting network capture (Ctl-C to end)\n")
+}
+&nbsp;
+probe netdev.receive {
+    receive_stats[dev_name, pid(), execname()] &lt;&lt;&lt; length
+}
+&nbsp;
+probe netdev.transmit {
+   transmit_stats[dev_name, pid(), execname()] &lt;&lt;&lt; length
+}
+&nbsp;
+probe end {
+    printf("\nEnd Capture\n\n")
+    &nbsp;
+    printf("Iface Process........ PID.. RcvPktCnt XmtPktCnt\n")
+    &nbsp;
+    foreach ([dev, pid, name] in receive_stats) {
+        recvcount = @count(receive_stats[dev, pid, name])
+        xmitcount = @count(transmit_stats[dev, pid, name])
+        printf( "%5s %-15s %-5d %9d %9d\n", dev, name, pid, recvcount, xmitcount )
+    }
+&nbsp;
+    delete receive_stats
+    delete transmit_stats
+}
+</pre>
+
+<p>Opět zde nalezneme dvojici globálních proměnných, tentokrát se ovšem jedná o
+asociativní pole, v&nbsp;němž jsou prvky &bdquo;indexovány&ldquo; jménem
+síťového rozhraní, PID aktivního procesu a současně jménem procesu. Do těchto
+polí se ukládají délky bloků dat přenášených přes dané rozhraní a na konci běhu
+skriptu se v&nbsp;sondě <strong>end</strong> vypíše celkový počet přenosů, a to
+jednotlivě pro zařízení, PID procesu a jména procesu.</p>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Demonstrační příklad: vytvoření histogramu čtení a zápisu do souborů</h2>
+
+<p>V&nbsp;dnešním třetím demonstračním příkladu rozšíříme možnosti skriptu,
+s&nbsp;nímž jsme se již seznámili minule. Budeme sledovat čtení a zápisy do
+souborů. Počet zapsaných či přečtených bajtů se ukládá do globálních polí
+pojmenovaných <strong>reads</strong> a <strong>writes</strong>. Z&nbsp;těchto
+dat se posléze vytvoří histogram funkcí <strong>@hist_linear</strong>. Této
+funkci je nutné předat čtyři hodnoty: vlastní pole, minimální hodnotu na ose,
+maximální hodnotu na ose a šířku intervalu (čím je šířka intervalu menší, tím
+více hodnot se v&nbsp;histogramu zobrazí):</p>
+
+<pre>
+global reads
+global writes
+global read_write_count=0
+&nbsp;
+probe begin
+{
+    println("STAP prepared");
+}
+&nbsp;
+probe process("ls").begin
+{
+    printf("ls with PID=%d started\n", pid());
+}
+&nbsp;
+probe process("ls").end
+{
+    printf("ls with PID=%d finished\n", pid());
+}
+&nbsp;
+probe syscall.open
+{
+    filename = user_string($filename);
+    printf("ls opened file %s\n", filename);
+}
+&nbsp;
+probe syscall.read
+{
+    bytes=$count
+    into=$fd
+    reads &lt;&lt;&lt; bytes
+    printf("read %d bytes from file descriptor %d\n", bytes, into);
+    read_write_count++
+    if (read_write_count&gt;10000) exit()
+}
+&nbsp;
+probe syscall.write
+{
+    bytes=$count
+    into=$fd
+    writes &lt;&lt;&lt; bytes
+    printf("write %d bytes to file descriptor %d\n", bytes, into);
+    read_write_count++
+    if (read_write_count&gt;10000) exit()
+}
+&nbsp;
+probe end
+{
+    println("Reads:")
+    print(@hist_linear(reads, 0, 1000, 100))
+    println()
+    println("Writes:")
+    print(@hist_linear(writes, 0, 1000, 100))
+}
+</pre>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Výsledky demonstračního příkladu</h2>
+
+<p>Pokud <a href="#k08">výše uvedený skript</a> spustíme na středně vytíženém
+systému, můžeme získat například následující dva histogramy. Ty jsou samozřejmě
+vytištěny na standardní výstup, vystačíme si tedy s&nbsp;pouhým terminálem.
+Znaky ~ jsou použity pro vynechání &bdquo;nezajímavých&ldquo; hodnot, znak &gt;
+na začátku řádku zase říká, že maximální hodnota je příliš nízká:</p>
+
+<pre>
+Reads:
+value |-------------------------------------------------- count
+    0 |                                                       0
+  100 |                                                       2
+  200 |                                                       0
+  300 |@                                                     10
+      ~
+  800 |                                                       0
+  900 |                                                       0
+ 1000 |                                                       1
+&gt;1000 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  35621
+</pre>
+
+<p>Histogram zápisů vypadá zcela jinak a naznačuje, že některé procesy zapisují
+po jednotlivých znacích (možná na standardní výstup) či mají malý buffer:</p>
+
+<pre>
+Writes:
+value |-------------------------------------------------- count
+    0 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  17940
+  100 |@@@@@@@@@@@@@@@@@@@@@@@@@@                          9492
+  200 |@                                                    468
+  300 |@@                                                   873
+  400 |@@                                                  1070
+  500 |                                                     211
+  600 |                                                      91
+  700 |                                                      26
+  800 |                                                      12
+  900 |                                                       1
+ 1000 |                                                       5
+&gt;1000 |                                                     147
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Základní funkce pro získání statistických informací</h2>
+
+<p>Na prvky (globálního) pole použitého pro tvorbu histogramu je možné
+aplikovat i některé další funkce vracející mnohdy užitečné statistické
+informace:</p>
+
+<table>
+<tr><th>#</th><th>Funkce</th><th>Stručný popis</th></tr>
+<tr><td>1</td><td>@count()</td><td>počet prvků (vzorků)</td></tr>
+<tr><td>2</td><td>@sum</td><td>součet (suma) hodnot prvků</td></tr>
+<tr><td>3</td><td>@min</td><td>nalezení vzorku s&nbsp;minimální hodnotou</td></tr>
+<tr><td>4</td><td>@max</td><td>nalezení vzorku s&nbsp;maximální hodnotou</td></tr>
+<tr><td>5</td><td>@avg</td><td>výpočet průměrné hodnoty</td></tr>
+<tr><td>6</td><td>@hist_linear</td><td>normální histogram s&nbsp;lineární osou</td></tr>
+<tr><td>7</td><td>@hist_log</td><td>histogram s&nbsp;logaritmickou osou</td></tr>
+</table>
+
+<p>Histogram s&nbsp;logaritmickou osou vypadá takto:</p>
+
+<pre>
+value |-------------------------------------------------- count
+    1 |                                                      0
+    2 |                                                      0
+    4 |                                                      0
+    8 |                                                      0
+   16 |                                                      0
+   32 |                                                      0
+   64 |                                                      0
+  128 |                                                      0
+  256 |                                                      0
+  512 |                                                      0
+ 1024 |                                                      0
+ 2048 |                                                      0
+ 4096 |                                                      0
+</pre>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Demonstrační příklad: získání statistických informací o čtení a zápisech do souborů</h2>
+
+<p>Zmíněné funkce pro výpočet základních statistických veličin byly přidány do
+dalšího demonstračního příkladu, který opět sleduje čtení a zápisy do souborů.
+Při ukončení skriptu (stisk Ctrl+C popř.&nbsp;po dosažení 10000 čtení/zápisů)
+se v&nbsp;sondě <strong>end</strong> jednotlivé hodnoty vypočtou a následně
+zobrazí. Mimochodem, povšimněte si, že se funkce <strong>printf</strong> chová
+prakticky stejně jako v&nbsp;céčku (až na ten rozdíl, že v&nbsp;SystemTapu se
+lépe kontrolují typy parametrů):</p>
+
+<pre>
+global reads
+global writes
+global read_write_count=0
+&nbsp;
+probe begin
+{
+    println("STAP prepared");
+}
+&nbsp;
+probe process("ls").begin
+{
+    printf("ls with PID=%d started\n", pid());
+}
+&nbsp;
+probe process("ls").end
+{
+    printf("ls with PID=%d finished\n", pid());
+}
+&nbsp;
+probe syscall.open
+{
+    filename = user_string($filename);
+    printf("ls opened file %s\n", filename);
+}
+&nbsp;
+probe syscall.read
+{
+    bytes=$count
+    into=$fd
+    reads &lt;&lt;&lt; bytes
+    printf("read %d bytes from file descriptor %d\n", bytes, into);
+    read_write_count++
+    if (read_write_count&gt;10000) exit()
+}
+&nbsp;
+probe syscall.write
+{
+    bytes=$count
+    into=$fd
+    writes &lt;&lt;&lt; bytes
+    printf("write %d bytes to file descriptor %d\n", bytes, into);
+    read_write_count++
+    if (read_write_count&gt;10000) exit()
+}
+&nbsp;
+probe end
+{
+    println("Reads:")
+    printf("Count: %d operations\n", @count(reads))
+    printf("Total: %d bytes\n", @sum(reads))
+    printf("Min:   %d bytes\n", @min(reads))
+    printf("Max:   %d bytes\n", @max(reads))
+    printf("Avg:   %d bytes/operation\n", @avg(reads))
+&nbsp;
+    println()
+    println("Writes:")
+    printf("Count: %d operations\n", @count(writes))
+    printf("Total: %d bytes\n", @sum(writes))
+    printf("Min:   %d bytes\n", @min(writes))
+    printf("Max:   %d bytes\n", @max(writes))
+    printf("Avg:   %d bytes/operation\n", @avg(writes))
+}
+</pre>
+
+<p>Výsledky demonstračního příkladu mohou vypadat následovně (čistě náhodou se
+počet čtení prakticky rovná počtu zápisů, vy však na svém systému můžete
+naměřit odlišné hodnoty):</p>
+
+<pre>
+Reads:
+Count: 5003 operations
+Total: 538640392 bytes
+Min:   8196 bytes
+Max:   131072 bytes
+Avg:   107663 bytes/operation
+&nbsp;
+Writes:
+Count: 4999 operations
+Total: 828740 bytes
+Min:   40 bytes
+Max:   2312 bytes
+Avg:   165 bytes/operation
+</pre>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>SystemTap Reference: Context Functions<br />
+<a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html/SystemTap_Tapset_Reference/context_stp.html">https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html/SystemTap_Tapset_Reference/context_stp.html</a>
+</li>
+
+<li>SystemTap Beginners Guide (RHEL 6)<br />
+<a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html/SystemTap_Beginners_Guide/index.html">https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html/SystemTap_Beginners_Guide/index.html</a>
+</li>
+
+<li>SystemTap Tapset Reference (RHEL 6)<br />
+<a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html-single/SystemTap_Tapset_Reference/index.html">https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html-single/SystemTap_Tapset_Reference/index.html</a>
+</li>
+
+<li>SystemTap Beginners Guide (RHEL 7)<br />
+<a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/SystemTap_Beginners_Guide/index.html">https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/SystemTap_Beginners_Guide/index.html</a>
+</li>
+
+<li>SystemTap Tapset Reference (RHEL 6)<br />
+<a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/SystemTap_Tapset_Reference/index.html">https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/SystemTap_Tapset_Reference/index.html</a>
+</li>
+
+<li>Debuggery a jejich nadstavby v Linuxu<br />
+<a href="http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu/">http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu/</a>
+</li>
+
+<li>Debuggery a jejich nadstavby v Linuxu (2. část)<br />
+<a href="http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-2-cast/">http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-2-cast/</a>
+</li>
+
+<li>Debuggery a jejich nadstavby v Linuxu (3): Nemiver<br />
+<a href="http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-3-nemiver/">http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-3-nemiver/</a>
+</li>
+
+<li>Debuggery a jejich nadstavby v Linuxu (4): KDbg<br />
+<a href="http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-4-kdbg/">http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-4-kdbg/</a>
+</li>
+
+<li>Debuggery a jejich nadstavby v Linuxu (5): ladění aplikací v&nbsp;editorech Emacs a Vim<br />
+<a href="http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-5-ladeni-aplikaci-v-editorech-emacs-a-vim/">http://mojefedora.cz/debuggery-a-jejich-nadstavby-v-linuxu-5-ladeni-aplikaci-v-editorech-emacs-a-vim/</a>
+</li>
+
+<li>Tracing (software)<br />
+<a href="https://en.wikipedia.org/wiki/Tracing_%28software%29">https://en.wikipedia.org/wiki/Tracing_%28software%29</a>
+</li>
+
+<li>ltrace(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/ltrace">http://linux.die.net/man/1/ltrace</a>
+</li>
+
+<li>ltrace (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Ltrace">https://en.wikipedia.org/wiki/Ltrace</a>
+</li>
+
+<li>strace(1) - Linux man page<br />
+<a href="http://linux.die.net/man/1/strace">http://linux.die.net/man/1/strace</a>
+</li>
+
+<li>strace (stránka projektu na SourceForge)<br />
+<a href="https://sourceforge.net/projects/strace/">https://sourceforge.net/projects/strace/</a>
+</li>
+
+<li>strace (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Strace">https://en.wikipedia.org/wiki/Strace</a>
+</li>
+
+<li>SystemTap (stránka projektu)<br />
+<a href="https://sourceware.org/systemtap/">https://sourceware.org/systemtap/</a>
+</li>
+
+<li>SystemTap (Wiki projektu)<br />
+<a href="https://sourceware.org/systemtap/wiki">https://sourceware.org/systemtap/wiki</a>
+</li>
+
+<li>SystemTap (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/SystemTap">https://en.wikipedia.org/wiki/SystemTap</a>
+</li>
+
+<li>Dynamic Tracing with DTrace &amp; SystemTap<br />
+<a href="http://myaut.github.io/dtrace-stap-book/">http://myaut.github.io/dtrace-stap-book/</a>
+</li>
+
+<li>DTrace (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/DTrace">https://en.wikipedia.org/wiki/DTrace</a>
+</li>
+
+<li>GDB - Dokumentace<br />
+<a href="http://sourceware.org/gdb/current/onlinedocs/gdb/">http://sourceware.org/gdb/current/onlinedocs/gdb/</a>
+</li>
+
+<li>GDB - Supported Languages<br />
+<a href="http://sourceware.org/gdb/current/onlinedocs/gdb/Supported-Languages.html#Supported-Languages">http://sourceware.org/gdb/current/onlinedocs/gdb/Supported-Languages.html#Supported-Languages</a>
+</li>
+
+<li>GNU Debugger (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/GNU_Debugger">https://en.wikipedia.org/wiki/GNU_Debugger</a>
+</li>
+
+<li>The LLDB Debugger<br />
+<a href="http://lldb.llvm.org/">http://lldb.llvm.org/</a>
+</li>
+
+<li>Debugger (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Debugger">https://en.wikipedia.org/wiki/Debugger</a>
+</li>
+
+<li>13 Linux Debuggers for C++ Reviewed<br />
+<a href="http://www.drdobbs.com/testing/13-linux-debuggers-for-c-reviewed/240156817">http://www.drdobbs.com/testing/13-linux-debuggers-for-c-reviewed/240156817</a>
+</li>
+
+<li>Getting started with ltrace: how does it do that?<br />
+<a href="https://www.ellexus.com/getting-started-with-ltrace-how-does-it-do-that/">https://www.ellexus.com/getting-started-with-ltrace-how-does-it-do-that/</a>
+</li>
+
+<li>Reverse Engineering Tools in Linux – strings, nm, ltrace, strace, LD_PRELOAD<br />
+<a href="http://www.thegeekstuff.com/2012/03/reverse-engineering-tools/">http://www.thegeekstuff.com/2012/03/reverse-engineering-tools/</a>
+</li>
+
+<li>7 Strace Examples to Debug the Execution of a Program in Linux<br />
+<a href="http://www.thegeekstuff.com/2011/11/strace-examples/">http://www.thegeekstuff.com/2011/11/strace-examples/</a>
+</li>
+
+<li>Oracle® Solaris 11.3 DTrace (Dynamic Tracing) Guide<br />
+<a href="http://docs.oracle.com/cd/E53394_01/html/E53395/gkwpo.html#scrolltoc">http://docs.oracle.com/cd/E53394_01/html/E53395/gkwpo.html#scrolltoc</a>
+</li>
+
+<li>An Introduction To Using GDB Under Emacs<br />
+<a href="http://tedlab.mit.edu/~dr/gdbintro.html">http://tedlab.mit.edu/~dr/gdbintro.html</a>
+</li>
+
+<li>GNU Emacs<br />
+<a href="https://www.gnu.org/software/emacs/emacs.html">https://www.gnu.org/software/emacs/emacs.html</a>
+</li>
+
+<li>The Emacs Editor<br />
+<a href="https://www.gnu.org/software/emacs/manual/html_node/emacs/index.html">https://www.gnu.org/software/emacs/manual/html_node/emacs/index.html</a>
+</li>
+
+<li>Emacs Lisp<br />
+<a href="https://www.gnu.org/software/emacs/manual/html_node/elisp/index.html">https://www.gnu.org/software/emacs/manual/html_node/elisp/index.html</a>
+</li>
+
+<li>An Introduction to Programming in Emacs Lisp<br />
+<a href="https://www.gnu.org/software/emacs/manual/html_node/eintr/index.html">https://www.gnu.org/software/emacs/manual/html_node/eintr/index.html</a>
+</li>
+
+<li>27.6 Running Debuggers Under Emacs<br />
+<a href="https://www.gnu.org/software/emacs/manual/html_node/emacs/Debuggers.html">https://www.gnu.org/software/emacs/manual/html_node/emacs/Debuggers.html</a>
+</li>
+
+<li>GdbMode<br />
+<a href="http://www.emacswiki.org/emacs/GdbMode">http://www.emacswiki.org/emacs/GdbMode</a>
+</li>
+
+<li>Emacs (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Emacs">https://en.wikipedia.org/wiki/Emacs</a>
+</li>
+
+<li>Emacs Lisp (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Emacs_Lisp">https://en.wikipedia.org/wiki/Emacs_Lisp</a>
+</li>
+
+<li>Pyclewn installation notes<br />
+<a href="http://pyclewn.sourceforge.net/install.html">http://pyclewn.sourceforge.net/install.html</a>
+</li>
+
+<li>pip Installation<br />
+<a href="https://pip.pypa.io/en/latest/installing.html">https://pip.pypa.io/en/latest/installing.html</a>
+</li>
+
+<li>Clewn<br />
+<a href="http://clewn.sourceforge.net/">http://clewn.sourceforge.net/</a>
+</li>
+
+<li>Clewn installation<br />
+<a href="http://clewn.sourceforge.net/install.html">http://clewn.sourceforge.net/install.html</a>
+</li>
+
+<li>Clewn - soubory<br />
+<a href="http://sourceforge.net/projects/clewn/files/OldFiles/">http://sourceforge.net/projects/clewn/files/OldFiles/</a>
+</li>
+
+<li>KDbg: úvodní stránka<br />
+<a href="http://www.kdbg.org/">http://www.kdbg.org/</a>
+</li>
+
+<li>Nemiver (stránky projektu)<br />
+<a href="https://wiki.gnome.org/Apps/Nemiver">https://wiki.gnome.org/Apps/Nemiver</a>
+</li>
+
+<li>Basic Assembler Debugging with GDB<br />
+<a href="http://dbp-consulting.com/tutorials/debugging/basicAsmDebuggingGDB.html">http://dbp-consulting.com/tutorials/debugging/basicAsmDebuggingGDB.html</a>
+</li>
+
+<li>Nemiver FAQ<br />
+<a href="https://wiki.gnome.org/Apps/Nemiver/FAQ">https://wiki.gnome.org/Apps/Nemiver/FAQ</a>
+</li>
+
+<li>Nemiver (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Nemiver">https://en.wikipedia.org/wiki/Nemiver</a>
+</li>
+
+<li>Data Display Debugger<br />
+<a href="https://www.gnu.org/software/ddd/">https://www.gnu.org/software/ddd/</a>
+</li>
+
+<li>GDB - Dokumentace<br />
+<a href="http://sourceware.org/gdb/current/onlinedocs/gdb/">http://sourceware.org/gdb/current/onlinedocs/gdb/</a>
+</li>
+
+<li>BASH Debugger<br />
+<a href="http://bashdb.sourceforge.net/">http://bashdb.sourceforge.net/</a>
+</li>
+
+<li>The Perl Debugger(s)<br />
+<a href="http://debugger.perl.org/">http://debugger.perl.org/</a>
+</li>
+
+<li>Visual Debugging with DDD<br />
+<a href="http://www.drdobbs.com/tools/visual-debugging-with-ddd/184404519">http://www.drdobbs.com/tools/visual-debugging-with-ddd/184404519</a>
+</li>
+
+<li>Pydb - Extended Python Debugger<br />
+<a href="http://bashdb.sourceforge.net/pydb/">http://bashdb.sourceforge.net/pydb/</a>
+</li>
+
+<li>Insight<br />
+<a href="http://www.sourceware.org/insight/">http://www.sourceware.org/insight/</a>
+</li>
+
+<li>Supported Languages (GNU Debugger)<br />
+<a href="http://sourceware.org/gdb/current/onlinedocs/gdb/Supported-Languages.html#Supported-Languages">http://sourceware.org/gdb/current/onlinedocs/gdb/Supported-Languages.html#Supported-Languages</a>
+</li>
+
+<li>GNU Debugger (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/GNU_Debugger">https://en.wikipedia.org/wiki/GNU_Debugger</a>
+</li>
+
+<li>The LLDB Debugger<br />
+<a href="http://lldb.llvm.org/">http://lldb.llvm.org/</a>
+</li>
+
+<li>Debugger (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Debugger">https://en.wikipedia.org/wiki/Debugger</a>
+</li>
+
+<li>13 Linux Debuggers for C++ Reviewed<br />
+<a href="http://www.drdobbs.com/testing/13-linux-debuggers-for-c-reviewed/240156817">http://www.drdobbs.com/testing/13-linux-debuggers-for-c-reviewed/240156817</a>
+</li>
+
+<li>Clewn<br />
+<a href="http://clewn.sourceforge.net/">http://clewn.sourceforge.net/</a>
+</li>
+
+<li>Clewn installation<br />
+<a href="http://clewn.sourceforge.net/install.html">http://clewn.sourceforge.net/install.html</a>
+</li>
+
+<li>Clewn - soubory ke stažení<br />
+<a href="http://sourceforge.net/projects/clewn/files/OldFiles/">http://sourceforge.net/projects/clewn/files/OldFiles/</a>
+</li>
+
+<li>Pyclewn installation notes<br />
+<a href="http://pyclewn.sourceforge.net/install.html">http://pyclewn.sourceforge.net/install.html</a>
+</li>
+
+<li>Debugging<br />
+<a href="http://janus.uclan.ac.uk/pagray/labs/debug.htm">http://janus.uclan.ac.uk/pagray/labs/debug.htm</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
