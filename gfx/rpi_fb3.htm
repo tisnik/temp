@@ -1,0 +1,1687 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Operace s framebufferem na Raspberry Pi (vykreslování složitějších objektů)</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Operace s framebufferem na Raspberry Pi (vykreslování složitějších objektů)</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Ve třetí části článku o použití framebufferu na populárním jednodeskovém mikropočítači Raspberry Pi si na trojici příkladů ukážeme, jak lze využít znalosti o formátu framebufferu při vykreslování složitějších objektů, především úseček.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Operace s&nbsp;framebufferem na Raspberry Pi (vykreslování složitějších objektů)</a></p>
+<p><a href="#k02">2. Vylepšení vykreslování pixelů do framebufferů s&nbsp;formáty RGBA a BGRA (true color)</a></p>
+<p><a href="#k03">3. Demonstrační příklad <strong>fpi_fb7.c</strong>: vylepšená operace typu putpixel</a></p>
+<p><a href="#k04">4. Slavný Bresenhamův algoritmus pro vykreslení úsečky</a></p>
+<p><a href="#k05">5. Adaptace Bresenhamova algoritmu s&nbsp;voláním funkce putpixel</a></p>
+<p><a href="#k06">6. Úplný zdrojový kód dnešního druhého demonstračního příkladu <strong>fpi_fb8.c</strong></a></p>
+<p><a href="#k07">7. Urychlení vykreslování úseček: rychlejší výpočet barev a adres pixelů</a></p>
+<p><a href="#k08">8. Bresenhamův algoritmus pro framebuffery s&nbsp;formáty RGBA a BGRA (true color)</a></p>
+<p><a href="#k09">9. Bresenhamův algoritmus pro framebuffery s&nbsp;formátem hi-color 565</a></p>
+<p><a href="#k10">10. Úplný zdrojový kód dnešního třetího demonstračního příkladu <strong>fpi_fb9.c</strong></a></p>
+<p><a href="#k11">11. Repositář s&nbsp;demonstračními příklady</a></p>
+<p><a href="#k12">12. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">1. Operace s&nbsp;framebufferem na Raspberry Pi (vykreslování složitějších objektů)</h2>
+
+<p>Způsob zápisu barev jednotlivých pixelů do framebufferu, s&nbsp;nímž jsme se
+seznámili <a
+href="http://www.root.cz/clanky/operace-s-framebufferem-na-raspberry-pi-vykreslovani-do-framebufferu/">ve
+druhé části</a> tohoto seriálu, je možné použít i pro vykreslování složitějších
+objektů. V&nbsp;některých knihovnách, jmenujme například populární <a
+href="http://www.libsdl.org/">SDL</a>, je množina objektů (či geometrických
+tvarů), které je možné přímo vykreslit, poměrně malá a omezuje se vlastně jen
+na vyplněné osově orientované obdélníky (funkce <a
+href="http://wiki.libsdl.org/SDL_FillRect">SDL_FillRect</a>). Pro vykreslování
+složitějších objektů je nutné použít nějaké nadstavbové knihovny postavené nad
+SDL. Podobně je koncipována i nová verze konkurenční knihovny <a
+href="http://liballeg.org/">Allegro</a>, v&nbsp;níž se složitější objekty
+vykreslují s&nbsp;využitím přídavného modulu nazvaného <a
+href="http://liballeg.org/a5docs/trunk/primitives.html">allegro_primitives</a>.</p>
+
+<a href="http://www.root.cz/obrazek/235978/"><img src="https://i.iinfo.cz/images/49/rpi3-1-prev.png" class="image-235978" alt="&#160;" height="270" width="360" /></a>
+<p><i>Obrázek 1: Pro tvorbu 2D a 3D grafů je ve skutečnosti zapotřebí
+implementovat vykreslování jen minimálního počtu grafických objektů &ndash;
+bodů, úseček a znaků.</i></p>
+
+<p>Dnes si ukážeme, jakým způsobem je možné implementovat funkce pro
+vykreslování úseček. Tento geometrický tvar byl zvolen z&nbsp;toho důvodu, že
+si při jeho vykreslování již nevystačíme s&nbsp;pouhou operací typu
+<i>putpixel</i>, resp.&nbsp;přesněji řečeno je použití této funkce při kreslení
+úseček velmi pomalé (a to i na Raspberry Pi). Ovšem druhý důvod, proč jsem
+vybral zrovna algoritmus pro vykreslování úseček, je praktičtější: setkal jsem
+se již s&nbsp;několika projekty, v&nbsp;nichž by bylo vhodné využít Raspberry
+Pi nejenom k&nbsp;řízení nějakých zařízení či ke zjišťování různých údajů
+z&nbsp;připojených čidel (teplota atd.), ale i k&nbsp;zobrazení naměřených či
+vypočtených hodnot formou grafu na připojený monitor. A právě při kresbě os
+grafů, uživatelského rozhraní i vlastních průběhů hodnot může být rychlý
+algoritmus pro kreslení úseček užitečný, zejména po doplnění knihovny funkcemi
+pro práci s&nbsp;fonty.</p>
+
+<a href="http://www.root.cz/obrazek/235979/"><img src="https://i.iinfo.cz/images/375/rpi3-2-prev.png" class="image-235979" alt="&#160;" height="270" width="360" /></a>
+<p><i>Obrázek 2: I s&nbsp;naprostým minimem kreslicích funkcí je možné vytvořit
+působivé retro hry (zde screenshot z&nbsp;původní varianty slavné automatovky
+Lunar Lander).</i></p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">2. Vylepšení vykreslování pixelů do framebufferů s&nbsp;formáty RGBA a BGRA (true color)</h2>
+
+<p>Před popisem algoritmu vykreslení úseček se ještě na chvíli zastavme u
+způsobu kódování barev u pixelů zapisovaných do framebufferů podporujících
+tzv.&nbsp;&bdquo;pravé barvy&ldquo; neboli &bdquo;true-color&ldquo;. U takto
+nakonfigurovaných framebufferů se pro zakódování barvy pixelu používají buď tři
+bajty nebo bajty čtyři, přičemž druhá varianta sice vede k&nbsp;nárůstu
+kapacity framebufferu o 25%, ovšem předností je uchování hodnoty (barvy) pixelu
+v&nbsp;jediném 32bitovém slově, což může znamenat značné urychlení některých
+operací (to se týká i dnes prezentovaného algoritmu pro vykreslení úsečky).
+Problém je jen jeden &ndash; jak správně reagovat na různé způsoby ukládání
+barev pixelů. U těch framebufferů, kde se pro uložení barvy jednoho pixelu
+používají tři bajty, se setkáme s&nbsp;posloupností R-G-B či B-G-R. Zajímavější
+(čti komplikovanější) je situace v&nbsp;případě, že je jeden pixel
+reprezentován čtyřmi bajty. Zde se mohou vyskytnout kombinace R-G-B-A, B-G-R-A,
+A-R-G-B či A-B-G-R (A je buď alfa kanál nebo hodnota, která se nijak
+neinterpretuje).</p>
+
+<p><a
+href="http://www.root.cz/clanky/operace-s-framebufferem-na-raspberry-pi-vykreslovani-do-framebufferu/#k11">V&nbsp;příkladu</a>,
+který jsme si ukázali v&nbsp;závěru předchozího článku, se pro rozhodování, jak
+zapisovat barvové složky do framebufferu, používala poměrně jednoduchá funkce,
+v&nbsp;níž se rozhodovalo pouze na základě bitové hloubky framebufferu:</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce, ktera vraci korektni funkci pro operaci putpixel().</i>
+<i> */</i>
+PutpixelFunction getProperPutpixelFunction(<strong>int</strong> bits_per_pixel, <strong>int</strong> type, <strong>int</strong> visual)
+{
+    <i>/* umime rozeznat pouze format bez bitovych rovin a bez palety */</i>
+    <strong>if</strong> (type == FB_TYPE_PACKED_PIXELS &amp;&amp; visual == FB_VISUAL_TRUECOLOR) {
+        <strong>if</strong> (bits_per_pixel == 16) {
+            <strong>return</strong> putpixel565;
+        }
+        <strong>if</strong> (bits_per_pixel == 32) {
+            <i>/* toto neni zcela korektni, bylo by nutne rozlisit RGBA, ABGR, ARGB atd.*/</i>
+            <i>/* (ukol pro vazene ctenare :) */</i>
+            <strong>return</strong> putpixelRGBA;
+        }
+    }
+    <strong>return</strong> putpixelNull;
+}
+</pre>
+
+<a href="http://www.root.cz/obrazek/235980/"><img src="https://i.iinfo.cz/images/588/rpi3-3-prev.png" class="image-235980" alt="&#160;" height="182" width="370" /></a>
+<p><i>Obrázek 3: Zápis barvových složek do framebufferu na Raspberry Pi ve
+špatném pořadí (viz demonstrační příklad z&nbsp;minulého článku).</i></p>
+
+<p>Aby se tato funkce chovala správně minimálně na Raspberry Pi, je nutné ji
+nepatrně upravit:</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce, ktera vraci korektni funkci pro operaci putpixel().</i>
+<i> */</i>
+PutpixelFunction getProperPutpixelFunction(<strong>int</strong> bits_per_pixel, <strong>int</strong> type, <strong>int</strong> visual, <strong>int</strong> redOffset)
+{
+    <i>/* umime rozeznat pouze format bez bitovych rovin a bez palety */</i>
+    <strong>if</strong> (type == FB_TYPE_PACKED_PIXELS &amp;&amp; visual == FB_VISUAL_TRUECOLOR) {
+        <strong>if</strong> (bits_per_pixel == 16) {
+            <strong>return</strong> putpixel565;
+        }
+        <strong>if</strong> (bits_per_pixel == 32) {
+            <strong>if</strong> (redOffset == 16) {
+                <strong>return</strong> putpixelBGRA;
+            }
+            <strong>else</strong> {
+                <strong>return</strong> putpixelRGBA;
+            }
+        }
+    }
+    <strong>return</strong> putpixelNull;
+}
+</pre>
+
+<p>Záměr je zde zřejmý &ndash; u framebufferů s&nbsp;bitovou hloubkou 16bpp se
+stále používá stejná funkce <strong>putpixel565</strong>, zatímco u
+framebufferů s&nbsp;hloubkou 32bpp se na základě pozice (offsetu) červené
+barvové složky rozhodne, zda se jedná o formát RGBA či BGRA. Otázka pro
+čtenáře: co se stane v&nbsp;případě, že se program spustí na počítači
+s&nbsp;framebufferem, který má formát ABGR či ARGB? Resp.&nbsp;jinak: postačuje
+skutečně testovat pouze offset červené složky?</p>
+
+<a href="http://www.root.cz/obrazek/235981/"><img src="https://i.iinfo.cz/images/90/rpi3-4-prev.png" class="image-235981" alt="&#160;" height="180" width="370" /></a>
+<p><i>Obrázek 4: Zápis barvových složek do framebufferu na Raspberry Pi ve
+špatném pořadí (viz demonstrační příklad v&nbsp;další kapitole).</i></p>
+
+<p>Doplňková funkce pro vykreslení pixelů je velmi jednoduchá:</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni pro Raspberry Pi s poradim bajtu R,G,B,A.</i>
+<i> */</i>
+<strong>void</strong> putpixelRGBA(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    putpixelBGRA(x, y, b, g, r, pixels, line_length);
+}
+</pre>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">3. Demonstrační příklad <strong>fpi_fb7.c</strong>: vylepšená operace typu putpixel</h2>
+
+<p>Úplný zdrojový kód demonstračního příkladu, v&nbsp;němž se použije upravený
+algoritmus pro výběr správné funkce pro vykreslení pixelů, vypadá následovně a
+naleznete ho samozřejmě <a
+href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb7.c">i
+na GitHubu</a>. Tento příklad je funkční na Raspberry Pi jak při výběru
+16bitové hloubky framebufferu, tak i při použití hloubky 32bitové:</p>
+
+<pre>
+<i>/* Framebuffer na jednodeskovem mikropocitaci Raspberry Pi */</i>
+<i>/* Autor: Pavel Tisnovsky, 2016 */</i>
+&nbsp;
+<i>/* Demonstracni priklad cislo 7: rozdil mezi formatem RGBA a BGRA</i>
+<i> *                               pri vykreslovani pixelu. */</i>
+&nbsp;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;linux/fb.h&gt;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Datova struktura, do niz se ulozi informace o framebufferu.</i>
+<i> * Blizsi informace o teto strukture je mozne nalezt v hlavickovem souboru</i>
+<i> * dostupnem v adresari "/usr/include/linux/fb.h"</i>
+<i> */</i>
+<strong>typedef</strong> struct fb_var_screeninfo FramebufferInfo;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Druha datova struktura popisujici zbyvajici vlastnosti framebufferu.</i>
+<i> * Blizsi informace o teto strukture je mozne nalezt v hlavickovem souboru</i>
+<i> * dostupnem v adresari "/usr/include/linux/fb.h"</i>
+<i> */</i>
+<strong>typedef</strong> struct fb_fix_screeninfo ModeInfo;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Precteni vsech relevantnich informaci zjistenych o framebufferu. Pro korektni</i>
+<i> * funkci je zapotrebi, aby mel uzivatel pristup k zarizeni /dev/fb0</i>
+<i> * (postacuje byt ve skupine 'video' ci pouziti su/sudo)</i>
+<i> */</i>
+<strong>int</strong> readFramebufferInfo(<strong>int</strong> framebufferDevice,
+                        FramebufferInfo *framebufferInfoPtr,
+                        ModeInfo        *modeInfoPtr)
+{
+    <i>/* Pokud operace ioctl probehne v poradku, vrati se 0 */</i>
+    <strong>if</strong> (ioctl(framebufferDevice, FBIOGET_VSCREENINFO, framebufferInfoPtr)) {
+        perror("Nelze precist informace o framebufferu");
+        <strong>return</strong> 0;
+    }
+&nbsp;
+    <i>/* Pokud operace ioctl probehne v poradku, vrati se 0 */</i>
+    <strong>if</strong> (ioctl(framebufferDevice, FBIOGET_FSCREENINFO, modeInfoPtr)) {
+        perror("Nelze precist informace o rezimu");
+        <strong>return</strong> 0;
+    }
+    <strong>return</strong> 1;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pro nezname graficke rezimy.</i>
+<i> */</i>
+<strong>void</strong> putpixelNull(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni napriklad pro graficke karty Intel.</i>
+<i> */</i>
+<strong>void</strong> putpixelBGRA(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x&lt;&lt;2) + y*line_length;
+    <i>/* &lt;&lt; 2 nahrazuje nasobeni ctyrmi */</i>
+&nbsp;
+    <i>/* vlastni provedeni zapisu */</i>
+    *(pixels+index) = b;
+    index++;
+    *(pixels+index) = g;
+    index++;
+    *(pixels+index) = r;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni pro Raspberry Pi s poradim bajtu R,G,B,A.</i>
+<i> */</i>
+<strong>void</strong> putpixelRGBA(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    putpixelBGRA(x, y, b, g, r, pixels, line_length);
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy hi-color</i>
+<i> * s formatem 5-6-5.</i>
+<i> */</i>
+<strong>void</strong> putpixel565(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+#define RED_OFFSET     11
+#define GREEN_OFFSET    5
+#define BLUE_OFFSET     0
+#define RED_LOST_BITS   3
+#define GREEN_LOST_BITS 2
+#define BLUE_LOST_BITS  3
+    <i>/* vypocet barvy pixelu, v zavorce nejdrive snizime bitovou sirku</i>
+    <i> * rezervovanou pro jednotlive barvove slozky a posleze bity, ktere</i>
+    <i> * reprezentuji barvovou slozku posuneme do spravne pozice ve slove */</i>
+    <strong>unsigned</strong> <strong>int</strong> pixel_value = (r &gt;&gt; RED_LOST_BITS)   &lt;&lt; RED_OFFSET |
+                               (g &gt;&gt; GREEN_LOST_BITS) &lt;&lt; GREEN_OFFSET |
+                               (b &gt;&gt; BLUE_LOST_BITS)  &lt;&lt; BLUE_OFFSET;
+&nbsp;
+    <i>/* prevod na dvojici bajtu */</i>
+    <strong>unsigned</strong> <strong>char</strong> byte1 = pixel_value &amp; 0xff;
+    <strong>unsigned</strong> <strong>char</strong> byte2 = pixel_value &gt;&gt; 8;
+&nbsp;
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x&lt;&lt;1) + y*line_length;
+    <i>/* &lt;&lt; 1 nahrazuje nasobeni dvema */</i>
+&nbsp;
+    <i>/* vlastni provedeni zapisu */</i>
+    *(pixels+index) = byte1;
+    index++;
+    *(pixels+index) = byte2;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Novy datovy typ - ukazatel na (libovolnou) funkci putpixel.</i>
+<i> */</i>
+<strong>typedef</strong> <strong>void</strong> (*PutpixelFunction)(<strong>const</strong> <strong>int</strong>, <strong>const</strong> <strong>int</strong>,
+                                 <strong>const</strong> <strong>char</strong>, <strong>const</strong> <strong>char</strong>, <strong>const</strong> <strong>char</strong>,
+                                 <strong>char</strong>*, <strong>const</strong> <strong>int</strong>);
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce, ktera vraci korektni funkci pro operaci putpixel().</i>
+<i> */</i>
+PutpixelFunction getProperPutpixelFunction(<strong>int</strong> bits_per_pixel, <strong>int</strong> type, <strong>int</strong> visual, <strong>int</strong> redOffset)
+{
+    <i>/* umime rozeznat pouze format bez bitovych rovin a bez palety */</i>
+    <strong>if</strong> (type == FB_TYPE_PACKED_PIXELS &amp;&amp; visual == FB_VISUAL_TRUECOLOR) {
+        <strong>if</strong> (bits_per_pixel == 16) {
+            <strong>return</strong> putpixel565;
+        }
+        <strong>if</strong> (bits_per_pixel == 32) {
+            <strong>if</strong> (redOffset == 16) {
+                <strong>return</strong> putpixelBGRA;
+            }
+            <strong>else</strong> {
+                <strong>return</strong> putpixelRGBA;
+            }
+        }
+    }
+    <strong>return</strong> putpixelNull;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Vykresleni testovaciho obrazku s vyuzitim funkce putpixel.</i>
+<i> */</i>
+<strong>void</strong> drawTestImage(<strong>int</strong> framebufferDevice,
+                   FramebufferInfo *framebufferInfoPtr,
+                   ModeInfo        *modeInfoPtr)
+{
+#define OFFSET 300
+    <i>/* casto pouzivane konstanty */</i>
+    <strong>const</strong> <strong>int</strong> buffer_length = modeInfoPtr-&gt;smem_len;
+    <strong>const</strong> <strong>int</strong> xres = framebufferInfoPtr-&gt;xres;
+    <strong>const</strong> <strong>int</strong> yres = framebufferInfoPtr-&gt;yres;
+&nbsp;
+    <i>/* ziskame spravnou verzi funkce putpixel */</i>
+    PutpixelFunction putpixel = getProperPutpixelFunction(framebufferInfoPtr-&gt;bits_per_pixel,
+                                                          modeInfoPtr-&gt;type,
+                                                          modeInfoPtr-&gt;visual,
+                                                          framebufferInfoPtr-&gt;red.offset);
+&nbsp;
+    <i>/* ziskat primy pristup do framebufferu */</i>
+    <strong>char</strong> *pixels = (char*)mmap(0, buffer_length,
+                               PROT_READ | PROT_WRITE,
+                               MAP_SHARED, framebufferDevice,
+                               0);
+&nbsp;
+    <strong>if</strong> (pixels != MAP_FAILED) {
+        <strong>int</strong> x, y;
+        <strong>int</strong> r, g, b;
+        <i>/* nejprve vymazeme cely framebuffer */</i>
+        memset(pixels, 0, buffer_length);
+&nbsp;
+        <i>/* vykreslime nekolik ctvercu o velikosti 256x256 pixelu</i>
+        <i> * s gradientnim barevnym prechodem */</i>
+        <strong>for</strong> (y=0; y&lt;256; y++) {
+            <strong>for</strong> (x=0; x&lt;256; x++) {
+                <i>/* prvni rada - gradientni prechody */</i>
+                <strong>if</strong> (yres &gt; 256) {
+                    <i>/* cerveny gradient */</i>
+                    <strong>if</strong> (xres &gt; 256) {
+                        r=y; g=0; b=0;
+                        putpixel(x, y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                    <i>/* zeleny gradient */</i>
+                    <strong>if</strong> (xres &gt; 256 + OFFSET) {
+                        r=0; g=y; b=0;
+                        putpixel(OFFSET+x, y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                    <i>/* modry gradient */</i>
+                    <strong>if</strong> (xres &gt; 256 + OFFSET*2) {
+                        r=0; g=0; b=y;
+                        putpixel(OFFSET*2+x, y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                    <i>/* grayscale gradient */</i>
+                    <strong>if</strong> (xres &gt; 256 + OFFSET*3) {
+                        r=y; g=y; b=y;
+                        putpixel(OFFSET*3+x, y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                }
+&nbsp;
+                <i>/* druha rada - palety */</i>
+                <strong>if</strong> (yres &gt; 256 + OFFSET) {
+                    <strong>if</strong> (xres &gt; 256) {
+                        r=x; g=y; b=0;
+                        putpixel(x, OFFSET+y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                    <strong>if</strong> (xres &gt; 256 + OFFSET) {
+                        r=x; g=y; b=255;
+                        putpixel(OFFSET+x, OFFSET+y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                    <strong>if</strong> (xres &gt; 256 + OFFSET*2) {
+                        r=255; g=x; b=y;
+                        putpixel(OFFSET*2+x, OFFSET+y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                    <strong>if</strong> (xres &gt; 256 + OFFSET*3) {
+                        r=y; g=255; b=x;
+                        putpixel(OFFSET*3+x, OFFSET+y, r, g, b, pixels, modeInfoPtr-&gt;line_length);
+                    }
+                }
+            }
+        }
+        getchar();
+        munmap(pixels, buffer_length);
+    }
+    <strong>else</strong> {
+        perror("Nelze pristupovat k framebufferu");
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/* Vstupni bod do demonstracniho prikladu... :) */</i>
+<strong>int</strong> main(<strong>int</strong> argc, <strong>char</strong> **argv)
+{
+    FramebufferInfo framebufferInfo;
+    ModeInfo        modeInfo;
+    <strong>int</strong> framebufferDevice = 0;
+&nbsp;
+    <i>/* Ze zarizeni potrebujeme cist i zapisovat.*/</i>
+    framebufferDevice = open("/dev/fb0", O_RDWR);
+&nbsp;
+    <i>/* Pokud otevreni probehlo uspesne, nacteme</i>
+    <i> * a nasledne vypiseme informaci o framebufferu.*/</i>
+    <strong>if</strong> (framebufferDevice != -1) {
+        <i>/* Precteni informaci o framebufferu a test, zda se vse podarilo */</i>
+        <strong>if</strong> (readFramebufferInfo(framebufferDevice, &amp;framebufferInfo, &amp;modeInfo)) {
+            drawTestImage(framebufferDevice, &amp;framebufferInfo, &amp;modeInfo);
+        }
+        close(framebufferDevice);
+        <strong>return</strong> 0;
+    }
+    <i>/* Otevreni se nezadarilo, vypiseme tudiz pouze chybove hlaseni.*/</i>
+    <strong>else</strong> {
+        perror("Nelze otevrit ovladac /dev/fb0");
+        <strong>return</strong> 1;
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/* finito */</i>
+</pre>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">4. Slavný Bresenhamův algoritmus pro vykreslení úsečky</h2>
+
+<p>Pro vykreslení úseček bylo vyvinuto několik algoritmů, ovšem nejrychlejší (a
+v&nbsp;minulosti taktéž nejpoužívanější) je algoritmus navržený Jackem Eltonem
+Bresenhamem už v&nbsp;roce 1962. Tento algoritmus pro vykreslení úsečky, který
+je <a href="https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm">velmi
+podrobně popsán na Wikipedii</a>, využívá pouze celočíselné operace a současně
+jsou v&nbsp;něm eliminovány aritmetické operace pro násobení a dělení, což je i
+dnes poměrně důležité (zejména na ARMech). Všechny výpočty se tak zjednoduší na
+aritmetický posun, sčítání, odčítání a podmíněné skoky. Právě díky těmto
+vlastnostem se Bresenhamův algoritmus stále v&nbsp;některých aplikacích
+používá, i když v&nbsp;případě požadavků na co nejvyšší kvalitu vykreslování se
+někdy přechází na pomalejší algoritmy s&nbsp;antialiasingem. Navíc, jak si
+ukážeme dále, se může dalšími optimalizacemi ještě více urychlit přístup
+k&nbsp;framebufferu, když se namísto souřadnic x a y pouze počítá offset od
+začátku framebufferu.</p>
+
+<a href="http://www.root.cz/obrazek/235988/"><img src="https://i.iinfo.cz/images/14/rpi3-7-prev.png" class="image-235988" alt="&#160;" height="265" width="370" /></a>
+<p><i>Obrázek 5: Typické &bdquo;schody&ldquo; vykreslované Bresenhamovým
+algoritmem.</i></p>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">5. Adaptace Bresenhamova algoritmu s&nbsp;voláním funkce putpixel</h2>
+
+<p>Pokud se při vykreslování úseček spokojíme s&nbsp;menší rychlostí celého
+programu, je možné Bresenhamův algoritmus implementovat poměrně přímočarým
+způsobem, což je ostatně patrné z&nbsp;výpisu kódu, který naleznete pod tímto
+odstavcem. Pomocné lokální proměnné <strong>sx</strong> a <strong>sy</strong>
+slouží pro posuny souřadnice vykreslovaného pixelu, čímž bylo možné eliminovat
+rozepsání tohoto algoritmu pro všech osm oktantů (díky existenci
+<strong>sx</strong> a <strong>sy</strong> se jakoby pohybujeme pouze
+v&nbsp;prvním oktantu, i když ve skutečnosti může vykreslování probíhat
+v&nbsp;jiném směru). Pomocné proměnné <strong>dx</strong> a <strong>dy</strong>
+společně s&nbsp;proměnnou <strong>err</strong> se používají k&nbsp;určení směru
+vykreslování. Povšimněte si, že vykreslování vždy začíná v&nbsp;prvním vrcholu
+[x1, y1] a končí přesně ve druhém vrcholu [x2, y2], nezávisle na vzájemné
+pozici těchto vrcholů (může se jednat i o jediný bod):</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce pro vykresleni usecky.</i>
+<i> */</i>
+<strong>void</strong> line(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+          <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+          <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length, PutpixelFunction putpixel)
+{
+#define ABS(x) ((x)&lt;0 ? -(x) : (x))
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1; 
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <strong>while</strong> (1) {
+        putpixel(x, y, r, g, b, pixels, line_length);
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+             err += dx;
+             <i>/* posun na predchozi ci nasledujici radek */</i>
+             y += sy;
+        }
+    }
+}
+</pre>
+
+<p>Pro vykreslení každého pixelu je volána funkce předaná v&nbsp;parametru
+<strong>putpixel</strong> (přesněji řečeno se předává ukazatel na funkci).</p>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">6. Úplný zdrojový kód druhého demonstračního příkladu <strong>fpi_fb8.c</strong></h2>
+
+<p>Podívejme se nyní, jak je výše uvedená implementace Bresenhamova algoritmu
+přidána do dalšího demonstračního příkladu, po jehož spuštění by se měl na
+obrazovce objevit následující vzorek:</p>
+
+<a href="http://www.root.cz/obrazek/235982/"><img src="https://i.iinfo.cz/images/464/rpi3-5-prev.png" class="image-235982" alt="&#160;" height="176" width="370" /></a>
+<p><i>Obrázek 6: Vzorek vykreslený demonstračním příkladem
+<strong>fpi_fb8.c</strong></i></p>
+
+<p>Úplný zdrojový kód tohoto příkladu vypadá následovně:</p>
+
+<pre>
+<i>/* Framebuffer na jednodeskovem mikropocitaci Raspberry Pi */</i>
+<i>/* Autor: Pavel Tisnovsky, 2016 */</i>
+&nbsp;
+<i>/* Demonstracni priklad cislo 8: pomale vykreslovani usecek. */</i>
+&nbsp;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;linux/fb.h&gt;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Datova struktura, do niz se ulozi informace o framebufferu.</i>
+<i> * Blizsi informace o teto strukture je mozne nalezt v hlavickovem souboru</i>
+<i> * dostupnem v adresari "/usr/include/linux/fb.h"</i>
+<i> */</i>
+<strong>typedef</strong> struct fb_var_screeninfo FramebufferInfo;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Druha datova struktura popisujici zbyvajici vlastnosti framebufferu.</i>
+<i> * Blizsi informace o teto strukture je mozne nalezt v hlavickovem souboru</i>
+<i> * dostupnem v adresari "/usr/include/linux/fb.h"</i>
+<i> */</i>
+<strong>typedef</strong> struct fb_fix_screeninfo ModeInfo;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Precteni vsech relevantnich informaci zjistenych o framebufferu. Pro korektni</i>
+<i> * funkci je zapotrebi, aby mel uzivatel pristup k zarizeni /dev/fb0</i>
+<i> * (postacuje byt ve skupine 'video' ci pouziti su/sudo)</i>
+<i> */</i>
+<strong>int</strong> readFramebufferInfo(<strong>int</strong> framebufferDevice,
+                        FramebufferInfo *framebufferInfoPtr,
+                        ModeInfo        *modeInfoPtr)
+{
+    <i>/* Pokud operace ioctl probehne v poradku, vrati se 0 */</i>
+    <strong>if</strong> (ioctl(framebufferDevice, FBIOGET_VSCREENINFO, framebufferInfoPtr)) {
+        perror("Nelze precist informace o framebufferu");
+        <strong>return</strong> 0;
+    }
+&nbsp;
+    <i>/* Pokud operace ioctl probehne v poradku, vrati se 0 */</i>
+    <strong>if</strong> (ioctl(framebufferDevice, FBIOGET_FSCREENINFO, modeInfoPtr)) {
+        perror("Nelze precist informace o rezimu");
+        <strong>return</strong> 0;
+    }
+    <strong>return</strong> 1;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pro nezname graficke rezimy.</i>
+<i> */</i>
+<strong>void</strong> putpixelNull(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni napriklad pro graficke karty Intel.</i>
+<i> */</i>
+<strong>void</strong> putpixelBGRA(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x&lt;&lt;2) + y*line_length;
+    <i>/* &lt;&lt; 2 nahrazuje nasobeni ctyrmi */</i>
+&nbsp;
+    <i>/* vlastni provedeni zapisu */</i>
+    *(pixels+index) = b;
+    index++;
+    *(pixels+index) = g;
+    index++;
+    *(pixels+index) = r;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni pro Raspberry Pi s poradim bajtu R,G,B,A.</i>
+<i> */</i>
+<strong>void</strong> putpixelRGBA(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    putpixelBGRA(x, y, b, g, r, pixels, line_length);
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce putpixel platna pouze pro graficke rezimy hi-color</i>
+<i> * s formatem 5-6-5.</i>
+<i> */</i>
+<strong>void</strong> putpixel565(<strong>const</strong> <strong>int</strong> x, <strong>const</strong> <strong>int</strong> y,
+                 <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+                 <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+#define RED_OFFSET     11
+#define GREEN_OFFSET    5
+#define BLUE_OFFSET     0
+#define RED_LOST_BITS   3
+#define GREEN_LOST_BITS 2
+#define BLUE_LOST_BITS  3
+    <i>/* vypocet barvy pixelu, v zavorce nejdrive snizime bitovou sirku</i>
+    <i> * rezervovanou pro jednotlive barvove slozky a posleze bity, ktere</i>
+    <i> * reprezentuji barvovou slozku posuneme do spravne pozice ve slove */</i>
+    <strong>unsigned</strong> <strong>int</strong> pixel_value = (r &gt;&gt; RED_LOST_BITS)   &lt;&lt; RED_OFFSET |
+                               (g &gt;&gt; GREEN_LOST_BITS) &lt;&lt; GREEN_OFFSET |
+                               (b &gt;&gt; BLUE_LOST_BITS)  &lt;&lt; BLUE_OFFSET;
+&nbsp;
+    <i>/* prevod na dvojici bajtu */</i>
+    <strong>unsigned</strong> <strong>char</strong> byte1 = pixel_value &amp; 0xff;
+    <strong>unsigned</strong> <strong>char</strong> byte2 = pixel_value &gt;&gt; 8;
+&nbsp;
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x&lt;&lt;1) + y*line_length;
+    <i>/* &lt;&lt; 1 nahrazuje nasobeni dvema */</i>
+&nbsp;
+    <i>/* vlastni provedeni zapisu */</i>
+    *(pixels+index) = byte1;
+    index++;
+    *(pixels+index) = byte2;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Novy datovy typ - ukazatel na (libovolnou) funkci putpixel.</i>
+<i> */</i>
+<strong>typedef</strong> <strong>void</strong> (*PutpixelFunction)(<strong>const</strong> <strong>int</strong>, <strong>const</strong> <strong>int</strong>,
+                                 <strong>const</strong> <strong>char</strong>, <strong>const</strong> <strong>char</strong>, <strong>const</strong> <strong>char</strong>,
+                                 <strong>char</strong>*, <strong>const</strong> <strong>int</strong>);
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce, ktera vraci korektni funkci pro operaci putpixel().</i>
+<i> */</i>
+PutpixelFunction getProperPutpixelFunction(<strong>int</strong> bits_per_pixel, <strong>int</strong> type, <strong>int</strong> visual, <strong>int</strong> redOffset)
+{
+    <i>/* umime rozeznat pouze format bez bitovych rovin a bez palety */</i>
+    <strong>if</strong> (type == FB_TYPE_PACKED_PIXELS &amp;&amp; visual == FB_VISUAL_TRUECOLOR) {
+        <strong>if</strong> (bits_per_pixel == 16) {
+            <strong>return</strong> putpixel565;
+        }
+        <strong>if</strong> (bits_per_pixel == 32) {
+            <strong>if</strong> (redOffset == 16) {
+                <strong>return</strong> putpixelBGRA;
+            }
+            <strong>else</strong> {
+                <strong>return</strong> putpixelRGBA;
+            }
+        }
+    }
+    <strong>return</strong> putpixelNull;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce pro vykresleni usecky.</i>
+<i> */</i>
+<strong>void</strong> line(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+          <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+          <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length, PutpixelFunction putpixel)
+{
+#define ABS(x) ((x)&lt;0 ? -(x) : (x))
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1; 
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <strong>while</strong> (1) {
+        putpixel(x, y, r, g, b, pixels, line_length);
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+             err += dx;
+             <i>/* posun na predchozi ci nasledujici radek */</i>
+             y += sy;
+        }
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Vykresleni testovaciho obrazku s vyuzitim funkci line a putpixel.</i>
+<i> */</i>
+<strong>void</strong> drawTestImage(<strong>int</strong> framebufferDevice,
+                   FramebufferInfo *framebufferInfoPtr,
+                   ModeInfo        *modeInfoPtr)
+{
+#define OFFSET 300
+    <i>/* casto pouzivane konstanty */</i>
+    <strong>const</strong> <strong>int</strong> buffer_length = modeInfoPtr-&gt;smem_len;
+    <strong>const</strong> <strong>int</strong> pitch = modeInfoPtr-&gt;line_length;
+&nbsp;
+    <i>/* ziskame spravnou verzi funkce putpixel */</i>
+    PutpixelFunction putpixel = getProperPutpixelFunction(framebufferInfoPtr-&gt;bits_per_pixel,
+                                                          modeInfoPtr-&gt;type,
+                                                          modeInfoPtr-&gt;visual,
+                                                          framebufferInfoPtr-&gt;red.offset);
+&nbsp;
+    <i>/* ziskat primy pristup do framebufferu */</i>
+    <strong>char</strong> *pixels = (char*)mmap(0, buffer_length,
+                               PROT_READ | PROT_WRITE,
+                               MAP_SHARED, framebufferDevice,
+                               0);
+&nbsp;
+    <strong>if</strong> (pixels != MAP_FAILED) {
+        <strong>int</strong> i;
+        <strong>int</strong> r, g, b;
+        <i>/* nejprve vymazeme cely framebuffer */</i>
+        memset(pixels, 0, buffer_length);
+&nbsp;
+        <i>/* vykreslime nekolik usecek s ruznym sklonem a barvou*/</i>
+        <strong>for</strong> (i=0; i&lt;256; i++) {
+            r = i;
+            g = i;
+            b = 256-i;
+            line(i*3, 0, i*3, 100, r, g, b, pixels, pitch, putpixel);
+            r = 255;
+            g = i;
+            b = 255-i;
+            line(i*4, 150, i*5, 250, r, g, b, pixels, pitch, putpixel);
+        }
+        <strong>for</strong> (i=0; i&lt;=300; i+=10) {
+            line(0, 300 + i, i, 300 + 300, 255, 255, 255, pixels, pitch, putpixel);
+&nbsp;
+            line(300, 300, 600, 300 + i, 128, 128, 255, pixels, pitch, putpixel);
+        }
+        getchar();
+        munmap(pixels, buffer_length);
+    }
+    <strong>else</strong> {
+        perror("Nelze pristupovat k framebufferu");
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/* Vstupni bod do demonstracniho prikladu... :) */</i>
+<strong>int</strong> main(<strong>int</strong> argc, <strong>char</strong> **argv)
+{
+    FramebufferInfo framebufferInfo;
+    ModeInfo        modeInfo;
+    <strong>int</strong> framebufferDevice = 0;
+&nbsp;
+    <i>/* Ze zarizeni potrebujeme cist i zapisovat.*/</i>
+    framebufferDevice = open("/dev/fb0", O_RDWR);
+&nbsp;
+    /* Pokud otevreni probehlo uspesne, nacteme
+     * a nasledne vypiseme informaci o framebufferu.*/
+    <strong>if</strong> (framebufferDevice != -1) {
+        <i>/* Precteni informaci o framebufferu a test, zda se vse podarilo */</i>
+        <strong>if</strong> (readFramebufferInfo(framebufferDevice, &amp;framebufferInfo, &amp;modeInfo)) {
+            drawTestImage(framebufferDevice, &amp;framebufferInfo, &amp;modeInfo);
+        }
+        close(framebufferDevice);
+        <strong>return</strong> 0;
+    }
+    <i>/* Otevreni se nezadarilo, vypiseme tudiz pouze chybove hlaseni.*/</i>
+    <strong>else</strong> {
+        perror("Nelze otevrit ovladac /dev/fb0");
+        <strong>return</strong> 1;
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/* finito */</i>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">7. Urychlení vykreslování úseček: rychlejší výpočet barev a adres pixelů</h2>
+
+<p>Samotný Bresenhamův algoritmus je sice velmi rychlý, ovšem naše původní
+implementace zcela jistě velkou rychlostí vykreslování neoplývala. Je tomu tak
+z&nbsp;jednoduchého důvodu &ndash; i když se souřadnice jednotlivých pixelů
+ležících na úsečce počítají bez použití výpočetně náročných operací pro
+násobení a dělení, nakonec se zavolá funkce typu <i>putpixel</i>, kde se již
+tyto operace používají. Co je ještě horší &ndash; barva se ve funkci
+<i>putpixel</i> počítá stále znovu, což znamená, že se pro jedinou úsečku o
+délce řekněme 500 pixelů spočte 500&times; barva a 500&times; offset, na němž
+je zapotřebí provést zápis do framebufferu. Aby se celá operace urychlila, je
+možné provést tyto úpravy:</p>
+
+<ol>
+
+<li>Eliminovat volání funkce putpixel v&nbsp;Bresenhamově algoritmu. To se
+provede jednoduše: přesunem kódu přímo do funkce pro vykreslení úsečky.</li>
+
+<li>Výpočet barvy provést jen jednou. Z&nbsp;předchozího bodu plyne, že po
+přesunu kódu se výpočet barvy skutečně může provést ještě před vlastním
+vykreslováním.</li>
+
+<li>Výpočet offsetu ze souřadnic x a y taktéž provést jen jedenkrát. Toto je
+asi nejzajímavější část. Při posunu pixelu horizontálním směrem se vlastně mění
+offset o hodnotu +-bpp (2 či 4 bajty), při posunu pixelu vertikálním směrem pak
+o +- délku řádku (tu známe).</li>
+
+<li>Optimalizace samotného zápisu (nezapisovat po bajtech, ale po
+slovech).</li>
+
+</ol>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">8. Bresenhamův algoritmus pro framebuffery s&nbsp;formáty RGBA a BGRA (true color)</h2>
+
+<p>Podívejme se, jak lze první tři body aplikovat u framebufferů s&nbsp;formáty
+RGBA či BGRA. Uvedeme si řešení pouze pro jeden z&nbsp;těchto formátů, protože
+úprava spočívající v&nbsp;prohození barvových složek je triviální (a není ji
+vlastně zapotřebí moc řešit, protože se ta stejná funkce zavolá s&nbsp;mírně
+pozměněnými parametry):</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce line platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni naproklad pro graficke karty Intel.</i>
+<i> */</i>
+<strong>void</strong> lineBGRA(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+              <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+              <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x1&lt;&lt;2) + y1*line_length;
+    <i>/* &lt;&lt; 2 nahrazuje nasobeni ctyrmi */</i>
+&nbsp;
+    <i>/* vlastni provedeni vykresleni usecky */</i>
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1;
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <i>/* pri posunu po x-ove ose se index musi zvysit ci snizit o 4 (bajty) */</i>
+    <strong>int</strong> offsetX = x1&lt;x2 ? 4: -4;
+    <i>/* pri posunu po y-ove ose se index musi zvysit ci snizit o delku radku (v bajtech) */</i>
+    <strong>int</strong> offsetY = y1&lt;y2 ? line_length : - line_length;
+&nbsp;
+    <strong>while</strong> (1) {
+        <i>/* vlastni provedeni zapisu barvy pixelu */</i>
+        *(pixels+index) = b;
+        *(pixels+index+1) = g;
+        *(pixels+index+2) = r;
+&nbsp;
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+            index += offsetX;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err += dx;
+            <i>/* posun na predchozi ci nasledujici radek */</i>
+            y += sy;
+            index += offsetY;
+        }
+    }
+}
+</pre>
+
+<p>Do původní implementace Bresenhamova algoritmu jsme zasáhli jen na dvou
+místech: namísto volání <i>putpixel</i> se přímo provede vykreslení a kromě
+posunu x-ové a y-ové složky souřadnic pixelu se mění i hodnota offsetu.</p>
+
+<p>Stále se však při změně barvy pixelů provádí tři zápisy, a &ndash; což je
+možná ještě horší &ndash; zapisují se bajty a nikoli širší slova. To lze
+relativně snadno upravit, a to tak, že se na framebuffer nebudeme dívat jako na
+pole bajtů, ale jako na pole 32bitových hodnot. Ukazatelová aritmetika se nám
+tak paradoxně poněkud zjednoduší, pouze na začátku budeme muset vypočítat barvu
+pixelu a uložit ji do 32bitového slova:</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce line platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni naproklad pro graficke karty Intel.</i>
+<i> */</i>
+<strong>void</strong> lineBGRA(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+              <strong>const</strong> <strong>unsigned</strong> <strong>char</strong> r, <strong>const</strong> <strong>unsigned</strong> <strong>char</strong> g, <strong>const</strong> <strong>unsigned</strong> <strong>char</strong> b,
+              <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    <i>/* vypocet adresy zapisu dat */</i>
+    <i>/* pocitame v 32bitovych slovech, tj. line_length je nutne podelit ctyrmi */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = x1 + (y1*line_length &gt;&gt; 2);
+    <i>/* &gt;&gt; 2 nahrazuje deleni ctyrmi */</i>
+&nbsp;
+    <i>/* vlastni provedeni vykresleni usecky */</i>
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1;
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <i>/* uplna barva v jednom slove */</i>
+    <strong>__u32</strong> color = (r&lt;&lt;16) | (g&lt;&lt;8) | b;
+    <strong>__u32</strong> *pixels32 = (<strong>__u32</strong>*)pixels;
+&nbsp;
+    <i>/* pri posunu po x-ove ose se index musi zvysit ci snizit o 4 (bajty) tj. o jedno 32-bitove slovo */</i>
+    <strong>int</strong> offsetX = x1&lt;x2 ? 1: -1;
+    <i>/* pri posunu po y-ove ose se index musi zvysit ci snizit o delku radku (ve slovech) */</i>
+    <strong>int</strong> offsetY = y1&lt;y2 ? (line_length &gt;&gt; 2) : - (line_length &gt;&gt; 2);
+&nbsp;
+    <strong>while</strong> (1) {
+        <i>/* vlastni provedeni zapisu barvy pixelu */</i>
+        *(pixels32+index) = color;
+&nbsp;
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+            index += offsetX;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err += dx;
+            <i>/* posun na predchozi ci nasledujici radek */</i>
+            y += sy;
+            index += offsetY;
+        }
+    }
+}
+</pre>
+
+<p>V&nbsp;algoritmu bylo nutné udělat jednu změnu: barvové složky jsou zde
+explicitně popsány typem <strong>unsigned char</strong> a nikoli pouze
+<strong>char</strong>, protože s&nbsp;nimi provádíme bitové posuny (při pouhém
+zápisu bajtů vlastně bylo jedno, jakého jsou typu).</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">9. Bresenhamův algoritmus pro framebuffery s&nbsp;formátem hi-color 565</h2>
+
+<p>Pro framebuffer s&nbsp;formátem hi-color 565, tj.&nbsp;s&nbsp;formátem,
+který je pro Raspberry Pi a Raspbian výchozí, si ukážeme pouze jednu variantu
+Bresenhamova algoritmu pro vykreslování úseček. V&nbsp;této variantě se pro
+každý pixel provedou dva zápisy (horní a dolní bajt). Úpravu stylem,
+s&nbsp;nímž jsme se seznámili na konci předchozí kapitoly, ponechám laskavému a
+zvídavému čtenáři za domácí úkol :-) [v&nbsp;případě zájmu samozřejmě stačí
+počkat, až commitnu změny do <a
+href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb10.c">https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb10.c</a>]:</p>
+
+<pre>
+<i>/*</i>
+<i> * Funkce line platna pouze pro graficke rezimy hi-color</i>
+<i> * s formatem 5-6-5.</i>
+<i> */</i>
+<strong>void</strong> line565(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+             <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+             <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+#define RED_OFFSET     11
+#define GREEN_OFFSET    5
+#define BLUE_OFFSET     0
+#define RED_LOST_BITS   3
+#define GREEN_LOST_BITS 2
+#define BLUE_LOST_BITS  3
+    <i>/* vypocet barvy pixelu, v zavorce nejdrive snizime bitovou sirku</i>
+    <i> * rezervovanou pro jednotlive barvove slozky a posleze bity, ktere</i>
+    <i> * reprezentuji barvovou slozku posuneme do spravne pozice ve slove */</i>
+    <strong>unsigned</strong> <strong>int</strong> pixel_value = (r &gt;&gt; RED_LOST_BITS)   &lt;&lt; RED_OFFSET |
+                               (g &gt;&gt; GREEN_LOST_BITS) &lt;&lt; GREEN_OFFSET |
+                               (b &gt;&gt; BLUE_LOST_BITS)  &lt;&lt; BLUE_OFFSET;
+&nbsp;
+    <i>/* prevod na dvojici bajtu */</i>
+    <strong>unsigned</strong> <strong>char</strong> byte1 = pixel_value &amp; 0xff;
+    <strong>unsigned</strong> <strong>char</strong> byte2 = pixel_value &gt;&gt; 8;
+&nbsp;
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x1&lt;&lt;1) + y1*line_length;
+    <i>/* &lt;&lt; 1 nahrazuje nasobeni dvema */</i>
+&nbsp;
+    <i>/* vykresleni usecky */</i>
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1;
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <i>/* pri posunu po x-ove ose se index musi zvysit ci snizit o 2 (bajty) */</i>
+    <strong>int</strong> offsetX = x1&lt;x2 ? 2: -2;
+    <i>/* pri posunu po y-ove ose se index musi zvysit ci snizit o delku radku (v bajtech) */</i>
+    <strong>int</strong> offsetY = y1&lt;y2 ? line_length : - line_length;
+&nbsp;
+    <strong>while</strong> (1) {
+        <i>/* vlastni provedeni zapisu barvy pixelu */</i>
+        *(pixels+index) = byte1;
+        *(pixels+index+1) = byte2;
+&nbsp;
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+            index += offsetX;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err += dx;
+            <i>/* posun na predchozi ci nasledujici radek */</i>
+            y += sy;
+            index += offsetY;
+        }
+    }
+}
+</pre>
+
+<p>Poznámky k&nbsp;předchozímu kódu:</p>
+
+<ol>
+
+<li>Barvy vykreslovaných pixelů jsou opět vypočteny před vstupem do programové
+smyčky, zapisované hodnoty jsou uloženy do proměnných pojmenovaných
+<strong>byte1</strong> a <strong>byte2</strong>.</li>
+
+<li>Při posunu na další (předchozí) pixel na řádku se adresa změní o +-1: viz
+proměnnou <strong>offsetX</strong> naplňovanou opět před smyčkou.</li>
+
+<li>Při posunu na další (předchozí) řádek se adresa změní o hodnotu
+line_length: viz proměnnou <strong>offsetY</strong>.</li>
+
+<li>Proč je podmínka pro ukončení smyčky umístěna přesně tam kde je? Druhá
+otázka za domácí úkol :-)</li>
+
+</ol>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">10. Úplný zdrojový kód třetího demonstračního příkladu <strong>fpi_fb9.c</strong></h2>
+
+<p>Bez dalších komentářů se podívejme, jak se předchozí dvě funkce staly
+součástí demonstračního příkladu <a
+href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb9.c">https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb9.c</a>:</p>
+
+<pre>
+<i>/* Framebuffer na jednodeskovem mikropocitaci Raspberry Pi */</i>
+<i>/* Autor: Pavel Tisnovsky, 2016 */</i>
+&nbsp;
+<i>/* Demonstracni priklad cislo 9: vykreslovani usecek: rychlejsi varianta</i>
+<i> *                               nepouzivajici funkci putpixel. */</i>
+&nbsp;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;sys/mman.h&gt;
+#include &lt;linux/fb.h&gt;
+&nbsp;
+&nbsp;
+&nbsp;
+#define ABS(x) ((x)&lt;0 ? -(x) : (x))
+&nbsp;
+<i>/*</i>
+<i> * Datova struktura, do niz se ulozi informace o framebufferu.</i>
+<i> * Blizsi informace o teto strukture je mozne nalezt v hlavickovem souboru</i>
+<i> * dostupnem v adresari "/usr/include/linux/fb.h"</i>
+<i> */</i>
+<strong>typedef</strong> struct fb_var_screeninfo FramebufferInfo;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Druha datova struktura popisujici zbyvajici vlastnosti framebufferu.</i>
+<i> * Blizsi informace o teto strukture je mozne nalezt v hlavickovem souboru</i>
+<i> * dostupnem v adresari "/usr/include/linux/fb.h"</i>
+<i> */</i>
+<strong>typedef</strong> struct fb_fix_screeninfo ModeInfo;
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Precteni vsech relevantnich informaci zjistenych o framebufferu. Pro korektni</i>
+<i> * funkci je zapotrebi, aby mel uzivatel pristup k zarizeni /dev/fb0</i>
+<i> * (postacuje byt ve skupine 'video' ci pouziti su/sudo)</i>
+<i> */</i>
+<strong>int</strong> readFramebufferInfo(<strong>int</strong> framebufferDevice,
+                        FramebufferInfo *framebufferInfoPtr,
+                        ModeInfo        *modeInfoPtr)
+{
+    <i>/* Pokud operace ioctl probehne v poradku, vrati se 0 */</i>
+    <strong>if</strong> (ioctl(framebufferDevice, FBIOGET_VSCREENINFO, framebufferInfoPtr)) {
+        perror("Nelze precist informace o framebufferu");
+        <strong>return</strong> 0;
+    }
+&nbsp;
+    <i>/* Pokud operace ioctl probehne v poradku, vrati se 0 */</i>
+    <strong>if</strong> (ioctl(framebufferDevice, FBIOGET_FSCREENINFO, modeInfoPtr)) {
+        perror("Nelze precist informace o rezimu");
+        <strong>return</strong> 0;
+    }
+    <strong>return</strong> 1;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce line() platna pro nezname graficke rezimy.</i>
+<i> */</i>
+<strong>void</strong> lineNull(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+              <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+              <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce line platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni naproklad pro graficke karty Intel.</i>
+<i> */</i>
+<strong>void</strong> lineBGRA(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+              <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+              <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x1&lt;&lt;2) + y1*line_length;
+    <i>/* &lt;&lt; 2 nahrazuje nasobeni ctyrmi */</i>
+&nbsp;
+    <i>/* vlastni provedeni vykresleni usecky */</i>
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1;
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <i>/* pri posunu po x-ove ose se index musi zvysit ci snizit o 4 (bajty) */</i>
+    <strong>int</strong> offsetX = x1&lt;x2 ? 4: -4;
+    <i>/* pri posunu po y-ove ose se index musi zvysit ci snizit o delku radku (v bajtech) */</i>
+    <strong>int</strong> offsetY = y1&lt;y2 ? line_length : - line_length;
+&nbsp;
+    <strong>while</strong> (1) {
+        <i>/* vlastni provedeni zapisu barvy pixelu */</i>
+        *(pixels+index) = b;
+        *(pixels+index+1) = g;
+        *(pixels+index+2) = r;
+&nbsp;
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+            index += offsetX;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err += dx;
+            <i>/* posun na predchozi ci nasledujici radek */</i>
+            y += sy;
+            index += offsetY;
+        }
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce line platna pouze pro graficke rezimy true-color</i>
+<i> * s formatem 8-8-8-8 (popr. muze byt alfa kanal ignorovan).</i>
+<i> * Funkcni pro Raspberry Pi s poradim bajtu R,G,B,A.</i>
+<i> */</i>
+<strong>void</strong> lineRGBA(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+              <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+              <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+    lineBGRA(x1, y1, x2, y2, b, g, r, pixels, line_length);
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce line platna pouze pro graficke rezimy hi-color</i>
+<i> * s formatem 5-6-5.</i>
+<i> */</i>
+<strong>void</strong> line565(<strong>const</strong> <strong>int</strong> x1, <strong>const</strong> <strong>int</strong> y1, <strong>const</strong> <strong>int</strong> x2, <strong>const</strong> <strong>int</strong> y2,
+             <strong>const</strong> <strong>char</strong> r, <strong>const</strong> <strong>char</strong> g, <strong>const</strong> <strong>char</strong> b,
+             <strong>char</strong> *pixels, <strong>const</strong> <strong>int</strong> line_length)
+{
+#define RED_OFFSET     11
+#define GREEN_OFFSET    5
+#define BLUE_OFFSET     0
+#define RED_LOST_BITS   3
+#define GREEN_LOST_BITS 2
+#define BLUE_LOST_BITS  3
+    <i>/* vypocet barvy pixelu, v zavorce nejdrive snizime bitovou sirku</i>
+    <i> * rezervovanou pro jednotlive barvove slozky a posleze bity, ktere</i>
+    <i> * reprezentuji barvovou slozku posuneme do spravne pozice ve slove */</i>
+    <strong>unsigned</strong> <strong>int</strong> pixel_value = (r &gt;&gt; RED_LOST_BITS)   &lt;&lt; RED_OFFSET |
+                               (g &gt;&gt; GREEN_LOST_BITS) &lt;&lt; GREEN_OFFSET |
+                               (b &gt;&gt; BLUE_LOST_BITS)  &lt;&lt; BLUE_OFFSET;
+&nbsp;
+    <i>/* prevod na dvojici bajtu */</i>
+    <strong>unsigned</strong> <strong>char</strong> byte1 = pixel_value &amp; 0xff;
+    <strong>unsigned</strong> <strong>char</strong> byte2 = pixel_value &gt;&gt; 8;
+&nbsp;
+    <i>/* vypocet adresy zapisu dat */</i>
+    <strong>unsigned</strong> <strong>int</strong> index = (x1&lt;&lt;1) + y1*line_length;
+    <i>/* &lt;&lt; 1 nahrazuje nasobeni dvema */</i>
+&nbsp;
+    <i>/* vykresleni usecky */</i>
+    <strong>int</strong> x = x1;
+    <strong>int</strong> y = y1;
+    <i>/* zrcadleni algoritmu pro dalsi oktanty */</i>
+    <strong>int</strong> dx = ABS(x2-x1), sx = x1&lt;x2 ? 1 : -1;
+    <strong>int</strong> dy = ABS(y2-y1), sy = y1&lt;y2 ? 1 : -1;
+    <strong>int</strong> err = (dx&gt;dy ? dx : -dy)/2, e2;
+&nbsp;
+    <i>/* pri posunu po x-ove ose se index musi zvysit ci snizit o 2 (bajty) */</i>
+    <strong>int</strong> offsetX = x1&lt;x2 ? 2: -2;
+    <i>/* pri posunu po y-ove ose se index musi zvysit ci snizit o delku radku (v bajtech) */</i>
+    <strong>int</strong> offsetY = y1&lt;y2 ? line_length : - line_length;
+&nbsp;
+    <strong>while</strong> (1) {
+        <i>/* vlastni provedeni zapisu barvy pixelu */</i>
+        *(pixels+index) = byte1;
+        *(pixels+index+1) = byte2;
+&nbsp;
+        <strong>if</strong> (x==x2 &amp;&amp; y==y2) {
+            <strong>break</strong>;
+        }
+        e2 = err;
+        <strong>if</strong> (e2 &gt;-dx) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err -= dy;
+            <i>/* posun na predchozi ci dalsi pixel na radku */</i>
+            x += sx;
+            index += offsetX;
+        }
+        <strong>if</strong> (e2 &lt; dy) {
+            <i>/* prepocet kumulovane chyby */</i>
+            err += dx;
+            <i>/* posun na predchozi ci nasledujici radek */</i>
+            y += sy;
+            index += offsetY;
+        }
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Novy datovy typ - ukazatel na (libovolnou) funkci line.</i>
+<i> */</i>
+<strong>typedef</strong> <strong>void</strong> (*LineFunction)(<strong>const</strong> <strong>int</strong>, <strong>const</strong> <strong>int</strong>, <strong>const</strong> <strong>int</strong>, <strong>const</strong> <strong>int</strong>,
+                             <strong>const</strong> <strong>char</strong>, <strong>const</strong> <strong>char</strong>, <strong>const</strong> <strong>char</strong>,
+                             <strong>char</strong>*, <strong>const</strong> <strong>int</strong>);
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Funkce, ktera vraci korektni funkci pro operaci line().</i>
+<i> */</i>
+LineFunction getProperLineFunction(<strong>int</strong> bits_per_pixel, <strong>int</strong> type, <strong>int</strong> visual, <strong>int</strong> redOffset)
+{
+    <i>/* umime rozeznat pouze format bez bitovych rovin a bez palety */</i>
+    <strong>if</strong> (type == FB_TYPE_PACKED_PIXELS &amp;&amp; visual == FB_VISUAL_TRUECOLOR) {
+        <strong>if</strong> (bits_per_pixel == 16) {
+            <strong>return</strong> line565;
+        }
+        <strong>if</strong> (bits_per_pixel == 32) {
+            <strong>if</strong> (redOffset == 16) {
+                <strong>return</strong> lineBGRA;
+            }
+            <strong>else</strong> {
+                <strong>return</strong> lineRGBA;
+            }
+        }
+    }
+    <strong>return</strong> lineNull;
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/*</i>
+<i> * Vykresleni testovaciho obrazku s vyuzitim funkce line.</i>
+<i> */</i>
+<strong>void</strong> drawTestImage(<strong>int</strong> framebufferDevice,
+                   FramebufferInfo *framebufferInfoPtr,
+                   ModeInfo        *modeInfoPtr)
+{
+#define OFFSET 300
+    <i>/* casto pouzivane konstanty */</i>
+    <strong>const</strong> <strong>int</strong> buffer_length = modeInfoPtr-&gt;smem_len;
+    <strong>const</strong> <strong>int</strong> pitch = modeInfoPtr-&gt;line_length;
+&nbsp;
+    <i>/* ziskame spravnou verzi funkce line */</i>
+    LineFunction line = getProperLineFunction(framebufferInfoPtr-&gt;bits_per_pixel,
+                                              modeInfoPtr-&gt;type,
+                                              modeInfoPtr-&gt;visual,
+                                              framebufferInfoPtr-&gt;red.offset);
+&nbsp;
+    <i>/* ziskat primy pristup do framebufferu */</i>
+    <strong>char</strong> *pixels = (char*)mmap(0, buffer_length,
+                               PROT_READ | PROT_WRITE,
+                               MAP_SHARED, framebufferDevice,
+                               0);
+&nbsp;
+    <strong>if</strong> (pixels != MAP_FAILED) {
+        <strong>int</strong> i;
+        <strong>int</strong> r, g, b;
+        <i>/* nejprve vymazeme cely framebuffer */</i>
+        memset(pixels, 0, buffer_length);
+&nbsp;
+        <i>/* vykreslime nekolik usecek s ruznym sklonem a barvou*/</i>
+        <strong>for</strong> (i=0; i&lt;256; i++) {
+            r = i;
+            g = i;
+            b = 256-i;
+            line(i*3, 0, i*3, 100, r, g, b, pixels, pitch);
+            r = 255;
+            g = i;
+            b = 255-i;
+            line(i*4, 150, i*5, 250, r, g, b, pixels, pitch);
+        }
+        <strong>for</strong> (i=0; i&lt;=300; i+=10) {
+            line(0, 300 + i, i, 300 + 300, 255, 255, 255, pixels, pitch);
+&nbsp;
+            line(300, 300, 600, 300 + i, 128, 128, 255, pixels, pitch);
+        }
+        getchar();
+        munmap(pixels, buffer_length);
+    }
+    <strong>else</strong> {
+        perror("Nelze pristupovat k framebufferu");
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/* Vstupni bod do demonstracniho prikladu... :) */</i>
+<strong>int</strong> main(<strong>int</strong> argc, <strong>char</strong> **argv)
+{
+    FramebufferInfo framebufferInfo;
+    ModeInfo        modeInfo;
+    <strong>int</strong> framebufferDevice = 0;
+&nbsp;
+    <i>/* Ze zarizeni potrebujeme cist i zapisovat.*/</i>
+    framebufferDevice = open("/dev/fb0", O_RDWR);
+&nbsp;
+    <i>/* Pokud otevreni probehlo uspesne, nacteme</i>
+    <i> * a nasledne vypiseme informaci o framebufferu.*/</i>
+    <strong>if</strong> (framebufferDevice != -1) {
+        <i>/* Precteni informaci o framebufferu a test, zda se vse podarilo */</i>
+        <strong>if</strong> (readFramebufferInfo(framebufferDevice, &amp;framebufferInfo, &amp;modeInfo)) {
+            drawTestImage(framebufferDevice, &amp;framebufferInfo, &amp;modeInfo);
+        }
+        close(framebufferDevice);
+        <strong>return</strong> 0;
+    }
+    <i>/* Otevreni se nezadarilo, vypiseme tudiz pouze chybove hlaseni.*/</i>
+    <strong>else</strong> {
+        perror("Nelze otevrit ovladac /dev/fb0");
+        <strong>return</strong> 1;
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+<i>/* finito */</i>
+</pre>
+
+<a href="http://www.root.cz/obrazek/235983/"><img src="https://i.iinfo.cz/images/102/rpi3-6-prev.png" class="image-235983" alt="&#160;" height="180" width="370" /></a>
+<p><i>Obrázek 7: Výsledek běhu dnešního posledního demonstračního příkladu na
+počítači s&nbsp;framebufferem nakonfigurovaným pro použití true color formátu
+RGBA.</i></p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">11. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny tři demonstrační příklady, s&nbsp;nimiž jsme se v&nbsp;dnešním
+článku seznámili, byly uloženy do Git repositáře umístěného na GitHubu na
+adrese (<a
+href="https://github.com/tisnik/presentations">https://github.com/tisnik/presentations</a>):</p>
+
+<table>
+<tr><th>#</th><th>Příklad</th><th>Zdrojový kód</th></tr>
+<tr><td>1</td><td>rpi_fb7.c</td><td><a href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb7.c">https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb7.c</a></td></tr>
+<tr><td>2</td><td>rpi_fb8.c</td><td><a href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb8.c">https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb8.c</a></td></tr>
+<tr><td>3</td><td>rpi_fb9.c</td><td><a href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb9.c">https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb9.c</a></td></tr>
+<tr><td>4</td><td>rpi_fb10.c</td><td><a href="https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb10.c">https://github.com/tisnik/presentations/blob/master/rpi_framebuffer/rpi_fb10.c</a></td></tr>
+</table>
+
+<p>Pro překlad obou demonstračních příkladů je zapotřebí mít nainstalován
+překladač GNU C (či Clang), linker a vývojářskou verzi libc.</p>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">12. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Seriál Grafické karty a grafické akcelerátory<br />
+<a href="http://www.root.cz/serialy/graficke-karty-a-graficke-akceleratory/">http://www.root.cz/serialy/graficke-karty-a-graficke-akceleratory/</a>
+</li>
+
+<li>Grafika na osmibitových počítačích firmy Sinclair II<br />
+<a href="http://www.root.cz/clanky/grafika-na-osmibitovych-pocitacich-firmy-sinclair-ii/">http://www.root.cz/clanky/grafika-na-osmibitovych-pocitacich-firmy-sinclair-ii/</a>
+</li>
+
+<li>Grafické čipy v osmibitových počítačích Atari<br />
+<a href="http://www.root.cz/clanky/graficke-cipy-v-osmibitovych-pocitacich-atari/">http://www.root.cz/clanky/graficke-cipy-v-osmibitovych-pocitacich-atari/</a>
+</li>
+
+<li>Osmibitové počítače Commodore a čip VIC-II<br />
+<a href="http://www.root.cz/clanky/osmibitove-pocitace-commodore-a-cip-vic-ii/">http://www.root.cz/clanky/osmibitove-pocitace-commodore-a-cip-vic-ii/</a>
+</li>
+
+<li>Grafika na osmibitových počítačích firmy Apple<br />
+<a href="http://www.root.cz/clanky/grafika-na-osmibitovych-pocitacich-firmy-apple/">http://www.root.cz/clanky/grafika-na-osmibitovych-pocitacich-firmy-apple/</a>
+</li>
+
+<li>Počátky grafiky na PC: grafické karty CGA a Hercules<br />
+<a href="http://www.root.cz/clanky/pocatky-grafiky-na-pc-graficke-karty-cga-a-hercules/">http://www.root.cz/clanky/pocatky-grafiky-na-pc-graficke-karty-cga-a-hercules/</a>
+</li>
+
+<li>Karta EGA: první použitelná barevná grafika na PC<br />
+<a href="http://www.root.cz/clanky/karta-ega-prvni-pouzitelna-barevna-grafika-na-pc/">http://www.root.cz/clanky/karta-ega-prvni-pouzitelna-barevna-grafika-na-pc/</a>
+</li>
+
+<li>Grafické karty MCGA a VGA<br />
+<a href="http://www.root.cz/clanky/graficke-karty-mcga-a-vga/">http://www.root.cz/clanky/graficke-karty-mcga-a-vga/</a>
+</li>
+
+<li>Grafický subsystém počítačů Amiga<br />
+<a href="http://www.root.cz/clanky/graficky-subsystem-pocitacu-amiga/">http://www.root.cz/clanky/graficky-subsystem-pocitacu-amiga/</a>
+</li>
+
+<li>Grafický subsystém počítačů Amiga II<br />
+<a href="http://www.root.cz/clanky/graficky-subsystem-pocitacu-amiga-ii/">http://www.root.cz/clanky/graficky-subsystem-pocitacu-amiga-ii/</a>
+</li>
+
+<li>Raspberry Pi pages<br />
+<a href="https://www.raspberrypi.org/">https://www.raspberrypi.org/</a>
+</li>
+
+<li>BCM2835 registers<br />
+<a href="http://elinux.org/BCM2835_registers">http://elinux.org/BCM2835_registers</a>
+</li>
+
+<li>VideoCore (archiv stránek společnosti Alphamosaic)<br />
+<a href="http://web.archive.org/web/20030209213838/www.alphamosaic.com/videocore/">http://web.archive.org/web/20030209213838/www.alphamosaic.com/videocore/</a>
+</li>
+
+<li>VideoCore (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Videocore">https://en.wikipedia.org/wiki/Videocore</a>
+</li>
+
+<li>RPi lessons: Lesson 6 Screen01<br />
+<a href="http://www.cl.cam.ac.uk/projects/raspberrypi/tutorials/os/screen01.html">http://www.cl.cam.ac.uk/projects/raspberrypi/tutorials/os/screen01.html</a>
+</li>
+
+<li>Raspberry Pi forum: Bare metal<br />
+<a href="https://www.raspberrypi.org/forums/viewforum.php?f=72">https://www.raspberrypi.org/forums/viewforum.php?f=72</a>
+</li>
+
+<li>C library for Broadcom BCM 2835 as used in Raspberry Pi<br />
+<a href="http://www.airspayce.com/mikem/bcm2835/">http://www.airspayce.com/mikem/bcm2835/</a>
+</li>
+
+<li>Raspberry Pi Hardware Components<br />
+<a href="http://elinux.org/RPi_Hardware#Components">http://elinux.org/RPi_Hardware#Components</a>
+</li>
+
+<li>(Linux) Framebuffer<br />
+<a href="http://wiki.linuxquestions.org/wiki/Framebuffer">http://wiki.linuxquestions.org/wiki/Framebuffer</a>
+</li>
+
+<li>(Linux) Framebuffer HOWTO<br />
+<a href="http://tldp.org/HOWTO/Framebuffer-HOWTO/">http://tldp.org/HOWTO/Framebuffer-HOWTO/</a>
+</li>
+
+<li>Linux framebuffer (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Linux_framebuffer">https://en.wikipedia.org/wiki/Linux_framebuffer</a>
+</li>
+
+<li>RPi Framebuffer<br />
+<a href="http://elinux.org/RPi_Framebuffer">http://elinux.org/RPi_Framebuffer</a>
+</li>
+
+<li>HOWTO: Boot your Raspberry Pi into a fullscreen browser kiosk<br />
+<a href="http://blogs.wcode.org/2013/09/howto-boot-your-raspberry-pi-into-a-fullscreen-browser-kiosk/">http://blogs.wcode.org/2013/09/howto-boot-your-raspberry-pi-into-a-fullscreen-browser-kiosk/</a>
+</li>
+
+<li>Zdrojový kód fb.c pro RPI<br />
+<a href="https://github.com/jncronin/rpi-boot/blob/master/fb.c">https://github.com/jncronin/rpi-boot/blob/master/fb.c</a>
+</li>
+
+<li>RPiconfig<br />
+<a href="http://elinux.org/RPi_config.txt">http://elinux.org/RPi_config.txt</a>
+</li>
+
+<li>Mailbox framebuffer interface<br />
+<a href="https://github.com/raspberrypi/firmware/wiki/Mailbox-framebuffer-interface">https://github.com/raspberrypi/firmware/wiki/Mailbox-framebuffer-interface</a>
+</li>
+
+<li>Seriál Grafické formáty<br />
+<a href="http://www.root.cz/serialy/graficke-formaty/">http://www.root.cz/serialy/graficke-formaty/</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2016</small></p>
+</body>
+</html>
+
