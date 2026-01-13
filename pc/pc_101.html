@@ -1,0 +1,547 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Popis činnosti grafického systému Reality Engine</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=iso-8859-2" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Popis činnosti grafického systému Reality Engine</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>V dnešní části seriálu o architekturách počítačů dokončíme popis grafického subsystému Reality Engine, s jehož základními charakteristikami jsme se seznámili minule. Řekneme si, jakým způsobem jsou vykreslovány trojúhelníky generované modulem Geometry Engine, popíšeme si způsob rasterizace trojúhelníků na fragmenty i to, jak jsou jednotlivé fragmenty ukládány do framebufferu.</p>
+
+
+
+<h2>Obsah</h2>
+
+<p><a href="#k01">1. Popis činnosti grafického systému Reality Engine</a></p>
+<p><a href="#k02">2. Transformace vrcholů a normálových vektorů, odstranění neviditelných částí polygonů</a></p>
+<p><a href="#k03">3. Zpracování transformovaných polygonů rozložených na trojúhelníky</a></p>
+<p><a href="#k04">4. Rasterizace trojúhelníků</a></p>
+<p><a href="#k05">5. Operace s&nbsp;fragmenty a antialiasing</a></p>
+<p><a href="#k06">6. Obsah následující části seriálu</a></p>
+<p><a href="#k07">7. Literatura</a></p>
+<p><a href="#k08">8. Odkazy na Internetu</a></p>
+
+
+
+<p><a name="k01"></a></p>
+<h2>1. Popis činnosti grafického systému Reality Engine</h2>
+
+<p>V&nbsp;předchozí části seriálu o architekturách počítačů jsme si řekli,
+z&nbsp;jakých modulů se skládá grafický subsystém <i>Reality Engine</i>
+používaný na některých výkonných počítačích firmy <i>SGI</i>. Víme již, že celý
+subsystém je sestaven z&nbsp;několika samostatných desek nazvaných <i>geometry
+board</i>, <i>raster memory board</i> a <i>display generator board</i>.
+V&nbsp;závislosti na tom, jaký výkon při zobrazování prostorové grafiky
+vyžaduje uživatel, může být celý grafický subsystém <i>Reality Engine</i>
+sestaven ze tří, čtyř nebo šesti desek (to znamená, že některé desky a tím i
+grafické moduly, jsou v&nbsp;systému použity vícekrát a mohou pracovat
+paralelně). První deska grafického subsystému obsahuje jeden procesor příkazů
+(<i>Command Processor</i>) a několik bloků, které zpracovávají geometrické
+informace (<i>Geometry Engines</i>). Na druhé desce se nachází generátory
+fragmentů (<i>Fragment Generators</i>) a pole procesorů určených pro zpracování
+bitmap a finální vykreslování fragmentů do framebufferu s&nbsp;využitím
+antialiasingu (<i>Image Engines</i>). Poslední deska slouží pro zpracování
+výsledného rastrového obrazu a pro generování video signálu určeného pro
+monitory popř.&nbsp;pro další vhodná grafická výstupní zařízení.</p>
+
+<a href="http://i.iinfo.cz/images/371/pc100-3.png"><img src="http://i.iinfo.cz/images/371/pc100-3-prev.png" width="303" height="270" alt="pc100" /></a>
+<p><i>Obrázek 1: Funkční bloky grafického subsystému Reality Engine.</i></p>
+
+<p>V&nbsp;předchozí části tohoto seriálu jsme se také dozvěděli, jakou funkci
+v&nbsp;grafickém subsystému vykonává procesor příkazů (<i>Command
+Processor</i>) &ndash; ten slouží k&nbsp;postupnému načítání příkazů
+z&nbsp;fronty (typu <i>FIFO &ndash; First In, First Out</i>), do níž jsou
+příkazy předávány grafickou knihovnou <i>OpenGL</i>. Každý příkaz je po
+zavolání nějaké výkonné funkce <i>OpenGL</i> převeden na sekvenci řídicích kódů
+a parametrů, které jsou následně uloženy do fronty. Procesor příkazů některé
+příkazy dokáže sdružovat takovým způsobem, aby byly prováděny na jednom
+<i>Geometry Enginu</i> (viz další kapitolu) a naopak dlouhou sekvenci vzájemně
+nesouvisejících příkazů (popř.&nbsp;i polyčáry či velké pruhy a trsy
+trojúhelníků) dokáže korektně rozložit (distribuovat) mezi několik <i>Geometry
+Enginů</i> takovým způsobem, aby byly všechny další moduly grafického
+subsystému <i>Reality Engine</i> vytíženy v&nbsp;co největší míře rovnoměrně,
+neboť jen tak lze zajistit paralelní běh všech grafických algoritmů.</p>
+
+<a href="http://i.iinfo.cz/images/371/pc100-4.jpg"><img src="http://i.iinfo.cz/images/371/pc100-4-prev.jpg" width="247" height="270" alt="pc100" /></a>
+<p><i>Obrázek 2: Čtyři desky, ze kterých se skládá grafický subsystém Reality
+Engine. Existuje i méně výkonná konfigurace se třemi deskami a naopak
+výkonnější konfigurace obsahující šest desek.</i></p>
+
+
+
+<p><a name="k02"></a></p>
+<h2>2. Transformace vrcholů a normálových vektorů, odstranění neviditelných částí polygonů</h2>
+
+<p>Každý modul <i>Geometry Engine</i> je sestaven z&nbsp;RISCových procesorů
+<i>Intel i860XP</i>, které dokážou provádět jak aritmetické operace
+s&nbsp;celočíselnými operandy, tak i s&nbsp;operandy reprezentovanými ve
+formátu pohyblivé řádové čárky (<i>floating point</i>), což je i jeden
+z&nbsp;důvodů, proč se firma <i>SGI</i> rozhodla tyto procesory v&nbsp;systému
+<i>Reality Engine</i> použít. Každý modul <i>Geometry Engine</i> dokáže
+provádět různé transformace souřadnic vrcholů i jejich normálových vektorů na
+základě zadaných transformačních matic, odstranění odvrácených polygonů,
+polygonů ležících mimo viditelný prostor atd. Některé výpočty jsou prováděny
+v&nbsp;jednoduché přesnosti (což odpovídá datovému typu <i>float</i> či
+<i>single</i>), ovšem další výpočty vyžadují použití dvojité přesnosti (datový
+typ <i>double</i>). Transformované polygony jsou navíc rozděleny na
+trojúhelníky, které jsou následně poslány na sběrnici nazvanou <i>Triangle
+Bus</i>.</p>
+
+<img src="http://i.iinfo.cz/images/371/pc100-7.png" width="450" height="441" alt="pc100" />
+<p><i>Obrázek 3: Blokové schéma jednoho modulu Geometry Engine. Zde můžeme
+vidět, že se tento uzel skládá z&nbsp;procesoru Intel i860XP, paměťového čipu a
+taktéž zákaznického obvodu určeného pro komunikaci s&nbsp;okolními
+čipy.</i></p>
+
+<p>První verze algoritmů implementovaných v&nbsp;modulech <i>Geometry
+Engine</i> byly napsány v&nbsp;čistém céčku; veškerý vývoj byl prováděn na
+systémech s&nbsp;procesory MIPS, ovšem výsledný kód byl generován přímo pro
+procesory <i>Intel i860XP</i>. Po odladění a patřičném otestování všech
+algoritmů vývojáři zjistili, které části implementovaných algoritmů jsou
+prováděny nejčastěji. Následně byly tyto části přepsány do assembleru (jazyka
+symbolických instrukcí/adres) s&nbsp;důrazem na co nejlepší využití všech
+výpočetních jednotek, které tyto procesory mají &ndash; kromě klasické
+aritmeticko-logické jednotky (<i>ALU</i>) totiž tyto procesory obsahovaly i dvě
+jednotky určené pro provádění operací s&nbsp;operandy v&nbsp;pohyblivé řádové
+čárce. Jedná se o <i>FP adder</i> s&nbsp;jehož pomocí bylo možné provádět
+součty, rozdíly, porovnání a konverze čísel uložených v&nbsp;systému plovoucí
+řádové tečky. Druhá jednotka nazvaná <i>FP multiplier</i> sloužila
+k&nbsp;součinu dvou čísel a taktéž k&nbsp;výpočtu převrácené hodnoty. Všechny
+tři základní jednotky, tj.&nbsp;ALU, FP adder a FP multiplier pracovaly
+paralelně, přičemž paralelismus byl podporován přímo v&nbsp;instrukční sadě,
+která byla typu <i>VLIW</i> (jedno instrukční slovo obsahuje bloky bitů,
+z&nbsp;nichž každý představuje instrukci určenou pro jednu výpočetní
+jednotku).</p>
+
+<img src="http://i.iinfo.cz/images/660/pc93-5.jpg" alt="pc93" height="450" width="450" />
+<p><i>Obrázek 4: Mikroprocesor Intel i860.</i></p>
+
+
+
+<p><a name="k03"></a></p>
+<h2>3. Zpracování transformovaných polygonů rozložených na trojúhelníky</h2>
+
+<p>Každý modul <i>Geometry Engine</i> při své činnosti vytváří sérii
+trojúhelníků s&nbsp;transformovanými vrcholy i normálovými vektory doplněnými
+informací o sklonu trojúhelníků ve směru os <i>x</i> a <i>y</i>, které jsou
+následně posílány na <i>Triangle Bus</i>, což je interní sběrnice grafického
+systému Reality Engine, která dokáže přenášet data mezi jakýmkoli <i>Geometry
+Enginem</i> a kterýmkoli generátorem fragmentů (<i>Fragment Generator</i>).
+Existence jediné sběrnice, na jejímž vstupu je osm či dvanáct <i>Geometry
+Enginů</i> a na výstupu ještě větší množství generátorů fragmentů, by mohla
+znamenat riziko potenciálního vzniku úzkého hrdla celé architektury, protože
+v&nbsp;jeden okamžik je možné propojit pouze jediný <i>Geometry Engine</i>
+s&nbsp;jediným generátorem fragmentů. Tvůrci popisované grafické architektury
+se vzniku úzkého hrdla, jež by celou architekturu grafického subsystému
+znehodnotilo, bránili dvěma způsoby &ndash; minimalizací času, který je nutný
+pro arbitráž sběrnice (tj.&nbsp;rozhodování, mezi kterými moduly se budou
+v&nbsp;daném okamžiku přenášet data a který přenos dat bude mít přednost před
+ostatními přenosy) a samozřejmě také zvýšením vlastní přenosové rychlosti.</p>
+
+<a href="http://i.iinfo.cz/images/615/pc101-1.png"><img src="http://i.iinfo.cz/images/615/pc101-1-prev.png" alt="pc101" height="153" width="370" /></a>
+<p><i>Obrázek 5: Pruh čtyřúhelníků (quad strip). Jedná se o jeden typ
+geometrické entity podporovaný knihovnou OpenGL. Před vlastní rasterizací se
+pruh čtyřúhelníků rozloží na samostatné čtyřúhelníky a následně se každý
+čtyřúhelník rozloží na dvojici trojúhelníků. Teprve tyto trojúhelníky jsou
+distribuovány mezi jednotlivé moduly Geometry Engine.</i></p>
+
+<p>Přenosová rychlost této interní sběrnice je tak velká, aby umožnila
+vykreslení více než jednoho milionu otexturovaných trojúhelníků za sekundu při
+povoleném antialiasingu i zapnutém Z-bufferu (tj.&nbsp;při porovnávání
+vzdáleností vytvářených fragmentů od pozorovatele s&nbsp;případným vyloučením
+těch fragmentů, které jsou překryty jiným, již dříve vykresleným fragmentem).
+Vzhledem k&nbsp;tomu, že osm či dvanáct <i>Geometry Enginů</i> dokáže
+v&nbsp;ideálním případě, tj.&nbsp;při dokonalé distribuci práce mezi všechny
+moduly, generovat jen přibližně 500&nbsp;000 až 700&times;000 trojúhelníků za
+sekundu, nedochází zavedením jediné sběrnice do celé architektury ke vzniku
+úzkého hrdla, i když se na druhou stranu omezily možnosti dalšího rozšiřování
+této architektury o další moduly <i>Geometry Engine</i> a generátory fragmentů
+(k&nbsp;významnějším kolizím na sběrnici by došlo v&nbsp;případě použití
+přibližně patnácti modulů <i>Geometry Engine</i>).</p>
+
+<a href="http://i.iinfo.cz/images/371/pc100-6.jpg"><img src="http://i.iinfo.cz/images/371/pc100-6-prev.jpg" width="360" height="270" alt="pc100" /></a>
+<p><i>Obrázek 6: První deska obsahující procesor příkazů a osm procesorů Intel
+860 (Geometry Engine) spolu s&nbsp;dalšími obvody zajišťujícími vzájemnou
+komunikaci všech čipů.</i></p>
+
+
+
+<p><a name="k04"></a></p>
+<h2>4. Rasterizace trojúhelníků</h2>
+
+<p>Každý trojúhelník, který byl transformován v&nbsp;modulu <i>Geometry
+Engine</i>, je následně přes výše popsanou sběrnici <i>Triangle Bus</i> poslán
+do pěti, deseti nebo dokonce dvaceti modulů nazvaných <i>Fragment
+Generator</i>, v&nbsp;nichž je provedena vlastní rasterizace a uložení
+fragmentů do framebufferu. Proces rasterizace se u grafického systému
+<i>Reality Engine</i> příliš neliší od operací, které jsou prováděny i na
+dnešních grafických akcelerátorech &ndash; nejprve se provede prvotní
+inicializace fragmentů s&nbsp;vhodnými počátečními hodnotami, vytvoří se
+subpixelová bitová maska obsahující příznaky, které fragmenty se mají skutečně
+vykreslit (ostatní leží mimo rasterizovaný trojúhelník), vypočte se adresa
+prvního texelu v&nbsp;texturovací paměti, popř.&nbsp;se vypočtou parametry
+používané pro modulaci textur, provede se výpočet osvětlení a nakonec se barva
+výsledného fragmentu může modifikovat barvou mlhy (<i>fog</i>) na základě
+vzdálenosti fragmentu od pozorovatele nebo se barva smíchá s&nbsp;barvou již
+dříve vykresleného fragmentu (<i>blending</i>).</p>
+
+<a href="http://i.iinfo.cz/images/371/pc100-8.jpg"><img src="http://i.iinfo.cz/images/371/pc100-8-prev.jpg" width="360" height="270" alt="pc100" /></a>
+<p><i>Obrázek 7: Druhá deska, z&nbsp;níž se skládá grafický subsystém Reality
+Engine. Na této desce jsou umístěny generátory fragmentů sloužící
+k&nbsp;vlastní rasterizaci objektů a taktéž pole modulů Image Engine(s)
+určených pro provádění operací nad jednotlivými fragmenty.</i></p>
+
+<p>Všechny výše zmíněné grafické operace jsou implementovány jako pipeline,
+která obsahuje velké množství řezů (<i>slices</i>), což znamená, že vykreslení
+jednoho fragmentu sice může trvat poměrně dlouhou dobu, protože data musí
+projít všemi řezy pipeline, ovšem v&nbsp;jednu chvíli se zpracovává větší
+množství fragmentů (jejich počet odpovídá počtu řezů), samozřejmě každý
+v&nbsp;jiné části vykreslovací (renderovací) pipeline. Vzhledem k&nbsp;tomu, že
+je každý trojúhelník, resp.&nbsp;jeho část, poslán do 5, 10 či 20 těchto
+modulů, musí každý <i>Fragment Generator</i> vykreslit pouze 20% (100/5), 10%
+(100/10) či jen 5% (100/20) fragmentů každého trojúhelníku, což samozřejmě
+představuje velmi významné urychlení vykreslování. Každý generátor fragmentů je
+implementován pomocí dvou ASIC čipů a osmi paměťových modulů DRAM &ndash; viz
+též následující obrázek, na kterém je nakresleno blokové schéma jednoho
+generátoru fragmentů spolu s&nbsp;jeho vstupními i výstupními částmi.</p>
+
+<a href="http://i.iinfo.cz/images/615/pc101-2.png"><img src="http://i.iinfo.cz/images/615/pc101-2-prev.png" alt="pc101" height="266" width="370" /></a>
+<p><i>Obrázek 8: Blokové schéma jednoho generátoru fragmentů, který je složen
+ze dvou čipů ASIC a osmice paměťových modulů DRAM.</i></p>
+
+
+
+<p><a name="k05"></a></p>
+<h2>5. Operace s&nbsp;fragmenty a antialiasing</h2>
+
+<p>Fragmenty vytvářené ve výše popsaných generátorech fragmentů byly následně
+distribuovány mezi šestnáct modulů nazvaných <i>Image Engine</i>. Hlavním
+úkolem těchto modulů bylo zajistit operace prováděné na subpixelové úrovni,
+protože grafický systém <i>Reality Engine</i> podporoval, jakožto dobové hi-end
+řešení 3D akcelerace, vykreslování s&nbsp;využitím antialiasingu, které bylo
+prováděno supersamplingem, což znamená, že se pro každý vykreslovaný pixel
+generovalo větší množství vzorků, které byly následně vhodným způsobem
+zkombinovány ve výslednou barvu pixelu. Každý modul <i>Image Engine</i> získal
+od generátoru fragmentů poměrně značné množství informací, především vzdálenost
+středu fragmentu od pozorovatele, sklon fragmentu v&nbsp;osách <i>x</i> a
+<i>y</i> (fragment si můžeme představit jako malý čtvereček ležící na
+vykreslovaném trojúhelníku) a taktéž již v&nbsp;předchozí kapitole zmiňovanou
+bitovou masku o rozlišení 8&times;8, ve které bylo pomocí hodnoty jednotlivých
+bitů (0, 1) určeno, které části fragmentu leží uvnitř vykreslované plochy a
+které naopak vně.</p>
+
+<img src="http://i.iinfo.cz/images/615/pc101-3.png" alt="pc101" height="403" width="450" />
+<p><i>Obrázek 9: Blokové schéma jednoho modulu Image Engine.</i></p>
+
+<p>Modul <i>Image Engine</i> následně s&nbsp;využitím informace o vzdálenosti
+středu fragmentu a jeho sklonu vypočítal přesné vzdálenosti všech 8&times;8
+subpixelů, provedl porovnání těchto vzdáleností s&nbsp;údaji uloženými ve
+framebufferu (jedna hloubka/vzdálenost pro každý fragment), aplikoval barvu
+vypočtenou generátorem fragmentů na viditelné subpixely a následně vypočítal
+výslednou barvu fragmentu, která byla posléze uložena do framebufferu. Každý
+modul <i>Image Engine</i> obsahoval část framebufferu o kapacitě 256k&times;16
+bitů implementovanou pomocí paměťových modulů DRAM. Hloubka fragmentů byla
+uložena na 32 bitech, barva každého fragmentu mohla mít 12 bitů pro každou
+barvovou složku (red, green, blue), což znamená 36bitovou barvovou hloubku
+(6.8&times;10<sup>10</sup> barevných odstínů).</p>
+
+<a href="http://i.iinfo.cz/images/615/pc101-4.jpg"><img src="http://i.iinfo.cz/images/615/pc101-4-prev.jpg" alt="pc101" height="270" width="360" /></a>
+<p><i>Obrázek 10: Třetí deska s&nbsp;čipy zajišťujícími výstup video signálu na
+různá zobrazovací zařízení &ndash; monitory atd.</i></p>
+
+
+
+<p><a name="k06"></a></p>
+<h2>6. Obsah následující části seriálu</h2>
+
+<p>V&nbsp;následující části seriálu o architekturách počítačů na chvíli
+odbočíme od popisu grafických systémů používaných na hi-end grafických
+stanicích. Na základě žádostí čtenářů se totiž budeme zabývat způsobem tvorby
+grafiky na osmibitových domácích počítačích. Vzhledem k&nbsp;tomu, že jsme si
+již některé známé osmibitové domácí počítače (především osmibitová
+<i>Atari</i>, <i>Commodore C64</i> i <i>Sinclair ZX80</i>, <i>Sinclair ZX81</i>
+a samozřejmě také <i>ZX Spectrum</i>) v&nbsp;tomto seriálu popsali, zaměříme se
+příště především na ty osmibitové počítače, které byly zkonstruovány
+v&nbsp;bývalé ČSSR i některých okolních zemích. Bude se jednat například o
+chvalně i nechvalně známé stroje <i>IQ 151</i>, <i>PMD 85</i> (jeho různé
+varianty), <i>Ondra</i>, <i>MAŤO</i>, <i>Didaktik Alfa</i>, <i>Didaktik
+Kompakt</i> či <i>Didaktik Gama</i>, které byly většinou osazeny osmibitovým
+mikroprocesorem 8080 popř.&nbsp;Z80 (resp.&nbsp;jeho východoněmeckou variantou
+U880). Pro některé z&nbsp;těchto počítačů existují i emulátory pro různé
+operační systémy (včetně Linuxu), takže pamětníci si mohou zavzpomínat
+například nad hrou <i>Hlípa</i> na dobu, kdy světu vládl Basic a ne C# :-)</p>
+
+<a href="http://i.iinfo.cz/images/615/pc101-5.jpg"><img src="http://i.iinfo.cz/images/615/pc101-5-prev.jpg" alt="pc101" height="203" width="370" /></a>
+<p><i>Obrázek 11: Legendární IQ 151, které kromě funkce počítače mohlo
+v&nbsp;domácnostech i školách sloužit jako elektrický přímotop.</i></p>
+
+
+
+<p><a name="k07"></a></p>
+<h2>7. Literatura</h2>
+
+<ol>
+
+<li>
+Fuchs, H., Goldfeather, J., Hultquist, J., Spach, S., Austin, J., Brooks, F., Eyles, J., and Poulton, J.,:<br />
+<i>&bdquo;Fast Spheres, Shadows, Textures, Transparencies, and Image Enhancements in Pixel-Planes&ldquo;</i><br />
+Computer Graphics (SIGGRAPH '85 Conference Proceedings), Vol. 19, No. 3, July, 1985, pp 111-120.
+</li>
+
+<li>
+Fuchs, H., Poulton, J., Eyles, J., Greer, T., Goldfeather, J., Ellsworth, D., Molnar, S., Turk, G., and Israel, L.,:<br />
+<i>&bdquo;A Heterogeneous Multiprocessor Graphics System Using Processor-Enhanced Memories&ldquo;</i><br />
+Computer Graphics (Proceedings of SIGGRAPH '89), Vol. 23, No. 3, pp 79-88.
+</li>
+
+<li>
+Poulton, J.,:<br />
+<i>&bdquo;Building Microelectronic Systems in a University Environment&ldquo;</i><br />
+Proceedings of the 1991 Conference on Advanced Research in VLSI, (invited presentation) UC-Santa Cruz, March 25-27, 1991, pages 387-400.
+</li>
+
+<li>
+Andries van Dam, Steven K. Feiner, John F. Hughes:<br />
+<i>&bdquo;Computer Graphics: Principles and Practice in C&ldquo;</i><br />
+(2nd Edition)
+</li>
+
+<li>
+Henry Styles and Wayne Luk:<br />
+<i>&bdquo;Customising Graphics Applications: Techniques and Programming Interface&ldquo;</i><br />
+Department of Computing, Imperial College, London, England
+</li>
+
+<li>
+Akeley, Kurt:
+<i>&bdquo;RealityEngine Graphics&ldquo;</i><br />
+Proceedings of SIGGRAPH '93, pp. 109-116.
+</li>
+
+</ol>
+
+
+
+<p><a name="k08"></a></p>
+<h2>8. Odkazy na Internetu</h2>
+
+<ol>
+
+<li>Pixel-Planes Project<br />
+<a href="http://www.cs.unc.edu/~pxfl/history.html">http://www.cs.unc.edu/~pxfl/history.html</a>
+</li>
+
+<li>Pixel-Plane 5<br />
+<a href="http://www.cs.sunysb.edu/~vislab/papers/pvr/rpe/node27.html">http://www.cs.sunysb.edu/~vislab/papers/pvr/rpe/node27.html</a>
+</li>
+
+<li>Tiled rendering<br />
+<a href="http://en.wikipedia.org/wiki/Tiled_rendering">http://en.wikipedia.org/wiki/Tiled_rendering</a>
+</li>
+
+<li>PowerVR<br />
+<a href="http://en.wikipedia.org/wiki/PowerVR">http://en.wikipedia.org/wiki/PowerVR</a>
+</li>
+
+<li>High-Performance Graphics Architectures: The Pixel-Planes Group<br />
+<a href="http://www.cs.unc.edu/~pxfl/pxpl-summary.html">http://www.cs.unc.edu/~pxfl/pxpl-summary.html</a>
+</li>
+
+<li>Reality Engine<br />
+<a href="http://en.wikipedia.org/wiki/RealityEngine">http://en.wikipedia.org/wiki/RealityEngine</a>
+</li>
+
+<li>Geometry pipelines<br />
+<a href="http://en.wikipedia.org/wiki/Geometry_Engine">http://en.wikipedia.org/wiki/Geometry_Engine</a>
+</li>
+
+<li>SGIstuff : Hardware : Graphics : RealityEngine<br />
+<a href="http://old.sgistuff.net/hardware/graphics/reality.php">http://old.sgistuff.net/hardware/graphics/reality.php</a>
+</li>
+
+<li>Onyx2 Technical Specification<br />
+<a href="http://vintagecomputers.info/onyx2/tech_specs.html">http://vintagecomputers.info/onyx2/tech_specs.html</a>
+</li>
+
+<li>Video Technology Magazine &ndash; various graphics resolutions<br />
+<a href="http://www.videotechnology.com/0904/formats.html">http://www.videotechnology.com/0904/formats.html</a>
+</li>
+
+<li>Ultra XGA (Ultra eXtended Graphics Array)<br />
+<a href="http://www.pcmag.com/encyclopedia_term/0,2542,t=UXGA&amp;i=53603,00.asp">http://www.pcmag.com/encyclopedia_term/0,2542,t=UXGA&amp;i=53603,00.asp</a>
+</li>
+
+<li>UXGA (Ultra eXtended Graphics Array)<br />
+<a href="http://en.wikipedia.org/wiki/UXGA">http://en.wikipedia.org/wiki/UXGA</a>
+</li>
+
+<li>WUXGA (Widescreen Ultra eXtended Graphics Array)<br />
+<a href="http://en.wikipedia.org/wiki/WUXGA">http://en.wikipedia.org/wiki/WUXGA</a>
+</li>
+
+<li>Video Standards (Graphics resolutions)<br />
+<a href="http://en.wikipedia.org/wiki/File:Vector_Video_Standards2.svg">http://en.wikipedia.org/wiki/File:Vector_Video_Standards2.svg</a>
+</li>
+
+<li>The MIPS R10000 Superscalar Microprocessor (článek dostupný členům ACM)<br />
+<a href="http://portal.acm.org/citation.cfm?id=623999">http://portal.acm.org/citation.cfm?id=623999</a>
+</li>
+
+<li>Glide API<br />
+<a href="http://en.wikipedia.org/wiki/Glide_API">http://en.wikipedia.org/wiki/Glide_API</a>
+</li>
+
+<li>Scientific Application of OpenGL Vizserver within High Performance Computing<br />
+<a href="http://www.ukhec.ac.uk/publications/reports/vizserver_casestudy_dec02.pdf">http://www.ukhec.ac.uk/publications/reports/vizserver_casestudy_dec02.pdf</a>
+</li>
+
+<li>Amdahl's law<br />
+<a href="http://en.wikipedia.org/wiki/Amdahl%27s_law">http://en.wikipedia.org/wiki/Amdahl%27s_law</a>
+</li>
+
+<li>NUMA: Frequently Asked Questions<br />
+<a href="http://lse.sourceforge.net/numa/faq/">http://lse.sourceforge.net/numa/faq/</a>
+</li>
+
+<li>NUMA (Numa Support in Linux)<br />
+<a href="http://oss.sgi.com/projects/numa/">http://oss.sgi.com/projects/numa/</a>
+</li>
+
+<li>Symmetric multiprocessing<br />
+<a href="http://en.wikipedia.org/wiki/Symmetric_multiprocessing">http://en.wikipedia.org/wiki/Symmetric_multiprocessing</a>
+</li>
+
+<li>Non-Uniform Memory Access<br />
+<a href="http://en.wikipedia.org/wiki/Non-Uniform_Memory_Access">http://en.wikipedia.org/wiki/Non-Uniform_Memory_Access</a>
+</li>
+
+<li>Northbridge (computing)<br />
+<a href="http://en.wikipedia.org/wiki/Northbridge_(computing)">http://en.wikipedia.org/wiki/Northbridge_(computing)</a>
+</li>
+
+<li>Southbridge (computing)<br />
+<a href="http://en.wikipedia.org/wiki/Southbridge_(computing)">http://en.wikipedia.org/wiki/Southbridge_(computing)</a>
+</li>
+
+<li>Carrier sense multiple access with collision detection<br />
+<a href="http://en.wikipedia.org/wiki/Carrier_sense_multiple_access_with_collision_detection">http://en.wikipedia.org/wiki/Carrier_sense_multiple_access_with_collision_detection</a>
+</li>
+
+<li>Intel i740<br />
+<a href="http://en.wikipedia.org/wiki/Intel740">http://en.wikipedia.org/wiki/Intel740</a>
+</li>
+
+<li>Intel i740 Datasheet<br />
+<a href="ftp://download.intel.com/support/graphics/intel740/29061902.pdf">ftp://download.intel.com/support/graphics/intel740/29061902.pdf</a>
+</li>
+
+<li>Intel740(TM) Graphics Accelerator P854 Hardware<br />
+<a href="ftp://download.intel.com/support/graphics/intel740/29062202.pdf">ftp://download.intel.com/support/graphics/intel740/29062202.pdf</a>
+</li>
+
+<li>S3 Savage<br />
+<a href="http://en.wikipedia.org/wiki/S3_Savage">http://en.wikipedia.org/wiki/S3_Savage</a>
+</li>
+
+<li>Savage (S3)<br />
+<a href="http://www.economy-point.org/s/savage-s3.html">http://www.economy-point.org/s/savage-s3.html</a>
+</li>
+
+<li>3dfx Interactive<br />
+<a href="http://en.wikipedia.org/wiki/3dfx_Voodoo_Graphics">http://en.wikipedia.org/wiki/3dfx_Voodoo_Graphics</a>
+</li>
+
+<li>Visualization Tools and Environments for Very Large Data<br />
+<a href="http://ditwww.epfl.ch/SIC/SA/publications/SCR00/scr12-page9.html">http://ditwww.epfl.ch/SIC/SA/publications/SCR00/scr12-page9.html</a>
+</li>
+
+<li>Intel 860@cpu-collection<br />
+<a href="http://www.cpu-collection.de/?l0=co&l1=Intel&l2=i860">http://www.cpu-collection.de/?l0=co&l1=Intel&l2=i860</a>
+</li>
+
+<li>S3 Graphics<br />
+<a href="http://www.s3graphics.com/en/index.aspx">http://www.s3graphics.com/en/index.aspx</a>
+</li>
+
+<li>TSENG ET6000 Performance Page<br />
+<a href="http://dani75.tripod.com/TSENG.htm">http://dani75.tripod.com/TSENG.htm</a>
+</li>
+
+<li>Tseng Labs Ships ET6000 Advanced Graphics Chip, Announces Additional Manufacturing Sources<br />
+<a href="http://www.encyclopedia.com/doc/1G1-18088868.html">http://www.encyclopedia.com/doc/1G1-18088868.html</a>
+</li>
+
+<li>CyberMax chooses Tseng Labs' ET6000 Graphics and Video Controller for Max and ProMax Series PCs<br />
+<a href="http://findarticles.com/p/articles/mi_m0EIN/is_1996_Oct_9/ai_18754932/">http://findarticles.com/p/articles/mi_m0EIN/is_1996_Oct_9/ai_18754932/</a>
+</li>
+
+<li>Intel i860<br />
+<a href="http://en.wikipedia.org/wiki/Intel_860">http://en.wikipedia.org/wiki/Intel_860</a>
+</li>
+
+<li>Intel i860 64-Bit Microprocessor<br />
+<a href="http://www.microprocessor.sscc.ru/i860.html">http://www.microprocessor.sscc.ru/i860.html</a>
+</li>
+
+<li>25 Microchips That Shook the World<br />
+<a href="http://www.synbio.org.uk/scientific-computing-news/1351.html">http://www.synbio.org.uk/scientific-computing-news/1351.html</a>
+</li>
+
+<li>Sprite (computer graphics)<br />
+<a href="http://en.wikipedia.org/wiki/Sprite_(computer_graphics)">http://en.wikipedia.org/wiki/Sprite_(computer_graphics)</a>
+</li>
+
+<li>Sprite (počítačová grafika)<br />
+<a href="http://cs.wikipedia.org/wiki/Sprite_(počítačová_grafika)">http://cs.wikipedia.org/wiki/Sprite_(počítačová_grafika)</a>
+</li>
+
+<li>Wikipedia: Video Display Controller<br />
+<a href="http://en.wikipedia.org/wiki/Video_Display_Controller">http://en.wikipedia.org/wiki/Video_Display_Controller</a>
+</li>
+
+<li>3dfx Voodoo1 PCI<br />
+<a href="http://www.v3info.de/english/html/v1.shtml">http://www.v3info.de/english/html/v1.shtml</a>
+</li>
+
+<li>Glide 2.2 Programming Guide<br />
+<a href="http://www.gamers.org/dEngine/xf3D/glide/glidepgm.htm">http://www.gamers.org/dEngine/xf3D/glide/glidepgm.htm</a>
+</li>
+
+<li>OpenGL Vizserver 3.1 Application Transparent Remote Interactive Visualization and Collaboration<br />
+<a href="http://subs.emis.de/LNI/Proceedings/Proceedings55/GI-Proceedings.55-20.pdf">http://subs.emis.de/LNI/Proceedings/Proceedings55/GI-Proceedings.55-20.pdf</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="http://www.fit.vutbr.cz/~tisnovpa">Pavel Tišnovský</a> &nbsp; 2010</small></p>
+</body>
+</html>
+
