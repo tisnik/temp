@@ -37,10 +37,10 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. Překlad jazykové konstrukce <strong>goto</strong></a></p>
-<p><a href="#k02">*** 2. Podmínky a instrukce <strong>select</strong></a></p>
-<p><a href="#k03">*** 3. Volání funkcí</a></p>
-<p><a href="#k04">*** 4. Manipulace s&nbsp;poli</a></p>
+<p><a href="#k01">1. Překlad jazykové konstrukce <strong>goto</strong></a></p>
+<p><a href="#k02">2. Podmínky a instrukce <strong>select</strong></a></p>
+<p><a href="#k03">3. Rekurzivní volání funkcí</a></p>
+<p><a href="#k04">4. Manipulace s&nbsp;poli</a></p>
 <p><a href="#k05">*** 5. Přečtení hodnoty prvku z&nbsp;pole</a></p>
 <p><a href="#k06">*** 6. Modifikace hodnoty prvku v&nbsp;poli</a></p>
 <p><a href="#k07">*** 7. Modifikace prvků v&nbsp;poli přes ukazatel</a></p>
@@ -63,55 +63,281 @@
 <p><a name="k01"></a></p>
 <h2 id="k01">1. Překlad jazykové konstrukce <strong>goto</strong></h2>
 
+<p>V&nbsp;prvním příkladu, který si v&nbsp;dnešním článku ukážeme, prozkoumáme,
+jakou sekvencí instrukcí mezikódu je realizována konstrukce
+<strong>goto</strong>. Jedná se o nepodmíněný skok, takže se dá předpokládat,
+že v&nbsp;LLMV IR bude použita &bdquo;univerzální&ldquo; instrukce
+<strong>br</strong> (<i>branch</i>):</p>
+
+<pre>
+void <strong>positive_case</strong>(void);
+void <strong>negative_case</strong>(void);
+void <strong>finish</strong>(void);
+&nbsp;
+void <strong>bar</strong>(int i) {
+  if (i &gt; 0) {
+    goto positive;
+  }
+  positive_case();
+  goto end;
+<strong>positive</strong>:
+  negative_case();
+<strong>end</strong>:
+  finish();
+}
+</pre>
+
+<p>Překlad do mezikódu LLVM IR dopadne následovně:</p>
+
+<pre>
+<i>; Function Attrs: nounwind optsize uwtable</i>
+define dso_local void @<strong>bar</strong>(i32 noundef %0) local_unnamed_addr #0 {
+  %2 = icmp sgt i32 %0, 0
+  br i1 %2, label %4, label %3
+&nbsp;
+3:                                                ; preds = %1
+  tail call void @positive_case() #2
+  br label %5
+
+4:                                                ; preds = %1
+  tail call void @negative_case() #2
+  br label %5
+
+5:                                                ; preds = %4, %3
+  tail call void @finish() #2
+  ret void
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že se ve skutečnosti
+v&nbsp;prvním případě jedná o podmíněný skok, protože překladač <i>Clang</i>
+zkombinoval podmínku následovanou skokem do jediné instrukce <strong>br
+i1</strong>. Ovšem další dvě použití instrukce <strong>br</strong> již značí
+běžný nepodmíněný skok.</div></p>
+
 
 
 <p><a name="k02"></a></p>
 <h2 id="k02">2. Podmínky a instrukce <strong>select</strong></h2>
 
+<p>Ve skutečnosti se v&nbsp;mezikódu LLVM IR můžeme setkat ještě s&nbsp;jednou
+zajímavou instrukcí. Tato instrukce se jmenuje <strong>select</strong> a slouží
+nikoli k&nbsp;rozvětvení na základě podmínky, ale k&nbsp;výběru hodnoty, taktéž
+na základě podmínky. Ukažme si jednoduchý příklad, který v&nbsp;LLVM IR vede
+k&nbsp;použití této instrukce:</p>
+
+<pre>
+int <strong>decision</strong>(int a) {
+  if (a &lt; 0) {
+    return 42;
+  }
+  return 9999;
+}
+</pre>
+
+<p>Teoreticky by bylo možné tuto funkci přeložit s&nbsp;využitím podmíněného
+skoku atd., ovšem v&nbsp;mezikódu namísto toho nalezneme právě instrukci
+<strong>select</strong>. Povšimněte si, jak se používá &ndash; na základě
+podmínky (první operand) se vybere buď hodnota druhá nebo třetí. Všechny
+hodnoty jsou v&nbsp;LLVM IR doplněny o typy:</p>
+
+<pre>
+<i>; Function Attrs: mustprogress nofree norecurse nosync nounwind optsize willreturn memory(none) uwtable</i>
+define dso_local noundef range(i32 42, 10000) i32 @<strong>decision</strong>(i32 noundef %0) local_unnamed_addr #0 {
+  %2 = icmp slt i32 %0, 0
+  %3 = select i1 %2, i32 42, i32 9999
+  ret i32 %3
+}
+</pre>
+
+<p>Naši tabulku instrukcí LLVM IR tedy rozšíříme o:</p>
+
+<table>
+<tr><th>#</th><th>Jméno instrukce</th><th>Parametry</th><th>Stručný popis instrukce</th></tr>
+<tr><td>1</td><td>select</td><td>podmínka, hodnota1, hodnota2</td><td>výběr hodnoty na základě vyhodnocené podmínky</td></tr>
+</table>
+
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. Volání funkcí</h2>
+<h2 id="k03">3. Rekurzivní volání funkcí</h2>
+
+<p>V&nbsp;LLVM IR je umožněno, aby nějaká funkce volala sebe samu. Pro tento
+účel se používá již popsaná instrukce <strong>call</strong> popř.&nbsp;její
+&bdquo;koncová&ldquo; varianta <strong>tail call</strong>. Ukažme si celý
+postup na známé Ackermannově funkci, která není primitivně rekurzivní:</p>
+
+<pre>
+unsigned int <strong>ackermann</strong>(unsigned int m, unsigned int n) {
+    if (m == 0)
+        return n + 1;
+    else if (n == 0)
+        return ackermann(m - 1, 1);
+    else
+        return ackermann(m - 1, ackermann(m, n - 1));
+}
+</pre>
+
+<p>Výsledek překladu do mezikódu LLVM IR dopadne následovně. Připomínám, že
+jsou povoleny optimalizace na velikost výsledného kódu:</p>
+
+<pre>
+<i>; Function Attrs: nofree nosync nounwind optsize memory(none) uwtable</i>
+define dso_local i32 @ackermann(i32 noundef %0, i32 noundef %1) local_unnamed_addr #0 {
+  %3 = icmp eq i32 %0, 0
+  br i1 %3, label %4, label %7
+&nbsp;
+4:                                                ; preds = %11, %2
+  %5 = phi i32 [ %1, %2 ], [ %12, %11 ]
+  %6 = add i32 %5, 1
+  ret i32 %6
+&nbsp;
+7:                                                ; preds = %2, %11
+  %8 = phi i32 [ %12, %11 ], [ %1, %2 ]
+  %9 = phi i32 [ %13, %11 ], [ %0, %2 ]
+  %10 = icmp eq i32 %8, 0
+  br i1 %10, label %11, label %15
+&nbsp;
+11:                                               ; preds = %7, %15
+  %12 = phi i32 [ %17, %15 ], [ 1, %7 ]
+  %13 = add i32 %9, -1
+  %14 = icmp eq i32 %13, 0
+  br i1 %14, label %4, label %7
+&nbsp;
+15:                                               ; preds = %7
+  %16 = add i32 %8, -1
+  %17 = tail call i32 @ackermann(i32 noundef %9, i32 noundef %16) #1
+  br label %11
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: tento kód je již dosti složitý, protože
+se v&nbsp;něm vyskytuje (pseudo)instrukce <strong>phi</strong>, které bude
+věnován samostatný článek (resp.&nbsp;přesněji řečeno se bude jednat o článek
+s&nbsp;vysvětlením, k&nbsp;čemu je nutné, aby mezikód touto instrukcí
+disponoval). Nicméně i tak můžeme vidět volání funkce
+<strong>ackermann</strong> ze sebe samé. To je nutné, protože funkce, která
+není primitivně rekurzivní, nelze přepsat do formy jednoduché programové
+smyčky.</div></p>
 
 
 
 <p><a name="k04"></a></p>
 <h2 id="k04">4. Manipulace s&nbsp;poli</h2>
 
+<p>Mezikód LLVM IR obsahuje i instrukce (resp.&nbsp;přesněji řečeno jednu
+instrukci) pro manipulaci s&nbsp;poli (<i>array</i>). Od mezikódu vyžadujeme
+dvě operace: přečtení i-tého prvku pole a zápis do i-tého prvku pole,
+samozřejmě za předpokladu, že je pole měnitelné (<i>mutable</i>). Tyto operace
+sice přímo podporovány nejsou, ovšem v&nbsp;LLVM IR je k&nbsp;dispozici
+instrukce, která na základě ukazatele na pole a indexu prvku vypočte a vrátí
+ukazatel na tento prvek. To je plně dostačující, protože čtení a zápisy přes
+ukazatel již známe &ndash; k&nbsp;tomuto účelu se používají instrukce
+<strong>load</strong> a <strong>store</strong>, které jsme si popsali již <a
+href="https://www.root.cz/clanky/technologie-mezijazyku-mezikodu-a-bajtkodu-llvm-ir/#k08">předminule
+v&nbsp;osmé kapitole</a>. V&nbsp;navazujících kapitolách si ukážeme, jak se do
+LLVM IR přeloží operace s&nbsp;poli prováděné buď indexováním prvků nebo
+přístupem k&nbsp;prvkům přes ukazatel.</p>
+
 
 
 <p><a name="k05"></a></p>
 <h2 id="k05">5. Přečtení hodnoty prvku z&nbsp;pole</h2>
+
+<p></p>
+
+<pre>
+unsigned int <strong>set</strong>(unsigned int *array, int index) {
+    return array[index];
+}
+</pre>
+
+<p></p>
+
+<pre>
+<i>; Function Attrs: mustprogress nofree norecurse nosync nounwind optsize willreturn memory(argmem: read) uwtable</i>
+define dso_local i32 @<strong>set</strong>(ptr nocapture noundef readonly %0, i32 noundef %1) local_unnamed_addr #0 {
+  %3 = sext i32 %1 to i64
+  %4 = getelementptr inbounds i32, ptr %0, i64 %3
+  %5 = load i32, ptr %4, align 4, !tbaa !3
+  ret i32 %5
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;tomto mezikódu se poprvé
+setkáváme s&nbsp;instrukcí nazvanou <strong>getelementptr</strong>. Tato
+instrukce na základě adresy pole a indexu prvku vrátí ukazatel na i-tý prvek
+pole. Povšimněte si, že tato instrukce může být použita i v&nbsp;těch jazycích,
+které přímo nepodporují přístup k&nbsp;prvkům polí přes ukazatel.</div></p>
 
 
 
 <p><a name="k06"></a></p>
 <h2 id="k06">6. Modifikace hodnoty prvku v&nbsp;poli</h2>
 
+<p></p>
+
+<pre>
+</pre>
+
+<p></p>
+
+<pre>
+</pre>
+
 
 
 <p><a name="k07"></a></p>
 <h2 id="k07">7. Modifikace prvků v&nbsp;poli přes ukazatel</h2>
+
+<p></p>
+
+<pre>
+</pre>
+
+<p></p>
+
+<pre>
+</pre>
 
 
 
 <p><a name="k08"></a></p>
 <h2 id="k08">8. Instrukce LLVM určené pro manipulaci s&nbsp;prvky pole</h2>
 
+<table>
+<tr><th>#</th><th>Jméno instrukce</th><th>Parametry</th><th>Stručný popis instrukce</th></tr>
+<tr><td>1</td><td>getelementptr</td><td></td><td></td></tr>
+</table>
+
 
 
 <p><a name="k09"></a></p>
 <h2 id="k09">9. Výpočet součtu prvků pole</h2>
+
+<pre>
+</pre>
+
+<pre>
+</pre>
 
 
 
 <p><a name="k10"></a></p>
 <h2 id="k10">10. Způsob překladu bez použití vektorových instrukcí</h2>
 
+<pre>
+</pre>
+
+<pre>
+</pre>
+
 
 
 <p><a name="k11"></a></p>
-<h2 id="k11">11. </h2>
+<h2 id="k11">11. Doplnění instrukčního souboru: co nebylo popsáno minule</h2>
+
+<p></p>
 
 
 
@@ -365,11 +591,33 @@ hodnot typu <i>half float</i>. K&nbsp;tomuto účelu opět využijeme variantu
 příkladu z&nbsp;předchozího článku:</p>
 
 <pre>
+#define <strong>EQ</strong>(type) int eq_##type(type x, type y) {return x==y;}
+#define <strong>NE</strong>(type) int ne_##type(type x, type y) {return x!=y;}
+#define <strong>LT</strong>(type) int lt_##type(type x, type y) {return x&lt;y;}
+#define <strong>LE</strong>(type) int le_##type(type x, type y) {return x&lt;=y;}
+#define <strong>GT</strong>(type) int gt_##type(type x, type y) {return x&gt;y;}
+#define <strong>GE</strong>(type) int ge_##type(type x, type y) {return x&gt;=y;}
+&nbsp;
+#define <strong>ALL</strong>(type) \
+    EQ(type) \
+    NE(type) \
+    LT(type) \
+    LE(type) \
+    GT(type) \
+    GE(type)
+&nbsp;
+ALL(_Float16)
 </pre>
 
 <p>Výsledek činnosti preprocesoru jazyka C:</p>
 
 <pre>
+int <strong>eq__Float16</strong>(_Float16 x, _Float16 y) {return x==y;}
+int <strong>ne__Float16</strong>(_Float16 x, _Float16 y) {return x!=y;}
+int <strong>lt__Float16</strong>(_Float16 x, _Float16 y) {return x&lt;y;}
+int <strong>le__Float16</strong>(_Float16 x, _Float16 y) {return x&lt;=y;}
+int <strong>gt__Float16</strong>(_Float16 x, _Float16 y) {return x&gt;y;}
+int <strong>ge__Float16</strong>(_Float16 x, _Float16 y) {return x&gt;=y;}
 </pre>
 
 <p>Překlad do LLVM IR:</p>
@@ -499,6 +747,7 @@ popsané a použité instrukce LLVM IR:</p>
 <tr><td>47</td><td>br</td><td>podmínka label číslo</td><td>podmíněný skok na nastavené návěští</td></tr>
 <tr><td>48</td><td>switch</td><td></td><td>rozeskok na základě tabulky s dvojicemi hodnota:návěští</td></tr>
 <tr><td>49</td><td>phi</td><td>typ [hodnota, hodnota] ...</td><td>instrukce použitá při konverzi mezi LLVM IR a SSA</td></tr>
+<tr><td>50</td><td>select</td><td>podmínka, hodnota1, hodnota2</td><td>výběr hodnoty na základě vyhodnocené podmínky</td></tr>
 </table>
 
 
@@ -1077,6 +1326,14 @@ v&nbsp;mezijazyku LLVM IR získané překladem Clangem:</p>
 
 <li>LLVM IR Language Reference<br />
 <a href="https://deepwiki.com/llvm-mirror/llvm/2.1-llvm-ir-language-reference">https://deepwiki.com/llvm-mirror/llvm/2.1-llvm-ir-language-reference</a>
+</li>
+
+<li>Ackermann function<br />
+<a href="https://en.wikipedia.org/wiki/Ackermann_function">https://en.wikipedia.org/wiki/Ackermann_function</a>
+</li>
+
+<li>Primitive recursive function<br />
+<a href="https://en.wikipedia.org/wiki/Primitive_recursive_function">https://en.wikipedia.org/wiki/Primitive_recursive_function</a>
 </li>
 
 </ol>
