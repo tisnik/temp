@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>pgvector, embedding a sémantické vyhledávání (2. část: sofistikovanější indexy a různé typy vektorů)</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>pgvector, embedding a sémantické vyhledávání (2. část: sofistikovanější indexy a různé typy vektorů)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,13 +37,13 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
+<p><a href="#k01">*** 1. pgvector, embedding a sémantické vyhledávání (2. část: sofistikovanější indexy a různé typy vektorů)</a></p>
 <p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
-<p><a href="#k04">*** 4. </a></p>
-<p><a href="#k05">*** 5. </a></p>
-<p><a href="#k06">*** 6. </a></p>
-<p><a href="#k07">*** 7. </a></p>
+<p><a href="#k03">*** 3. Indexy založené na použití sofistikovanějších datových struktur</a></p>
+<p><a href="#k04">*** 4. Rozdělení celého prostoru Voroného dekompozicí</a></p>
+<p><a href="#k05">*** 5. Konstrukce indexu <strong>IVFFlat</strong> v&nbsp;Postgresu</a></p>
+<p><a href="#k06">*** 6. Index <i>HNSW</i> (Hierarchical Navigable Small World)</a></p>
+<p><a href="#k07">*** 7. Základ pro benchmarky, které budeme provádět</a></p>
 <p><a href="#k08">*** 8. </a></p>
 <p><a href="#k09">*** 9. </a></p>
 <p><a href="#k10">*** 10. </a></p>
@@ -61,37 +61,216 @@
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. pgvector, embedding a sémantické vyhledávání (2. část: sofistikovanější indexy a různé typy vektorů)</h2>
+
+<p></p>
+
+<a href="https://www.root.cz/clanky/pgvector-vektorova-databaze-postavena-na-postgresu/">pgvector: vektorová databáze postavená na Postgresu</a>
+
+<a href="https://www.root.cz/clanky/rozsireni-postgresql-jmenem-pgvector-embedding-a-semanticke-vyhledavani-1-cast/">Rozšíření PostgreSQL jménem pgvector, embedding a sémantické vyhledávání (1. část)</a>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Typy prvků vektorů</h2>
+
+<p></p>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Indexy založené na použití sofistikovanějších datových struktur</h2>
+
+<p>V&nbsp;jazykových modelech, ale i v&nbsp;některých dalších oblastech, se můžeme setkat s&nbsp;datovými sadami, které obsahují desítky či dokonce stovky milionů vektorů. To znamená, že (pochopitelně) existuje snaha o snížení času vyhledávání &ndash; ideálně změnou časové složitosti (z&nbsp;lineární složitosti k&nbsp;například logaritmické složitosti nebo složitosti s&nbsp;odmocninou), nebo alespoň sice se zachováním lineární složitosti, ovšem s&nbsp;jejím menším sklonem (což je ona někdy podceňovaná konstanta <i>k</i> ve vztahu <i>k O(n)</i>). I v&nbsp;těchto oblastech nám databáze PostgreSQL s&nbsp;rozšířením <i>pgvector</i> nabízí různá řešení. V&nbsp;rámci dalších kapitol se seznámíme se dvěma různými technikami, které jsou založeny na použití sofistikovanějších datových struktur, než jsou pouhé sekvence (tabulky) vektorů.</p>
+
+<p><div class="rs-tip-major">Poznámka: na tomto místě je vhodné poznamenat, že výkonnost <i>pgvectoru</i> může být horší v&nbsp;porovnání s&nbsp;některými specializovanými vektorovými databázemi.</div></p>
 
 
 
 <p><a name="k04"></a></p>
-<h2 id="k04">4. </h2>
+<h2 id="k04">4. Rozdělení celého prostoru Voroného dekompozicí</h2>
+
+<p>Jeden z&nbsp;dostupných a relativně často používaných algoritmů určených pro urychlení vyhledávání podobných vektorů spočívá v&nbsp;tom, že se n-dimenzionální prostor, ve kterém vektory vstupní datové sady leží, rozdělí do zadaného počtu oblastí. Pro rozdělení se přitom typicky používá Voroného dekompozice, i když by teoreticky bylo možné použít i další metody (možná zobecněný oktalový strom?). Algoritmus vyhledávání je v&nbsp;tom nejjednodušším případě upraven následujícím způsobem:</p>
+
+<ol>
+<li>Vstupem je vektor (dotaz) k&nbsp;němuž v&nbsp;datové sadě hledáme nejbližší vektory</li>
+<li>Pro tento vstupní vektor je zjištěna oblast (Voroného dekompozice), ve které bude prováděno vyhledávání</li>
+<li>Následně jsou nejbližší vektory vyhledávány pouze v&nbsp;této oblasti</li>
+</ol>
+
+<p>Problém spočívá v&nbsp;tom, že právě popsaný algoritmus nemusí vyhledat skutečně nejbližší vektory. To nastane v&nbsp;případě, že se vstupní vektor nachází blízko hranice oblasti a nejbližší vektor(y) by se tedy nacházel <i>za</i> touto hranicí. Proto může být algoritmus vyhledávání upraven do nepatrně odlišné podoby:</p>
+
+<ol>
+<li>Vstupem je vektor (dotaz) k&nbsp;němuž v&nbsp;datové sadě hledáme nejbližší vektory</li>
+<li>Pro tento vstupní vektor je zjištěna oblast (Voroného dekompozice), ve které bude prováděno vyhledávání</li>
+<li>Dále jsou zjištěno <i>m</i> sousedních oblastí k&nbsp;nalezené oblasti (<i>m</i> je konfigurovatelné)</li>
+<li>Následně jsou nejbližší vektory vyhledávány v&nbsp;nalezené oblasti (bod 2) i oblastech sousedních (bod 3)</li>
+</ol>
+
+<p>Čím větší je hodnota <i>m</i>, tím pomalejší, ale přesnější je vyhledání nejbližších vektorů.</p>
 
 
 
 <p><a name="k05"></a></p>
-<h2 id="k05">5. </h2>
+<h2 id="k05">5. Konstrukce indexu <strong>IVFFlat</strong> v&nbsp;Postgresu</h2>
+
+<p>Rozdělení n-dimenzionálního prostoru podle Voroného dekompozice je pochopitelně nutné nějakým způsobem realizovat. Podporu pro toto rozdělení programátorům sice nabízí samotné rozšíření <i>pgvector</i>, ovšem samotná konstrukce indexu se nepatrně zkomplikuje. Připomeňme si, že původně byla tabulka obsahující vektory naprogramována následujícím způsobem:</p>
+
+<pre>
+</pre>
+
+<p>Při aplikaci Voroného dekompozice je nutné index explicitně vytvořit:</p>
+
+<pre>
+</pre>
 
 
 
 <p><a name="k06"></a></p>
-<h2 id="k06">6. </h2>
+<h2 id="k06">6. Index <i>HNSW</i> (Hierarchical Navigable Small World)</h2>
+
+<p>Dalším potenciálně užitečným typem indexu, které jsou nabízeny (nejenom) rozšířením <i>pgvector</i> (ale například i ve Faissu), je index označovaný zkratkou <i>HNSW</i> neboli <i>Hierarchical Navigable Small World</i>. Jak již název tohoto indexu naznačuje, je metoda HNSW založena na rozdělení celého prostoru do hierarchicky organizovaných menších částí (ty jsou nazývány &bdquo;malé světy&ldquo;). Samotné rozdělování prostoru je časově velmi náročné, ovšem na druhou stranu se urychlí vyhledávání podobných vektorů, a to o jeden až dva řády (do značné míry ovšem záleží na dalších parametrech). Samozřejmě se i s&nbsp;tímto indexem pojí určité další nevýhody.</p>
 
 
 
 <p><a name="k07"></a></p>
-<h2 id="k07">7. </h2>
+<h2 id="k07">7. Základ pro benchmarky, které budeme provádět</h2>
+
+<pre>
+<i># Rozšíření pgvector pro databázi PostgreSQL</i>
+<i>#</i>
+<i># - příprava pro benchmark rozšíření pgvector</i>
+<i># - vytvoření tabulky používané benchmarkem</i>
+<i># - je použit výchozí index</i>
+<i># - zápis vektorů do nově vytvořené tabulky</i>
+
+from time import time
+
+import psycopg2
+from pgvector.psycopg2 import register_vector
+
+import numpy as np
+
+<i># parametry benchmarku</i>
+DIMENSIONS = 16
+VECTOR_COUNT = 10
+
+
+def create_vector_table(connection, dimensions, print_tables=True):
+    """Vytvoření tabulky obsahující sloupec s vektory."""
+    DROP_TABLE_STATEMENT = """
+        DROP TABLE IF EXISTS v3
+    """
+
+    CREATE_TABLE_STATEMENT = """
+        CREATE TABLE IF NOT EXISTS v3 (
+            id bigserial PRIMARY KEY,
+            embedding vector(%s) NOT NULL
+        );
+    """
+
+    LIST_TABLES_QUERY = """
+        SELECT table_schema,table_name
+          FROM information_schema.tables
+         WHERE table_schema='public'
+         ORDER BY table_schema,table_name;
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(DROP_TABLE_STATEMENT)
+        connection.commit()
+
+        cursor.execute(CREATE_TABLE_STATEMENT, (dimensions,))
+        connection.commit()
+
+        cursor.execute(LIST_TABLES_QUERY)
+        tables = cursor.fetchall()
+
+        if print_tables:
+            print("Tables in database:")
+            for table in tables:
+                print(f"    {table[0]}: {table[1]}")
+            print()
+
+
+def fill_in_vector_table(connection, dimensions, vector_count):
+    """Naplnění tabulky náhodnými vektory."""
+    t1 = time()
+    with connection.cursor() as cursor:
+        <i># prozatím budeme tabulku naplňovat po jednotlivých záznamech</i>
+        for i in range(vector_count):
+            # náhodný vektor
+            vector = np.random.rand(dimensions).astype("float32")
+            cursor.execute("INSERT INTO v3 (embedding) VALUES (%s)", (vector,))
+        connection.commit()
+    t2 = time()
+    return t2 - t1
+
+
+def print_vector_count(connection):
+    """Tisk počtu vektorů uložených v tabulce."""
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM v3")
+        count = cursor.fetchone()
+        print(f"Vectors stored in table v3: {count[0]}")
+
+
+def main():
+    """Vstupní bod do benchmarku."""
+    <i># připojení k databázi</i>
+    connection = psycopg2.connect(
+        host="", port=5432, user="tester", password="123qwe", dbname="test"
+    )
+
+    try:
+        <i># budeme používat rozšíření pgvector</i>
+        register_vector(connection)
+
+        <i># vytvoření tabulky s vektory</i>
+        create_vector_table(connection, DIMENSIONS)
+
+        <i># naplnění tabulky s vektory</i>
+        t = fill_in_vector_table(connection, DIMENSIONS, VECTOR_COUNT)
+        print(f"Time to fill-in database: {t:3} seconds")
+
+        <i># zjištění počtu skutečně uložených vektorů</i>
+        print_vector_count(connection)
+    finally:
+        connection.close()
+
+
+<i># spuštění benchmarku</i>
+main()
+</pre>
+
+<pre>
+$ uv run index-benchmark-1.py 
+Tables in database:
+    public: v3
+
+Time to fill-in database: 0.02258753776550293 seconds
+Vectors stored in table v3: 10
+</pre>
+
+<pre>
+test=> \dt
+              List of relations
+ Schema |       Name        | Type  | Owner  
+--------+-------------------+-------+--------
+ public | v3                | table | tester
+(1 row)
+</pre>
+
+<pre>
+test=> \d v3
+                               Table "public.v3"
+  Column   |    Type    | Collation | Nullable |            Default             
+-----------+------------+-----------+----------+--------------------------------
+ id        | bigint     |           | not null | nextval('v3_id_seq'::regclass)
+ embedding | vector(16) |           | not null | 
+Indexes:
+    "v3_pkey" PRIMARY KEY, btree (id)
+</pre>
 
 
 
@@ -391,6 +570,18 @@ V&nbsp;tabulce zobrazené níže jsou odkazy na jednotlivé příklady:</p>
 
 <li>pgvector 0.4.0 performance<br />
 <a href="https://supabase.com/blog/pgvector-performance">https://supabase.com/blog/pgvector-performance</a>
+</li>
+
+<li>IVFFlat (Inverted File Flat) Index<br />
+<a href="https://skyzh.github.io/write-you-a-vector-db/cpp-05-ivfflat.html">https://skyzh.github.io/write-you-a-vector-db/cpp-05-ivfflat.html</a>
+</li>
+
+<li>HNSW (Hierarchical Navigable Small Worlds) Index<br />
+<a href="https://skyzh.github.io/write-you-a-vector-db/cpp-06-02-hnsw.html">https://skyzh.github.io/write-you-a-vector-db/cpp-06-02-hnsw.html</a>
+</li>
+
+<li>Vector Indexing: Your Guide to Understanding and Implementation<br />
+<a href="https://www.teradata.com/insights/ai-and-machine-learning/what-is-vector-index">https://www.teradata.com/insights/ai-and-machine-learning/what-is-vector-index</a>
 </li>
 
 </ol>
