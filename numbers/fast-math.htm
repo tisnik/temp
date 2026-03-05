@@ -31,7 +31,7 @@
 
 <h1>Úvodník</h1>
 
-<p></p>
+<p>Moderní překladače při zpracování hodnot s plovoucí řádovou čárkou dodržují normu IEEE 754, a to včetně rozšíření této normy (IEEE 754-2008). To sice zajišťuje stabilitu a reprodukovatelnost výpočtů, ovšem existují situace, kdy je vhodné se od této normy odklonit a provádět výpočty rychleji.</p>
 
 
 
@@ -49,9 +49,9 @@
 <p><a href="#k10">10. A jak vypadá výsledný strojový kód?</a></p>
 <p><a href="#k11">11. Výpočet sumy prvků pole</a></p>
 <p><a href="#k12">12. Úprava předchozího příkladu: omezení pseudonáhodných hodnot</a></p>
-<p><a href="#k13">*** 13. Vliv přeskládání prvků na výsledek může být enormní</a></p>
-<p><a href="#k14">*** 14. Jak se vlastně změnil mezikód výpočtu sumy?</a></p>
-<p><a href="#k15">*** 15. A co výsledný strojový kód?</a></p>
+<p><a href="#k13">13. Vliv přeskládání prvků na výsledek může být enormní</a></p>
+<p><a href="#k14">14. Jak se vlastně změnil mezikód výpočtu sumy?</a></p>
+<p><a href="#k15">15. A co výsledný strojový kód?</a></p>
 <p><a href="#k16">16. Přesné nebo rychlé výpočty trigonometrických funkcí</a></p>
 <p><a href="#k17">17. Jaká funkce <strong>sinf</strong> se vlastně volá?</a></p>
 <p><a href="#k18">18. Příloha: Makefile pro překlad všech demonstračních příkladů</a></p>
@@ -860,6 +860,20 @@ na druhé cifře!</div></p>
 <p><a name="k13"></a></p>
 <h2 id="k13">13. Vliv přeskládání prvků na výsledek může být enormní</h2>
 
+<p>Mohlo by se zdát, že využití asociativity operací (zde konkrétně operace
+součtu) má jen relativně malý vliv na vypočtené výsledky. Ukažme si ovšem, co
+se stane ve chvíli, kdy je pole, jehož prvky sčítáme, naplněno sekvencí hodnot,
+přičemž sousední prvky mají opačná znaménka:</p>
+
+<pre>
+    for (int i = 0; i &lt; N; i++) {
+        array[i] = i % 2 ? i : -i;
+    }
+</pre>
+
+<p>Úplný zdrojový kód takto upraveného demonstračního příkladu vypadá
+následovně:</p>
+
 <pre>
 #include &lt;stdio.h&gt;
 #include &lt;time.h&gt;
@@ -868,7 +882,7 @@ na druhé cifře!</div></p>
 &nbsp;
 float array[N];
 &nbsp;
-float sum_array() {
+float <strong>sum_array</strong>() {
     float sum = 0.0f;
     for (int i = 0; i &lt; N; i++) {
         sum += array[i];
@@ -876,7 +890,7 @@ float sum_array() {
     return sum;
 }
 &nbsp;
-int main() {
+int <strong>main</strong>() {
     for (int i = 0; i &lt; N; i++) {
         array[i] = i % 2 ? i : -i;
     }
@@ -891,14 +905,54 @@ int main() {
 }
 </pre>
 
+<p>Výsledky jsou nyní v&nbsp;případě <i>fast math</i> značně odlišné od
+očekávané hodnoty 50000 (tedy N/2):</p>
+
+<pre>
+$ <strong>./array_sum_3_clang_O0</strong>
+Sum: 50000.0000
+Time: 0.9900 ms
+&nbsp;
+$ <strong>./array_sum_3_clang_O3</strong>
+Sum: 50000.0000
+Time: 0.2540 ms
+&nbsp;
+$ <strong>./array_sum_3_clang_fast_math</strong>
+Sum: 76800.0000
+Time: 0.0570 ms
+&nbsp;
+$ <strong>./array_sum_3_gcc_O0</strong>
+Sum: 50000.0000
+Time: 1.0070 ms
+&nbsp;
+$ <strong>./array_sum_3_gcc_O3</strong>
+Sum: 50000.0000
+Time: 0.2030 ms
+&nbsp;
+$ <strong>./array_sum_3_gcc_fast_math</strong>
+Sum: 88064.0000
+Time: 0.0690 ms
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: důležité je zamyslet se nad tím, čím je
+rozdíl ve výsledcích způsoben. Pokud se totiž prvky před provedením součtu
+přeorganizují, například tak, že se sčítají jen kladné prvky, dojde ke ztrátě
+přesnosti (mantisa má jen omezený počet bitů). To stejné platí pro součet
+záporných prvků. Součet totiž skutečně není v&nbsp;podání FP hodnot asociativní
+operací!</div></p>
+
 
 
 <p><a name="k14"></a></p>
 <h2 id="k14">14. Jak se vlastně změnil mezikód?</h2>
 
+<p>A jak vypadá mezikód LLVM IR získaný překladem demonstračního příkladu <a
+href="#k13">z&nbsp;předchozí kapitoly</a>? Neoptimalizovaná verze nepočítá
+s&nbsp;asociativitou operací:</p>
+
 <pre>
-; Function Attrs: noinline nounwind optnone uwtable
-define dso_local float @sum_array() #0 {
+<i>; Function Attrs: noinline nounwind optnone uwtable</i>
+define dso_local float @<strong>sum_array</strong>() #0 {
   %1 = alloca float, align 4
   %2 = alloca i32, align 4
   store float 0.000000e+00, ptr %1, align 4
@@ -932,9 +986,21 @@ define dso_local float @sum_array() #0 {
 }
 </pre>
 
+<p>Výpočet uvnitř těla smyčky vypadá takto:</p>
+
 <pre>
-; Function Attrs: nofree norecurse nosync nounwind memory(read, argmem: none, inaccessiblemem: none) uwtable
-define dso_local float @sum_array() local_unnamed_addr #0 {
+  %10 = load float, ptr %9, align 4
+  %11 = load float, ptr %1, align 4
+  %12 = fadd float %11, %10
+  store float %12, ptr %1, align 4
+</pre>
+
+<p>Překlad se zapnutím optimalizací, ale nikoli v&nbsp;režimu <i>fast
+math</i>:</p>
+
+<pre>
+<i>; Function Attrs: nofree norecurse nosync nounwind memory(read, argmem: none, inaccessiblemem: none) uwtable</i>
+define dso_local float @<strong>sum_array</strong>() local_unnamed_addr #0 {
   br label %2
 &nbsp;
 1:                                                ; preds = %2
@@ -980,9 +1046,21 @@ define dso_local float @sum_array() local_unnamed_addr #0 {
 }
 </pre>
 
+<p>Zde došlo k&nbsp;rozbalení smyčky, ale stále se provádí sekvence:</p>
+
 <pre>
-; Function Attrs: nofree norecurse nosync nounwind memory(read, argmem: none, inaccessiblemem: none) uwtable
-define dso_local nofpclass(nan inf) float @sum_array() local_unnamed_addr #0 {
+  %26 = load float, ptr %25, align 4, !tbaa !3
+  %27 = fadd float %23, %26
+  %29 = getelementptr inbounds nuw [100000 x float], ptr @array, i64 0, i64 %28
+  %30 = load float, ptr %29, align 8, !tbaa !3
+  %31 = fadd float %27, %30
+</pre>
+
+<p>Ovšem při zapnutí režimu <i>fast-math</i> je vše jinak:</p>
+
+<pre>
+<i>; Function Attrs: nofree norecurse nosync nounwind memory(read, argmem: none, inaccessiblemem: none) uwtable</i>
+define dso_local nofpclass(nan inf) float @<strong>sum_array</strong>() local_unnamed_addr #0 {
   br label %1
 &nbsp;
 1:                                                ; preds = %1, %0
@@ -1034,15 +1112,28 @@ define dso_local nofpclass(nan inf) float @sum_array() local_unnamed_addr #0 {
 }
 </pre>
 
+<p>Můžeme zde vidět jak rozbalení smyčky, tak i vektorizované součty:</p>
+
+<pre>
+  %30 = fadd fast &lt;4 x float&gt; %28, %23
+</pre>
+
+<p>Ovšem kvůli vektorizaci se prvky sčítají v&nbsp;odlišném pořadí, než je
+předepsáno ve zdrojovém kódu.</p>
+
 
 
 <p><a name="k15"></a></p>
 <h2 id="k15">15. A co výsledný strojový kód?</h2>
 
-<p></p>
+<p>Pro úplnost si ještě ukážeme výsledný strojový kód, který překladače dokážou
+vygenerovat. V&nbsp;tomto případě použiji GCC (Clang byl využit pro LLVM
+IR).</p>
+
+<p>Varianta přeložená bez optimalizací:</p>
 
 <pre>
-sum_array:
+<strong>sum_array</strong>:
         push    rbp
         mov     rbp, rsp
         pxor    xmm0, xmm0
@@ -1065,10 +1156,20 @@ sum_array:
         ret
 </pre>
 
-<p></p>
+<p>Zde se opakovaně provádí součet mezivýsledku s&nbsp;prvkem přečteným
+z&nbsp;pole:</p>
 
 <pre>
-sum_array:
+        movss   xmm0, DWORD PTR array[0+rax*4]
+        movss   xmm1, DWORD PTR [rbp-4]
+        addss   xmm0, xmm1
+        movss   DWORD PTR [rbp-4], xmm0
+</pre>
+
+<p>Kód získaný po zapnutí optimalizací, ovšem bez <i>fast math</i>:</p>
+
+<pre>
+<strong>sum_array</strong>:
         mov     eax, OFFSET FLAT:array
         pxor    xmm0, xmm0
 .L2:
@@ -1082,10 +1183,21 @@ sum_array:
         ret
 </pre>
 
-<p></p>
+<p>Programová smyčka je sice optimalizována a rozbalena, ovšem stále se provádí
+součty ve správném pořadí. Když si odmyslíme zvýšení offsetu
+<strong>RAX</strong>, provádí se čtyři součty v&nbsp;jedné iteraci:</p>
 
 <pre>
-sum_array:
+        addss   xmm0, DWORD PTR [rax]
+        addss   xmm0, DWORD PTR [rax+4]
+        addss   xmm0, DWORD PTR [rax+8]
+        addss   xmm0, DWORD PTR [rax+12]
+</pre>
+
+<p>A konečně výsledek překladu v&nbsp;režimu <i>fast math</i>:</p>
+
+<pre>
+<strong>sum_array</strong>:
         mov     eax, OFFSET FLAT:array
         mov     edx, OFFSET FLAT:array+400000
         pxor    xmm0, xmm0
@@ -1103,6 +1215,10 @@ sum_array:
         addps   xmm0, xmm1
         ret
 </pre>
+
+<p>Povšimněte si vektorizované (SIMD) instrukce <strong>addps</strong>, která
+navíc ukazuje, jak se prvky sčítají (prvek N+prvek N+8 atd.). Předpokládá se
+zde asociativita operace součtu!</p>
 
 
 
