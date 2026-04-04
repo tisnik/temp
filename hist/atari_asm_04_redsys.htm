@@ -1,0 +1,1417 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<head>
+<title>Programování her a grafických dem pro osmibitová Atari: blokové výplně a přesuny dat, grafický subsystém</title>
+<meta name="Author" content="Pavel Tisnovsky" />
+<meta name="Generator" content="vim" />
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<style type="text/css">
+         body {color:#000000; background:#ffffff;}
+         h1  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#c00000; text-align:center; padding-left:1em}
+         h2  {font-family: arial, helvetica, sans-serif; color:#ffffff; background-color:#0000c0; padding-left:1em; text-align:left}
+         h3  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#c0c0c0; padding-left:1em; text-align:left}
+         h4  {font-family: arial, helvetica, sans-serif; color:#000000; background-color:#e0e0e0; padding-left:1em; text-align:left}
+         a   {font-family: arial, helvetica, sans-serif;}
+         li  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ol  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         ul  {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify; width:450px;}
+         p   {font-family: arial, helvetica, sans-serif; color:#000000; text-align:justify;}
+         pre {background:#e0e0e0}
+</style>
+</head>
+
+<body>
+
+<h1>Programování her a grafických dem pro osmibitová Atari: blokové výplně a přesuny dat, grafický subsystém</h1>
+
+<h3>Pavel Tišnovský</h3>
+
+<p></p>
+
+<h1>Úvodník</h1>
+
+<p>Čtvrtý článek o vývoji programů pro legendární osmibitové domácí mikropočítače Atari je rozdělen na dvě části. V části první si ukážeme realizaci vyplňování paměti i přesunů bloků pouze s využitím osmibitových registrů. V části druhé se začneme zabývat grafickým subsystémem Atari.</p>
+
+
+
+<p><a name="k01"></a></p>
+<h2 id="k01">Akumulátor a dva index registry &ndash; a není to málo, Antone Pavloviči?</h2>
+
+<p>Osmibitový mikroprocesor MOS 6502, který je ústředním prvkem osmibitových
+domácích mikropočítačů Atari, obsahoval pouze minimální, ovšem ještě stále
+prakticky použitelný počet registrů. Všechny tyto registry jsou pro připomenutí
+vypsány v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th>#</th><th>Registr</th><th>Šířka</th><th>Význam</th></tr>
+<tr><td>1</td><td>A</td><td>8 bitů</td><td>akumulátor</td></tr>
+<tr><td>2</td><td>X</td><td>8 bitů</td><td>index registr (osmibitová adresa nebo offset adresy)</td></tr>
+<tr><td>3</td><td>Y</td><td>8 bitů</td><td>index registr (osmibitová adresa nebo offset adresy)</td></tr>
+<tr><td>4</td><td>SP</td><td>8 bitů</td><td>část ukazatele na vrchol zásobníku (+ $0100)</td></tr>
+<tr><td>5</td><td>PC</td><td>16 bitů</td><td>čítač instrukcí</td></tr>
+<tr><td>6</td><td>P</td><td>7/8 bitů</td><td>příznakový a stavový registr</td></tr>
+</table>
+
+<p>Poslední tři registry se většinou používají nepřímo. Naopak přímo se pracuje
+s&nbsp;akumulátorem <strong>A</strong> a index registry <strong>X</strong> a
+<strong>Y</strong>. Kupodivu i přes tato omezení (připomeňme si, že index
+registry jsou jen osmibitové) je možné realizovat i sofistikované programy, a
+to díky pokročilým adresním režimům. Opět si pro připomenutí vypišme ty
+adresovací režimy, které se používají pro adresování operandů (načítání,
+ukládání, vyplňování bloků/polí, přenosy bloků atd.). Vynechám režimy používané
+pro realizaci skoků:</p>
+
+<table>
+<tr><th> #</th><th>Zápis</th><th>Název</th><th>Assembler</th><th>Stručný popis</th></tr>
+<tr><td> 1</td><td>impl</td><td>implied</td><td>INS</td><td>operand je odvozen přímo z&nbsp;instrukce, například INX</td></tr>
+<tr><td> 2</td><td>A</td><td>accumulator</td><td>INS A</td><td>operandem je přímo akumulátor</td></tr>
+<tr><td> 3</td><td>#</td><td>immediate</td><td>INS #$BB</td><td>za instrukcí následuje bajt s&nbsp;konstantou</td></tr>
+<tr><td> 4</td><td>zpg</td><td>zeropage</td><td>INS $LL</td><td>operand je uložen na nulté stránce na adrese LL</td></tr>
+<tr><td> 5</td><td>zpg,X</td><td>zeropage, X-indexed</td><td>INS $LL,X</td><td>operand je uložen na nulté stránce na adrese LL+X</td></tr>
+<tr><td> 6</td><td>zpg,Y</td><td>zeropage, Y-indexed</td><td>INS $LL,Y</td><td>operand je uložen na nulté stránce na adrese LL+Y</td></tr>
+<tr><td> 7</td><td>abs</td><td>absolute</td><td>INS $LLHH</td><td>za instrukcí následuje šestnáctibitová adresa, na níž je operand uložen</td></tr>
+<tr><td> 8</td><td>abs,X</td><td>absolute, X-indexed</td><td>INS $LLHH,X</td><td>za instrukcí následuje šestnáctibitová adresa, která je přičtena k X</td></tr>
+<tr><td> 9</td><td>abs,Y</td><td>absolute, Y-indexed</td><td>INS $LLHH,Y</td><td>za instrukcí následuje šestnáctibitová adresa, která je přičtena k Y</td></tr>
+<tr><td>10</td><td>X,ind</td><td>X-indexed, indirect</td><td>INS ($LL,X)</td><td>efektivní adresa je spočtena z&nbsp;hodnoty uložené na (LL+X)</td></tr>
+<tr><td>11</td><td>ind,Y</td><td>indirect, Y-indexed</td><td>INS ($LL),Y</td><td>efektivní adresa je spočtena z&nbsp;hodnoty uložené na LL, k&nbsp;výsledku se přičte Y</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že poslední dva
+adresovací režimy mají i přes podobné jméno zcela odlišnou funkci. Tudíž i
+index registry <strong>X</strong> a <strong>Y</strong> nejsou zcela
+zaměnitelné. V&nbsp;praxi se setkáme především s&nbsp;druhým režimem
+(<i>indirect, Y-indexed</i> popř.&nbsp;jen <i>indirect indexed</i>), a to při
+práci s&nbsp;bloky paměti, poli atd. Podle mého názoru se jedná o jednu
+z&nbsp;nejlepších vlastností MOS 6502.</div></p>
+
+
+
+<p><a name="k02"></a></p>
+<h2 id="k02">Vyplnění bloku paměti bajtem se zvolenou hodnotou</h2>
+
+<p>Nejprve se pokusme vytvořit jednoduchý program, který po svém spuštění
+vyplní prvních pět textových řádků ve standardním textovém režimu. Každý řádek
+obsahuje čtyřicet znaků, takže je nutné vyplnit pouze 5&times;40=200 bajtů. A
+to je &bdquo;pěkná&ldquo; hodnota, protože je menší než 256, což celý
+algoritmus zjednoduší.</p>
+
+<p>První varianta programu pro vyplnění pěti textových řádků bude používat
+index registr <strong>Y</strong> ve funkci offsetu a index registr
+<strong>X</strong> bude počitadlo smyčky. Offset se zvyšuje instrukcí
+<strong>INY</strong> (<i>INcrement Y</i>) a adresa pro zápis je vypočtena na
+základě adresy uložené v&nbsp;buňkách 88 a 89, ke které je připočten právě
+obsah registru <strong>Y</strong>. Počitadlo budeme postupně snižovat instrukcí
+<strong>DEX</strong> (<i>DEcrement X</i>), která mj.&nbsp;nastavuje i
+příznakový bit <i>zero</i>. Ten je testován instrukcí <strong>BNE</strong>
+(<i>Branch if Not Equal</i>), čímž je realizována celá programová smyčka:</p>
+
+<pre>
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+&nbsp;
+.proc <strong>main</strong>
+        lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+        ldx #40*5               <i>; počet zápisů</i>
+        ldy #0                  <i>; offset</i>
+clear:
+        sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+                                <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+        iny                     <i>; zvýšit hodnotu offsetu</i>
+        dex                     <i>; zmenšit hodnotu počitadla</i>
+        bne clear               <i>; skok, pokud X&gt;0</i>
+&nbsp;
+loop:   jmp loop
+end:
+.endproc
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   main::end - 1           <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+<p>Po překladu a spuštění tohoto programu by měla mít obrazovka následující obsah:</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283433" data-alignment="center" data-link-type="modal">Obrázek #1283433 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283433">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-1.png" class="image-1283433" width="336" height="240" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-1.png" data-prev-width="336" data-prev-height="240" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-1.png" data-large-width="336" data-large-height="240" /><p class="description">Obrázek 1: Obrazovka ve standardním textovém režimu; prvních pět řádků je vyplněno jednoduchou programovou smyčkou.&#160;<br class="_remove" /></p></div></div>
+
+
+
+<p><a name="k03"></a></p>
+<h2 id="k03">Řešení využívající jen jediný index registr</h2>
+
+<p>Program z&nbsp;předchozí kapitoly je sice plně funkční, ovšem je taktéž
+zbytečně dlouhý a využívá všechny tři pracovní registry. Ve skutečnosti je
+ovšem možné ho zkrátit a navíc využít jen jediný index registr. Musí se jednat
+o registr <strong>Y</strong>, protože jen pro něj existuje adresovací režim
+<i>indirect, Y-indexed</i>. Registr naplníme koncovým offsetem (hodnotou
+počitadla) a budeme ho postupně snižovat o jedničku. Smyčka bude dokončena ve
+chvíli, kdy registr dosáhne nulové hodnoty:</p>
+
+<pre>
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+&nbsp;
+.proc <strong>main</strong>
+        lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+        ldy #40*5               <i>; počet zápisů</i>
+clear:
+        sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+                                <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+        dey                     <i>; zmenšit hodnotu počitadla a offsetu</i>
+        bne clear               <i>; skok, pokud Y&gt;0</i>
+
+loop:   jmp loop
+end:
+.endproc
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   main::end - 1           <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+ <i>; finito</i>
+</pre>
+
+<p>Po překladu a spuštění tohoto programu ovšem zjistíme, že vyplňuje chybně
+&ndash; podařilo se nám udělat klasickou &bdquo;off-by-one&ldquo; chybu:</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283436" data-alignment="center" data-link-type="modal">Obrázek #1283436 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283436">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-2.png" class="image-1283436" width="336" height="240" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-2.png" data-prev-width="336" data-prev-height="240" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-2.png" data-large-width="336" data-large-height="240" /><p class="description">Obrázek 2: Vyplnění s chybou typu off-by-one.&#160;<br class="_remove" /></p></div></div>
+
+
+
+<p><a name="k04"></a></p>
+<h2 id="k04">Oprava klasické chyby &pm;1</h2>
+
+<p>Vyplnění s&nbsp;posunem o jeden znak je způsobeno tím, že sice programovou
+smyčku opakujeme správně 40&times;5=200krát, ovšem samotný zápis je proveden
+ještě před snížením hodnoty index registru <strong>Y</strong>. Náprava je ve
+skutečnosti snadná, protože můžeme zápis provést až po zmenšení počitadla
+<strong>Y</strong>. Vše bude funkční, protože instrukce <strong>STA</strong>
+(zápis do paměti) je jednou z&nbsp;mála instrukcí mikroprocesoru MOS 6502,
+která nemění příznakové bity. Korektní varianta programu tedy bude vypadat
+takto:</p>
+
+<pre>
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+&nbsp;
+.proc <strong>main</strong>
+        lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+        ldy #40*5               <i>; počet zápisů</i>
+clear:
+        dey                     <i>; zmenšit hodnotu počitadla a offsetu</i>
+        sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+                                <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+        bne clear               <i>; skok, pokud Y&gt;0</i>
+
+loop:   jmp loop
+end:
+.endproc
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   main::end - 1           <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+ <i>; finito</i>
+</pre>
+
+<p>Výsledek bude (opět) korektní:</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283439" data-alignment="center" data-link-type="modal">Obrázek #1283439 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283439">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-3.png" class="image-1283439" width="336" height="240" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-3.png" data-prev-width="336" data-prev-height="240" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-3.png" data-large-width="336" data-large-height="240" /><p class="description">Obrázek 3: Korektní vyplnění prvních pěti textových řádků.&#160;<br class="_remove" /></p></div></div>
+
+
+
+<p><a name="k05"></a></p>
+<h2 id="k05">Vyplňování směrem k&nbsp;vyšším adresám</h2>
+
+<p>Samozřejmě se můžeme pokusit o úpravu počítané programové smyčky takovým
+způsobem, že budeme provádět vyplňování od prvního znaku a nikoli od znaku
+posledního. Počitadlo a současně i offset reprezentovaný index registrem
+<strong>Y</strong> tedy bude začínat hodnotou 0 a bude postupně zvyšováno až do
+hodnoty 40&times;5=200. Po dosažení této hodnoty bude počítaná programová
+smyčka ukončena:</p>
+
+<pre>
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+&nbsp;
+.proc <strong>main</strong>
+        lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+                                <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #40*5               <i>; test na koncovou hodnotu počitadla</i>
+        bne clear               <i>; skok, pokud Y&lt;40*5</i>
+&nbsp;
+loop:   jmp loop
+end:
+.endproc
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   main::end - 1           <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+ <i>; finito</i>
+</pre>
+
+<p>Opět se podívejme na výsledek:</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283442" data-alignment="center" data-link-type="modal">Obrázek #1283442 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283442">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-4.png" class="image-1283442" width="336" height="240" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-4.png" data-prev-width="336" data-prev-height="240" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-4.png" data-large-width="336" data-large-height="240" /><p class="description">Obrázek 4: Korektní vyplnění prvních pěti textových řádků.&#160;<br class="_remove" /></p></div></div>
+
+
+
+<p><a name="k06"></a></p>
+<h2 id="k06">Porovnání všech čtyř metod z&nbsp;pohledu velikosti kódu a výpočetní rychlosti</h2>
+
+<p>Všechny čtyři algoritmy, tedy i včetně algoritmu nekorektního, si
+pochopitelně můžeme porovnat jak s&nbsp;ohledem na velikost strojového kódu,
+tak i s&nbsp;ohledem na rychlost jedné iterace. Nejprve si uvedeme výpisy
+strojových kódů jednotlivých variant, ze kterých je možné zjistit velikosti
+kódů:</p>
+
+<pre>
+000000r 1  A9 21                lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+000002r 1  A2 C8                ldx #40*5               <i>; počet zápisů</i>
+000004r 1  A0 00                ldy #0                  <i>; offset</i>
+000006r 1               clear:
+000006r 1  91 58                sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+000008r 1                                               <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+000008r 1  C8                   iny                     <i>; zvýšit hodnotu offsetu</i>
+000009r 1  CA                   dex                     <i>; zmenšit hodnotu počitadla</i>
+00000Ar 1  D0 FA                bne clear               <i>; skok, pokud X&gt;0</i>
+</pre>
+
+<pre>
+000000r 1  A9 21                lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+000002r 1  A0 C8                ldy #40*5               <i>; počet zápisů</i>
+000004r 1               clear:
+000004r 1  91 58                sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+000006r 1                                               <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+000006r 1  88                   dey                     <i>; zmenšit hodnotu počitadla a offsetu</i>
+000007r 1  D0 FB                bne clear               <i>; skok, pokud Y&gt;0</i>
+</pre>
+
+<pre>
+000000r 1  A9 21                lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+000002r 1  A0 C8                ldy #40*5               <i>; počet zápisů</i>
+000004r 1               clear:
+000004r 1  88                   dey                     <i>; zmenšit hodnotu počitadla a offsetu</i>
+000005r 1  91 58                sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+000007r 1                                               <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+000007r 1  D0 FB                bne clear               <i>; skok, pokud Y&gt;0</i>
+</pre>
+
+<pre>
+000000r 1  A9 21                lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+000002r 1  A0 00                ldy #0                  <i>; počitadlo zápisů</i>
+000004r 1               clear:
+000004r 1  91 58                sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+000006r 1                                               <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+000006r 1  C8                   iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+000007r 1  C0 C8                cpy #40*5               <i>; test na koncovou hodnotu počitadla</i>
+000009r 1  D0 F9                bne clear               <i>; skok, pokud Y&lt;40*5</i>
+</pre>
+
+<p>Můžeme tedy snadno porovnat velikosti jednotlivých implementací:</p>
+
+<table>
+<tr><th>Implementace</th><th>Velikost (bajtů)</th></tr>
+<tr><td>dva index registry              </td><td>12</td></tr>
+<tr><td>výplň směrem dolů, jeden registr</td><td>9</td></tr>
+<tr><td>oprava předchozího řešení       </td><td>9</td></tr>
+<tr><td>výplň směrem nahoru             </td><td>11</td></tr>
+</table>
+
+<p>Rychlost jedné iterace vypočteme z&nbsp;tabulky na adrese <a
+href="https://www.nesdev.org/wiki/6502_cycle_times">https://www.nesdev.org/wiki/6502_cycle_times</a>
+pouhým součtem cyklů jednotlivých instrukcí (instrukce se nepřekrývají):</p>
+
+<table>
+<tr><th>Implementace</th><th>Jedna iterace (cyklů)</th></tr>
+<tr><td>dva index registry              </td><td>6+2+2+3=13</td></tr>
+<tr><td>výplň směrem dolů, jeden registr</td><td>6+2+3=11</td></tr>
+<tr><td>oprava předchozího řešení       </td><td>2+6+3=11</td></tr>
+<tr><td>výplň směrem nahoru             </td><td>6+2+2+3=13</td></tr>
+</table>
+
+<p>Porovnáním obou tabulek tedy zjistíme, že realizace třetím algoritmem jasně
+vyhrává:</p>
+
+<pre>
+000004r 1               clear:
+000004r 1  88                   dey                     <i>; zmenšit hodnotu počitadla a offsetu</i>
+000005r 1  91 58                sta (88), y             <i>; tisk znaku "A" na zvolené místo na obrazovce</i>
+000007r 1                                               <i>; (adresa Video RAM je na adresách 88 a 89)</i>
+000007r 1  D0 FB                bne clear               <i>; skok, pokud Y&gt;0</i>
+</pre>
+
+
+
+<p><a name="k07"></a></p>
+<h2 id="k07">Vyplnění bloku většího než 256 bajtů: koncept nepřímého adresování</h2>
+
+<p>Komplikovanější situace nastane tehdy, pokud velikost vyplňovaného bloku
+přesáhne 256 bajtů. V&nbsp;tomto případě již není možné ve funkci offsetu
+použít index registr <strong>Y</strong>, ale je nutné nějakým způsobem pracovat
+se šestnáctibitovou adresou. Ta nemůže být uložena v&nbsp;registru (žádný tak
+široký registr nemáme!), ale přímo v&nbsp;paměti. Využijeme tedy nepřímé
+adresování (což již do jisté míry známe) a budeme muset vyřešit i zvyšování
+této adresy: buď jen spodního bajtu, nebo i bajtu vyššího. Adresu pro zápis
+uložíme někam do nulté stránky paměti, ke které je rychlejší přístup:</p>
+
+<pre>
+to = $80                        <i>; dva bajty z nulté stránky</i>
+</pre>
+
+<p>Taktéž je ovšem nutné pracovat i se šestnáctibitovým počitadlem, takže se
+opět použije dvojice bajtů uložená v&nbsp;operační paměti:</p>
+
+<pre>
+sizeh:    .byte  &gt;800           <i>; vyšší bajt velikosti</i>
+sizel:    .byte  &lt;800           <i>; nižší bajt velikosti</i>
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si způsobu výpočtu hodnoty
+spodního a horního bajtu &ndash; tento výpočet pochopitelně provádí assembler
+v&nbsp;době překladu.</div></p>
+
+<p>Zápis je proveden ve třech počítaných smyčkách. Nejprve se ve dvojici
+vnořených smyček vyplní celé 256bajtové bloky a ve druhé smyčce případný kratší
+blok na konci. Uveďme si nejprve první blok s&nbsp;vnořenými smyčkami. Vnější
+smyčka má počitadlo <strong>X</strong>, původně obsahuje počet vyplňovaných
+256bajtových bloků. Vnitřní smyčka má počitadlo <strong>Y</strong> a provádí
+výplň celého bloku (což znamená, že se <strong>Y</strong> automaticky nuluje
+&ndash; jedná se totiž o čistě osmibitový registr):</p>
+
+<pre>
+        ldy #0                  <i>; offset pro zápis</i>
+        ldx sizeh               <i>; vyšší bajt velikosti (počet bloků)</i>
+        beq fill2               <i>; je nulový? -> přeneseme jen zbylé bajty</i>
+fill1:  sta (to), y             <i>; zápis do bloku</i>
+        iny                     <i>; zvýšit offset</i>
+        bne  fill1              <i>; počítáme až do 256</i>
+        inc to+1                <i>; zvýšit adresu (!!!)</i>
+        dex                     <i>; zmenšit počitadlo bloků</i>
+        bne fill1               <i>; pokračovat dalším blokem</i>
+</pre>
+
+<p>Přenos zbylých bajtů je realizováno takto (<strong>X</strong> obsahuje
+hodnotu získanou <strong>sizel</strong>, <strong>Y</strong> byl naopak
+vynulován, takže nemusíme provádět inicializaci):</p>
+
+<pre>
+fill2:  ldx sizel               <i>; nižší bajt velikosti (počet zbývajících bajtů)</i>
+        beq fill4               <i>; je nulový? -> vše hotovo!</i>
+fill3:  sta (to), y             <i>; přenést zbylé bajty (méně než 256)</i>
+        iny                     <i>; zvýšit offset</i>
+        dex                     <i>; zmenšit počitadlo smyčky</i>
+        bne fill3               <i>; opakujeme dokud se X nevynuluje</i>
+fill4:
+</pre>
+
+
+
+<p><a name="k08"></a></p>
+<h2 id="k08">Realizace programu vyplňujícího více než 256 bajtů paměti</h2>
+
+<p>Podívejme se nyní na praktickou realizaci algoritmu pro vyplnění 800 bajtů
+textové paměti, tedy celých dvaceti textových řádků:</p>
+
+<pre>
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+to = $80                        <i>; dva bajty z nulté stránky</i>
+&nbsp;
+.proc <strong>main</strong>
+        lda 88                  <i>; načíst část adresy počátku video RAM</i>
+        sta to                  <i>; uložit do "proměnné"</i>
+        lda 89                  <i>; načíst část adresy počátku video RAM</i>
+        sta to+1                <i>; uložit do "proměnné"</i>
+&nbsp;
+        lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+&nbsp;
+        ldy #0                  <i>; offset pro zápis</i>
+        ldx sizeh               <i>; vyšší bajt velikosti (počet bloků)</i>
+        beq fill2               <i>; je nulový? -> přeneseme jen zbylé bajty</i>
+fill1:  sta (to), y             <i>; zápis do bloku</i>
+        iny                     <i>; zvýšit offset</i>
+        bne  fill1              <i>; počítáme až do 256</i>
+        inc to+1                <i>; zvýšit adresu (!!!)</i>
+        dex                     <i>; zmenšit počitadlo bloků</i>
+        bne fill1               <i>; pokračovat dalším blokem</i>
+fill2:  ldx sizel               <i>; nižší bajt velikosti (počet zbývajících bajtů)</i>
+        beq fill4               <i>; je nulový? -> vše hotovo!</i>
+fill3:  sta (to), y             <i>; přenést zbylé bajty (méně než 256)</i>
+        iny                     <i>; zvýšit offset</i>
+        dex                     <i>; zmenšit počitadlo smyčky</i>
+        bne fill3               <i>; opakujeme dokud se X nevynuluje</i>
+fill4:
+&nbsp;
+loop:   jmp loop
+&nbsp;
+ <i>; data</i>
+sizeh:    .byte  &gt;800           <i>; vyšší bajt velikosti</i>
+sizel:    .byte  &lt;800           <i>; nižší bajt velikosti</i>
+&nbsp;
+end:
+.endproc
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   main::end - 1           <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+ <i>; finito</i>
+</pre>
+
+<p>O tom, že se vyplní více než 256 bajtů (znaků) se můžeme velmi snadno
+přesvědčit:</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283445" data-alignment="center" data-link-type="modal">Obrázek #1283445 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283445">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-5.png" class="image-1283445" width="336" height="240" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-5.png" data-prev-width="336" data-prev-height="240" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-5.png" data-large-width="336" data-large-height="240" /><p class="description">Obrázek 5: Obrazovka, ve které je vyplněno více než 256 bajtů (znaků).&#160;<br class="_remove" /></p></div></div>
+
+Obrazovka, ve které je vyplněno více než 256 bajtů (znaků).
+
+<p>Pro úplnost se ještě podívejme na výpis vygenerovaného strojového kódu:</p>
+
+<pre>
+000000r 1               .proc <strong>main</strong>
+000000r 1  A5 58                lda 88                  <i>; načíst část adresy počátku video RAM</i>
+000002r 1  85 80                sta to                  <i>; uložit do "proměnné"</i>
+000004r 1  A5 59                lda 89                  <i>; načíst část adresy počátku video RAM</i>
+000006r 1  85 81                sta to+1                <i>; uložit do "proměnné"</i>
+000008r 1               
+000008r 1  A9 21                lda #33                 <i>; kod znaku, ktery se bude tisknout</i>
+00000Ar 1               
+00000Ar 1  A0 00                ldy #0                  <i>; offset pro zápis</i>
+00000Cr 1  AE rr rr             ldx sizeh               <i>; vyšší bajt velikosti (počet bloků)</i>
+00000Fr 1  F0 0A                beq fill2               <i>; je nulový? -> přeneseme jen zbylé bajty</i>
+000011r 1  91 80        fill1:  sta (to), y             <i>; zápis do bloku</i>
+000013r 1  C8                   iny                     <i>; zvýšit offset</i>
+000014r 1  D0 FB                bne  fill1              <i>; počítáme až do 256</i>
+000016r 1  E6 81                inc to+1                <i>; zvýšit adresu (!!!)</i>
+000018r 1  CA                   dex                     <i>; zmenšit počitadlo bloků</i>
+000019r 1  D0 F6                bne fill1               <i>; pokračovat dalším blokem</i>
+00001Br 1  AE rr rr     fill2:  ldx sizel               <i>; nižší bajt velikosti (počet zbývajících bajtů)</i>
+00001Er 1  F0 06                beq fill4               <i>; je nulový? -> vše hotovo!</i>
+000020r 1  91 80        fill3:  sta (to), y             <i>; přenést zbylé bajty (méně než 256)</i>
+000022r 1  C8                   iny                     <i>; zvýšit offset</i>
+000023r 1  CA                   dex                     <i>; zmenšit počitadlo smyčky</i>
+000024r 1  D0 FA                bne fill3               <i>; opakujeme dokud se X nevynuluje</i>
+000026r 1               fill4:
+000026r 1               
+000026r 1  4C rr rr     loop:   jmp loop
+</pre>
+
+<p>Celková délka programu nyní dosahuje úctyhodných 41 bajtů!</p>
+
+
+
+<p><a name="k09"></a></p>
+<h2 id="k09">Algoritmus pro blokové přesuny dat</h2>
+
+<p>Pro úplnost si ještě představme algoritmus pro blokové přesuny dat,
+konkrétně přesuny bloků, které mohou přesahovat velikost 256 bajtů (pokud jsou
+bloky menší, jedná se o relativně jednoduchou záležitost). Při blokových
+přesunech je pochopitelně nutné zjistit, jestli se zdrojový a cílový blok
+nepřekrývá a pokud tomu tam je, který z&nbsp;bloků začíná na nižší adrese,
+protože výběr konkrétního způsobu přenosu na těchto okolnostech závisí.  Různé
+realizace přesunu bloků uvedené pod tímto odstavcem byly získány ze stránky <a
+href="http://www.6502.org/source/general/memory_move.html">http://www.6502.org/source/general/memory_move.html</a>
+a dokonce nejsou psány v&nbsp;syntaxi CA65 (to je však triviálně
+řešitelné):</p>
+
+<pre>
+ <i>; Move memory down</i>
+ <i>;</i>
+ <i>; FROM = source start address</i>
+ <i>;   TO = destination start address</i>
+ <i>; SIZE = number of bytes to move</i>
+ <i>;</i>
+MOVEDOWN LDY #0
+         LDX SIZEH
+         BEQ MD2
+MD1      LDA (FROM),Y <i>; move a page at a time</i>
+         STA (TO),Y
+         INY
+         BNE MD1
+         INC FROM+1
+         INC TO+1
+         DEX
+         BNE MD1
+MD2      LDX SIZEL
+         BEQ MD4
+MD3      LDA (FROM),Y <i>; move the remaining bytes</i>
+         STA (TO),Y
+         INY
+         DEX
+         BNE MD3
+MD4      RTS
+</pre>
+
+<p>Přesun opačným směrem:</p>
+
+<pre>
+ <i>; Move memory up</i>
+ <i>;</i>
+ <i>; FROM = source start address</i>
+ <i>;   TO = destination start address</i>
+ <i>; SIZE = number of bytes to move</i>
+ <i>;</i>
+MOVEUP   LDX SIZEH    <i>; the last byte must be moved first</i>
+         CLC          <i>; start at the final pages of FROM and TO</i>
+         TXA
+         ADC FROM+1
+         STA FROM+1
+         CLC
+         TXA
+         ADC TO+1
+         STA TO+1
+         INX          <i>; allows the use of BNE after the DEX below</i>
+         LDY SIZEL
+         BEQ MU3
+         DEY          <i>; move bytes on the last page first</i>
+         BEQ MU2
+MU1      LDA (FROM),Y
+         STA (TO),Y
+         DEY
+         BNE MU1
+MU2      LDA (FROM),Y <i>; handle Y = 0 separately</i>
+         STA (TO),Y
+MU3      DEY
+         DEC FROM+1   <i>; move the next page (if any)</i>
+         DEC TO+1
+         DEX
+         BNE MU1
+         RTS
+</pre>
+
+<p>Jiná alternativa:</p>
+
+<pre>
+ <i>; Move memory up</i>
+ <i>;</i>
+ <i>; FROM = 1 + source end address</i>
+ <i>; TO   = 1 + destination end address</i>
+ <i>; SIZE = number of bytes to move</i>
+ <i>;</i>
+MOVEUP   LDY #$FF
+         LDX SIZEH
+         BEQ MU3
+MU1      DEC FROM+1
+         DEC TO+1
+MU2      LDA (FROM),Y <i>; move a page at a time</i>
+         STA (TO),Y
+         DEY
+         BNE MU2
+         LDA (FROM),Y <i>; handle Y = 0 separately</i>
+         STA (TO),Y
+         DEY
+         DEX
+         BNE MU1
+MU3      LDX SIZEL
+         BEQ MU5
+         DEC FROM+1
+         DEC TO+1
+MU4      LDA (FROM),Y <i>; move the remaining bytes</i>
+         STA (TO),Y
+         DEY
+         DEX
+         BNE MU4
+MU5      RTS
+</pre>
+
+<p>Ještě jedna odlišná alternativa:</p>
+
+<pre>
+ <i>; Move memory up</i>
+ <i>;</i>
+ <i>; FROM = source end address</i>
+ <i>; TO   = destination end address</i>
+ <i>; SIZE = number of bytes to move</i>
+ <i>;</i>
+MOVEUP   LDY #0
+         LDX SIZEH
+         BEQ MU3
+MU1      LDA (FROM),Y <i>; handle Y = 0 separately</i>
+         STA (TO),Y
+         DEY
+         DEC FROM+1
+         DEC TO+1
+MU2      LDA (FROM),Y <i>; move a page at a time</i>
+         STA (TO),Y
+         DEY
+         BNE MU2
+         DEX
+         BNE MU1
+MU3      LDX SIZEL
+         BEQ MU5
+         LDA (FROM),Y <i>; handle Y = 0 separately</i>
+         STA (TO),Y
+         DEY
+         DEX
+         BEQ MU5
+         DEC FROM+1
+         DEC TO+1
+MU4      LDA (FROM),Y <i>; move the remaining bytes</i>
+         STA (TO),Y
+         DEY
+         DEX
+         BNE MU4
+MU5      RTS
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: na tomto místě je vhodné upozornit na
+to, že u některých jiných mikroprocesorů, včetně mikroprocesorů osmibitových,
+lze blokový přenos realizovat jedinou instrukcí popř.&nbsp;několika málo
+instrukcemi (<strong>LDIR</strong> a <strong>LLDR</strong> u Z80):</div></p>
+
+<pre>
+        ld   hl, SOURCE_ADDRESS     <i>; adresa zdrojového bloku</i>
+        ld   de, TARGET_ADDRESS     <i>; adresa cílového bloku</i>
+        ld   bc, BLOCK_SIZE         <i>; velikost přenášených dat</i>
+        <strong>ldir</strong>       <i>; provést blokový přenos</i>
+</pre>
+
+
+
+<p><a name="k10"></a></p>
+<h2 id="k10">Grafické subsystémy osmibitových mikropočítačů</h2>
+
+<p>Ve druhé části dnešního článku se, prozatím alespoň ve stručnosti, seznámíme
+s&nbsp;grafickým subsystémem osmibitových mikropočítačů Atari. Ten je do značné
+míry unikátní a do jisté míry vychází z&nbsp;čipů, které obsahovala osmibitová
+herní konzole Atari 2600.</p>
+
+<p>S&nbsp;nástupem osmibitových domácích počítačů je spojen i prudký rozvoj
+počítačové grafiky, který byl způsobem zejména vývojem počítačových her.
+Později byly pro tyto počítače vytvořeny i &bdquo;seriózní&ldquo; programy
+vyžívající grafické možnosti těchto počítačů, například jednoduché CAD systémy,
+matematické programy, které dokázaly vykreslovat grafy apod.</p>
+
+<p>Podívejme se však nejprve, jaké vlastnosti měl typický osmibitový počítač.
+Vzhledem k&nbsp;tomu, že mikroprocesory, kterými byly tyto počítače osazeny
+(většinou MOS 6502 a jeho varianty či Zilog Z80), měly osmibitovou datovou
+sběrnici a šestnáctibitovou sběrnici adresovou. Bylo tak možné adresovat až
+2<sup>16</sup>B=64KB paměti.</p>
+
+<p>Do tohoto adresového prostoru byla namapována jak klasická operační paměť
+typu RAM/RWM, tak i paměť ROM a obrazová paměť, která se většinou nacházela
+přímo v&nbsp;operační paměti, což komplikovalo přístup procesoru a grafického
+čipu na sběrnici (oba čipy se musely nějakým způsobem o sběrnici dělit,
+z&nbsp;čehož například plyne rozdíl mezi &bdquo;pomalým&ldquo; a
+&bdquo;rychlým&ldquo; regionem RAM v&nbsp;ZX Spectru).</p>
+
+<p>Z&nbsp;výše uvedeného také vyplývá, že kapacita obrazové paměti musela být
+co nejmenší, aby její adresový rozsah neubíral příliš mnoho z&nbsp;již tak
+omezeného adresového prostoru mikroprocesoru, nehledě na to, že by bylo
+pomalejší i překreslování snímků ve hrách atd.. Maximální praktická velikost
+obrazové paměti se z&nbsp;tohoto důvodu pohybovala na hranici osmi kilobytů
+(výjimkou jsou některé modely BBC Micro).</p>
+
+<p>I na takto malém prostoru však bylo možné vytvořit překvapivě působivé a
+k&nbsp;tomu i dynamické efekty. Návrháři většinou použili obvody, které mohly
+pracovat ve více grafických režimech, někdy byly využity i barvové atributy
+platné pro větší blok pixelů, typicky 8&times;8. Řešení je v&nbsp;této oblasti
+mnoho, každé má své výhody a nevýhody.</p>
+
+<p>Dalším požadavkem kladeným na domácí počítače byla samozřejmě i jejich cena.
+Z&nbsp;důvodu co nejnižšího zatížení peněženky případného kupce se proto tyto
+počítače konstruovaly tak, že je bylo možné zapojit na běžný televizor a jako
+externí paměťové médium se používaly kompaktní magnetofonové kazety nebo i
+klasické magnetofonové cívky (snad s&nbsp;výjimkou českého počítače Maťo, který
+používal gramofonové desky). Televizní přijímač vykazuje díky šířce pásma a
+modulaci i demodulaci při zobrazování jemné rastrové grafiky velké množství
+chyb, které bylo zapotřebí eliminovat (nebo naopak i využít) vhodným návrhem
+grafického výstupu.</p>
+
+<p>Taktovací frekvence použitých mikroprocesorů se pohybovala v&nbsp;řádu
+jednotek MHz a proto nebylo vhodné, aby samotný mikroprocesor řešil tvorbu
+všech grafických efektů, neboť to vyžaduje poměrně rozsáhlé, a tím pádem i
+pomalé přesuny dat v&nbsp;paměti. Z&nbsp;tohoto důvodu měly některé počítače na
+grafickém čipu implementovánu podporu pro <i>sprity</i>, pomocí nichž bylo
+možné zobrazovat pohybující se předměty nezávisle na okolním obraze (sem
+pochopitelně spadají i osmibitová Atari).</p>
+
+
+
+<p><a name="k11"></a></p>
+<h2 id="k11">Rozlišení a počet barev</h2>
+
+<p>S&nbsp;velikostí obrazové paměti úzce souvisí i rozlišovací schopnost a
+počet současně zobrazitelných barev. Podle rozlišovací schopnosti můžeme
+osmibitové počítače zhruba rozdělit do dvou skupin:</p>
+
+<ol>
+
+<li>V&nbsp;první skupině se nachází počítače, které zobrazovaly obraz
+v&nbsp;rozlišení 256&times;192 pixelů, což v&nbsp;textovém režimu odpovídá
+textovému oknu 32&times;24 znaků. Předností tohoto rozlišení je jednoduché
+adresování (délka řádku je mocninou dvou) a také fakt, že se všechny pixely
+zobrazily přesně i na běžném televizním přijímači. Nevýhodný je především
+horizontální počet pixelů při práci v&nbsp;textových režimech, kdy je počet 32
+znaků pro mnoho účelů nedostatečný, což se obcházelo zmenšením rastru, ve
+kterých se znaky zobrazují. Typickým zástupcem těchto počítačů je slavné ZX
+Spectrum a prakticky všechny jeho klony a nástupci.</li>
+
+<li>Ve druhé skupině se nachází počítače, jejichž maximální podporované
+rozlišení bylo 320&times;192 resp.&nbsp;320&times;200 pixelů nebo vyšší. Toto
+rozlišení se nazývalo &bdquo;profesionální&ldquo;, protože bylo možné zobrazit
+znaky o rozměrech 8&times;8 pixelů v&nbsp;textovém režimu 40&times;24
+resp.&nbsp;40&times;25 znaků podobně jako na prvních PC s&nbsp;grafickou kartou
+CGA &ndash; ostatně násobky 320 najdeme i dnes u mnoha standardizovaných
+rozlišení. Nevýhodou těchto rozlišení je složitější výpočet pozice pixelu či
+znaku na obrazovce a také problematické zobrazení na televizním monitoru, kdy
+při poměrně velkém horizontálním rozlišení docházelo ke vzniku barevných
+artefaktů u sousedních pixelů, které byly navzájem kontrastní (zejména
+v&nbsp;NTSC, zatímco norma PAL byla použitelná i pro takto relativně vysoké
+horizontální rozlišení). Představitelem této skupiny počítačů jsou osmibitová
+Atari a Commodore C64.</li>
+
+</ol>
+
+<p><div class="rs-tip-major">Poznámka: i vertikální rozlišení je omezeno
+možnostmi televizorů (a jejich norem). K&nbsp;podrobnostem se ještě vrátíme
+příště.</div></p>
+
+
+
+<p><a name="k12"></a></p>
+<h2 id="k12">Grafické čipy v&nbsp;osmibitových počítačích Atari</h2>
+
+<p>V&nbsp;osmibitových domácích počítačích firmy Atari (například se jedná o
+modely Atari 800XL, Atari 800XE, Atari 130XE, Atari 1200XL a Atari 65XE) byla
+pro vytváření grafického výstupu použita dvojice poměrně komplikovaných
+číslicových obvodů nazvaných <i>ANTIC</i> a <i>GTIA</i>. Tyto dva obvody se
+navzájem doplňovaly ve svých funkcích a umožňovaly tak precizní nastavení
+grafického či textového režimu, horizontální i vertikální posun obrazu a na
+zobrazeném pozadí nezávislé vykreslování <i>spritů</i>.</p>
+
+<p>Na čipech ANTIC a GTIA je nejzajímavější začlenění do systému počítače.
+Obvod ANTIC byl totiž ve skutečnosti samostatným grafickým procesorem (GPU),
+jelikož obsahoval vlastní sadu příkazů a dokázal obsluhovat přístup do paměti
+bez zásahu procesoru (tím byl MOS 6502A). Dnes si popíšeme základní možnosti
+těchto čipů, příště je už vyžijeme v&nbsp;programech.</p>
+
+
+
+<p><a name="k13"></a></p>
+<h2 id="k13">ANTIC &ndash; generování rastrové grafiky</h2>
+
+<p>Na osmibitových počítačích Atari se grafika skládala ze dvou částí: pozadí
+(hrací pole, <i>playfield</i>) a pohyblivých rastrových obrázků
+(<i>spritů</i>). Pro nastavení grafického režimu pozadí (playfield) byl určen
+obvod <i>ANTIC</i> (což je zkratka ze sousloví
+<i><strong>A</strong>lpha-<strong>N</strong>umeric <strong>T</strong>elevision
+<strong>I</strong>nterface <strong>C</strong>ircuit</i>), který umožnil pro
+každý vykreslovaný řádek (<i>scanline</i>) programově nastavit jeden ze
+dvanácti grafických režimů, které se lišily svým rozlišením, počtem současně
+zobrazitelných barev a velikostí alokované paměti.</p>
+
+<p>Některé z&nbsp;podporovaných režimů zobrazovaly pouze znaky, jiné byly čistě
+bitmapové a další byly sice textové, ovšem se speciální interpretací rastrů
+znaků (tyto režimy jsou nejužitečnější při tvorbě her). U každého zobrazovaného
+řádku bylo možné povolit přerušení DLI (<i>Display-List Interrupt</i>), které
+nastalo při horizontálním zpětném běhu elektronového paprsku na televizní
+obrazovce. Pro každý zobrazovaný řádek bylo také možné povolit jemný posuv o
+maximálně osm pixelů, čímž bylo možné realizovat jednoduchý <i>scrolling</i>
+obrazovky nebo její části (tj.&nbsp;pouze několika vybraných řádků).</p>
+
+<p>Vzhledem k&nbsp;tomu, že se čip ANTIC řídil vlastní sadou příkazů nazývanou
+<i>Display List</i> a při vykreslování přebíral od hlavního procesoru řízení
+sběrnice, se v&nbsp;podstatě jednalo o jeden z&nbsp;prvních široce používaných
+grafických procesorů (<i>Graphics Processing Unit &ndash; GPU</i>). Operační
+paměť byla mezi hlavním procesorem počítače MOS 6502 a čipem ANTIC sdílená, což
+vedlo k&nbsp;nutnosti postupného přebírání řízení jedním z&nbsp;procesorů za
+pomoci operací přerušení.</p>
+
+<p>Díky frekvenci hlavního procesoru a potřebě synchronizace elektronového
+paprsku bylo maximální podporované rozlišení rovno 352&times;240 pixelům. Toto
+rozlišení, které se v&nbsp;literatuře nazývá celkem trefně <i>overscan</i>, se
+kvůli kompatibilitě s&nbsp;kompozitními monitory a televizními obrazovkami
+snižovalo na standardních 320&times;200 pixelů resp.&nbsp;320&times;192 pixelů.
+V&nbsp;režimu <i>overscan</i> totiž paprsek okrajové části obrazu kreslil
+&bdquo;za roh&ldquo; obrazovky, což bylo krásně viditelné například na
+elektronkových televizorech Salermo, které měly přední část obrazovky o cca 2cm
+vysunutou z&nbsp;šasi přístroje.</p>
+
+
+
+<p><a name="k14"></a></p>
+<h2 id="k14">Grafické režimy čipu ANTIC</h2>
+
+<p>V&nbsp;následující tabulce jsou pro ilustraci některých možností čipu
+<i>ANTIC</i> uvedeny vybrané základní režimy, které je možné nastavit pro každý
+obrazový řádek zvlášť. V&nbsp;prvním sloupci je číslo (kód) instrukce pro čip
+<i>ANTIC</i>, ve sloupci druhém pak číslo, které se předává příkazu
+<strong>GRAPHICS</strong> v&nbsp;<i>Basicu</i> při nastavování textového či
+grafického režimu.</p>
+
+<table>
+<tr><th>Instrukce ANTIC</th><th>GRAPHICS x</th><th>Režim</th><th>Rozlišení</th><th>Počet barev</th><th>Poznámka</th></tr>
+<tr><td>2</td><td>0</td><td>textový</td><td>40 znaků na řádek</td><td>2</td><td>standardní textový režim</td></tr>
+<tr><td>3</td><td>&times;</td><td>textový</td><td>40 znaků na řádek</td><td>2</td><td>textový režim s&nbsp;vyššími znaky</td></tr>
+<tr><td>4</td><td>12</td><td>textový</td><td>40 znaků na řádek</td><td>5</td><td>výška znaku 8 pixelů, 4 barvy/znak</td></tr>
+<tr><td>5</td><td>13</td><td>textový</td><td>40 znaků na řádek</td><td>5</td><td>výška znaku 16 pixelů, 4 barvy/znak</td></tr>
+<tr><td>6</td><td>1</td><td>textový</td><td>20 znaků na řádek</td><td>5</td><td>výška znaku 8 pixelů</td></tr>
+<tr><td>7</td><td>2</td><td>textový</td><td>20 znaků na řádek</td><td>5</td><td>výška znaku 16 pixelů</td></tr>
+<tr><td>8</td><td>3</td><td>grafický</td><td>40 pixelů na řádek</td><td>4</td><td>neznám žádnou aplikaci, která by tento režim používala</td></tr>
+<tr><td>9</td><td>4</td><td>grafický</td><td>80 pixelů na řádek</td><td>2</td><td></td></tr>
+<tr><td>A</td><td>5</td><td>grafický</td><td>80 pixelů na řádek</td><td>4</td><td></td></tr>
+<tr><td>B</td><td>6</td><td>grafický</td><td>160 pixelů na řádek</td><td>2</td><td>výška pixelu dva obrazové řádky, vertikální rozlišení cca 96 pixelů</td></tr>
+<tr><td>C</td><td>14</td><td>grafický</td><td>160 pixelů na řádek</td><td>2</td><td>výška pixelu jeden obrazový řádek, vertikální rozlišení cca 192 pixelů</td></tr>
+<tr><td>D</td><td>7</td><td>grafický</td><td>160 pixelů na řádek</td><td>4</td><td>výška pixelu dva obrazové řádky, vertikální rozlišení cca 96 pixelů</td></tr>
+<tr><td>E</td><td>15</td><td>grafický</td><td>160 pixelů na řádek</td><td>4</td><td>výška pixelu jeden obrazový řádek, vertikální rozlišení cca 192 pixelů</td></tr>
+<tr><td>F</td><td>8</td><td>grafický</td><td>320 pixelů na řádek</td><td>2</td><td>nejvyšší možné standardní rozlišení</td></tr>
+</table>
+
+<p>Povšimněte si, že textový režim číslo 3 není přímo z&nbsp;<i>Basicu</i>
+přístupný. Jedná se o režim s&nbsp;vyššími znaky, který lze s&nbsp;výhodou
+využít například v&nbsp;textových editorech používajících font
+s&nbsp;&bdquo;nabodeníčky&ldquo;. Pokud je tedy požadováno, aby se zobrazil
+textový režim se 40 znaky na řádek a 24 textovými řádky, musí display-list
+řídicí čip <i>ANTIC</i> obsahovat mj.&nbsp;i 24 instrukcí s&nbsp;kódem 2
+(podrobnosti si řekneme příště). Ve skutečnosti je však display-list poněkud
+složitější, protože obsahuje i instrukci pro vykreslení horního jednobarevného
+okraje, instrukci pro nastavení začátku obrazové paměti (adresu prvního znaku
+na obrazovce) a na samotném konci display-listu taktéž instrukci pro skok na
+jeho začátek.</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283448" data-alignment="center" data-link-type="modal">Obrázek #1283448 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283448">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-6.png" class="image-1283448" width="336" height="240" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-6.png" data-prev-width="336" data-prev-height="240" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-6.png" data-large-width="336" data-large-height="240" /><p class="description">Obrázek 6: Hra Amaroute běžící v monochromatickém režimu s nejvyšším rozlišením 320x192 pixelů. Povšimněte si korektního skrývání vzdálených objektů; pravděpodobně se používá optimalizovaná podoba malířova algoritmu.&#160;<br class="_remove" /></p></div></div>
+
+
+
+<p><a name="k15"></a></p>
+<h2 id="k15">GTIA &ndash; sprity a vícebarevná grafika</h2>
+
+<p>S&nbsp;obvodem ANTIC úzce spolupracoval číslicový obvod GTIA
+(<i><strong>G</strong>raphics <strong>T</strong>elevision
+<strong>I</strong>nterface <strong>A</strong>dapter</i> nebo také
+<i><strong>G</strong>eorge's <strong>T</strong>elevision
+<strong>I</strong>nterface <strong>A</strong>dapter</i>), který zaváděl podporu
+pro další tři grafické režimy s&nbsp;horizontálním rozlišením 80 pixelů na
+řádek a především umožňoval vykreslování spritů (ovšem mluvit o nových
+grafických režimech je poněkud zavádějící; podrobnější vysvětlení bude opět
+uvedeno jindy). Současně bylo možné vykreslit čtyři sprity s&nbsp;rozlišením
+maximálně 8&times;256 pixelů a další čtyři sprity s&nbsp;rozlišením 2&times;256
+pixelů, které bylo možno spojit do jednoho většího spritu s&nbsp;rozlišením
+8&times;256 pixelů.</p>
+
+<p>Sprity široké 8 pixelů se v&nbsp;literatuře nazývají hráči (<i>players</i>),
+úzké dvoupixelové sprity se jmenují střely (<i>missiles</i>). Proto se ve světě
+osmibitových Atari celý koncept spritů nazývá PMG neboli <i>player-missile
+graphics</i>.</p>
+
+<p>Sprity byly jednobarevné. Více barev bylo možno dosáhnout logickými
+operacemi nad překrývajícími se sprity (počítače Commodore C64 ovšem nabízely i
+sprity v&nbsp;režimu <i>multicolor</i>). Každý sprite mohl pomocí jedné
+instrukce měnit svoji horizontální velikost i horizontální pozici, přičemž
+polohy spritů byly navzájem nezávislé.</p>
+
+<p>Vertikální pozice spritů se měnila přesunem bitmapy spritu v&nbsp;operační
+paměti. Bylo také možné definovat priority vykreslování spritů vůči sobě
+navzájem i vůči pozadí.</p>
+
+
+
+<p><a name="k16"></a></p>
+<h2 id="k16">Priorita spritů a detekce kolize spritů</h2>
+
+<p>Čip GTIA podporoval i změnu priority jednotlivých spritů (jejich překrývání)
+a bylo také možné detekovat kolizi spritu s&nbsp;jiným spritem
+popř.&nbsp;s&nbsp;nějakou barvou hracího pole. To stejné samozřejmě platí i pro
+střely, u nichž byla možná detekce kolize s&nbsp;hráčem či kolize s&nbsp;hracím
+polem. Při kolizi (do úvahy se samozřejmě braly pouze viditelné pixely spritu,
+tj.&nbsp;pixely nastavené na logickou jedničku) se nastavil příslušný bit ve
+stavových registrech, odkud bylo možné kdykoli poté zjistit, zda ke kolizi
+došlo či nikoli. Díky této funkcionalitě bylo možné velmi snadno otestovat
+například náraz hráče do stěny, zásah hráče střelou atd.</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283451" data-alignment="center" data-link-type="modal">Obrázek #1283451 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283451">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-7.png" class="image-1283451" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-7.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-7.png" data-large-width="370" data-large-height="264" /><p class="description">Obrázek 7: Hra Adventure 2 pro počítače Atari 5200. Jedná se o hry z 21. století vytvořenou v domácích podmínkách, která se snaží zachovat prvky z původní hry Adventure pro Atari 2600 (viz tvar hráče - čtverečku).&#160;<br class="_remove" /></p></div></div>
+
+<p>Vzhledem k&nbsp;tomu, že sprity byly pouze jednobarevné, museli se
+vícebarevní hráči sestavovat z&nbsp;několika spritů. Omezení počtu spritů
+naproti tomu nebylo kritické, neboť jeden sprite mohl být ve skutečnosti
+použitý pro zobrazení většího množství objektů ve scéně &ndash; jediným
+omezením bylo to, že tyto objekty nesměly ležet na stejném obrazovém řádku.</p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1283454" data-alignment="center" data-link-type="modal">Obrázek #1283454 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1283454">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/348/atari-dev-4-8.png" class="image-1283454" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/348/atari-dev-4-8.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/348/atari-dev-4-8.png" data-large-width="370" data-large-height="264" /><p class="description">Obrázek 8: Další screenshot ze hry Adventure 2.&#160;<br class="_remove" /></p></div></div>
+
+
+
+<p><a name="k17"></a></p>
+<h2 id="k17">Příloha A: Seznam všech doposud popsaných instrukcí mikroprocesoru MOS 6502</h2>
+
+<p>Všechny doposud popsané instrukce mikroprocesoru MOS 6502 jsou vypsány
+v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th> #</th><th>Instrukce</th><th>Plné jméno</th><th>Popis</th></tr>
+<tr><td> 1</td><td>ADC</td><td>add with carry</td><td>součet hodnoty s&nbsp;akumulátorem (včetně přetečení)</td></tr>
+<tr><td> 2</td><td>SBC</td><td>subtract with carry</td><td>odečtení hodnoty od akumulátoru (včetně výpůjčky)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>AND</td><td>and with accumulator</td><td>logické AND s&nbsp;akumulátorem</td></tr>
+<tr><td> 4</td><td>ORA</td><td>or with accumulator</td><td>logické OR s&nbsp;akumulátorem</td></tr>
+<tr><td> 5</td><td>EOR</td><td>exclusive or with accumulator</td><td>logické XOR s&nbsp;akumulátorem</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>INC</td><td>increment</td><td>zvýšení hodnoty o 1 (kupodivu nelze s&nbsp;akumulátorem, ovšem s&nbsp;pamětí ano)</td></tr>
+<tr><td> 7</td><td>INX</td><td>increment X</td><td>zvýšení hodnoty index registru X o 1 </td></tr>
+<tr><td> 8</td><td>INY</td><td>increment Y</td><td>zvýšení hodnoty index registru Y o 1 </td></tr>
+<tr><td> 9</td><td>DEC</td><td>decrement</td><td>snížení hodnoty o 1 (opět nelze s&nbsp;akumulátorem)</td></tr>
+<tr><td>10</td><td>DEX</td><td>decrement X</td><td>snížení hodnoty index registru X o 1 </td></tr>
+<tr><td>11</td><td>DEY</td><td>decrement Y</td><td>snížení hodnoty index registru Y o 1 </td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>12</td><td>CMP</td><td>compare with accumulator</td><td>odečtení hodnoty od akumulátoru bez zápisu výsledku</td></tr>
+<tr><td>13</td><td>CPX</td><td>compare with X</td><td>odečtení hodnoty od index registru X bez zápisu výsledku</td></tr>
+<tr><td>14</td><td>CPY</td><td>compare with Y</td><td>odečtení hodnoty od index registru Y bez zápisu výsledku</td></tr>
+<tr><td>15</td><td>BIT</td><td>bit test</td><td>logické AND bez uložení výsledků (změní se jen příznakové bity)</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>16</td><td>ASL</td><td>arithmetic shift left</td><td>aritmetický posun doleva o jeden bit</td></tr>
+<tr><td>17</td><td>LSR</td><td>logical shift right</td><td>logický posun doprava o jeden bit</td></tr>
+<tr><td>18</td><td>ROL</td><td>rotate left</td><td>rotace doleva o jeden bit</td></tr>
+<tr><td>19</td><td>ROR</td><td>rotate right</td><td>rotace doprava o jeden bit</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>20</td><td>JMP</td><td>jump</td><td>skok (existuje několik adresovacích režimů)</td></tr>
+<tr><td>21</td><td>JSR</td><td>jump to subroutine</td><td>skok do podprogramu s&nbsp;uložením návratové adresy na zásobník</td></tr>
+<tr><td>22</td><td>RTS</td><td>return from subroutine</td><td>návrat z&nbsp;podprogramu</td></tr>
+<tr><td>23</td><td>RTI</td><td>return from interrupt</td><td>návrat z&nbsp;prerušovací rutiny</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>24</td><td>BCC</td><td>branch on carry clear</td><td>rozvětvení za podmínky C==0</td></tr>
+<tr><td>25</td><td>BCS</td><td>branch on carry set</td><td>rozvětvení za podmínky C==1</td></tr>
+<tr><td>26</td><td>BEQ</td><td>branch on equal (zero set)</td><td>rozvětvení za podmínky Z==1</td></tr>
+<tr><td>27</td><td>BMI</td><td>branch on minus (negative set)</td><td>rozvětvení za podmínky N==1</td></tr>
+<tr><td>28</td><td>BNE</td><td>branch on not equal (zero clear)</td><td>rozvětvení za podmínky Z==0</td></tr>
+<tr><td>29</td><td>BPL</td><td>branch on plus (negative clear)</td><td>rozvětvení za podmínky N==0</td></tr>
+<tr><td>30</td><td>BVC</td><td>branch on overflow clear</td><td>rozvětvení za podmínky O==0</td></tr>
+<tr><td>31</td><td>BVS</td><td>branch on overflow set</td><td>rozvětvení za podmínky O==1</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>32</td><td>PHA</td><td>push accumulator on stack</td><td>uložení obsahu akumulátoru na zásobník</td></tr>
+<tr><td>33</td><td>PLA</td><td>pull accumulator from stack</td><td>obnovení obsahu akumulátoru ze zásobníku</td></tr>
+</table>
+
+
+
+<p><a name="k18"></a></p>
+<h2 id="k18">Příloha B: Makefile pro překlad všech demonstračních příkladů</h2>
+
+<p>Všechny minule i dnes popsané demonstrační příklady, pro jejichž překlad je
+zapotřebí použít assembler <strong>ca65</strong> a linker
+<strong>ld65</strong>, je možné přeložit s&nbsp;využitím souboru
+<strong>Makefile</strong>, jehož obsah je vypsán pod tímto odstavcem:</p>
+
+<pre>
+execs := dummy.xex print_a.xex \
+         background_color_1.xex  background_color_2.xex \
+         color_computation_1.xex color_computation_2.xex \
+         subroutine_1.xex        subroutine_2.xex \
+         hex_number_1.xex        hex_number_2.xex \
+         hex_number_3.xex        hex_number_4.xex \
+         hex_number_5.xex        hex_number_6.xex \
+         hex_number_7.xex        hex_number_8.xex \
+         hex_number_9.xex \
+         fill_block_1.xex        fill_block_2.xex \
+         fill_block_3.xex        fill_block_4.xex \
+         fill_block_5.xex
+&nbsp;
+all: $(execs)
+&nbsp;
+clean:
+        rm -f *.o
+        rm -f *.xex
+&nbsp;
+.PHONY: all clean
+&nbsp;
+%.o: %.asm
+        ca65 $&lt; -t atari -o $@ -l $(basename $&lt;)_list.asm --list-bytes 100
+&nbsp;
+%.xex: %.o
+        ld65 -C linker.cfg $&lt; -o $@ -m $(basename $&lt;).map
+</pre>
+
+<p>Výsledkem překladu jsou soubory s&nbsp;koncovkou <strong>.xex</strong>,
+které je možné přímo spustit v&nbsp;emulátoru osmibitových počítačů Atari.</p>
+
+
+
+<p><a name="k19"></a></p>
+<h2 id="k19">Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny demonstrační příklady, s&nbsp;nimiž jsme se v&nbsp;předchozích
+článcích i v&nbsp;článku dnešním seznámili a které jsou určeny pro překlad
+s&nbsp;využitím assembleru <strong>ca65</strong>, jsou dostupné, jak je zvykem,
+na GitHubu. V&nbsp;tabulce níže jsou uvedeny odkazy na jednotlivé zdrojové kódy
+příkladů psané v&nbsp;assembleru i &bdquo;listingy&ldquo; vygenerované samotným
+assemblerem, ze kterých je patrné, jakým způsobem se jednotlivé příklady
+přeložily do výsledného XEX souboru:</p>
+
+<table>
+<tr><th> #</th><th>Příklad</th><th>Stručný popis příkladu</th><th>Adresa</th></tr>
+<tr><td> 1</td><td>Makefile</td><td>definice cílů pro překlad všech demonstračních příkladů z&nbsp;této tabulky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/Makefile">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/Makefile</a></td></tr>
+<tr><td> 2</td><td>linker.cfg</td><td>konfigurační soubor pro linker</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/linker.cfg">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/linker.cfg</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>dummy.asm</td><td>pouze nekonečná smyčka</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.asm</a></td></tr>
+<tr><td> 4</td><td>dummy_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy_list.asm</a></td></tr>
+<tr><td> 5</td><td>dummy_list.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>background_color_1.asm</td><td>změna barvy pozadí &ndash; základní varianta příkladu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.asm</a></td></tr>
+<tr><td> 7</td><td>background_color_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1_list.asm</a></td></tr>
+<tr><td> 8</td><td>background_color_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 9</td><td>background_color_2.asm</td><td>změna barvy pozadí &ndash; využití předdefinovaných konstant</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.asm</a></td></tr>
+<tr><td>10</td><td>background_color_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2_list.asm</a></td></tr>
+<tr><td>11</td><td>background_color_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>12</td><td>print_a.asm</td><td>tisk znaku přímo do obrazové paměti</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.asm</a></td></tr>
+<tr><td>13</td><td>print_a_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a_list.asm</a></td></tr>
+<tr><td>14</td><td>print_a.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>15</td><td>color_computation_1.asm</td><td>výpočet barvy, varianta bez bitových posunů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.asm</a></td></tr>
+<tr><td>16</td><td>color_computation_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1_list.asm</a></td></tr>
+<tr><td>17</td><td>color_computation_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>18</td><td>color_computation_2.asm</td><td>výpočet barvy, varianta s&nbsp;bitovými posuny</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.asm</a></td></tr>
+<tr><td>19</td><td>color_computation_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2_list.asm</a></td></tr>
+<tr><td>20</td><td>color_computation_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>21</td><td>subroutine_1.asm</td><td>skok do podprogramu bez předávání parametrů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.asm</a></td></tr>
+<tr><td>22</td><td>subroutine_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1_list.asm</a></td></tr>
+<tr><td>23</td><td>subroutine_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>24</td><td>subroutine_2.asm</td><td>skok do podprogramu s&nbsp;předáním parametru</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.asm</a></td></tr>
+<tr><td>25</td><td>subroutine_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2_list.asm</a></td></tr>
+<tr><td>26</td><td>subroutine_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>27</td><td>hex_number_1.asm</td><td>tisk jedné hexadecimální číslice (nekorektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.asm</a></td></tr>
+<tr><td>28</td><td>hex_number_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1_list.asm</a></td></tr>
+<tr><td>29</td><td>hex_number_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>30</td><td>hex_number_2.asm</td><td>tisk jedné hexadecimální číslice (korektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.asm</a></td></tr>
+<tr><td>31</td><td>hex_number_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2_list.asm</a></td></tr>
+<tr><td>32</td><td>hex_number_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>33</td><td>hex_number_3.asm</td><td>tisk jedné hexadecimální číslice (korektní varianta po refaktoringu)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.asm</a></td></tr>
+<tr><td>34</td><td>hex_number_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3_list.asm</a></td></tr>
+<tr><td>35</td><td>hex_number_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>36</td><td>hex_number_4.asm</td><td>tisk jedné hexadecimální číslice, varianta postavená na makrech</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.asm</a></td></tr>
+<tr><td>37</td><td>hex_number_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4_list.asm</a></td></tr>
+<tr><td>38</td><td>hex_number_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>39</td><td>hex_number_5.asm</td><td>tisk jedné hexadecimální číslice, varianta postavená na makrech, lokální automaticky generovaná návěští</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.asm</a></td></tr>
+<tr><td>40</td><td>hex_number_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5_list.asm</a></td></tr>
+<tr><td>41</td><td>hex_number_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>42</td><td>hex_number_6.asm</td><td>příprava pro tisk dvouciferné hexadecimální hodnoty</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.asm</a></td></tr>
+<tr><td>43</td><td>hex_number_6_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6_list.asm</a></td></tr>
+<tr><td>44</td><td>hex_number_6.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>45</td><td>hex_number_7.asm</td><td>realizace tisku dvouciferné hexadecimální hodnoty</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.asm</a></td></tr>
+<tr><td>46</td><td>hex_number_7_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7_list.asm</a></td></tr>
+<tr><td>47</td><td>hex_number_7.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>48</td><td>hex_number_8.asm</td><td>makro pro logický posun doprava o zadaný počet bitů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm</a></td></tr>
+<tr><td>49</td><td>hex_number_8_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm</a></td></tr>
+<tr><td>50</td><td>hex_number_8.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>51</td><td>hex_number_9.asm</td><td>čekání na stisk klávesy</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm</a></td></tr>
+<tr><td>52</td><td>hex_number_9_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm</a></td></tr>
+<tr><td>53</td><td>hex_number_9.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>54</td><td>fill_block_1.asm</td><td>vyplnění bloku, varianta se dvěma index registry</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.asm</a></td></tr>
+<tr><td>55</td><td>fill_block_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1_list.asm</a></td></tr>
+<tr><td>56</td><td>fill_block_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>57</td><td>fill_block_2.asm</td><td>vyplnění bloku, nekorektní varianta využívající jeden index registr</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.asm</a></td></tr>
+<tr><td>58</td><td>fill_block_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2_list.asm</a></td></tr>
+<tr><td>59</td><td>fill_block_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>60</td><td>fill_block_3.asm</td><td>vyplnění bloku, korektní varianta využívající jeden index registr</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.asm</a></td></tr>
+<tr><td>61</td><td>fill_block_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3_list.asm</a></td></tr>
+<tr><td>62</td><td>fill_block_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>63</td><td>fill_block_4.asm</td><td>vyplnění bloku delšího než 256 bajtů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.asm</a></td></tr>
+<tr><td>64</td><td>fill_block_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4_list.asm</a></td></tr>
+<tr><td>65</td><td>fill_block_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>66</td><td>fill_block_5.asm</td><td>vyplnění bloku, čítání směrem nahoru</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.asm</a></td></tr>
+<tr><td>67</td><td>fill_block_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5_list.asm</a></td></tr>
+<tr><td>68</td><td>fill_block_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>68</td><td>chars.bas</td><td>tisk všech znaků na obrazovku (varianta naprogramovaná v&nbsp;BASICu)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/chars.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/chars.bas</a></td></tr>
+</table>
+
+
+
+<p><a name="k20"></a></p>
+<h2 id="k20">Odkazy na Internetu</h2>
+
+<ol>
+
+<li>MOS 6502 instruction set<br />
+<a href="http://www.6502.org/users/obelisk/6502/instructions.html">http://www.6502.org/users/obelisk/6502/instructions.html</a>
+</li>
+
+<li>EXE File Format Description <br />
+<a href="https://gury.atari8.info/refs/file_formats_exe.php">https://gury.atari8.info/refs/file_formats_exe.php</a>
+</li>
+
+<li>XEX Filter - A toolkit to analyze and manipulate Atari binary files<br />
+<a href="https://www.vitoco.cl/atari/xex-filter/index.html">https://www.vitoco.cl/atari/xex-filter/index.html</a>
+</li>
+
+<li>chkxex.py<br />
+<a href="https://raw.githubusercontent.com/seban-slt/tcx_tools/refs/heads/master/chkxex.py">https://raw.githubusercontent.com/seban-slt/tcx_tools/refs/heads/master/chkxex.py</a>
+</li>
+
+<li>ca65 Users Guide<br />
+<a href="https://cc65.github.io/doc/ca65.html">https://cc65.github.io/doc/ca65.html</a>
+</li>
+
+<li>cc65 Users Guide<br />
+<a href="https://cc65.github.io/doc/cc65.html">https://cc65.github.io/doc/cc65.html</a>
+</li>
+
+<li>ld65 Users Guide<br />
+<a href="https://cc65.github.io/doc/ld65.html">https://cc65.github.io/doc/ld65.html</a>
+</li>
+
+<li>da65 Users Guide<br />
+<a href="https://cc65.github.io/doc/da65.html">https://cc65.github.io/doc/da65.html</a>
+</li>
+
+<li>Překladače jazyka C pro historické osmibitové mikroprocesory<br />
+<a href="https://www.root.cz/clanky/prekladace-jazyka-c-pro-historicke-osmibitove-mikroprocesory/">https://www.root.cz/clanky/prekladace-jazyka-c-pro-historicke-osmibitove-mikroprocesory/</a>
+</li>
+
+<li>Překladače programovacího jazyka C pro historické osmibitové mikroprocesory (2)<br />
+<a href="https://www.root.cz/clanky/prekladace-programovaciho-jazyka-c-pro-historicke-osmibitove-mikroprocesory-2/">https://www.root.cz/clanky/prekladace-programovaciho-jazyka-c-pro-historicke-osmibitove-mikroprocesory-2/</a>
+</li>
+
+<li>Getting Started Programming in C: Coding a Retro Game with C Part 2<br />
+<a href="https://retrogamecoders.com/getting-started-with-c-cc65/">https://retrogamecoders.com/getting-started-with-c-cc65/</a>
+</li>
+
+<li>NES game development in 6502 assembly - Part 1<br />
+<a href="https://kibrit.tech/en/blog/nes-game-development-part-1">https://kibrit.tech/en/blog/nes-game-development-part-1</a>
+</li>
+
+<li>NES 6502 Programming Tutorial - Part 1: Getting Started<br />
+<a href="https://dev.xenforo.relay.cool/index.php?threads/nes-6502-programming-tutorial-part-1-getting-started.858389/">https://dev.xenforo.relay.cool/index.php?threads/nes-6502-programming-tutorial-part-1-getting-started.858389/</a>
+</li>
+
+<li>Minimal NES example using ca65<br />
+<a href="https://github.com/bbbradsmith/NES-ca65-example">https://github.com/bbbradsmith/NES-ca65-example</a>
+</li>
+
+<li>List of 6502-based Computers and Consoles<br />
+<a href="https://www.retrocompute.co.uk/list-of-6502-based-computers-and-consoles/">https://www.retrocompute.co.uk/list-of-6502-based-computers-and-consoles/</a>
+</li>
+
+<li>6502 - the first RISC &micro;P<br />
+<a href="http://ericclever.com/6500/">http://ericclever.com/6500/</a>
+</li>
+
+<li>3 Generations of Game Machine Architecture<br />
+<a href="http://www.atariarchives.org/dev/CGEXPO99.html">http://www.atariarchives.org/dev/CGEXPO99.html</a>
+</li>
+
+<li>“Hello, world” from scratch on a 6502 — Part 1<br />
+<a href="https://www.youtube.com/watch?v=LnzuMJLZRdU">https://www.youtube.com/watch?v=LnzuMJLZRdU</a>
+</li>
+
+<li>A Tour of 6502 Cross-Assemblers<br />
+<a href="https://bumbershootsoft.wordpress.com/2016/01/31/a-tour-of-6502-cross-assemblers/">https://bumbershootsoft.wordpress.com/2016/01/31/a-tour-of-6502-cross-assemblers/</a>
+</li>
+
+<li>Adventures with ca65<br />
+<a href="https://atariage.com/forums/topic/312451-adventures-with-ca65/">https://atariage.com/forums/topic/312451-adventures-with-ca65/</a>
+</li>
+
+<li>example ca65 startup code<br />
+<a href="https://atariage.com/forums/topic/209776-example-ca65-startup-code/">https://atariage.com/forums/topic/209776-example-ca65-startup-code/</a>
+</li>
+
+<li>6502 PRIMER: Building your own 6502 computer<br />
+<a href="http://wilsonminesco.com/6502primer/">http://wilsonminesco.com/6502primer/</a>
+</li>
+
+<li>6502 Instruction Set<br />
+<a href="https://www.masswerk.at/6502/6502_instruction_set.html">https://www.masswerk.at/6502/6502_instruction_set.html</a>
+</li>
+
+<li>Chip Hall of Fame: MOS Technology 6502 Microprocessor<br />
+<a href="https://spectrum.ieee.org/tech-history/silicon-revolution/chip-hall-of-fame-mos-technology-6502-microprocessor">https://spectrum.ieee.org/tech-history/silicon-revolution/chip-hall-of-fame-mos-technology-6502-microprocessor</a>
+</li>
+
+<li>Single-board computer<br />
+<a href="https://en.wikipedia.org/wiki/Single-board_computer">https://en.wikipedia.org/wiki/Single-board_computer</a>
+</li>
+
+<li>www.6502.org<br />
+<a href="http://www.6502­.org/">http://www.6502­.org/</a>
+</li>
+
+<li>6502 PRIMER: Building your own 6502 computer &ndash; clock generator<br />
+<a href="http://wilsonminesco.com/6502primer/ClkGen.html">http://wilsonminesco.com/6502primer/ClkGen.html</a>
+</li>
+
+<li>Great Microprocessors of the Past and Present (V 13.4.0)<br />
+<a href="http://www.cpushack.com/CPU/cpu.html">http://www.cpushack.com/CPU/cpu.html</a>
+</li>
+
+<li>Jak se zrodil procesor?<br />
+<a href="https://www.root.cz/clanky/jak-se-zrodil-procesor/">https://www.root.cz/clanky/jak-se-zrodil-procesor/</a>
+</li>
+
+<li>Osmibitové mikroprocesory a mikrořadiče firmy Motorola (1)<br />
+<a href="https://www.root.cz/clanky/osmibitove-mikroprocesory-a-mikroradice-firmy-motorola-1/">https://www.root.cz/clanky/osmibitove-mikroprocesory-a-mikroradice-firmy-motorola-1/</a>
+</li>
+
+<li>Mikrořadiče a jejich použití v jednoduchých mikropočítačích<br />
+<a href="https://www.root.cz/clanky/mikroradice-a-jejich-pouziti-v-jednoduchych-mikropocitacich/">https://www.root.cz/clanky/mikroradice-a-jejich-pouziti-v-jednoduchych-mikropocitacich/</a>
+</li>
+
+<li>Mikrořadiče a jejich aplikace v jednoduchých mikropočítačích (2)<br />
+<a href="https://www.root.cz/clanky/mikroradice-a-jejich-aplikace-v-jednoduchych-mikropocitacich-2/">https://www.root.cz/clanky/mikroradice-a-jejich-aplikace-v-jednoduchych-mikropocitacich-2/</a>
+</li>
+
+<li>25 Microchips That Shook the World<br />
+<a href="https://spectrum.ieee.org/tech-history/silicon-revolution/25-microchips-that-shook-the-world">https://spectrum.ieee.org/tech-history/silicon-revolution/25-microchips-that-shook-the-world</a>
+</li>
+
+<li>Comparison of instruction set architectures<br />
+<a href="https://en.wikipedia.org/wiki/Comparison_of_instruction_set_architectures">https://en.wikipedia.org/wiki/Comparison_of_instruction_set_architectures</a>
+</li>
+
+<li>How To Start Learning Atari 8 Bit Assembly For Free<br />
+<a href="https://forums.atariage.com/topic/300732-how-to-start-learning-atari-8-bit-assembly-for-free/">https://forums.atariage.com/topic/300732-how-to-start-learning-atari-8-bit-assembly-for-free/</a>
+</li>
+
+<li>WUDSN (Demo Group)<br />
+<a href="https://www.wudsn.com/">https://www.wudsn.com/</a>
+</li>
+
+<li>Machine Language For Beginners<br />
+<a href="https://www.atariarchives.org/mlb/">https://www.atariarchives.org/mlb/</a>
+</li>
+
+<li>Assembly language: all about I/O<br />
+<a href="https://www.atarimagazines.com/v3n8/AllAbout_IO.html">https://www.atarimagazines.com/v3n8/AllAbout_IO.html</a>
+</li>
+
+<li>Sedmdesátiny assemblerů: lidsky čitelný strojový kód<br />
+<a href="https://www.root.cz/clanky/sedmdesatiny-assembleru-lidsky-citelny-strojovy-kod/">https://www.root.cz/clanky/sedmdesatiny-assembleru-lidsky-citelny-strojovy-kod/</a>
+</li>
+
+<li>Color names</br >
+<a href="https://atariwiki.org/wiki/Wiki.jsp?page=Color%20names">https://atariwiki.org/wiki/Wiki.jsp?page=Color%20names</a>
+</li>
+
+<li>ATASCII</br >
+<a href="https://en.wikipedia.org/wiki/ATASCII">https://en.wikipedia.org/wiki/ATASCII</a>
+</li>
+
+<li>Put characters in display ram isn't ATASCII?</br >
+<a href="https://forums.atariage.com/topic/359973-put-characters-in-display-ram-isnt-atascii/">https://forums.atariage.com/topic/359973-put-characters-in-display-ram-isnt-atascii/</a>
+</li>
+
+<li>ATASCII And Internal Character Code Values</br >
+<a href="https://www.atariarchives.org/mapping/appendix10.php">https://www.atariarchives.org/mapping/appendix10.php</a>
+</li>
+
+<li>Reading ATASCII from the keyboard in assembly<br />
+<a href="https://forums.atariage.com/topic/361733-reading-atascii-from-the-keyboard-in-assembly/">https://forums.atariage.com/topic/361733-reading-atascii-from-the-keyboard-in-assembly/</a>
+</li>
+
+<li>Why does the 6502 JSR instruction only increment the return address by 2 bytes?<br />
+<a href="https://retrocomputing.stackexchange.com/questions/19543/why-does-the-6502-jsr-instruction-only-increment-the-return-address-by-2-bytes">https://retrocomputing.stackexchange.com/questions/19543/why-does-the-6502-jsr-instruction-only-increment-the-return-address-by-2-bytes</a>
+</li>
+
+<li>Pushing return address to stack off by 1 byte<br />
+<a href="https://forums.atariage.com/topic/378206-pushing-return-address-to-stack-off-by-1-byte/">https://forums.atariage.com/topic/378206-pushing-return-address-to-stack-off-by-1-byte/</a>
+</li>
+
+<li>Intel x86 documentation has more pages than the 6502 has transistors<br />
+<a href="https://www.righto.com/2013/09/intel-x86-documentation-has-more-pages.html">https://www.righto.com/2013/09/intel-x86-documentation-has-more-pages.html</a>
+</li>
+
+<li>Clearing a Section of Memory<br />
+<a href="http://www.6502.org/source/general/clearmem.htm">http://www.6502.org/source/general/clearmem.htm</a>
+</li>
+
+<li>Practical Memory Move Routines by Bruce Clark<br />
+<a href="http://www.6502.org/source/general/memory_move.html">http://www.6502.org/source/general/memory_move.html</a>
+</li>
+
+<li>6502 Assembly Programming Guide<br />
+<a href="https://neumont-gamedev.github.io/posts/retrogamedev-6502-guide/">https://neumont-gamedev.github.io/posts/retrogamedev-6502-guide/</a>
+</li>
+
+<li>Off-by-one error<br />
+<a href="https://en.wikipedia.org/wiki/Off-by-one_error">https://en.wikipedia.org/wiki/Off-by-one_error</a>
+</li>
+
+<li>6502 cycle times<br />
+<a href="https://www.nesdev.org/wiki/6502_cycle_times">https://www.nesdev.org/wiki/6502_cycle_times</a>
+</li>
+
+</ol>
+
+
+
+<p></p><p></p>
+<p><small>Autor: <a href="https://github.com/tisnik/">Pavel Tišnovský</a> &nbsp; 2026</small></p>
+</body>
+</html>
+
