@@ -50,9 +50,9 @@
 <p><a href="#k11">*** 11. Praktické příklady využití typu <strong>Callable[..., ]</strong></a></p>
 <p><a href="#k12">*** 12. Indexování využívané v&nbsp;knihovně Numpy (n-rozměrná pole)</a></p>
 <p><a href="#k13">*** 13. Další příklady využití ... při indexování n-rozměrných polí</a></p>
-<p><a href="#k14">*** 14. </a></p>
+<p><a href="#k14">*** 14. Využití ... při komunikaci mezi procesy nebo vlákny</a></p>
 <p><a href="#k15">*** 15. </a></p>
-<p><a href="#k16">*** 16. </a></p>
+<p><a href="#k16">*** 16. Upozornění: ... není to samé jako _</a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. </a></p>
 <p><a href="#k19">19. Repositář s&nbsp;demonstračními příklady</a></p>
@@ -511,6 +511,27 @@ LIGHTSPEED_STACK_FIELDS: tuple[FieldSpec | ListFieldSpec, ...] = (
 <p></p>
 
 <pre>
+from pydantic import BaseModel, Field, PositiveInt, field_validator
+
+
+class User(BaseModel):
+    """Model reprezentující uživatele."""
+    name: str = Field(..., max_length=10)
+    surname: str = Field(..., max_length=10)
+    age: PositiveInt | None
+    registered: bool = False
+
+    @field_validator("age")
+    @classmethod
+    def check_age(cls, value):
+        """Kontrola, jestli je uživatel dospělý."""
+        if value < 18:
+            raise ValueError("You are too young to register")
+        return value
+
+
+user1 = User(name="Nabuchodonozor", surname="II", age=18)
+print(user1)
 </pre>
 
 
@@ -568,35 +589,436 @@ print(as_json)
 <p><a name="k10"></a></p>
 <h2 id="k10">10. Typová informace: funkce akceptující neznámý počet a typ parametrů</h2>
 
+<p></p>
+
+<pre>
+</pre>
+
 
 
 <p><a name="k11"></a></p>
 <h2 id="k11">11. Praktické příklady využití typu <strong>Callable[..., ]</strong></h2>
+
+<p></p>
+
+<pre>
+"""Decorator that makes sure the object is 'connected' according to it's connected predicate."""
+
+from collections.abc import Callable
+from typing import (
+    Concatenate,
+    ParamSpec,
+    Protocol,
+    TypeVar,
+    runtime_checkable,
+)
+
+P = ParamSpec("P")
+R = TypeVar("R")
+S = TypeVar("S", bound="Connectable")  # the method's self type
+
+
+@runtime_checkable
+class Connectable(Protocol):
+    """Any class that implements methods connected and connect."""
+
+    def connected(self) -&gt; bool:
+        """Check if DB is connected."""
+        return False
+
+    def connect(self) -&gt; None:
+        """Connect or reconnect the database."""
+
+
+def connection(
+    f: Callable[Concatenate[S, P], R],
+) -&gt; Callable[..., R]:
+    """
+    Ensure a connectable object is connected before invoking the wrapped method.
+
+    The returned wrapper calls `connectable.connected()` and, if that returns
+    `False`, calls `connectable.connect()` prior to delegating to the original
+    method.
+
+    Parameters:
+    ----------
+        f (Callable): The method to wrap. The wrapped method is
+        expected to accept a `connectable` first argument.
+
+    Returns:
+    -------
+        Callable: A wrapper method with signature `(connectable,
+        *args, **kwargs)` that ensures `connectable` is connected
+        before calling `f`.
+
+    Example:
+    ```python
+    @connection
+    def list_history(self) -&gt; list[str]:
+       pass
+    ```
+    """
+
+    def wrapper(self: S, *args: P.args, **kwargs: P.kwargs) -&gt; R:
+        """
+        Ensure the provided connectable is connected, then call the wrapped with the same arguments.
+
+        Parameters:
+        ----------
+            connectable (Any): Object that implements `connected()` -&gt; bool and
+            `connect()` -&gt; None; will be connected if not already.
+                *args (Any): Positional arguments forwarded to the wrapped callable.
+                **kwargs (Any): Keyword arguments forwarded to the wrapped callable.
+
+        Returns:
+        -------
+                Any: The value returned by the wrapped callable.
+        """
+        if not self.connected():
+            self.connect()
+        return f(self, *args, **kwargs)
+
+    return wrapper
+</pre>
+
+<p></p>
+
+<pre>
+def run_once_async(func: Callable[..., Any]) -&gt; Callable[..., Any]:
+    """
+    Ensure that an async function is executed only once.
+
+    On the first invocation the wrapped coroutine is scheduled as an
+    asyncio.Task on the current running event loop and its Task is cached.
+    Later invocations return/await the same Task, receiving the same result or
+    propagated exception. Requires an active running event loop when the
+    wrapped function is first called.
+
+    Returns:
+        Any: The result produced by the wrapped coroutine, or the exception it
+             raised propagated to callers.
+    """
+    task = None
+
+    @wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -&gt; Any:
+        """
+        Run the wrapped async function exactly once and return its (awaited) result on every call.
+
+        On the first invocation this schedules the underlying coroutine as an
+        asyncio.Task on the current running event loop and caches that task.
+        Subsequent calls return the same awaited task result. Exceptions raised
+        by the task propagate to callers. Requires an active running event loop
+        when first called.
+
+        Returns:
+            The awaited result of the wrapped coroutine.
+        """
+        nonlocal task
+        if task is None:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(func(*args, **kwargs))
+        return await task
+
+    return wrapper
+</pre>
 
 
 
 <p><a name="k12"></a></p>
 <h2 id="k12">12. Indexování využívané v&nbsp;knihovně Numpy (n-rozměrná pole)</h2>
 
+<p></p>
+
+<pre>
+import numpy as np
+
+a=np.arange(25)
+print(a)
+print()
+
+b=a.reshape((5, 5))
+print(b)
+print()
+
+print(b[2])
+print()
+
+print(b[2, ...])
+print()
+
+print(b[..., 2])
+print()
+
+</pre>
+
 
 
 <p><a name="k13"></a></p>
-<h2 id="k13">13. </h2>
+<h2 id="k13">13. Další příklady využití ... při indexování n-rozměrných polí</h2>
+
+<pre>
+import numpy as np
+
+a=np.arange(24)
+print(a)
+print()
+
+b=a.reshape((3, 4, 2))
+print(b)
+print()
+
+print(b[1])
+print()
+
+print(b[..., 1])
+print()
+
+print(b[..., 1, 1])
+print()
+</pre>
+
+<pre>
+import numpy as np
+
+a=np.arange(24)
+print(a)
+print()
+
+b=a.reshape((3, 4, 2))
+print(b)
+print()
+
+print(b[1, ..., 1])
+print()
+
+print(b[2, ..., 0])
+print()
+</pre>
+
+<pre>
+import numpy as np
+
+a=np.arange(24)
+print(a)
+print()
+
+b=a.reshape((3, 4, 2))
+print(b)
+print()
+
+print(b[..., 1, ...])
+print()
+</pre>
 
 
 
 <p><a name="k14"></a></p>
-<h2 id="k14">14. </h2>
+<h2 id="k14">14. Využití ... při komunikaci mezi procesy nebo vlákny</h2>
 
 
 
 <p><a name="k15"></a></p>
 <h2 id="k15">15. </h2>
 
+<pre>
+# Multiprocesing a multithreading v Pythonu:
+# - spuštění více úloh v nových vláknech
+# - komunikace mezi vlákny s využitím fronty
+
+CONCURRENCY_LEVEL = 5
+TASKS = 20
+WAIT_FOR_KEY = True
+SLEEP_AMOUNT = 1
+
+
+from queue import Queue
+from threading import Thread
+import time
+
+
+def worker(name, q):
+    """Worker spuštěný několikrát v samostatných vláknech."""
+    while True:
+        # čtení příkazů z fronty
+        cmd = q.get()
+        print(f"Thread '{name}' received command '{cmd}'")
+        if cmd == "quit":
+            print(f"Thread '{name}' is about to quit")
+            return
+        if SLEEP_AMOUNT > 0:
+            time.sleep(SLEEP_AMOUNT)
+
+
+if __name__ == "__main__":
+    t1 = time.time()
+
+    print("Starting")
+
+    # vytvoření fronty pro komunikaci mezi vlákny
+    q = Queue()
+
+    ts = []
+    # vytvoření procesů
+    for i in range(CONCURRENCY_LEVEL):
+        name = f"Thread #{i}"
+        ts.append(Thread(target=worker, daemon=True, name=name, args=[name, q]))
+
+    # spuštění vláken
+    for t in ts:
+        t.start()
+
+    print("Sending data to other threads")
+
+    # komunikace s vlákny přes frontu
+    for i in range(TASKS):
+        print(f"Sending 'command {i}'")
+        q.put("command {}".format(i))
+
+    if WAIT_FOR_KEY:
+        print("Press Enter to force all threads to finish")
+        input()
+
+    print("Asking other threads to finish")
+
+    # příkaz pro ukončení vláken
+    for i in range(CONCURRENCY_LEVEL):
+        q.put("quit")
+
+    print("Waiting for other threads")
+
+    # čekání na zpracování všech zpráv ve frontě
+    for t in ts:
+        t.join()
+
+    print("All work done!")
+
+    t2 = time.time()
+
+    print(f"Elapsed time: {t2-t1}")
+</pre>
+
+<pre>
+# Multiprocesing a multithreading v Pythonu:
+# - spuštění více úloh v nových vláknech
+# - komunikace mezi vlákny s využitím fronty
+
+CONCURRENCY_LEVEL = 5
+TASKS = 20
+WAIT_FOR_KEY = True
+SLEEP_AMOUNT = 1
+
+
+from queue import Queue
+from threading import Thread
+import time
+
+
+def worker(name, q):
+    """Worker spuštěný několikrát v samostatných vláknech."""
+    while True:
+        # čtení příkazů z fronty
+        cmd = q.get()
+        print(f"Thread '{name}' received command '{cmd}'")
+        if cmd is ...:
+            print(f"Thread '{name}' is about to quit")
+            return
+        if SLEEP_AMOUNT > 0:
+            time.sleep(SLEEP_AMOUNT)
+
+
+if __name__ == "__main__":
+    t1 = time.time()
+
+    print("Starting")
+
+    # vytvoření fronty pro komunikaci mezi vlákny
+    q = Queue()
+
+    ts = []
+    # vytvoření procesů
+    for i in range(CONCURRENCY_LEVEL):
+        name = f"Thread #{i}"
+        ts.append(Thread(target=worker, daemon=True, name=name, args=[name, q]))
+
+    # spuštění vláken
+    for t in ts:
+        t.start()
+
+    print("Sending data to other threads")
+
+    # komunikace s vlákny přes frontu
+    for i in range(TASKS):
+        print(f"Sending 'command {i}'")
+        q.put("command {}".format(i))
+
+    if WAIT_FOR_KEY:
+        print("Press Enter to force all threads to finish")
+        input()
+
+    print("Asking other threads to finish")
+
+    # příkaz pro ukončení vláken
+    for i in range(CONCURRENCY_LEVEL):
+        q.put(...)
+
+    print("Waiting for other threads")
+
+    # čekání na zpracování všech zpráv ve frontě
+    for t in ts:
+        t.join()
+
+    print("All work done!")
+
+    t2 = time.time()
+
+    print(f"Elapsed time: {t2-t1}")
+</pre>
+
 
 
 <p><a name="k16"></a></p>
-<h2 id="k16">16. </h2>
+<h2 id="k16">16. Upozornění: ... není to samé jako _</h2>
+
+<pre>
+def perform_command():
+    response = input("> ")
+
+    match response:
+        case "quit":
+            return "Quit"
+        case "list employees":
+            return "List employees"
+        case "list departments":
+            return "List departments"
+        case "list rooms":
+            return "List rooms"
+        case _:
+            return "Wrong command"
+
+
+print(perform_command())
+</pre>
+
+<pre>
+def perform_command():
+    response = input("> ")
+
+    match response:
+        case "quit":
+            return "Quit"
+        case "list employees":
+            return "List employees"
+        case "list departments":
+            return "List departments"
+        case "list rooms":
+            return "List rooms"
+        case ...:
+            return "Wrong command"
+
+
+print(perform_command())
+</pre>
 
 
 
