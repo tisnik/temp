@@ -1,0 +1,2781 @@
+<h2 id="k01">VBI &ndash; Vertical Blank Interrupt</h2>
+
+<p><a
+href="https://www.root.cz/clanky/dli-nejvetsi-zbran-osmibitovych-atari/">V&nbsp;předchozím
+článku</a> o vývoji her a dalších aplikací pro osmibitové domácí mikropočítače
+Atari jsme si představili základní koncepty <i>DLI</i> neboli <i>Display List
+Interruptu</i>. Připomeňme si, že přímo v&nbsp;display listu, který popisuje
+strukturu obrazové paměti i způsob jejího vykreslení, je možné u libovolných
+řádků povolit tzv.&nbsp;<i>DLI</i>. Čip ANTIC u takových řádků (nepřímo) zavolá
+podprogram (subrutinu), která DLI obslouží. Tyto podprogramy musí být poměrně
+rychlé, protože pro obsluhu DLI je k&nbsp;dispozici přibližně 114 cyklů,
+přičemž jedna strojová instrukce trvá 2 až 8 cyklů. V&nbsp;DLI se tedy provádí
+jen základní operace, které souvisí s&nbsp;jednotlivými částmi obrazovky
+(zobrazení více spritů, vícebarevné pozadí, přepnutí znakové sady atd.).</p>
+
+<p>Ovšem navíc a prakticky zcela nezávisle na <i>DLI</i> je možné naprogramovat
+subrutinu či subrutiny, které se spouští po vykreslení celého snímku, tedy
+ještě před začátkem dalšího snímku. Popř.&nbsp;je možné sice začít
+s&nbsp;výpočtem před začátkem dalšího snímku, ale výpočet může pokračovat i při
+jeho vykreslování (více než 20000 strojových cyklů). K&nbsp;tomuto účelu slouží
+<i>VBI</i> neboli <i>Vertical Blank Interrupt</i>. Výhodou VBI je, že
+programátor má k&nbsp;dispozici mnohem větší počet strojových cyklů, takže se
+mnohdy celá herní logika vejde právě do <i>VBI</i>. Obsluha <i>VBI</i> je
+nepatrně složitější, než v&nbsp;případě <i>DLI</i>. Celé zpracování je totiž
+rozděleno do čtyř částí (což jsou jednotlivé podprogramy, které se vzájemně
+volají):</p>
+
+<table>
+<tr><th>Rutina</th><th>Poznámka</th></tr>
+<tr><td>VBLANK</td><td>lze naprogramovat, přibližně 2500 strojových cyklů (3800 bez systémové části)</td></tr>
+<tr><td>SYSVBV</td><td>systémový podprogram</td></tr>
+<tr><td>Odložený VBLANK</td><td>cca 20000 cyklů (cca 4500 instrukcí), z&nbsp;toho přibližně 2778 při kreslení prázdných řádků na začátku obrazovky</td></tr>
+<tr><td>XITVBV</td><td>zavoláno při opouštění odloženého VBLANKu</td></tr>
+</table>
+
+<p>Programátor tedy může vytvořit dva podprogramy pro obsluhu VBI. První
+podprogram by měl mít délku do cca 2500 strojových cyklů a jeho předností je,
+že je skutečně vykonáván tehdy, pokud se neprovádí vykreslování (posílají se
+SYNCy do televizoru a paprsek se vrací na začátek obrazovky). Druhý podprogram
+pro &bdquo;odložený&ldquo; VBLANK může být mnohem delší, protože se provádí
+během vykreslování snímku. Ovšem na začátku obrazovky se typicky nachází 24
+prázdných obrazových řádků, takže několik set cyklů (uvádí se 2778, ovšem podle
+mě je to méně, 2778 cyklů odpovídá 24&times;63,5&micro;s) lze využít pro
+provádění grafických operací, které nezpůsobí problikávání obrazovky atd.
+(například pohyby spritů).</p>
+
+<p><div class="rs-tip-major">Poznámka: odložený VBLANK musí v&nbsp;každém
+případě skončit dřív, než nastane další VBI. Příště si otestujeme, co se stane,
+pokud tato podmínka není splněna.</div></p>
+
+
+
+<h2 id="k02">Krátké připomenutí: příklad s&nbsp;aktivním čekáním na dokončení překreslení snímku</h2>
+
+<p>V&nbsp;předchozích částech <a
+href="https://www.root.cz/serialy/programovani-pro-osmibitova-atari/">tohoto
+seriálu</a> jsme si mj.&nbsp;ukázali způsob vykreslování PMG (<i>Player Missile
+Graphics</i>), tj.&nbsp;pohyblivých objektů na obrazovce (neboli
+<i>spritů</i>). Dokonce jsme tyto sprity ovládali s&nbsp;využitím joysticku.
+Ovšem právě při ovládání spritů, což je vlastně jedna z&nbsp;forem primitivní
+animace, bylo nutné zajistit, aby se rychlost pohybu sesynchronizovala
+s&nbsp;generováním snímků na obrazovce. Tím se zajistí, že rychlost výsledné
+hry bude konstantní a nebude zapotřebí hlídat časovače atd.</p>
+
+<p><div class="rs-tip-major">Poznámka: Ve skutečnosti je zde velký rozdíl mezi
+normami PAL a NTSC, o tomto problému však vyjde samostatný článek).</div></p>
+
+<p>Připomeňme si, že čekání na dokončení snímku jsme (alespoň prozatím)
+prováděli aktivním čekáním na změnu hodnoty časovače <strong>RTCLOK</strong>,
+přesněji řečeno na změnu jeho nejnižšího bajtu. Využívalo se přitom toho faktu,
+že časovač je modifikován právě po dokreslení celého snímku:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro čekání na konec snímku</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>_wait_vsync</strong>
+        ldx     RTCLOK+2        <i>; čekání na konec snímku</i>
+@wt:    cpx     RTCLOK+2
+        beq     @wt
+        rts
+.endproc
+</pre>
+
+<p>Úplný zdrojový kód příkladu, ve kterém je realizován pohyb prvním hráčem
+s&nbsp;využitím joysticku, vypadal následovně:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>; Aktivní čekání na dokončení vykreslování snímku.</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #0                  <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+50, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+50, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+50, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+50, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+&nbsp;
+loop:
+        jsr horizontal_movement
+        jmp loop
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro horizontální posun prvního hráče</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+        txa                     <i>; uložení obsahu X do akumulátoru</i>
+        jsr _wait_vsync         <i>; čekání na další snímek</i>
+        jsr _wait_vsync         <i>; čekání na další snímek</i>
+        tax                     <i>; obnovení obsahu X z akumulátoru</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro čekání na konec snímku</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>_wait_vsync</strong>
+        ldx     RTCLOK+2        <i>; čekání na konec snímku</i>
+@wt:    cpx     RTCLOK+2
+        beq     @wt
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k03">Podprogram pro pohyb hráče joystickem realizovaný ve VBI</h2>
+
+<p>Předchozí demonstrační příklad ovšem není v&nbsp;žádném případě dokonalý.
+Jedním z&nbsp;problémů je fakt, že je změna pozice hráče realizována přímo
+v&nbsp;hlavní programové smyčce a druhý problém spočívá v&nbsp;nutnosti
+aktivního čekání na vykreslení snímku. Tím se ovšem zbytečně &bdquo;pálí&ldquo;
+strojové cykly, kterých pochopitelně mikroprocesor MOS 6502 nemá nekonečné
+množství. Jedno z&nbsp;možných řešení obou problémů (současně) je přesun kódu
+pro posun hráče s&nbsp;využitím joysticku přímo do obsluhy VBI. Samotný přesun
+kódu je snadný; výsledná subrutina vypadá následovně (již neobsahuje volání
+subrutiny <strong>_wait_vsync</strong>, tu totiž vůbec nepotřebujeme):</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: důležitá je předposlední instrukce,
+která zavolá systémový kód určený pro dokončení obsluhy VBI. Teoreticky je
+možné toto volání vynechat (například v&nbsp;kritických smyčkách ve hrách a
+demech), ovšem mnohé operace za nás dělá operační systém zadarmo, takže proč je
+nevyužít?</div></p>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1297995" data-alignment="center" data-link-type="modal">Obrázek #1297995 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1297995">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/659/atari-dev-9-1-prev.png" class="image-1297995" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/659/atari-dev-9-1-prev.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/659/atari-dev-9-1.png" data-large-width="672" data-large-height="480" /><p class="description">Obrázek 1: Posun spritů je řešen v rámci VBI.</p></div></div>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1297998" data-alignment="center" data-link-type="modal">Obrázek #1297998 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1297998">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/659/atari-dev-9-2-prev.png" class="image-1297998" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/659/atari-dev-9-2-prev.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/659/atari-dev-9-2.png" data-large-width="672" data-large-height="480" /><p class="description">Obrázek 2:&#160;Posun spritů je řešen v rámci VBI (první sprite byl posunut joystickem).</p></div></div>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1298001" data-alignment="center" data-link-type="modal">Obrázek #1298001 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1298001">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/659/atari-dev-9-3-prev.png" class="image-1298001" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/659/atari-dev-9-3-prev.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/659/atari-dev-9-3.png" data-large-width="672" data-large-height="480" /><p class="description">Obrázek 3: Posun spritů je řešen v rámci VBI (první sprite lze posunout až přes okraj obrazovky).</p></div></div>
+
+
+
+<h2 id="k04">První způsob nastavení vektoru pro VBI</h2>
+
+<p>Prozatím jsme vytvořili nový podprogram (subrutinu) nazvanou
+<strong>horizontal_movement</strong>. Assembler pochopitelně v&nbsp;pozdější
+fázi překladu zná počáteční adresu tohoto podprogramu. Jedná se o
+šestnáctibitovou adresu, kterou je možné s&nbsp;využitím operátorů &gt; a &lt;
+rozdělit na vyšší a nižší bajt adresy. Tato vlastnost assembleru se nám bude
+hodit, protože musíme adresu subrutiny <strong>horizontal_movement</strong>
+uložit do vektoru <strong>VVBLKD</strong>, jenž je umístěný na adresách 0x224 a
+0x225:</p>
+
+<pre>
+VVBLKD  = $0224         <i>;DEFERRED VERTICAL BLANK NMI VECTOR</i>
+</pre>
+
+<p>Poněkud naivní (a ne zcela bezpečné) zaregistrování subrutiny
+<strong>horizontal_movement</strong> může vypadat takto:</p>
+
+<pre>
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #&gt;horizontal_movement
+        sta VVBLKD+1
+        lda #&lt;horizontal_movement
+        sta VVBLKD
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: proč je tento kód potenciálně
+nebezpečný? Teoreticky totiž, i když je to velmi málo pravděpodobné, může VBI
+nastat přesně v&nbsp;okamžiku, kdy jsme modifikovali jen první polovinu adresy.
+To znamená, že bude proveden skok do odlišného místa paměti a program
+pravděpodobně zhavaruje nebo se zasekne (záleží na tom, zda dříve narazí na
+bajt s&nbsp;kódem instrukce <strong>RTS</strong> či naopak instrukce
+<strong>BRK</strong>).</div></p>
+
+<p>Hlavní herní smyčka se nyní zredukuje do následující triviální podoby,
+protože ovládání hráče je provedeno v&nbsp;obslužné subrutině VBI:</p>
+
+<pre>
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+</pre>
+
+
+
+<h2 id="k05">Úplný zdrojový kód druhého demonstračního příkladu</h2>
+
+<p>Dnešní druhý demonstrační příklad, ve kterém je pohyb hráče řešen
+v&nbsp;obsluze DLI, vypadá následovně:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>; Pohyb PMG realizovaný ve VBI.</i>
+<i>;</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #0                  <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+50, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+50, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+50, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+50, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+&nbsp;
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #&gt;horizontal_movement
+        sta VVBLKD+1
+        lda #&lt;horizontal_movement
+        sta VVBLKD
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k06">Druhý způsob nastavení vektoru pro VBI</h2>
+
+<p>Jak jsme si řekli v&nbsp;předchozím textu, nemusí být přímá modifikace
+adresy uložené do vektoru <strong>VVBLKD</strong> zcela bezpečná. Vhodnější je
+využít systémový podprogram (nebo, chcete-li, službu operačního systému)
+nazvanou <strong>SETVBV</strong>. Tato služba se zavolá skokem do subrutiny se
+stejným jménem, ovšem navíc je zapotřebí nastavit pracovní registry
+mikroprocesoru MOS 6502 následujícím způsobem:</p>
+
+<ol>
+
+<li>Do akumulátoru <strong>A</strong> se uloží konstanta 6, pokud měníme
+subrutinu zavolanou přímo při vzniku VBI (zde je ovšem počet cyklů omezen) nebo
+hodnotu 7, pokud měníme &bdquo;odloženou&ldquo; obsluhu VBI.</li>
+
+<li>Do index registru <strong>X</strong> je uložen vyšší bajt adresy obslužné
+subrutiny.</li>
+
+<li>Do index registru <strong>Y</strong> je uložen nižší bajt adresy obslužné
+subrutiny.</li>
+
+</ol>
+
+<p>To tedy znamená, že nastavení adresy &bdquo;odložené&ldquo; obsluhy VBI může
+vypadat následovně:</p>
+
+<pre>
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+</pre>
+
+<p>Hlavní herní smyčka zůstává stále stejná, tj.:</p>
+
+<pre>
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: systémová služba <strong>SETVBV</strong>
+může posloužit i pro nastavení obsluhy časovačů. Pro tyto účely se akumulátor
+<strong>A</strong> musí nastavit na hodnotu od 1 do 5. To však již přesahuje
+rámec dnešního článku.</div></p>
+
+
+
+<h2 id="k07">Úplný zdrojový kód třetího demonstračního příkladu</h2>
+
+<p>Úplný zdrojový kód dnešního třetího demonstračního příkladu vypadá
+následovně:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>; Pohyb PMG realizovaný ve VBI.</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #0                  <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+50, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+50, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+50, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+50, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+&nbsp;
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k08">Kombinace DLI a VBI v&nbsp;jednom programu</h2>
+
+<p>V&nbsp;předchozím článku jsme si popsali způsob nastavení DLI v&nbsp;display
+listu i to, jak může vypadat subrutina, která DLI obslouží. A dnes jsme se
+zabývali naprogramováním subrutiny zavolané při VBI, tj.&nbsp;při dokončení
+vykreslení snímku. Nabízí se tedy pochopitelná otázka &ndash; je možné DLI a
+VBI zkombinovat v&nbsp;jednom programu? Samozřejmě to možné je a právě tento
+způsob je využit v&nbsp;mnoha hrách pro osmibitové mikropočítače Atari. Pouze
+si musíme uvědomit, že subrutiny pro obsluhu DLI (pochopitelně) vyžadují určitý
+počet strojových cyklů MOS 6502. A tyto cykly potom budou chybět pro odložené
+VBI.</p>
+
+<p>Připomeňme si, že zatímco VBI je po resetu Atari povoleno (resp.&nbsp;se o
+to postará operační systém), je nutné DLI povolit explicitně, například
+takto:</p>
+
+<pre>
+        <i>; povolení DLI</i>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+</pre>
+
+<p>Poté již můžeme nastavit oba vektory obsahující adresy pro obsluhu DLI a
+VBI:</p>
+
+<pre>
+        <i>; vektor DLI</i>
+        lda #&lt;dli               <i>; nastavení DLI</i>
+        sta VDSLST
+        lda #&gt;dli
+        sta VDSLST+1
+&nbsp;
+        <i>; -------------------------------------------------</i>
+&nbsp;
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+</pre>
+
+<p>Obslužná subrutina pro DLI končí takto:</p>
+
+<pre>
+        rti                     <i>; návrat z DLI</i>
+</pre>
+
+<p>Zatímco obslužná rutina pro odložené VBI bude končit:</p>
+
+<pre>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+</pre>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1298004" data-alignment="center" data-link-type="modal">Obrázek #1298004 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1298004">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/659/atari-dev-9-4-prev.png" class="image-1298004" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/659/atari-dev-9-4-prev.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/659/atari-dev-9-4.png" data-large-width="672" data-large-height="480" /><p class="description">Obrázek 4: Posun spritů je řešen v rámci VBI, změna barev pozadí pomocí DLI.</p></div></div>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1298007" data-alignment="center" data-link-type="modal">Obrázek #1298007 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1298007">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/659/atari-dev-9-5-prev.png" class="image-1298007" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/659/atari-dev-9-5-prev.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/659/atari-dev-9-5.png" data-large-width="672" data-large-height="480" /><p class="description">Obrázek 5: Posun spritů je řešen v rámci VBI, změna barev pozadí pomocí DLI (posun prvního spritu joystickem).</p></div></div>
+
+<div class="rs-picture-widget-wrap"><div class="rs-picture-widget" data-image-id="1298010" data-alignment="center" data-link-type="modal">Obrázek #1298010 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1298010">(editovat)</span></div><div class="rs-img-center"><img src="https://i.iinfo.cz/images/659/atari-dev-9-6-prev.png" class="image-1298010" width="370" height="264" data-prev-filename="https://i.iinfo.cz/images/659/atari-dev-9-6-prev.png" data-prev-width="370" data-prev-height="264" data-large-filename="https://i.iinfo.cz/images/659/atari-dev-9-6.png" data-large-width="672" data-large-height="480" /><p class="description">Obrázek 6: Posun spritů je řešen v rámci VBI, změna barev pozadí pomocí DLI (posun prvního spritu joystickem až na okraj obrazovky).</p></div></div>
+
+
+
+<h2 id="k09">Úplný zdrojový kód čtvrtého demonstračního příkladu</h2>
+
+<p>Oba podprogramy, z&nbsp;nichž jeden je vyvolán při každém DLI a druhý při
+VBI, byly zakomponovány do jediného programu, jehož úplný zdrojový kód vypadá
+následovně:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>; Změna pozice PMG realizovaná ve VBI.</i>
+<i>; Změna barvy herního pole realizovaná v DLI.</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        lda #&lt;dlist             <i>; nižší byte adresy display listu</i>
+        sta SDLSTL
+        lda #&gt;dlist             <i>; vyšší byte adresy display listu</i>
+        sta SDLSTH
+&nbsp;
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        tya                     <i>; kód vypisovaného znaku</i>
+        sta screen, y           <i>; tisk znaku na zvolené místo na obrazovce</i>
+        sta screen+40*8, y
+        sta screen+40*16, y
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #$80
+        bne clear               <i>; skok</i>
+&nbsp;
+        <i>; vektor DLI</i>
+        lda #&lt;dli               <i>; nastavení DLI</i>
+        sta VDSLST
+        lda #&gt;dli
+        sta VDSLST+1
+&nbsp;
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #1                   <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+100, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+100, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+100, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+100, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+&nbsp;
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+&nbsp;
+        <i>; povolení DLI</i>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+&nbsp;
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; obsluha DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+<strong>dli</strong>:
+        pha                     <i>; uschovat akumulátor</i>
+        lda color               <i>; barva pozadí</i>
+        sta COLPF2              <i>; přímo nastavit zápisem do HW registru</i>
+        eor #%10000000          <i>; negovat nejvyšší bit</i>
+        sta color
+        pla                     <i>; obnovit akumulátor</i>
+        rti                     <i>; návrat z DLI</i>
+&nbsp;
+&nbsp;
+dlist:
+.byte DL_BLK8, DL_BLK8, DL_BLK8 <i>; 3x8=24 prázdných obrazových řádků</i>
+.byte DL_LMS+DL_CHR40x8x1       <i>; určení počáteční adresy obrazové paměti + jeden řádek režimu 2 (GR.0)</i>
+.byte &lt;screen, &gt;screen          <i>; počáteční adresa obrazové paměti </i>
+.res 6, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 7, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 8, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_JVB, &lt;dlist, &gt;dlist    <i>; skok na začátek display listu</i>
+&nbsp;
+&nbsp;
+color:
+.byte $c4                       <i>; původní barva</i>
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.BSS
+screen: .res 40*24
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k10">Odstranění nadbytečné instrukce <strong>RTS</strong> na konci obsluhy VBI</h2>
+
+<p>Ještě jednou se vraťme k&nbsp;podprogramu
+<strong>horizontal_movement</strong>, který se volá v&nbsp;rámci obsluhy
+VBI:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+</pre>
+
+<p>Zajímavé jsou poslední dvě instrukce:</p>
+
+<pre>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+</pre>
+
+<p>První instrukce provede <i>přímý</i> skok na adresu <strong>XITVBV</strong>,
+druhá provádí návrat z&nbsp;podprogramu. Ovšem to je zajímavé &ndash; jak se
+vlastně procesor dozví, že se má nejdříve vrátit <i>za</i> volání
+<strong>XITVBV</strong>, aby mohl <strong>rts</strong> vykonat? Odpovědí je, že
+se do tohoto místa programu řízení <i>nevrátí</i>, protože
+<strong>XITVBV</strong> samo končí instrukcí <strong>rts</strong> nebo
+<strong>rti</strong>. Tudíž je &bdquo;naše&ldquo; <strong>rts</strong>
+nadbytečná a můžeme ji odstranit:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+.endproc
+</pre>
+
+
+
+<h2 id="k11">Úplný zdrojový kód pátého demonstračního příkladu</h2>
+
+<p>Dnešní pátý demonstrační příklad se příliš neliší od příkladu čtvrtého,
+pouze v&nbsp;něm došlo k&nbsp;odstranění nadbytečné instrukce
+<strong>rts</strong>. Pro úplnost si ale ukážeme i takto upravený zdrojový
+kód:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>; Změna pozice PMG realizovaná ve VBI.</i>
+<i>; Změna barvy herního pole realizovaná v DLI.</i>
+<i>; Odstranění nadbytečné instrukce RTS ve VBI.</i>
+<i>;</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        lda #&lt;dlist             <i>; nižší byte adresy display listu</i>
+        sta SDLSTL
+        lda #&gt;dlist             <i>; vyšší byte adresy display listu</i>
+        sta SDLSTH
+&nbsp;
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        tya                     <i>; kód vypisovaného znaku</i>
+        sta screen, y           <i>; tisk znaku na zvolené místo na obrazovce</i>
+        sta screen+40*8, y
+        sta screen+40*16, y
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #$80
+        bne clear               <i>; skok</i>
+&nbsp;
+        <i>; vektor DLI</i>
+        lda #&lt;dli               <i>; nastavení DLI</i>
+        sta VDSLST
+        lda #&gt;dli
+        sta VDSLST+1
+&nbsp;
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #1                   <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+100, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+100, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+100, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+100, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+&nbsp;
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+&nbsp;
+        <i>; povolení DLI</i>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+&nbsp;
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; obsluha DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+<strong>dli</strong>:
+        pha                     <i>; uschovat akumulátor</i>
+        lda color               <i>; barva pozadí</i>
+        sta COLPF2              <i>; přímo nastavit zápisem do HW registru</i>
+        eor #%10000000          <i>; negovat nejvyšší bit</i>
+        sta color
+        pla                     <i>; obnovit akumulátor</i>
+        rti                     <i>; návrat z DLI</i>
+&nbsp;
+&nbsp;
+dlist:
+.byte DL_BLK8, DL_BLK8, DL_BLK8 <i>; 3x8=24 prázdných obrazových řádků</i>
+.byte DL_LMS+DL_CHR40x8x1       <i>; určení počáteční adresy obrazové paměti + jeden řádek režimu 2 (GR.0)</i>
+.byte &lt;screen, &gt;screen          <i>; počáteční adresa obrazové paměti </i>
+.res 6, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 7, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 8, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_JVB, &lt;dlist, &gt;dlist    <i>; skok na začátek display listu</i>
+&nbsp;
+&nbsp;
+color:
+.byte $c4                       <i>; původní barva</i>
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.BSS
+screen: .res 40*24
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k12">Refaktoring kódu v&nbsp;assembleru: subrutiny a makra</h2>
+
+<p>Již ve <a
+href="https://www.root.cz/clanky/programovani-pro-osmibitova-atari-volani-instrukci-procesoru-mos-6502/">druhém
+článku o programování pro osmibitová Atari</a> jsme si řekli, že programy psané
+v&nbsp;assembleru jsou psány na relativně nízké úrovni abstrakce. Proto je
+prakticky nutné, alespoň u rozsáhlejších aplikací, nějakým způsobem neustále
+provádět jejich refaktoring, protože v&nbsp;opačném případě bychom získali
+&bdquo;špagetový kód&ldquo; skládající se z&nbsp;nic neříkajících instrukcí.
+Assemblery a do jisté míry i samotné mikroprocesory nám nabízí dvě základní
+techniky, které je možné využít a různým způsobem je kombinovat. Jedná se o
+rozdělení úlohy na jednotlivé podprogramy (subrutiny), ideálně s&nbsp;rozumně
+nastaveným rozhraním, které specifikuje, jakým způsobem se mají do subrutin
+předávat parametry. A druhou technologií jsou makra, kterými jsme se zabývali
+<a
+href="https://www.root.cz/clanky/programovani-pro-osmibitova-atari-makra-asm-ca65-trik-s-instrukci-rts/">ve
+třetím článku</a>. Ovšem již samotné rozdělení programu na podprogramy může
+zvětšit čitelnost a vlastně se dostat na vyšší úroveň abstrakce (o programu
+budeme uvažovat jako o vzájemně se volajících blocích, nikoli jako o sekvenci
+instrukcí).</p>
+
+<p>Program, který využívá jak DL a PMG, tak i DLI a VBI (to je zkratek), je již
+relativně komplikovaný, takže se může vyplatit jeho refaktoring. Oba způsoby,
+tedy rozdělení na podprogramy popř.&nbsp;do maker, si ukážeme
+v&nbsp;navazujících kapitolách.</p>
+
+<p><div class="rs-tip-major">Poznámka: ukážeme se tedy všechny tři extrémy
+&ndash; špagetový kód (to jsme již viděli), vše rozdělené čistě do podprogramů
+a naopak vše realizované formou maker. V&nbsp;praxi se ovšem vyplatí rozumná
+kombinace obou dvou &bdquo;struturovaných&ldquo; přístupů (tedy
+s&nbsp;vyloučením špagetového kódu).</div></p>
+
+
+
+<h2 id="k13">Přepis všech částí programu do formy podprogramů (subrutin)</h2>
+
+<p>Přepis programu do formy s&nbsp;podprogramy může vypadat jednoduše. Hlavní
+část je dobře čitelná, ovšem jak uvidíme dále, ve skutečnosti není příliš
+obecná. Nalezneme zde pouze volání podprogramů realizované instrukcí
+<strong>JSR</strong> (<i>Jump to SubRoutine</i>):</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        jsr set_display_list    <i>; nastavení display listu</i>
+        jsr fill_screen         <i>; výpis znaků na obrazovku</i>
+        jsr setup_sprites
+        jsr set_dli_handler     <i>; nastavení obsluhy DLI</i>
+        jsr set_vbi_handler     <i>; nastavení obsluhy VBI</i>
+        jsr enable_interrupts
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+</pre>
+
+<p>Další části programu jsou realizovány subrutinami a tedy končí instrukcí
+<strong>RTS</strong> (<i>ReTurn from Subroutine</i>). Nevýhodou je, že se sice
+jedná o subrutiny, ale ty pracují s&nbsp;(de facto) globálními symboly
+<strong>screen</strong>, <strong>dlist</strong> a <strong>x_pos</strong> (a
+také s&nbsp;adresami obslužných programů pro DLI a VBI):</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro vyplnění obrazovky znaky</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>fill_screen</strong>
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        tya                     <i>; kód vypisovaného znaku</i>
+        sta screen, y           <i>; tisk znaku na zvolené místo na obrazovce</i>
+        sta screen+40*8, y
+        sta screen+40*16, y
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #$80
+        bne clear               <i>; skok</i>
+        rts
+.endproc
+</pre>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení display listu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>set_display_list</strong>
+        lda #&lt;dlist             <i>; nižší byte adresy display listu</i>
+        sta SDLSTL
+        lda #&gt;dlist             <i>; vyšší byte adresy display listu</i>
+        sta SDLSTH
+        rts
+.endproc
+</pre>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení všech spritů</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>setup_sprites</strong>
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #1                   <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+100, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+100, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+100, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+100, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+        rts
+.endproc
+</pre>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro povolení DLI i VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>enable_interrupts</strong>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+        rts
+.endproc
+</pre>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení obsluhy VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>set_vbi_handler</strong>
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+        rts
+.endproc
+</pre>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+</pre>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; obsluha DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+<strong>dli:</strong>
+        pha                     <i>; uschovat akumulátor</i>
+        lda color               <i>; barva pozadí</i>
+        sta COLPF2              <i>; přímo nastavit zápisem do HW registru</i>
+        eor #%10000000          <i>; negovat nejvyšší bit</i>
+        sta color
+        pla                     <i>; obnovit akumulátor</i>
+        rti                     <i>; návrat z DLI</i>
+</pre>
+
+
+
+<h2 id="k14">Úplný zdrojový kód šestého demonstračního příkladu</h2>
+
+<p>Po překladu došlo k&nbsp;nárůstu délky programu, protože bylo nutné
+zakódovat všechny nové instrukce <strong>JSR</strong> a <strong>RTS</strong>.
+Původní délka:</p>
+
+<pre>
+Segment list:
+-------------
+Name                   Start     End    Size  Align
+----------------------------------------------------
+AUTOSTRT              000000  000005  000006  00001
+EXEHDR                000000  000005  000006  00001
+CODE                  002000  0020E4  0000E5  00001
+BSS                   002400  0027BF  0003C0  00001
+</pre>
+
+<p>Nová délka téměř dosahuje velikosti jedné stránky paměti, tj.&nbsp;celých
+1/256 adresovací kapacity mikroprocesoru:</p>
+
+<pre>
+Segment list:
+-------------
+Name                   Start     End    Size  Align
+----------------------------------------------------
+AUTOSTRT              000000  000005  000006  00001
+EXEHDR                000000  000005  000006  00001
+CODE                  002000  0020FD  0000FE  00001
+BSS                   002400  0027BF  0003C0  00001
+</pre>
+
+<p>A výsledný zdrojový kód? Ten vypadá takto:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>;</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        jsr set_display_list    <i>; nastavení display listu</i>
+        jsr fill_screen         <i>; výpis znaků na obrazovku</i>
+        jsr setup_sprites
+        jsr set_dli_handler     <i>; nastavení obsluhy DLI</i>
+        jsr set_vbi_handler     <i>; nastavení obsluhy VBI</i>
+        jsr enable_interrupts
+&nbsp;
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro vyplnění obrazovky znaky</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>fill_screen</strong>
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        tya                     <i>; kód vypisovaného znaku</i>
+        sta screen, y           <i>; tisk znaku na zvolené místo na obrazovce</i>
+        sta screen+40*8, y
+        sta screen+40*16, y
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #$80
+        bne clear               <i>; skok</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení display listu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>set_display_list</strong>
+        lda #&lt;dlist             <i>; nižší byte adresy display listu</i>
+        sta SDLSTL
+        lda #&gt;dlist             <i>; vyšší byte adresy display listu</i>
+        sta SDLSTH
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení všech spritů</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>setup_sprites</strong>
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #1                   <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        addr = 152*256
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite-1, x         <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+100, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+100, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+100, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+100, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení DLI i VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>enable_interrupts</strong>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro povolení VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>set_vbi_handler</strong>
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;horizontal_movement
+        ldy #&lt;horizontal_movement
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro nastavení obsluhy DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>set_dli_handler</strong>
+        <i>; vektor DLI</i>
+        lda #&lt;dli               <i>; nastavení DLI</i>
+        sta VDSLST
+        lda #&gt;dli
+        sta VDSLST+1
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>horizontal_movement</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+        rts
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; obsluha DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+<strong>dli</strong>:
+        pha                     <i>; uschovat akumulátor</i>
+        lda color               <i>; barva pozadí</i>
+        sta COLPF2              <i>; přímo nastavit zápisem do HW registru</i>
+        eor #%10000000          <i>; negovat nejvyšší bit</i>
+        sta color
+        pla                     <i>; obnovit akumulátor</i>
+        rti                     <i>; návrat z DLI</i>
+&nbsp;
+&nbsp;
+dlist:
+.byte DL_BLK8, DL_BLK8, DL_BLK8 <i>; 3x8=24 prázdných obrazových řádků</i>
+.byte DL_LMS+DL_CHR40x8x1       <i>; určení počáteční adresy obrazové paměti + jeden řádek režimu 2 (GR.0)</i>
+.byte @lt;screen, &gt;screen          <i>; počáteční adresa obrazové paměti </i>
+.res 6, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 7, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 8, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_JVB, &lt;dlist, &gt;dlist    <i>; skok na začátek display listu</i>
+&nbsp;
+&nbsp;
+color:
+.byte $c4                       <i>; původní barva</i>
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.BSS
+screen: .res 40*24
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k15">Přepis všech částí programu do formy maker</h2>
+
+<p>Zajímavější a potenciálně užitečnější může být přepis částí programu do
+formy maker. Předností tohoto řešení je snadné předávání parametrů do makra,
+protože to se provádí v&nbsp;době překladu a nejsme tedy omezeni možnostmi čipu
+MOS 6502, relativně malým zásobníkem atd. atd. Druhou předností je fakt, že
+program jako celek bude menší a nepatrně rychlejší &ndash; ušetří se za
+instrukce <strong>JSR</strong> a <strong>RTS</strong>, ovšem pouze za
+předpokladu, že každé makro bude použito (expandováno) jen jedenkrát. A je zde
+ještě jeden malý problém &ndash; všechny symboly definované v&nbsp;makru by
+měly být lokální, aby bylo možné makro v&nbsp;případě potřeby skutečně
+expandovat vícekrát.</p>
+
+<p><div class="rs-tip-major">Poznámka: zatímco v&nbsp;jazyku C jsou makra spíše
+problematickým (ale důležitým) prvkem jazyka, je tomu v&nbsp;assembleru CA65
+naopak.</div></p>
+
+<p>Hlavní část programu v&nbsp;případě, že jsou další jeho části napsané
+s&nbsp;využitím maker, vypadá poměrně vysokoúrovňově, protože do maker můžeme
+předávat parametry a vyhnout se tak přímému použití globálních symbolů:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        set_display_list dlist  <i>; nastavení display listu</i>
+        fill_screen screen      <i>; výpis znaků na obrazovku</i>
+        setup_sprites sprite    <i>; nastavení spritů</i>
+        set_dli_handler dli     <i>; nastavení obsluhy DLI</i>
+        set_vbi_handler vbi     <i>; nastavení obsluhy VBI</i>
+        enable_interrupts       <i>; povolení přerušení</i>
+        game_loop               <i>; hlavní herní smyčka</i>
+.endproc
+</pre>
+
+<p>Samotná makra obsahují i definici parametrů:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení display listu</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>set_display_list label</strong>
+        lda #&lt;label             <i>; nižší byte adresy display listu</i>
+        sta SDLSTL
+        lda #&gt;label             <i>; vyšší byte adresy display listu</i>
+        sta SDLSTH
+.endmacro
+</pre>
+
+<p>Další makro obsahuje návěští, ovšem to je definováno jako lokální
+symbol:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro vyplnění obrazovky znaky</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>fill_screen screen</strong>
+        .local clear            <i>; definice lokálního symbolu</i>
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        tya                     <i>; kód vypisovaného znaku</i>
+        sta screen, y           <i>; tisk znaku na zvolené místo na obrazovce</i>
+        sta screen+40*8, y
+        sta screen+40*16, y
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #$80
+        bne clear               <i>; skok</i>
+.endmacro
+</pre>
+
+<p>Další makro s&nbsp;lokálními symboly (a bez parametrů):</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení DLI i VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>enable_interrupts</strong>
+        .local NMIEN_DLI        <i>; definice lokálního symbolu</i>
+        .local NMIEN_VBI        <i>; definice lokálního symbolu</i>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+.endmacro
+</pre>
+
+<p>A konečně si ukažme makra, do kterých se předávají jména subrutin, které
+mají být zaregistrovány pro obsluhu DLI nebo VBI:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>set_dli_handler handler</strong>
+        <i>; vektor DLI</i>
+        lda #&lt;handler           <i>; nastavení DLI</i>
+        sta VDSLST
+        lda #&gt;handler
+        sta VDSLST+1
+.endmacro
+</pre>
+
+<p>a:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>set_vbi_handler handler</strong>
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;handler
+        ldy #&lt;handler
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+.endmacro
+</pre>
+
+
+
+<h2 id="k16">Úplný zdrojový kód sedmého demonstračního příkladu</h2>
+
+<p>Závěrem praktické části dnešního článku si ukážeme úplný zdrojový kód
+příkladu s&nbsp;DLI i VBI, který je celý realizován s&nbsp;využitím maker:</p>
+
+<pre>
+<i>; ---------------------------------------------------------------------</i>
+<i>; Ovládání PMG joystickem v horizontálním směru.</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+.include "atari.inc"
+&nbsp;
+.CODE
+&nbsp;
+PLAYER_0_OFFSET = 512
+PLAYER_1_OFFSET = PLAYER_0_OFFSET + 128
+PLAYER_2_OFFSET = PLAYER_1_OFFSET + 128
+PLAYER_3_OFFSET = PLAYER_2_OFFSET + 128
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; definice maker</i>
+<i>; ---------------------------------------------------------------------</i>
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení display listu</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>set_display_list label</strong>
+        lda #&lt;label             <i>; nižší byte adresy display listu</i>
+        sta SDLSTL
+        lda #&gt;label             <i>; vyšší byte adresy display listu</i>
+        sta SDLSTH
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro vyplnění obrazovky znaky</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>fill_screen screen</strong>
+        .local clear            <i>; definice lokálního symbolu</i>
+        ldy #0                  <i>; počitadlo zápisů</i>
+clear:
+        tya                     <i>; kód vypisovaného znaku</i>
+        sta screen, y           <i>; tisk znaku na zvolené místo na obrazovce</i>
+        sta screen+40*8, y
+        sta screen+40*16, y
+        iny                     <i>; zvětšit hodnotu počitadla a offsetu</i>
+        cpy #$80
+        bne clear               <i>; skok</i>
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení všech spritů</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>setup_sprites sprite_address</strong>
+        lda #80                 <i>; horizontální pozice prvního hráče</i>
+        sta HPOSP0              <i>; uložit do řídicího registru HPOSP0 na čipu GTIA</i>
+&nbsp;
+        lda #100                <i>; horizontální pozice druhého hráče</i>
+        sta HPOSP1              <i>; uložit do řídicího registru HPOSP1 na čipu GTIA</i>
+&nbsp;
+        lda #120                <i>; horizontální pozice třetího hráče</i>
+        sta HPOSP2              <i>; uložit do řídicího registru HPOSP2 na čipu GTIA</i>
+&nbsp;
+        lda #140                <i>; horizontální pozice čtvrtého hráče</i>
+        sta HPOSP3              <i>; uložit do řídicího registru HPOSP3 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_GREEN&lt;&lt;4 + 12  <i>; barva prvního hráče (odstín+intenzita)</i>
+        sta PCOLR0              <i>; uložit do řídicího registru PCOLR0 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_YELLOW&lt;&lt;4 + 12 <i>; barva druhého hráče (odstín+intenzita)</i>
+        sta PCOLR1              <i>; uložit do řídicího registru PCOLR1 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_MAGENTA&lt;&lt;4 + 12 <i>; barva třetího hráče (odstín+intenzita)</i>
+        sta PCOLR2              <i>; uložit do řídicího registru PCOLR2 na čipu GTIA</i>
+&nbsp;
+        lda #HUE_CYAN&lt;&lt;4 + 12   <i>; barva čtvrtého hráče (odstín+intenzita)</i>
+        sta PCOLR3              <i>; uložit do řídicího registru PCOLR3 na čipu GTIA</i>
+&nbsp;
+        lda #$ff                <i>; bitová maska všech hráčů</i>
+        sta GRAFP0              <i>; uložit do řídicího registru GRAFP0 na čipu GTIA</i>
+        sta GRAFP1              <i>; uložit do řídicího registru GRAFP1 na čipu GTIA</i>
+        sta GRAFP2              <i>; uložit do řídicího registru GRAFP2 na čipu GTIA</i>
+        sta GRAFP3              <i>; uložit do řídicího registru GRAFP3 na čipu GTIA</i>
+&nbsp;
+        lda #3                  <i>; bitové pole: povolení hráčů i střel</i>
+        sta GRACTL              <i>; uložit do řídicího registru GRACTL na čipu GTIA</i>
+&nbsp;
+        lda #1                   <i>; priorita hráčů a pozadí</i>
+        sta GPRIOR              <i>; uložit do řídicího registru GPRIOR na čipu GTIA</i>
+&nbsp;
+        lda #152                <i>; paměťová stránka číslo 152</i>
+        sta PMBASE
+&nbsp;
+        .local addr             <i>; definice lokálního symbolu</i>
+        addr = 152*256
+&nbsp;
+        .local next_line        <i>; definice lokálního symbolu</i>
+        ldx #8                  <i>; začneme na hodnotě o 1 vyšší</i>
+next_line:
+        lda sprite_address-1, x          <i>; načíst</i>
+        sta addr+PLAYER_0_OFFSET+100, x  <i>; uložit byte - první hráč</i>
+        sta addr+PLAYER_1_OFFSET+100, x  <i>; uložit byte - druhý hráč</i>
+        sta addr+PLAYER_2_OFFSET+100, x  <i>; uložit byte - třetí hráč</i>
+        sta addr+PLAYER_3_OFFSET+100, x  <i>; uložit byte - čtvrtý hráč</i>
+        dex                     <i>; snížit offset + nastavit příznaky</i>
+        bne next_line           <i>; další byte spritu</i>
+&nbsp;
+        lda #46                 <i>; povolení PMG DMA</i>
+        sta SDMCTL
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení DLI i VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>enable_interrupts</strong>
+        .local NMIEN_DLI        <i>; definice lokálního symbolu</i>
+        .local NMIEN_VBI        <i>; definice lokálního symbolu</i>
+        NMIEN_DLI=$80           <i>; maska povolení DLI</i>
+        NMIEN_VBI=$40           <i>; maska povolení VBI</i>
+        lda #NMIEN_DLI | NMIEN_VBI <i>; povolení DLI</i>
+        sta NMIEN
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>set_vbi_handler handler</strong>
+        <i>; nastavit vektor pro odloženou VBI</i>
+        lda #7                  <i>; změna vektoru pro odložené VBI</i>
+        ldx #&gt;handler
+        ldy #&lt;handler
+        jsr SETVBV              <i>; zavolat službu systému pro nastavení vektoru</i>
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; makro pro nastavení DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>set_dli_handler handler</strong>
+        <i>; vektor DLI</i>
+        lda #&lt;handler           <i>; nastavení DLI</i>
+        sta VDSLST
+        lda #&gt;handler
+        sta VDSLST+1
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; hlavní herní smyčka</i>
+<i>; ---------------------------------------------------------------------</i>
+.macro  <strong>game_loop</strong>
+        .local loop             <i>; definice lokálního symbolu</i>
+loop:
+        jmp loop                <i>; program vlastně nice nedělá - jen cyklí!</i>
+.endmacro
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; vstupní bod do programu</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc <strong>main</strong>
+        set_display_list dlist  <i>; nastavení display listu</i>
+        fill_screen screen      <i>; výpis znaků na obrazovku</i>
+        setup_sprites sprite    <i>; nastavení spritů</i>
+        set_dli_handler dli     <i>; nastavení obsluhy DLI</i>
+        set_vbi_handler vbi     <i>; nastavení obsluhy VBI</i>
+        enable_interrupts       <i>; povolení přerušení</i>
+        game_loop               <i>; hlavní herní smyčka</i>
+.endproc
+&nbsp;
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; subrutina pro obsluhu VBI</i>
+<i>; ---------------------------------------------------------------------</i>
+.proc   <strong>vbi</strong>
+        ldx x_pos               <i>; původní pozice prvního hráče</i>
+&nbsp;
+        lda STICK0              <i>; čtení joysticku</i>
+        cmp #11                 <i>; je nakloněn doleva?</i>
+        bne not_left
+        dex                     <i>; posun hráče doleva</i>
+not_left:
+        cmp #7                  <i>; je nakloněn doprava?</i>
+        bne not_right
+        inx                     <i>; posun hráče doprava</i>
+not_right:
+        stx HPOSP0              <i>; změna pozice prvního hráče</i>
+        stx x_pos               <i>; zapamatovat si pozici prvního hráče</i>
+        jmp XITVBV              <i>; zpracovat zbytek odloženého VBLANKu</i>
+.endproc
+&nbsp;
+&nbsp;
+<i>; ---------------------------------------------------------------------</i>
+<i>; obsluha DLI</i>
+<i>; ---------------------------------------------------------------------</i>
+<strong>dli</strong>:
+        pha                     <i>; uschovat akumulátor</i>
+        lda color               <i>; barva pozadí</i>
+        sta COLPF2              <i>; přímo nastavit zápisem do HW registru</i>
+        eor #%10000000          <i>; negovat nejvyšší bit</i>
+        sta color
+        pla                     <i>; obnovit akumulátor</i>
+        rti                     <i>; návrat z DLI</i>
+&nbsp;
+&nbsp;
+dlist:
+.byte DL_BLK8, DL_BLK8, DL_BLK8 <i>; 3x8=24 prázdných obrazových řádků</i>
+.byte DL_LMS+DL_CHR40x8x1       <i>; určení počáteční adresy obrazové paměti + jeden řádek režimu 2 (GR.0)</i>
+.byte &lt;screen, &gt;screen          <i>; počáteční adresa obrazové paměti </i>
+.res 6, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 7, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_DLI+DL_CHR40x8x1       <i>; GR.0 ovšem navíc s povolením DLI</i>
+.res 8, DL_CHR40x8x1            <i>; opakovat řádky textového režimu 2 (GR.0)</i>
+.byte DL_JVB, &gt;dlist, &gt;dlist    <i>; skok na začátek display listu</i>
+&nbsp;
+&nbsp;
+color:
+.byte $c4                       <i>; původní barva</i>
+&nbsp;
+&nbsp;
+<i>; data</i>
+sprite:   .byte 24, 60, 126, 219, 255, 36, 90, 165
+&nbsp;
+<i>; horizontální pozice hráče</i>
+x_pos:    .byte 80
+&nbsp;
+end:
+&nbsp;
+&nbsp;
+.BSS
+screen: .res 40*24
+&nbsp;
+.segment "EXEHDR"
+.word   $ffff                   <i>; uvodni sekvence bajtu v souboru XEX</i>
+.word   main                    <i>; zacatek kodoveho segmentu</i>
+.word   end - 1                 <i>; konec kodoveho segmentu</i>
+&nbsp;
+&nbsp;
+.segment "AUTOSTRT"             <i>; segment s pocatecni adresou</i>
+.word   RUNAD                   <i>; naplni se pouze adresy RUNAD a RUNAD+1</i>
+.word   RUNAD+1
+.word   main                    <i>; adresa vstupniho bodu do programu</i>
+&nbsp;
+<i>; finito</i>
+</pre>
+
+
+
+<h2 id="k17">Obsah navazujícího článku</h2>
+
+<p>Popisem čipu ANTIC jsme se zabývali již ve čtyřech článcích, a to
+z&nbsp;toho důvodu, že se jedná o integrovaný obvod nabízející programátorům
+poměrně velké možnosti. Příště jeho popis dokončíme. Zabývat se budeme
+především realizací takzvaného jemného <i>scrollingu</i>. Čip ANTIC totiž
+umožňuje provádění horizontálního a/nebo vertikálního scrollingu
+s&nbsp;přesností na jednotlivé pixely, a to bez nutnosti přenosu dat ve video
+paměti. Scrolling je možné realizovat ve všech režimech, ovšem význam má
+především v&nbsp;režimech textových a pseudotextových (GR.13, GR.14). Ovšem to
+není vše. Navíc je ještě možné nastavit šířku herního pole (<i>playfiend</i>).
+K&nbsp;dispozici jsou tři šířky, které se uvádí v&nbsp;počtu takzvaných
+<i>color</i> cyklů (odpovídá frekvenci změny barvové složky TV signálu): 128
+cyklů, 160 cyklů a 192 cyklů. Počet color cyklů odpovídá horizontálnímu
+rozlišení v&nbsp;grafických režimech B, C, D a E. Naproti tomu v&nbsp;režimu F
+(GR.8) se jedná o 256, 320 a 384 pixelů (maximální dosažitelné rozlišení je tak
+přibližně rovno 384&times;224 pixelů).</p>
+
+
+
+<h2 id="k18">Příloha: Makefile pro překlad všech demonstračních příkladů</h2>
+
+<p>Všechny minule i dnes popsané demonstrační příklady, pro jejichž překlad je
+zapotřebí použít assembler <strong>ca65</strong> a linker
+<strong>ld65</strong>, je možné přeložit s&nbsp;využitím souboru
+<strong>Makefile</strong>, jehož obsah je vypsán pod tímto odstavcem:</p>
+
+<pre>
+execs := dummy.xex print_a.xex \
+         background_color_1.xex  background_color_2.xex \
+         color_computation_1.xex color_computation_2.xex \
+         subroutine_1.xex        subroutine_2.xex \
+         hex_number_1.xex        hex_number_2.xex \
+         hex_number_3.xex        hex_number_4.xex \
+         hex_number_5.xex        hex_number_6.xex \
+         hex_number_7.xex        hex_number_8.xex \
+         hex_number_9.xex \
+         fill_block_1.xex        fill_block_2.xex \
+         fill_block_3.xex        fill_block_4.xex \
+         fill_block_5.xex \
+         pmg_01.xex              pmg_02.xex \
+         pmg_03.xex              pmg_04.xex \
+         pmg_05.xex              pmg_06.xex \
+         pmg_07.xex              pmg_08.xex \
+         pmg_09.xex              pmg_10.xex \
+         pmg_11.xex              pmg_12.xex \
+         pmg_13.xex              pmg_14.xex \
+         pmg_15.xex              pong.xex \
+         pmg_stick_1.xex         pmg_stick_2.xex \
+         pmg_stick_3.xex         pmg_stick_4.xex \
+         pmg_stick_5.xex         pmg_stick_6.xex \
+         pmg_collisions_1.xex    pmg_collisions_2.xex \
+         pmg_collisions_3.xex    pmg_collisions_4.xex \
+         antic_1.xex             antic_2.xex \
+         antic_3.xex             antic_4.xex \
+         antic_5.xex             antic_6.xex \
+         antic_7.xex             antic_8.xex \
+         antic_9.xex             antic_A.xex \
+         antic_B.xex \
+         antic_bitmap_1.xex      antic_bitmap_2.xex \
+         antic_bitmap_3.xex      antic_bitmap_4.xex \
+         antic_bitmap_5.xex      antic_bitmap_6.xex \
+         antic_bitmap_7.xex      antic_bitmap_8.xex \
+         antic_dli_1.asm         antic_dli_2.asm \
+         antic_dli_3.asm         antic_dli_4.asm \
+         antic_dli_5.asm         antic_dli_pmg.asm
+&nbsp;
+all: $(execs)
+&nbsp;
+clean:
+        rm -f *.o
+        rm -f *.xex
+&nbsp;
+.PHONY: all clean
+&nbsp;
+<strong>%.o</strong>: %.asm
+        ca65 $&lt; -t atari -o $@ -l $(basename $&lt;)_list.asm --list-bytes 100
+&nbsp;
+<strong>%.xex</strong>: %.o
+        ld65 -C linker.cfg $&lt; -o $@ -m $(basename $&lt;).map
+&nbsp;
+<strong>antic_bitmap_6.xex</strong>:     antic_bitmap_6.o
+        ld65 -C linker_image.cfg $&lt; -o $@ -m $(basename $&lt;).map
+&nbsp;
+<strong>antic_bitmap_7.xex</strong>:     antic_bitmap_7.o
+        ld65 -C linker_image_2.cfg $&lt; -o $@ -m $(basename $&lt;).map
+&nbsp;
+<strong>antic_bitmap</strong>:   \
+        antic_bitmap_1.xex \
+        antic_bitmap_2.xex \
+        antic_bitmap_3.xex \
+        antic_bitmap_4.xex \
+        antic_bitmap_5.xex \
+        antic_bitmap_6.xex \
+        antic_bitmap_7.xex \
+        antic_bitmap_8.xex
+&nbsp;
+<strong>antic_dli</strong>:      \
+        antic_dli_1.xex \
+        antic_dli_2.xex \
+        antic_dli_3.xex \
+        antic_dli_4.xex \
+        antic_dli_5.xex \
+        antic_dli_pmg.xex
+&nbsp;
+<strong>antic_vbi</strong>:      \
+        antic_vbi_1.xex \
+        antic_vbi_2.xex \
+        antic_vbi_3.xex \
+        antic_vbi_dli_1.xex \
+        antic_vbi_dli_2.xex \
+        antic_vbi_dli_3.xex \
+        antic_vbi_dli_4.xex
+</pre>
+
+<p>Výsledkem překladu jsou soubory s&nbsp;koncovkou <strong>.xex</strong>,
+které je možné přímo spustit v&nbsp;emulátoru osmibitových počítačů Atari.</p>
+
+
+
+<h2 id="k19">Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny demonstrační příklady, s&nbsp;nimiž jsme se v&nbsp;předchozích
+článcích i v&nbsp;článku dnešním seznámili a které jsou určeny pro překlad
+s&nbsp;využitím assembleru <strong>ca65</strong>, jsou dostupné, jak je zvykem,
+na GitHubu. V&nbsp;tabulce níže jsou uvedeny odkazy na jednotlivé zdrojové kódy
+příkladů psané v&nbsp;assembleru i &bdquo;listingy&ldquo; vygenerované samotným
+assemblerem, ze kterých je patrné, jakým způsobem se jednotlivé příklady
+přeložily do výsledného XEX souboru:</p>
+
+<table>
+<tr><th> #</th><th>Příklad</th><th>Stručný popis příkladu</th><th>Adresa</th></tr>
+<tr><td> 1</td><td>Makefile</td><td>definice cílů pro překlad všech demonstračních příkladů z&nbsp;této tabulky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/Makefile">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/Makefile</a></td></tr>
+<tr><td> 2</td><td>linker.cfg</td><td>konfigurační soubor pro linker</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/linker.cfg">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/linker.cfg</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>dummy.asm</td><td>pouze nekonečná smyčka</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.asm</a></td></tr>
+<tr><td> 4</td><td>dummy_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy_list.asm</a></td></tr>
+<tr><td> 5</td><td>dummy_list.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/dummy.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 6</td><td>background_color_1.asm</td><td>změna barvy pozadí &ndash; základní varianta příkladu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.asm</a></td></tr>
+<tr><td> 7</td><td>background_color_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1_list.asm</a></td></tr>
+<tr><td> 8</td><td>background_color_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 9</td><td>background_color_2.asm</td><td>změna barvy pozadí &ndash; využití předdefinovaných konstant</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.asm</a></td></tr>
+<tr><td>10</td><td>background_color_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2_list.asm</a></td></tr>
+<tr><td>11</td><td>background_color_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/background_color_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>12</td><td>print_a.asm</td><td>tisk znaku přímo do obrazové paměti</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.asm</a></td></tr>
+<tr><td>13</td><td>print_a_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a_list.asm</a></td></tr>
+<tr><td>14</td><td>print_a.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/print_a.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>15</td><td>color_computation_1.asm</td><td>výpočet barvy, varianta bez bitových posunů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.asm</a></td></tr>
+<tr><td>16</td><td>color_computation_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1_list.asm</a></td></tr>
+<tr><td>17</td><td>color_computation_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>18</td><td>color_computation_2.asm</td><td>výpočet barvy, varianta s&nbsp;bitovými posuny</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.asm</a></td></tr>
+<tr><td>19</td><td>color_computation_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2_list.asm</a></td></tr>
+<tr><td>20</td><td>color_computation_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/color_computation_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>21</td><td>subroutine_1.asm</td><td>skok do podprogramu bez předávání parametrů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.asm</a></td></tr>
+<tr><td>22</td><td>subroutine_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1_list.asm</a></td></tr>
+<tr><td>23</td><td>subroutine_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>24</td><td>subroutine_2.asm</td><td>skok do podprogramu s&nbsp;předáním parametru</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.asm</a></td></tr>
+<tr><td>25</td><td>subroutine_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2_list.asm</a></td></tr>
+<tr><td>26</td><td>subroutine_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/subroutine_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>27</td><td>hex_number_1.asm</td><td>tisk jedné hexadecimální číslice (nekorektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.asm</a></td></tr>
+<tr><td>28</td><td>hex_number_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1_list.asm</a></td></tr>
+<tr><td>29</td><td>hex_number_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>30</td><td>hex_number_2.asm</td><td>tisk jedné hexadecimální číslice (korektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.asm</a></td></tr>
+<tr><td>31</td><td>hex_number_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2_list.asm</a></td></tr>
+<tr><td>32</td><td>hex_number_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>33</td><td>hex_number_3.asm</td><td>tisk jedné hexadecimální číslice (korektní varianta po refaktoringu)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.asm</a></td></tr>
+<tr><td>34</td><td>hex_number_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3_list.asm</a></td></tr>
+<tr><td>35</td><td>hex_number_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>36</td><td>hex_number_4.asm</td><td>tisk jedné hexadecimální číslice, varianta postavená na makrech</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.asm</a></td></tr>
+<tr><td>37</td><td>hex_number_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4_list.asm</a></td></tr>
+<tr><td>38</td><td>hex_number_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>39</td><td>hex_number_5.asm</td><td>tisk jedné hexadecimální číslice, varianta postavená na makrech, lokální automaticky generovaná návěští</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.asm</a></td></tr>
+<tr><td>40</td><td>hex_number_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5_list.asm</a></td></tr>
+<tr><td>41</td><td>hex_number_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>42</td><td>hex_number_6.asm</td><td>příprava pro tisk dvouciferné hexadecimální hodnoty</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.asm</a></td></tr>
+<tr><td>43</td><td>hex_number_6_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6_list.asm</a></td></tr>
+<tr><td>44</td><td>hex_number_6.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_6.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>45</td><td>hex_number_7.asm</td><td>realizace tisku dvouciferné hexadecimální hodnoty</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.asm</a></td></tr>
+<tr><td>46</td><td>hex_number_7_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7_list.asm</a></td></tr>
+<tr><td>47</td><td>hex_number_7.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_7.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>48</td><td>hex_number_8.asm</td><td>makro pro logický posun doprava o zadaný počet bitů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm</a></td></tr>
+<tr><td>49</td><td>hex_number_8_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm</a></td></tr>
+<tr><td>50</td><td>hex_number_8.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>51</td><td>hex_number_9.asm</td><td>čekání na stisk klávesy</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.asm</a></td></tr>
+<tr><td>52</td><td>hex_number_9_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8_list.asm</a></td></tr>
+<tr><td>53</td><td>hex_number_9.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/hex_number_8.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>54</td><td>fill_block_1.asm</td><td>vyplnění bloku, varianta se dvěma index registry</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.asm</a></td></tr>
+<tr><td>55</td><td>fill_block_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1_list.asm</a></td></tr>
+<tr><td>56</td><td>fill_block_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>57</td><td>fill_block_2.asm</td><td>vyplnění bloku, nekorektní varianta využívající jeden index registr</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.asm</a></td></tr>
+<tr><td>58</td><td>fill_block_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2_list.asm</a></td></tr>
+<tr><td>59</td><td>fill_block_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>60</td><td>fill_block_3.asm</td><td>vyplnění bloku, korektní varianta využívající jeden index registr</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.asm</a></td></tr>
+<tr><td>61</td><td>fill_block_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3_list.asm</a></td></tr>
+<tr><td>62</td><td>fill_block_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>63</td><td>fill_block_4.asm</td><td>vyplnění bloku delšího než 256 bajtů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.asm</a></td></tr>
+<tr><td>64</td><td>fill_block_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4_list.asm</a></td></tr>
+<tr><td>65</td><td>fill_block_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>66</td><td>fill_block_5.asm</td><td>vyplnění bloku, čítání směrem nahoru</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.asm</a></td></tr>
+<tr><td>67</td><td>fill_block_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5_list.asm</a></td></tr>
+<tr><td>68</td><td>fill_block_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/fill_block_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>69</td><td>pmg_01.asm</td><td>inicializace PMG, povolení PMG, nastavení pozice a tvaru prvního hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_01.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_01.asm</a></td></tr>
+<tr><td>70</td><td>pmg_01_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_01_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_01_list.asm</a></td></tr>
+<tr><td>71</td><td>pmg_01.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_01.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_01.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>72</td><td>pmg_02.asm</td><td>nastavení pozice, tvaru a barvy prvního hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_02.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_02.asm</a></td></tr>
+<tr><td>73</td><td>pmg_02_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_02_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_02_list.asm</a></td></tr>
+<tr><td>74</td><td>pmg_02.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_02.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_02.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>75</td><td>pmg_03.asm</td><td>vliv zákazu DMA na zobrazení PMG</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_03.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_03.asm</a></td></tr>
+<tr><td>76</td><td>pmg_03_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_03_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_03_list.asm</a></td></tr>
+<tr><td>77</td><td>pmg_03.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_03.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_03.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>78</td><td>pmg_04.asm</td><td>postupná změna horizontální velikosti hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_04.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_04.asm</a></td></tr>
+<tr><td>79</td><td>pmg_04_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_04_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_04_list.asm</a></td></tr>
+<tr><td>80</td><td>pmg_04.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_04.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_04.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>81</td><td>pmg_05.asm</td><td>odlišná bitová maska tvaru hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_05.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_05.asm</a></td></tr>
+<tr><td>82</td><td>pmg_05_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_05_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_05_list.asm</a></td></tr>
+<tr><td>83</td><td>pmg_05.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_05.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_05.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>84</td><td>pmg_06.asm</td><td>inicializace a zobrazení dvou hráčů, kteří se překrývají</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_06.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_06.asm</a></td></tr>
+<tr><td>84</td><td>pmg_06_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_06_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_06_list.asm</a></td></tr>
+<tr><td>86</td><td>pmg_06.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_06.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_06.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>87</td><td>pmg_07.asm</td><td>naivní způsob nastavení bitmapy prvního hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_07.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_07.asm</a></td></tr>
+<tr><td>88</td><td>pmg_07_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_07_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_07_list.asm</a></td></tr>
+<tr><td>89</td><td>pmg_07.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_07.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_07.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>90</td><td>pmg_08.asm</td><td>elegantnější způsob nastavení bitmapy prvního hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_08.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_08.asm</a></td></tr>
+<tr><td>91</td><td>pmg_08_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_08_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_08_list.asm</a></td></tr>
+<tr><td>92</td><td>pmg_08.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_08.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_08.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>93</td><td>pmg_09.asm</td><td>zobrazení všech čtyř hráčů, změna priority zobrazení</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_09.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_09.asm</a></td></tr>
+<tr><td>94</td><td>pmg_09_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_09_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_09_list.asm</a></td></tr>
+<tr><td>95</td><td>pmg_09.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_09.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_09.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>96</td><td>pmg_10.asm</td><td>nastavení bitmap všech čtyř hráčů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_10.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_10.asm</a></td></tr>
+<tr><td>97</td><td>pmg_10_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_10_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_10_list.asm</a></td></tr>
+<tr><td>98</td><td>pmg_10.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_10.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_10.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 99</td><td>pmg_stick_1.asm</td><td>ovládání prvního hráče joystickem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_1.asm</a></td></tr>
+<tr><td>100</td><td>pmg_stick_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_1_list.asm</a></td></tr>
+<tr><td>101</td><td>pmg_stick_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>102</td><td>pmg_stick_2.asm</td><td>zobrazení všech čtyř střel</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_2.asm</a></td></tr>
+<tr><td>103</td><td>pmg_stick_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_2_list.asm</a></td></tr>
+<tr><td>104</td><td>pmg_stick_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>105</td><td>pmg_stick_3.asm</td><td>střely zdánlivě tvoří pátého hráče (ovšem stále jsou samostatné)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_3.asm</a></td></tr>
+<tr><td>106</td><td>pmg_stick_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_3_list.asm</a></td></tr>
+<tr><td>107</td><td>pmg_stick_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>108</td><td>pmg_stick_4.asm</td><td>korektní zobrazení pátého hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_4.asm</a></td></tr>
+<tr><td>109</td><td>pmg_stick_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_4_list.asm</a></td></tr>
+<tr><td>110</td><td>pmg_stick_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>111</td><td>pmg_stick_5.asm</td><td>detekce stisku tlačítka joysticku, změna barvy prvního hráče</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_5.asm</a></td></tr>
+<tr><td>112</td><td>pmg_stick_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_5_list.asm</a></td></tr>
+<tr><td>113</td><td>pmg_stick_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>114</td><td>pmg_11.asm</td><td>automatický horizontální pohyb prvního hráče, realizace zpožďovací smyčky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_11.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_11.asm</a></td></tr>
+<tr><td>115</td><td>pmg_11_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_11_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_11_list.asm</a></td></tr>
+<tr><td>116</td><td>pmg_11.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_11.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_11.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>117</td><td>pmg_12.asm</td><td>automatický horizontální pohyb prvního hráče, čekání na další snímek</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_12.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_12.asm</a></td></tr>
+<tr><td>118</td><td>pmg_12_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_12_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_12_list.asm</a></td></tr>
+<tr><td>119</td><td>pmg_12.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_12.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_12.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>120</td><td>pmg_13.asm</td><td>vertikální posun spritu směrem dolů (nekorektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_13.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_13.asm</a></td></tr>
+<tr><td>121</td><td>pmg_13_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_13_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_13_list.asm</a></td></tr>
+<tr><td>122</td><td>pmg_13.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_13.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_13.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>123</td><td>pmg_14.asm</td><td>vertikální posun spritu směrem dolů (korektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_14.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_14.asm</a></td></tr>
+<tr><td>124</td><td>pmg_14_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_14_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_14_list.asm</a></td></tr>
+<tr><td>125</td><td>pmg_14.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_14.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_14.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>126</td><td>pmg_15.asm</td><td>vertikální posun spritu směrem nahoru (korektní varianta)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_15.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_15.asm</a></td></tr>
+<tr><td>127</td><td>pmg_15_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_15_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_15_list.asm</a></td></tr>
+<tr><td>128</td><td>pmg_15.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_15.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_15.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>129</td><td>pmg_stick_6.asm</td><td>ovládání PMG joystickem v horizontálním i vertikálním směru</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_6.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_6.asm</a></td></tr>
+<tr><td>130</td><td>pmg_stick_6_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_6_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_6_list.asm</a></td></tr>
+<tr><td>131</td><td>pmg_stick_6.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_6.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_stick_6.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>132</td><td>pmg_collision_1.asm</td><td>ovládání PMG joystickem, detekce kolize prvního hráče s&nbsp;dalšími hráči</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_1.asm</a></td></tr>
+<tr><td>133</td><td>pmg_collision_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_1_list.asm</a></td></tr>
+<tr><td>134</td><td>pmg_collision_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>135</td><td>pmg_collision_2.asm</td><td>ovládání PMG joystickem, detekce kolize prvního hráče s&nbsp;dalšími hráči</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_2.asm</a></td></tr>
+<tr><td>136</td><td>pmg_collision_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_2_list.asm</a></td></tr>
+<tr><td>137</td><td>pmg_collision_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>138</td><td>pmg_collision_3.asm</td><td>ovládání PMG joystickem, detekce kolize prvního hráče s dalšími hráči, detekce kolize první střely s&nbsp;hráči</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_3.asm</a></td></tr>
+<tr><td>139</td><td>pmg_collision_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_3_list.asm</a></td></tr>
+<tr><td>140</td><td>pmg_collision_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>141</td><td>pmg_collision_4.asm</td><td>ovládání PMG joystickem, detekce kolize prvního hráče s&nbsp;hracím polem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_4.asm</a></td></tr>
+<tr><td>142</td><td>pmg_collision_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_4_list.asm</a></td></tr>
+<tr><td>143</td><td>pmg_collision_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pmg_collision_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>144</td><td>pong.asm</td><td>scéna ze hry Pong vykreslená jen s&nbsp;využitím spritů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pong.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pong.asm</a></td></tr>
+<tr><td>145</td><td>pong_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pong_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pong_list.asm</a></td></tr>
+<tr><td>146</td><td>pong.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pong.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/pong.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>147</td><td>antic_1.asm</td><td>nastavení textového režimu se čtyřmi barvami a 20&times;12 znaky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_1.asm</a></td></tr>
+<tr><td>148</td><td>antic_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_1_list.asm</a></td></tr>
+<tr><td>149</td><td>antic_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>150</td><td>antic_2.asm</td><td>nastavení textového režimu se čtyřmi barvami a 20&times;12 znaky, zlepšení čitelnosti</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_2.asm</a></td></tr>
+<tr><td>151</td><td>antic_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_2_list.asm</a></td></tr>
+<tr><td>152</td><td>antic_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>153</td><td>antic_3.asm</td><td>nastavení režimu, ve kterém se kombinují různé textové a grafické řádky</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_3.asm</a></td></tr>
+<tr><td>154</td><td>antic_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_3_list.asm</a></td></tr>
+<tr><td>155</td><td>antic_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>156</td><td>antic_4.asm</td><td>nastavení standardního textového režimu GR.0, výpis 256 znaků</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_4.asm</a></td></tr>
+<tr><td>157</td><td>antic_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_4_list.asm</a></td></tr>
+<tr><td>158</td><td>antic_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>159</td><td>antic_5.asm</td><td>volba mezinárodní znakové sady pro textový režim GR.0</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_5.asm</a></td></tr>
+<tr><td>160</td><td>antic_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_5_list.asm</a></td></tr>
+<tr><td>161</td><td>antic_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>162</td><td>antic_6.asm</td><td>volba náhodné stránky pro fonty v&nbsp;textovém režimu GR.0</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_6.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_6.asm</a></td></tr>
+<tr><td>163</td><td>antic_6_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_6_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_6_list.asm</a></td></tr>
+<tr><td>164</td><td>antic_6.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_6.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_6.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>165</td><td>antic_7.asm</td><td>tisk 64 znaků ve čtyřech barvách v&nbsp;režimu GR.1</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_7.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_7.asm</a></td></tr>
+<tr><td>166</td><td>antic_7_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_7_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_7_list.asm</a></td></tr>
+<tr><td>167</td><td>antic_7.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_7.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_7.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>168</td><td>antic_8.asm</td><td>určení, které znaky se budou tisknout v&nbsp;režimu GR.1 nebo GR.2</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_8.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_8.asm</a></td></tr>
+<tr><td>169</td><td>antic_8_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_8_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_8_list.asm</a></td></tr>
+<tr><td>170</td><td>antic_8.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_8.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_8.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>171</td><td>antic_9.asm</td><td>nastavení textového režimu GR.12 a výpis znaků na obrazovku</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_9.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_9.asm</a></td></tr>
+<tr><td>172</td><td>antic_9_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_9_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_9_list.asm</a></td></tr>
+<tr><td>173</td><td>antic_9.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_9.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_9.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>174</td><td>antic_A.asm</td><td>vlastní znaková sada (naivní přístup) pro textový režim GR.12</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_A.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_A.asm</a></td></tr>
+<tr><td>175</td><td>antic_A_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_A_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_A_list.asm</a></td></tr>
+<tr><td>176</td><td>antic_A.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_A.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_A.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>177</td><td>antic_B.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 80&times;48 pixelů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_B.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_B.asm</a></td></tr>
+<tr><td>178</td><td>antic_B_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_B_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_B_list.asm</a></td></tr>
+<tr><td>179</td><td>antic_B.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_B.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_B.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>180</td><td>antic_bitmap_1.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 80&times;48 pixelů, zobrazení bitmapy</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_1.asm</a></td></tr>
+<tr><td>181</td><td>antic_bitmap_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_1_list.asm</a></td></tr>
+<tr><td>182</td><td>antic_bitmap_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>183</td><td>antic_bitmap_2.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 80&times;48 pixelů, jednodušší zápis display listu</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_2.asm</a></td></tr>
+<tr><td>184</td><td>antic_bitmap_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_2_list.asm</a></td></tr>
+<tr><td>185</td><td>antic_bitmap_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>186</td><td>antic_bitmap_3.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 160&times;96 pixelů, zobrazení bitmapy</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_3.asm</a></td></tr>
+<tr><td>187</td><td>antic_bitmap_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_3_list.asm</a></td></tr>
+<tr><td>188</td><td>antic_bitmap_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>189</td><td>antic_bitmap_4.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 160&times;192 pixelů, zobrazení bitmapy</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_4.asm</a></td></tr>
+<tr><td>190</td><td>antic_bitmap_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_4_list.asm</a></td></tr>
+<tr><td>191</td><td>antic_bitmap_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>192</td><td>antic_bitmap_5.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 320&times;192 pixelů, nekorektní display list, nekorektní zobrazení bitmapy</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_5.asm</a></td></tr>
+<tr><td>193</td><td>antic_bitmap_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_5_list.asm</a></td></tr>
+<tr><td>194</td><td>antic_bitmap_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>195</td><td>antic_bitmap_6.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 320&times;192 pixelů, zarovnání bitmapy do bloku 4096 bajtů</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_6.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_6.asm</a></td></tr>
+<tr><td>196</td><td>antic_bitmap_6_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_6_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_6_list.asm</a></td></tr>
+<tr><td>197</td><td>antic_bitmap_6.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_6.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_6.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>198</td><td>antic_bitmap_7.asm</td><td>nastavení dvoubarevného grafického režimu s&nbsp;rozlišením 320&times;192 pixelů, korektní display list, rozdělená bitmapa</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_7.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_7.asm</a></td></tr>
+<tr><td>199</td><td>antic_bitmap_7_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_7_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_7_list.asm</a></td></tr>
+<tr><td>200</td><td>antic_bitmap_7.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_7.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_7.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>201</td><td>antic_bitmap_8.asm</td><td>nastavení čtyřbarevného grafického režimu s&nbsp;rozlišením 160&times;96 pixelů, zobrazení čtyřbarevného obrázku</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_8.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_8.asm</a></td></tr>
+<tr><td>202</td><td>antic_bitmap_8_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_8_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_8_list.asm</a></td></tr>
+<tr><td>203</td><td>antic_bitmap_8.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_8.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_bitmap_8.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>204</td><td>chars.bas</td><td>tisk všech znaků na obrazovku (varianta naprogramovaná v&nbsp;BASICu)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/chars.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/chars.bas</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>205</td><td>image_80x48.asm</td><td>data obrázku 80&times;48 ve formě příkazů <strong>.byte</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_80x48.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_80x48.asm</a></td></tr>
+<tr><td>206</td><td>image_160x96.asm</td><td>data obrázku 160&times;96 ve formě příkazů <strong>.byte</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_160x96.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_160x96.asm</a></td></tr>
+<tr><td>207</td><td>image_160x192.asm</td><td>data obrázku 160&times;192 ve formě příkazů <strong>.byte</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_160x192.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_160x192.asm</a></td></tr>
+<tr><td>208</td><td>image_320x192.bin</td><td>čistě binární data obrázku 320&times;192&times;</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_320x192.bin">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_320x192.bin</a></td></tr>
+<tr><td>209</td><td>image_320x192_1.bin</td><td>čistě binární data obrázku 320&times;96&times; (první polovina)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_320x192_1.bin">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_320x192_1.bin</a></td></tr>
+<tr><td>210</td><td>image_320x192_2.bin</td><td>čistě binární data obrázku 320&times;96&times; (druhá polovina)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_320x192_2.bin">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_320x192_2.bin</a></td></tr>
+<tr><td>211</td><td>image_160x96x2.bin</td><td>čistě binární data obrázku 320&times;192&times;</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_160x96x2.bin">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/image_160x96x2.bin</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>212</td><td>antic_dli_1.asm</td><td>výpis všech 128 znaků v přímé i inverzní podobě v režimu GR.0</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_1.asm</a></td></tr>
+<tr><td>213</td><td>antic_dli_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_1_list.asm</a></td></tr>
+<tr><td>214</td><td>antic_dli_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>215</td><td>antic_dli_2.asm</td><td>dočasná modifikace barvy pozadí provedená v&nbsp;DLI (dvanáctý textový řádek)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_2.asm</a></td></tr>
+<tr><td>216</td><td>antic_dli_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_2_list.asm</a></td></tr>
+<tr><td>217</td><td>antic_dli_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>218</td><td>antic_dli_3.asm</td><td>opakované čekání na synchronizační pulz v&nbsp;DLI, výběr odlišné barvy pozadí</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_3.asm</a></td></tr>
+<tr><td>219</td><td>antic_dli_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_3_list.asm</a></td></tr>
+<tr><td>220</td><td>antic_dli_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>221</td><td>antic_dli_4.asm</td><td>display list obsahující několik instrukcí DLI, opakovaná změna barvy pozadí</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_4.asm</a></td></tr>
+<tr><td>222</td><td>antic_dli_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_4_list.asm</a></td></tr>
+<tr><td>223</td><td>antic_dli_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_4.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>224</td><td>antic_dli_5.asm</td><td>display list obsahující několik instrukcí DLI, opakovaná změna barvy pozadí</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_5.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_5.asm</a></td></tr>
+<tr><td>225</td><td>antic_dli_5_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_5_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_5_list.asm</a></td></tr>
+<tr><td>226</td><td>antic_dli_5.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_5.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_5.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>227</td><td>antic_dli_pmg.asm</td><td>zobrazení osmi spritů namísto spritů čtyř s&nbsp;využitím DLI</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_pmg.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_pmg.asm</a></td></tr>
+<tr><td>228</td><td>antic_dli_pmg_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_pmg_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_pmg_list.asm</a></td></tr>
+<tr><td>229</td><td>antic_dli_pmg.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_pmg.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_dli_pmg.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>230</td><td>antic_vbi_1.asm</td><td>aktivní čekání na dokončení vykreslení snímku (bez VBI)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_1.asm</a></td></tr>
+<tr><td>231</td><td>antic_vbi_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_1_list.asm</a></td></tr>
+<tr><td>232</td><td>antic_vbi_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>233</td><td>antic_vbi_2.asm</td><td>pohyb PMG realizovaný ve VBI (první způsob nastavení vektoru)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_2.asm</a></td></tr>
+<tr><td>234</td><td>antic_vbi_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_2_list.asm</a></td></tr>
+<tr><td>235</td><td>antic_vbi_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>235</td><td>antic_vbi_3.asm</td><td>pohyb PMG realizovaný ve VBI (druhý způsob nastavení vektoru)</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_3.asm</a></td></tr>
+<tr><td>236</td><td>antic_vbi_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_3_list.asm</a></td></tr>
+<tr><td>238</td><td>antic_vbi_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>239</td><td>antic_vbi_dli_1.asm</td><td>změna pozice PMG ve VBI, modifikace barvy herního pole v&nbsp;DLI</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_1.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_1.asm</a></td></tr>
+<tr><td>240</td><td>antic_vbi_dli_1_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_1_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_1_list.asm</a></td></tr>
+<tr><td>241</td><td>antic_vbi_dli_1.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_1.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_1.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>242</td><td>antic_vbi_dli_2.asm</td><td>dtto, ale s&nbsp;odstraněním nadbytečné instrukce <strong>RTS</strong> ve VBI</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_2.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_2.asm</a></td></tr>
+<tr><td>243</td><td>antic_vbi_dli_2_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_2_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_2_list.asm</a></td></tr>
+<tr><td>244</td><td>antic_vbi_dli_2.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_2.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_2.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>245</td><td>antic_vbi_dli_3.asm</td><td>přepis předchozího příkladu s&nbsp;využitím subrutin</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_3.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_3.asm</a></td></tr>
+<tr><td>246</td><td>antic_vbi_dli_3_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_3_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_3_list.asm</a></td></tr>
+<tr><td>247</td><td>antic_vbi_dli_3.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_3.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_3.map</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>248</td><td>antic_vbi_dli_4.asm</td><td>přepis předchozího příkladu s&nbsp;využitím maker</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_4.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_4.asm</a></td></tr>
+<tr><td>249</td><td>antic_vbi_dli_4_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_4_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_4_list.asm</a></td></tr>
+<tr><td>250</td><td>antic_vbi_dli_4.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_4.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/antic_vbi_dli_4.map</a></td></tr>
+</table>
+
+
+
+<h2 id="k20">Odkazy na Internetu</h2>
+
+<ol>
+
+<li>MOS 6502 instruction set<br />
+<a href="http://www.6502.org/users/obelisk/6502/instructions.html">http://www.6502.org/users/obelisk/6502/instructions.html</a>
+</li>
+
+<li>EXE File Format Description <br />
+<a href="https://gury.atari8.info/refs/file_formats_exe.php">https://gury.atari8.info/refs/file_formats_exe.php</a>
+</li>
+
+<li>XEX Filter - A toolkit to analyze and manipulate Atari binary files<br />
+<a href="https://www.vitoco.cl/atari/xex-filter/index.html">https://www.vitoco.cl/atari/xex-filter/index.html</a>
+</li>
+
+<li>chkxex.py<br />
+<a href="https://raw.githubusercontent.com/seban-slt/tcx_tools/refs/heads/master/chkxex.py">https://raw.githubusercontent.com/seban-slt/tcx_tools/refs/heads/master/chkxex.py</a>
+</li>
+
+<li>ca65 Users Guide<br />
+<a href="https://cc65.github.io/doc/ca65.html">https://cc65.github.io/doc/ca65.html</a>
+</li>
+
+<li>cc65 Users Guide<br />
+<a href="https://cc65.github.io/doc/cc65.html">https://cc65.github.io/doc/cc65.html</a>
+</li>
+
+<li>ld65 Users Guide<br />
+<a href="https://cc65.github.io/doc/ld65.html">https://cc65.github.io/doc/ld65.html</a>
+</li>
+
+<li>da65 Users Guide<br />
+<a href="https://cc65.github.io/doc/da65.html">https://cc65.github.io/doc/da65.html</a>
+</li>
+
+<li>Překladače jazyka C pro historické osmibitové mikroprocesory<br />
+<a href="https://www.root.cz/clanky/prekladace-jazyka-c-pro-historicke-osmibitove-mikroprocesory/">https://www.root.cz/clanky/prekladace-jazyka-c-pro-historicke-osmibitove-mikroprocesory/</a>
+</li>
+
+<li>Překladače programovacího jazyka C pro historické osmibitové mikroprocesory (2)<br />
+<a href="https://www.root.cz/clanky/prekladace-programovaciho-jazyka-c-pro-historicke-osmibitove-mikroprocesory-2/">https://www.root.cz/clanky/prekladace-programovaciho-jazyka-c-pro-historicke-osmibitove-mikroprocesory-2/</a>
+</li>
+
+<li>Getting Started Programming in C: Coding a Retro Game with C Part 2<br />
+<a href="https://retrogamecoders.com/getting-started-with-c-cc65/">https://retrogamecoders.com/getting-started-with-c-cc65/</a>
+</li>
+
+<li>NES game development in 6502 assembly - Part 1<br />
+<a href="https://kibrit.tech/en/blog/nes-game-development-part-1">https://kibrit.tech/en/blog/nes-game-development-part-1</a>
+</li>
+
+<li>NES 6502 Programming Tutorial - Part 1: Getting Started<br />
+<a href="https://dev.xenforo.relay.cool/index.php?threads/nes-6502-programming-tutorial-part-1-getting-started.858389/">https://dev.xenforo.relay.cool/index.php?threads/nes-6502-programming-tutorial-part-1-getting-started.858389/</a>
+</li>
+
+<li>Minimal NES example using ca65<br />
+<a href="https://github.com/bbbradsmith/NES-ca65-example">https://github.com/bbbradsmith/NES-ca65-example</a>
+</li>
+
+<li>List of 6502-based Computers and Consoles<br />
+<a href="https://www.retrocompute.co.uk/list-of-6502-based-computers-and-consoles/">https://www.retrocompute.co.uk/list-of-6502-based-computers-and-consoles/</a>
+</li>
+
+<li>6502 - the first RISC &micro;P<br />
+<a href="http://ericclever.com/6500/">http://ericclever.com/6500/</a>
+</li>
+
+<li>3 Generations of Game Machine Architecture<br />
+<a href="http://www.atariarchives.org/dev/CGEXPO99.html">http://www.atariarchives.org/dev/CGEXPO99.html</a>
+</li>
+
+<li>“Hello, world” from scratch on a 6502 — Part 1<br />
+<a href="https://www.youtube.com/watch?v=LnzuMJLZRdU">https://www.youtube.com/watch?v=LnzuMJLZRdU</a>
+</li>
+
+<li>A Tour of 6502 Cross-Assemblers<br />
+<a href="https://bumbershootsoft.wordpress.com/2016/01/31/a-tour-of-6502-cross-assemblers/">https://bumbershootsoft.wordpress.com/2016/01/31/a-tour-of-6502-cross-assemblers/</a>
+</li>
+
+<li>Adventures with ca65<br />
+<a href="https://atariage.com/forums/topic/312451-adventures-with-ca65/">https://atariage.com/forums/topic/312451-adventures-with-ca65/</a>
+</li>
+
+<li>example ca65 startup code<br />
+<a href="https://atariage.com/forums/topic/209776-example-ca65-startup-code/">https://atariage.com/forums/topic/209776-example-ca65-startup-code/</a>
+</li>
+
+<li>6502 PRIMER: Building your own 6502 computer<br />
+<a href="http://wilsonminesco.com/6502primer/">http://wilsonminesco.com/6502primer/</a>
+</li>
+
+<li>6502 Instruction Set<br />
+<a href="https://www.masswerk.at/6502/6502_instruction_set.html">https://www.masswerk.at/6502/6502_instruction_set.html</a>
+</li>
+
+<li>Chip Hall of Fame: MOS Technology 6502 Microprocessor<br />
+<a href="https://spectrum.ieee.org/tech-history/silicon-revolution/chip-hall-of-fame-mos-technology-6502-microprocessor">https://spectrum.ieee.org/tech-history/silicon-revolution/chip-hall-of-fame-mos-technology-6502-microprocessor</a>
+</li>
+
+<li>Single-board computer<br />
+<a href="https://en.wikipedia.org/wiki/Single-board_computer">https://en.wikipedia.org/wiki/Single-board_computer</a>
+</li>
+
+<li>www.6502.org<br />
+<a href="http://www.6502­.org/">http://www.6502­.org/</a>
+</li>
+
+<li>6502 PRIMER: Building your own 6502 computer &ndash; clock generator<br />
+<a href="http://wilsonminesco.com/6502primer/ClkGen.html">http://wilsonminesco.com/6502primer/ClkGen.html</a>
+</li>
+
+<li>Great Microprocessors of the Past and Present (V 13.4.0)<br />
+<a href="http://www.cpushack.com/CPU/cpu.html">http://www.cpushack.com/CPU/cpu.html</a>
+</li>
+
+<li>Jak se zrodil procesor?<br />
+<a href="https://www.root.cz/clanky/jak-se-zrodil-procesor/">https://www.root.cz/clanky/jak-se-zrodil-procesor/</a>
+</li>
+
+<li>Osmibitové mikroprocesory a mikrořadiče firmy Motorola (1)<br />
+<a href="https://www.root.cz/clanky/osmibitove-mikroprocesory-a-mikroradice-firmy-motorola-1/">https://www.root.cz/clanky/osmibitove-mikroprocesory-a-mikroradice-firmy-motorola-1/</a>
+</li>
+
+<li>Mikrořadiče a jejich použití v jednoduchých mikropočítačích<br />
+<a href="https://www.root.cz/clanky/mikroradice-a-jejich-pouziti-v-jednoduchych-mikropocitacich/">https://www.root.cz/clanky/mikroradice-a-jejich-pouziti-v-jednoduchych-mikropocitacich/</a>
+</li>
+
+<li>Mikrořadiče a jejich aplikace v jednoduchých mikropočítačích (2)<br />
+<a href="https://www.root.cz/clanky/mikroradice-a-jejich-aplikace-v-jednoduchych-mikropocitacich-2/">https://www.root.cz/clanky/mikroradice-a-jejich-aplikace-v-jednoduchych-mikropocitacich-2/</a>
+</li>
+
+<li>25 Microchips That Shook the World<br />
+<a href="https://spectrum.ieee.org/tech-history/silicon-revolution/25-microchips-that-shook-the-world">https://spectrum.ieee.org/tech-history/silicon-revolution/25-microchips-that-shook-the-world</a>
+</li>
+
+<li>Comparison of instruction set architectures<br />
+<a href="https://en.wikipedia.org/wiki/Comparison_of_instruction_set_architectures">https://en.wikipedia.org/wiki/Comparison_of_instruction_set_architectures</a>
+</li>
+
+<li>How To Start Learning Atari 8 Bit Assembly For Free<br />
+<a href="https://forums.atariage.com/topic/300732-how-to-start-learning-atari-8-bit-assembly-for-free/">https://forums.atariage.com/topic/300732-how-to-start-learning-atari-8-bit-assembly-for-free/</a>
+</li>
+
+<li>WUDSN (Demo Group)<br />
+<a href="https://www.wudsn.com/">https://www.wudsn.com/</a>
+</li>
+
+<li>Machine Language For Beginners<br />
+<a href="https://www.atariarchives.org/mlb/">https://www.atariarchives.org/mlb/</a>
+</li>
+
+<li>Assembly language: all about I/O<br />
+<a href="https://www.atarimagazines.com/v3n8/AllAbout_IO.html">https://www.atarimagazines.com/v3n8/AllAbout_IO.html</a>
+</li>
+
+<li>Sedmdesátiny assemblerů: lidsky čitelný strojový kód<br />
+<a href="https://www.root.cz/clanky/sedmdesatiny-assembleru-lidsky-citelny-strojovy-kod/">https://www.root.cz/clanky/sedmdesatiny-assembleru-lidsky-citelny-strojovy-kod/</a>
+</li>
+
+<li>Color names</br >
+<a href="https://atariwiki.org/wiki/Wiki.jsp?page=Color%20names">https://atariwiki.org/wiki/Wiki.jsp?page=Color%20names</a>
+</li>
+
+<li>ATASCII</br >
+<a href="https://en.wikipedia.org/wiki/ATASCII">https://en.wikipedia.org/wiki/ATASCII</a>
+</li>
+
+<li>Put characters in display ram isn't ATASCII?</br >
+<a href="https://forums.atariage.com/topic/359973-put-characters-in-display-ram-isnt-atascii/">https://forums.atariage.com/topic/359973-put-characters-in-display-ram-isnt-atascii/</a>
+</li>
+
+<li>ATASCII And Internal Character Code Values</br >
+<a href="https://www.atariarchives.org/mapping/appendix10.php">https://www.atariarchives.org/mapping/appendix10.php</a>
+</li>
+
+<li>Reading ATASCII from the keyboard in assembly<br />
+<a href="https://forums.atariage.com/topic/361733-reading-atascii-from-the-keyboard-in-assembly/">https://forums.atariage.com/topic/361733-reading-atascii-from-the-keyboard-in-assembly/</a>
+</li>
+
+<li>Why does the 6502 JSR instruction only increment the return address by 2 bytes?<br />
+<a href="https://retrocomputing.stackexchange.com/questions/19543/why-does-the-6502-jsr-instruction-only-increment-the-return-address-by-2-bytes">https://retrocomputing.stackexchange.com/questions/19543/why-does-the-6502-jsr-instruction-only-increment-the-return-address-by-2-bytes</a>
+</li>
+
+<li>Pushing return address to stack off by 1 byte<br />
+<a href="https://forums.atariage.com/topic/378206-pushing-return-address-to-stack-off-by-1-byte/">https://forums.atariage.com/topic/378206-pushing-return-address-to-stack-off-by-1-byte/</a>
+</li>
+
+<li>Intel x86 documentation has more pages than the 6502 has transistors<br />
+<a href="https://www.righto.com/2013/09/intel-x86-documentation-has-more-pages.html">https://www.righto.com/2013/09/intel-x86-documentation-has-more-pages.html</a>
+</li>
+
+<li>Clearing a Section of Memory<br />
+<a href="http://www.6502.org/source/general/clearmem.htm">http://www.6502.org/source/general/clearmem.htm</a>
+</li>
+
+<li>Practical Memory Move Routines by Bruce Clark<br />
+<a href="http://www.6502.org/source/general/memory_move.html">http://www.6502.org/source/general/memory_move.html</a>
+</li>
+
+<li>6502 Assembly Programming Guide<br />
+<a href="https://neumont-gamedev.github.io/posts/retrogamedev-6502-guide/">https://neumont-gamedev.github.io/posts/retrogamedev-6502-guide/</a>
+</li>
+
+<li>Off-by-one error<br />
+<a href="https://en.wikipedia.org/wiki/Off-by-one_error">https://en.wikipedia.org/wiki/Off-by-one_error</a>
+</li>
+
+<li>6502 cycle times<br />
+<a href="https://www.nesdev.org/wiki/6502_cycle_times">https://www.nesdev.org/wiki/6502_cycle_times</a>
+</li>
+
+<li>Atari TIA<br />
+<a href="http://www.atarihq.com/danb/tia.shtml">http://www.atarihq.com/danb/tia.shtml</a>
+</li>
+
+<li>TIA Playfield<br />
+<a href="http://www.atarihq.com/danb/TIA/Playfield.shtml">http://www.atarihq.com/danb/TIA/Playfield.shtml</a>
+</li>
+
+<li>Atari Inc.:<br />
+<i>ANTIC C012296 (NTSC) Revision D</i><br />
+Atari Incorporated, Sunnyvale CA, 1982
+</li>
+
+<li>Atari Inc.:<br />
+<i>GTIA C014805 (NTSC) Revision A</i><br />
+Atari Incorporated, Sunnyvale CA, 1982
+</li>
+
+<li>Atari 5200<br />
+<a href="http://www.atariage.com/software_search.html?SystemID=5200">http://www.atariage.com/software_search.html?SystemID=5200</a>
+</li>
+
+<li>Atari 5200 Hardware and Accessories<br />
+<a href="http://www.atariage.com/5200/archives/hardware.html">http://www.atariage.com/5200/archives/hardware.html</a>
+</li>
+
+<li>Atari 5200 Screenshots<br />
+<a href="http://www.atariage.com/system_items.html?SystemID=5200&ItemTypeID=SCREENSHOT">http://www.atariage.com/system_items.html?SystemID=5200&ItemTypeID=SCREENSHOT</a>
+</li>
+
+<li>History of video game consoles (second generation): Wikipedia<br />
+<a href="http://en.wikipedia.org/wiki/History_of_video_game_consoles_(second_generation)">http://en.wikipedia.org/wiki/History_of_video_game_consoles_(second_generation)</a>
+</li>
+
+<li>Atari 5200: Wikipedia<br />
+<a href="http://en.wikipedia.org/wiki/Atari_5200">http://en.wikipedia.org/wiki/Atari_5200</a>
+</li>
+
+<li>Player-Missile Graphics<br />
+<a href="https://www.atariarchives.org/agagd/chapter5.php">https://www.atariarchives.org/agagd/chapter5.php</a>
+</li>
+
+<li>Sprite (computer graphics)<br />
+<a href="https://en.wikipedia.org/wiki/Sprite_(computer_graphics)">https://en.wikipedia.org/wiki/Sprite_(computer_graphics)</a>
+</li>
+
+<li>Atari Graphics Demonstrations by Underground Software, 1985 | Atari 8 bit Demo<br />
+<a href="https://www.youtube.com/watch?v=h7N9EYSyCkw">https://www.youtube.com/watch?v=h7N9EYSyCkw</a>
+</li>
+
+<li>Atari 8-bit Display List Interrupts: A Complete(ish) Tutorial<br />
+<a href="https://playermissile.com/dli_tutorial/">https://playermissile.com/dli_tutorial/</a>
+</li>
+
+<li>Atari Assembler Editor manual<br />
+<a href="https://atariwiki.org/wiki/attach/Atari%20Assembler%20Editor/ATARI%20Assembler%20Editor%20User-s%20Manual-OCR.pdf">https://atariwiki.org/wiki/attach/Atari%20Assembler%20Editor/ATARI%20Assembler%20Editor%20User-s%20Manual-OCR.pdf</a>
+</li>
+
+</ol>
