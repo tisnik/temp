@@ -1,0 +1,2447 @@
+<h2 id="k01">LunarML: až překvapivě kvalitní transpiler z&nbsp;jazyka Standard ML do jazyků Lua a JavaScript</h2>
+
+<p>V&nbsp;dnešním článku se seznámíme s&nbsp;projektem nazvaným <i>LunarML</i>.
+Jedná se o transpřekladač (<i>transpiler</i>), který dokáže transformovat
+zdrojové kódy zapsané v&nbsp;jazyce <i>ML</i> (resp.&nbsp;přesněji řečeno
+v&nbsp;jeho standardizované podobě pojmenované <i>Standard ML</i>) do
+programovacího jazyka <i>Lua</i> popř.&nbsp;do <i>JavaScriptu</i>. Jazyky Lua a
+ML jsme se již na stránkách Rootu zabývali v&nbsp;seriálech <a
+href="https://www.root.cz/serialy/programovaci-jazyk-lua/">Programovací jazyk
+Lua</a> (o něm jsem si dovolil vydat i e-book) a <a
+href="https://www.root.cz/serialy/funkcionalni-programovaci-jazyk-ml/">Funkcionální
+programovací jazyk ML</a>. Vraťme se však k&nbsp;projektu <i>LunarML</i>.
+Transpřekladačů v&nbsp;současnosti existují vyšší desítky, pravděpodobně ale
+stovky, takže se nejedná o žádnou neznámou technologii. Ovšem <i>LunarML</i> je
+zajímavý tím, že při transpřekladu provádí optimalizace, například náhradu kódu
+za konstantu či odstranění (<i>inlining</i>) triviálních funkcí.</p>
+
+<p>Na tomto místě je možná dobré připomenout, že <i>Standard ML</i> je velmi
+zajímavým jazykem, který patří (alespoň podle skromného názoru autora tohoto
+článku) mezi trojici programovacích jazyků, které by měl alespoň rámcově znát
+každý programátor. Ve skutečnosti se v&nbsp;případě ML jedná o tři doménově
+specifické jazyky v&nbsp;jednom, protože ML obsahuje sémantická pravidla pro
+popis algoritmu (výpočtu, vyhodnocení), dále pro popis datových typů a nakonec
+DSL určený pro popis modulů. Zajímavé (z&nbsp;pohledu výuky) je, že se
+jednotlivé části ML mohou učit postupně &ndash; tedy napřed způsob zápisu
+algoritmů (kupodivu se zde po poměrně dlouhou dobu obejdeme bez explicitního
+zápisu typů &ndash; jaká to změna oproti mainstreamu), poté se může student
+naučit typový systém ML (což je stále špička v&nbsp;oboru) a nakonec zbývá
+systém určený pro popis modulů.</p>
+
+<p>Ovšem to není vše. Samotný ML resp.&nbsp;SML je dobře čitelný a navíc i
+programový kód, který vznikne transpřekladem z&nbsp;ML do Luy či JavaScriptu,
+je taktéž poměrně dobře pochopitelný. To si ostatně můžeme velmi snadno ověřit,
+například zjištěním, jakým způsobem se transformuje (poněkud naivní a
+neidiomaticky zapsaný) algoritmus výpočtu <i>n</i>-tého prvku Fibonacciho
+posloupnosti:</p>
+
+<pre>
+<i>(* Naivní implementace výpočtu Fibonacciho posloupnosti *)</i>
+&nbsp;
+fun <strong>fib</strong> n =
+    if n = 0 then 0 else
+    if n = 1 then 1 else
+    fib (n - 1) + fib (n - 2);
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;praxi by se použil zápis
+s&nbsp;<i>pattern matchingem</i>. Ten si ukážeme v&nbsp;dalším textu.</div></p>
+
+<p>Překladem do jazyka Lua vznikne tento zdrojový kód:</p>
+
+<pre>
+  local function <strong>fib</strong>(n)
+    if n == 0 then
+      return 0
+    elseif n == 1 then
+      return 1
+    end
+    local tmp1 = fib(_Int_sub(n, 1))
+    local tmp2 = fib(_Int_sub(n, 2))
+    return _Int_add(tmp1, tmp2)
+  end
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: až na explicitní volání funkcí pro
+součet a rozdíl celých čísel je tedy i zápis v&nbsp;Lue idiomatický.</div></p>
+
+<p>I transpřeklad do JavaScriptu vede k&nbsp;vytvoření čitelného kódu:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp6 = fib(_Int54_sub(n, 1));
+   const tmp7 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp6, tmp7);
+  }
+ };
+</pre>
+
+
+
+<h2 id="k02">Transpilery používané v&nbsp;minulosti i v&nbsp;současnosti</h2>
+
+<p>Jazyk Standard ML se typicky překládá do nativního kódu, ovšem
+k&nbsp;dispozici jsou i &bdquo;interpretační překladače&ldquo; umožňující
+interaktivní zápis deklarací funkcí a typů. LunarML ovšem do této kategorie
+nepatří, protože se jedná o typický transpřekladač vyžadující na vstupu celý
+zdrojový kód (to je docela škoda, protože pro výuku se hodí právě
+&bdquo;interpretační překladače&ldquo;).</p>
+
+<p>Problematikou takzvaných transpřekladačů (anglicky <i>transcompilers</i>
+nebo taktéž poněkud opisně <i>source-to-source compilers</i>) jsme se již na <a
+href="https://www.root.cz">stránkách Rootu</a> zabývali, a to dokonce
+několikrát. Připomeňme si například projekty <a
+href="https://www.root.cz/clanky/programovaci-jazyk-clojure-21-clojurescript-aneb-preklad-clojure-do-javascriptu/">ClojureScript</a>
+(což je transpřekladač z&nbsp;jazyka Clojure do JavaScriptu),
+popř.&nbsp;projekty <a
+href="https://www.root.cz/clanky/programovaci-jazyk-lua-v-roli-skriptovaciho-jazyka-pro-www-stranky/#k06">lua2js</a>
+(transpřekladač Lua &rarr; opět JavaScript) a <a
+href="https://www.root.cz/clanky/propojeni-sveta-lispu-se-svetem-javascriptu-s-vyuzitim-transprekladace-wisp/">Wisp</a>
+(programovací jazyk podobný Clojure transpřekládaný opět do JavaScriptu).</p>
+
+<p>V&nbsp;předchozích větách byl použit výraz &bdquo;transpřekladač&ldquo;,
+takže si ho alespoň ve stručnosti vysvětlíme. <i>Transpřekladače</i> jsou
+nástroje sloužící pro překlad algoritmů zapsaných v&nbsp;nějakém zdrojovém
+programovacím jazyce do zvoleného cílového programovacího jazyka (ovšem nikoli
+do nativního kódu či do bajtkódu, to je totiž role běžných překladačů &ndash;
+<i>compilers</i>).</p>
+
+<p>Transpřekladače se v&nbsp;informatice používají již po několik desetiletí.
+Například se stále můžeme setkat s&nbsp;nástroji, které převádí kód
+z&nbsp;nějakého vyššího programovacího jazyka do Céčka, které je
+v&nbsp;současnosti s&nbsp;trochou nadsázky chápáno jako &bdquo;univerzální
+assembler&ldquo;. Asi nejznámějším příkladem z&nbsp;této oblasti je nástroj
+nazvaný <strong>web2c</strong>, jenž slouží pro transformaci zdrojových kódů
+<i>TeXu</i> do céčka, ovšem existuje například i <i>mypyc</i> pro překlad
+z&nbsp;Pythonu do jazyka C. Transpřekladače byly &ndash; a to zejména
+v&nbsp;minulém desetiletí, konkrétně před příchodem ES6 &ndash; velmi populární
+i mezi programátory webových aplikací, a to zejména z&nbsp;toho důvodu, že
+webové prohlížeče nativně podporují většinou pouze JavaScript, který je tak
+přirozeně cílovým jazykem transpřekladačů (proto se mu také někdy říká
+&bdquo;assembler pro web&ldquo;, viz též <a href="#k20">odkazy na konci
+článku</a>). Určitou revolucí byl v&nbsp;této oblasti právě
+<i>CoffeeScript</i>. A&nbsp;mnoho vlastností CoffeeScriptu bylo převzato do ES6
+(ECMAScript 2015), což způsobilo postupný odklon od CoffeeScriptu.</p>
+
+<p>Z&nbsp;praxe můžeme uvést například následující projekty založené na
+transpřekladači:</p>
+
+<table>
+<tr><th>#</th><th>Jazyk či transpřekladač</th><th>Poznámka</th></tr>
+<tr><td>1</td><td><a href="https://zdrojak.cz/clanky/coffeescript-radne-oslazeny-javascript/">CoffeeScript</a></td><td>přidání syntaktického cukru do JavaScriptu, dnes popisovaný Moonscript je jím inspirován</td></tr>
+<tr><td>2</td><td><a href="https://www.root.cz/clanky/programovaci-jazyk-clojure-21-clojurescript-aneb-preklad-clojure-do-javascriptu/">ClojureScript</a></td><td>překlad aplikací psaných v&nbsp;jazyce Clojure do JavaScriptu</td></tr>
+<tr><td>3</td><td>TypeScript</td><td>nadmnožina jazyka JavaScript, přidání datových typů</td></tr>
+<tr><td>4</td><td>6to5</td><td>transpřeklad z&nbsp;ECMAScript 6 (v&nbsp;roce 2015 nová varianta JavaScriptu) do starší varianty JavaScriptu</td></tr>
+<tr><td>5</td><td>Kaffeine</td><td>rozšíření JavaScriptu (opět!) o nové vlastnosti</td></tr>
+<tr><td>6</td><td>RedScript</td><td>programovací jazyk inspirovaný Ruby</td></tr>
+<tr><td>7</td><td>GorillaScript</td><td>další rozšíření JavaScriptu (JavaScript evidentně potřeboval různá rozšíření :-)</td></tr>
+<tr><td>8</td><td>ghcjs</td><td>transpřekladač pro fanoušky programovacího jazyka Haskell</td></tr>
+<tr><td>9</td><td>Haxe</td><td>transpřekladač, mezi jehož cílové jazyky patří i Java a JavaScript</td></tr>
+<tr><td>10</td><td><a href="https://www.root.cz/clanky/propojeni-sveta-lispu-se-svetem-javascriptu-s-vyuzitim-transprekladace-wisp/">Wisp</a></td><td>transpřekladač jazyka podobného Clojure, opět do JavaScriptu</td></tr>
+<tr><td>11</td><td>ScriptSharp</td><td>transpřekladač z&nbsp;C# do JavaScriptu</td></tr>
+<tr><td>12</td><td>Dart</td><td>transpřekladač z&nbsp;jazyka Dart do JavaScriptu</td></tr>
+<tr><td>13</td><td>COBOL &rarr; C</td><td>transpřekladač OpenCOBOL</td></tr>
+<tr><td>14</td><td>COBOL &rarr; Java</td><td>transpřekladač P3COBOL</td></tr>
+<tr><td>15</td><td><a href="https://www.root.cz/clanky/programovaci-jazyk-lua-v-roli-skriptovaciho-jazyka-pro-www-stranky/#k06">lua2js</a></td><td>transpřekladač jazyka Lua, opět do JavaScriptu</td></tr>
+<tr><td>16</td><td><a href="https://www.root.cz/clanky/coconut-funkcionalni-jazyk-s-pattern-matchingem-kompatibilni-s-pythonem/">Coconut</a></td><td>transpřekladač do Pythonu</td></tr>
+<tr><td>17</td><td>Moonscript</td><td>transpřekladač do jazyka Lua, jímž jsme se zabývali v&nbsp;článcích [<a href="https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua/">1</a>] [<a href="https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua-2/">2</a>] a [<a href="https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua-dokonceni/">3</a>].</td></tr>
+<tr><td>18</td><td>Transcrypt</td><td>transpřekladač z&nbsp;jazyka Python do JavaScriptu, viz též <a href="https://www.root.cz/clanky/transcrypt-technologie-umoznujici-pouziti-pythonu-v-prohlizeci/">následující článek</a></td></tr>
+<tr><td>19</td><td>GopherJS</td><td>transpřekladač z jazyka Go do JavaScriptu, viz též <a href="https://www.root.cz/clanky/gopherjs-transprekladac-z-jazyka-go-do-javascriptu/">tento článek</a></td></tr>
+<tr><td>20</td><td>mypyc</td><td>transpřekladač z&nbsp;Pythonu do C, viz též <a href="https://www.root.cz/clanky/rychlost-cpythonu-3-11-a-3-12-v-porovnani-s-jit-a-aot-prekladaci-pythonu/">tento článek</a></td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: z&nbsp;předchozího seznamu je zřejmé, že
+transpřekladače byly či stále jsou používány v&nbsp;prostředí, které podporuje
+pouze jediný cílový jazyk, což byl před příchodem technologie WASM případ
+webových prohlížečů.</div></p>
+
+
+
+<h2 id="k03">Praktické ukázky využití nástroje LunarML</h2>
+
+<p>Repositář nástroje <i>LunarML</i> je dostupný na adrese <a
+href="https://github.com/minoki/LunarML">https://github.com/minoki/LunarML</a>.
+K&nbsp;dispozici je hned několik možností jeho spuštění. Buď je možné si celý
+projekt lokálně přeložit (sestavit), nebo si můžete stáhnout předpřipravené
+binární balíčky se zvolenou verzí LunarML ze stránky <a
+href="https://github.com/minoki/LunarML/releases">https://github.com/minoki/LunarML/releases</a>.
+Pravděpodobně nejjednodušší je ovšem spuštění přes Docker či Podman. Nejdříve
+je pochopitelně nutné získat příslušný obraz:</p>
+
+<pre>
+$ <strong>docker pull ghcr.io/minoki/lunarml:latest</strong>
+</pre>
+
+<p>Překlad resp.&nbsp;transpřeklad se provede následujícím způsobem:</p>
+
+<pre>
+$ <strong>docker run --rm -v "$(pwd)":/work -w /work ghcr.io/minoki/lunarml:latest lunarml compile <i>název_zdrojového_kódu.sml</i></strong>
+</pre>
+
+<p>Do JavaScriptu:</p>
+
+<pre>
+$ <strong>docker run --rm -v "$(pwd)":/work -w /work ghcr.io/minoki/lunarml:latest lunarml compile --nodejs <i>název_zdrojového_kódu.sml</i></strong>
+</pre>
+
+<p>nebo:</p>
+
+<pre>
+$ <strong>docker run --rm -v "$(pwd)":/work -w /work ghcr.io/minoki/lunarml:latest lunarml compile --webjs <i>název_zdrojového_kódu.sml</i></strong>
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: vstupní zdrojové kódy musí mít koncovku
+<strong>.sml</strong> a nikoli pouze <strong>.ml</strong>.</div></p>
+
+<p>V&nbsp;dnešním článku budou všechny kódy napsané ve Standard ML přeloženy
+touto verzí LunarML:</p>
+
+<pre>
+$ <strong>docker run --rm -v "$(pwd)":/work -w /work ghcr.io/minoki/lunarml:latest lunarml version</strong>
+&nbsp;
+LunarML version 0.3.0
+</pre>
+
+<p>Samotný transpiler <i>LunarML</i> nabízí několik přepínačů, ze kterých
+využijeme jen <strong>--nodejs</strong>
+popř.&nbsp;<strong>--webjs</strong>:</p>
+
+<pre>
+Usage:
+  /opt/lunarml/lib/lunarml/bin/lunarml [subcommand] [options] file.sml
+Subcommands:
+  compile               Compile a program.
+  check                 Check a program.
+  help                  Show this message.
+  version               Show version information.
+Options:
+  -o,--output=file.ext  File name to output.
+  --exe                 Produce a standalone script.
+  --lib                 Produce a Lua module.
+  --lua                 Produce Lua code (targets Lua 5.3+).
+  --lua-continuations   Produce Lua code (targets Lua 5.3+ / supports one-shot delimited continuations).
+  --luajit              Produce Lua code (targets LuaJIT).
+  --nodejs              Produce JavaScript code for Node.js.
+  --nodejs-cps          Produce JavaScript code for Node.js (CPS mode).
+  --webjs               Produce JavaScript code for Web.
+  --webjs-cps           Produce JavaScript code for Web (CPS mode).
+  -h,--help             Show this message.
+  -v,--version          Show version information.
+  --dump                Dump intermediate code.
+  --dump-final          Dump final intermediate code.
+  -O,--optimize         Try to optimize hard.
+  --mlb-path-map=&lt;file&gt; Specify MLB path map.
+  --mlb-path-var=&lt;var&gt;=&lt;path&gt;  Specify MLB path variable.
+  --default-ann &lt;annotation&gt;   Specify MLB annotations.
+  --print-timings       Print compilation times.
+  -B&lt;libdir&gt;            Library directory (default: &lt;bindir&gt;/../lib/lunarml).
+</pre>
+
+
+
+<h2 id="k04">Čím jiným začít &ndash; program, který vytiskne &bdquo;Hello world&ldquo;</h2>
+
+<p>Popis možností <i>LunarML</i> začneme ve stopách Briana Kernighana a Denise
+Ritchieho, tedy programem, který vypíše &bdquo;Hello world&ldquo;. V&nbsp;SML
+se zapíše takto:</p>
+
+<pre>
+print "Hello world!\n";
+</pre>
+
+<p>Překlad do jazyka Lua je delší, kvůli definici symbolů použitých
+později:</p>
+
+<pre>
+local error = error
+local getmetatable = getmetatable
+local setmetatable = setmetatable
+local string = string
+local string_format = string.format
+local _exn_meta = {}
+function _exn_meta:__tostring()
+  local traceback = self.traceback
+  if traceback then
+    traceback = "\n" .. traceback
+  else
+    traceback = ""
+  end
+  return string_format("%s: %s%s", self.location or "&lt;no location info&gt;", self.tag[1], traceback)
+end
+local _Fail_tag = { "Fail" }
+local function _raise(x, location)
+  local e
+  if getmetatable(x) == _exn_meta and location ~= nil then
+    local traceback = debug.traceback(nil, 2)
+    e = setmetatable({ tag = x.tag, payload = x.payload, location = location, traceback = traceback }, _exn_meta)
+  else
+    e = x
+  end
+  error(e, 1)
+end
+local stdout = _ENV.io.stdout
+local Io_tag = {"Io"}
+local tmp, tmp1 = stdout:write("Hello world!\n")
+if not tmp then
+  _raise(setmetatable({tag = Io_tag, payload = {cause = setmetatable({tag = _Fail_tag, payload = tmp1}, _exn_meta), ["function"] = "output", name = "&lt;stdout&gt;"}}, _exn_meta), "text-io.sml:290:43")
+else
+  stdout:flush()
+end
+</pre>
+
+<p>Pokud ovšem odstraníme veškerou &bdquo;vatu&ldquo;, celý skript se zkrátí na
+volání funkce:</p>
+
+<pre>
+local tmp, tmp1 = stdout:write("Hello world!\n")
+</pre>
+
+<p>Překlad do JavaScriptu je ještě delší a kryptičtější:</p>
+
+<pre>
+"use strict";
+function _Match_tag() {}
+_Match_tag.prototype.__isMLExn = true;
+_Match_tag.prototype.name = "Match";
+const _Match = new _Match_tag();
+function _String_concat(xs) {
+    let n = 0;
+    let xs0 = xs;
+    while (xs0 !== null) {
+        const s = xs0[0];
+        n += s.length;
+        xs0 = xs0[1];
+    }
+    const a = new Uint8Array(n);
+    let m = 0;
+    while (xs !== null) {
+        const s = xs[0];
+        a.set(s, m);
+        m += s.length;
+        xs = xs[1];
+    }
+    return a;
+}
+{
+ const Io_tag = function(payload) {
+  this.payload = payload;
+ };
+ Io_tag.prototype.__isMLExn = true;
+ Io_tag.prototype.name = "Io";
+ const BlockingNotSupported_tag = function() {
+ };
+ BlockingNotSupported_tag.prototype.__isMLExn = true;
+ BlockingNotSupported_tag.prototype.name = "BlockingNotSupported";
+ const BlockingNotSupported = new BlockingNotSupported_tag();
+ const ClosedStream_tag = function() {
+ };
+ ClosedStream_tag.prototype.__isMLExn = true;
+ ClosedStream_tag.prototype.name = "ClosedStream";
+ const ClosedStream = new ClosedStream_tag();
+ const NO_BUF = "NO_BUF";
+ const closed = [false];
+ const tmp = {tag: "SOME", payload: function(slice) {
+  if (closed[0]) {
+   throw new Io_tag({cause: ClosedStream, "function": Uint8Array.of(119, 114, 105, 116, 101, 86, 101, 99), name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62)});
+  } else {
+   return slice.length;
+  }
+ }};
+ const tmp1 = {tag: "SOME", payload: function(slice) {
+  if (closed[0]) {
+   throw new Io_tag({cause: ClosedStream, "function": Uint8Array.of(119, 114, 105, 116, 101, 65, 114, 114), name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62)});
+  } else {
+   return slice.length;
+  }
+ }};
+ const tmp2 = {tag: "SOME", payload: function(slice) {
+  if (closed[0]) {
+   throw new Io_tag({cause: ClosedStream, "function": Uint8Array.of(119, 114, 105, 116, 101, 86, 101, 99, 78, 66), name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62)});
+  } else {
+   return {tag: "SOME", payload: slice.length};
+  }
+ }};
+ const tmp3 = {tag: "SOME", payload: function(slice) {
+  if (closed[0]) {
+   throw new Io_tag({cause: ClosedStream, "function": Uint8Array.of(119, 114, 105, 116, 101, 65, 114, 114, 78, 66), name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62)});
+  } else {
+   return {tag: "SOME", payload: slice.length};
+  }
+ }};
+ const tmp4 = {tag: "SOME", payload: function(a) {
+  if (closed[0]) {
+   throw new Io_tag({cause: ClosedStream, "function": Uint8Array.of(98, 108, 111, 99, 107), name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62)});
+  } else {
+   return undefined;
+  }
+ }};
+ const tmp5 = {tag: "SOME", payload: function(a) {
+  if (closed[0]) {
+   throw new Io_tag({cause: ClosedStream, "function": Uint8Array.of(99, 97, 110, 79, 117, 116, 112, 117, 116), name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62)});
+  } else {
+   return true;
+  }
+ }};
+ const tmp6 = {tag: "NONE"};
+ const tmp7 = {tag: "NONE"};
+ const tmp8 = {tag: "NONE"};
+ const tmp9 = {tag: "NONE"};
+ const tmp10 = function(a) {
+  closed[0] = true;
+  return undefined;
+ };
+ const tmp11 = {block: tmp4, canOutput: tmp5, chunkSize: 1, close: tmp10, endPos: tmp7, getPos: tmp6, ioDesc: {tag: "NONE"}, name: Uint8Array.of(60, 110, 117, 108, 108, 87, 114, 62), setPos: tmp8, verifyPos: tmp9, writeArr: tmp1, writeArrNB: tmp3, writeVec: tmp, writeVecNB: tmp2};
+ const tmp12 = [NO_BUF];
+ const tmp13 = [{buffer: [null], buffer_mode: tmp12, writer: tmp11}][0];
+ const name = tmp13.writer.name;
+ const writeVec = tmp13.writer.writeVec;
+ const buffer = tmp13.buffer;
+ let tmp14;
+ cont: {
+  let tmp15 = [Uint8Array.of(72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33, 10), buffer[0]], tmp16 = null;
+  for (;;) {
+   const _1 = tmp15, ys = tmp16;
+   if (_1 === null) {
+    tmp14 = ys;
+    break cont;
+   } else if (! (_1 === null)) {
+    const tmp17 = _1[0];
+    const tmp18 = _1[1];
+    [tmp15, tmp16] = [tmp18, [tmp17, ys]];
+   } else {
+    throw _Match;
+   }
+  }
+ }
+ const content$PRIME = _String_concat(tmp14);
+ if (writeVec.tag === "SOME") {
+  const writeVec1 = writeVec.payload;
+  writeVec1({base: content$PRIME, length: content$PRIME.length, start: 0});
+  buffer[0] = null;
+ } else if (writeVec.tag === "NONE") {
+  throw new Io_tag({cause: BlockingNotSupported, "function": Uint8Array.of(111, 117, 116, 112, 117, 116), name: name});
+ } else {
+  throw _Match;
+ }
+}
+</pre>
+
+<p>Pokud v&nbsp;tomto skriptu nemůžete nalézt řetězec Hello world, pak
+prozradím, že je zakódován tady:</p>
+
+<pre>
+  let tmp15 = [Uint8Array.of(72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33, 10), buffer[0]], tmp16 = null;
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;dalších kapitolách již budu
+uvádět jen relevantní části napsané v&nbsp;jazycích Lua a JavaScript.</div></p>
+
+
+
+<h2 id="k05">Optimalizace generovaného kódu</h2>
+
+<p>LunarML sice může vypadat jako typický &bdquo;školní&ldquo; projekt založený
+na sadě přepisovacích pravidel, ovšem ve skutečnosti je jeho překladač poměrně
+sofistikovaný a dokáže provádět různé optimalizace vygenerovaného kódu. Ukažme
+si to na jednoduchém příkladu, ve kterém je definována dvojice celočíselných
+proměnných a následně je vypočten a zobrazen výsledek jejich součtu:</p>
+
+<pre>
+val a = 1;
+val b = 2;
+print(Int.toString (a+b));
+print "\n";
+</pre>
+
+<p>V&nbsp;kódu přeloženém do jazyka Lua se ovšem vypisuje až výsledek operace,
+tj.&nbsp;hodnota 3:</p>
+
+<pre>
+local result = gsub(tostring(3), "-", "~")
+outputAndFlush(stdOut, result)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>Totéž platí i pro překlad do JavaScriptu:</p>
+
+<pre>
+ const tmp13 = 3 .toString();
+ const a = _encodeUtf8(tmp13);
+ outputAndFlush(stdOut[0], a);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: poslední volání provede
+odřádkování.</div></p>
+
+<p>Ve druhém příkladu bude součet proveden nikoli přímo operátorem +, ale
+funkcí <strong>add</strong>. To bude klást na (trans)překladač požadavek
+složitějších optimalizací:</p>
+
+<pre>
+fun <strong>add</strong> (x, y) = x + y;
+&nbsp;
+val a = 2;
+val b = 3;
+val c = add(a, b);
+print(Int.toString c);
+print "\n";
+</pre>
+
+<p>I nyní dojde k&nbsp;optimalizaci a bude se zobrazovat přímo výsledek
+součtu:</p>
+
+<pre>
+local result = gsub(tostring(5), "-", "~")
+outputAndFlush(stdOut, result)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>a:</p>
+
+<pre>
+ const tmp13 = 5 .toString();
+ const a = _encodeUtf8(tmp13);
+ outputAndFlush(stdOut[0], a);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: k&nbsp;optimalizacím prováděným
+transpřekladačem LunarML se ještě vrátíme v&nbsp;navazujících
+kapitolách.</div></p>
+
+
+
+<h2 id="k06">Překlad dvou variant výpočtu Fibonacciho posloupnosti</h2>
+
+<p>Ve funkcionálních programovacích jazycích, mezi které Standard ML patří, se
+velmi často setkáme s&nbsp;rekurzivními funkcemi, typicky založenými na
+principu postupného zjednodušování nějakého problému. Například poněkud naivní
+implementace funkce pro výpočet n-tého prvku Fibonacciho posloupnosti může být
+zapsána následujícím způsobem (i když ji pravděpodobně nikdo tímto stylem psát
+nebude):</p>
+
+<pre>
+<i>(* Naivní implementace výpočtu Fibonacciho posloupnosti *)</i>
+&nbsp;
+fun <strong>fib</strong> n =
+    if n = 0 then 0 else
+    if n = 1 then 1 else
+    fib (n - 1) + fib (n - 2);
+&nbsp;
+&nbsp;
+print(Int.toString(fib 0));
+print "\n";
+print(Int.toString(fib 1));
+print "\n";
+print(Int.toString(fib 10));
+print "\n";
+</pre>
+
+<p>Překlad tohoto programu do jazyka Lua je poměrně přímočarý a přitom dobře
+čitelný:</p>
+
+<pre>
+  local function <strong>fib</strong>(n)
+    if n == 0 then
+      return 0
+    elseif n == 1 then
+      return 1
+    end
+    local tmp1 = fib(_Int_sub(n, 1))
+    local tmp2 = fib(_Int_sub(n, 2))
+    return _Int_add(tmp1, tmp2)
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  local tmp1 = fib(0)
+  local tmp2 = gsub(tostring(tmp1), "-", "~")
+  outputAndFlush(stdOut, tmp2)
+  outputAndFlush(stdOut, "\n")
+  local tmp3 = fib(1)
+  local tmp4 = gsub(tostring(tmp3), "-", "~")
+  outputAndFlush(stdOut, tmp4)
+  outputAndFlush(stdOut, "\n")
+  tmp = fib(10)
+end
+local tmp1 = gsub(tostring(tmp), "-", "~")
+outputAndFlush(stdOut, tmp1)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>I překlad do JavaScriptu dopadne relativně &bdquo;dobře&ldquo;, protože je
+výsledek v&nbsp;rámci možností čitelný:</p>
+
+<pre>
+ fib = <strong>function</strong>(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp19 = fib(_Int54_sub(n, 1));
+   const tmp20 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp19, tmp20);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const tmp13 = fib(0);
+ const tmp14 = toString(tmp13);
+ outputAndFlush(stdOut[0], tmp14);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp15 = fib(1);
+ const tmp16 = toString(tmp15);
+ outputAndFlush(stdOut[0], tmp16);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp17 = fib(10);
+ const tmp18 = toString(tmp17);
+ outputAndFlush(stdOut[0], tmp18);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: zde můžeme poprvé vidět i další
+vlastnost Standard ML &ndash; a to typovou bezpečnost. V&nbsp;SML jsme totiž
+zapsali výpočet takovým způsobem, že je platný pouze pro celá čísla (což je
+dobře). A to je reflektováno i v&nbsp;jazycích Lua a JavaScript: volání
+<strong>_Int_add</strong> atd. je toho důkazem:</div></p>
+
+<pre>
+local function <strong>_Int_add</strong>(x, y)
+  -- assert(math_type(x) == "integer")
+  -- assert(math_type(y) == "integer")
+  local z = x + y
+  if y &gt; 0 and z &lt; x then
+    _raise(_Overflow, "Int.+")
+  elseif y &lt; 0 and z &gt; x then
+    _raise(_Overflow, "Int.+")
+  else
+    return z
+  end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local function <strong>_Int_sub</strong>(x, y)
+  -- assert(math_type(x) == "integer")
+  -- assert(math_type(y) == "integer")
+  local z = x - y
+  if y &lt; 0 and z &lt; x then
+    _raise(_Overflow, "Int.-")
+  elseif y &gt; 0 and x &lt; z then
+    _raise(_Overflow, "Int.-")
+  else
+    return z
+  end
+end
+</pre>
+
+<p>resp.&nbsp;obdoba pro JavaScript:</p>
+
+<pre>
+function <strong>_Int54_add</strong>(x, y) {
+    const z = x + y;
+    if ((MIN_INT54 &lt; z &amp;&amp; z &lt;= MAX_INT54) || (z === MIN_INT54 &amp;&amp; (x &amp; 1) === (y &amp; 1))) {
+        return z;
+    } else {
+        throw _Overflow;
+    }
+}
+&nbsp;
+&nbsp;
+&nbsp;
+function <strong>_Int54_sub</strong>(x, y) {
+    const z = x - y;
+    if ((MIN_INT54 &lt; z &amp;&amp; z &lt;= MAX_INT54) || (z === MIN_INT54 &amp;&amp; (x &amp; 1) === (y &amp; 1))) {
+        return z;
+    } else {
+        throw _Overflow;
+    }
+}
+</pre>
+
+<p>Výše uvedená implementace funkce <strong>fib</strong> ve skutečnosti není
+pro jazyk ML idiomatická &ndash; spíše se podobá přímému přepisu z&nbsp;LISPu
+nebo ze Scheme. Častěji se setkáme s&nbsp;použitím <i>pattern matchingu</i>,
+kterým se (v&nbsp;tomto případě) určují těla funkce pro různé vstupní podmínky.
+Díky tomu lze velmi snadno a především přehledně vyjmenovat například všechny
+mezní podmínky.</p>
+
+<p>Podívejme se tedy na to, jak by se v&nbsp;jazyku SML mohla definovat funkce
+pro výpočet n-tého členu slavné Fibonacciho posloupnosti. Jedno z&nbsp;možných
+řešení přímo vychází z&nbsp;jedné varianty matematické definice této
+posloupnosti (existuje ještě varianta s&nbsp;F<sub>0</sub>=0):</p>
+
+<pre>
+F<sub>1</sub> = 1
+F<sub>2</sub> = 1
+F<sub>n</sub> = F<sub>n-1</sub> + F<sub>n-2</sub>
+</pre>
+
+<p>Přepis tohoto předpisu bez použití pattern matchingu bude vypadat takto:</p>
+
+<pre>
+<i>(* Implementace výpočtu Fibonacciho posloupnosti s využitím pattern matchingu *)</i>
+&nbsp;
+fun <strong>fib</strong> 0 = 0
+  | <strong>fib</strong> 1 = 1
+  | <strong>fib</strong> n = fib (n - 1) + fib (n - 2);
+&nbsp;
+&nbsp;
+print(Int.toString(fib 0));
+print "\n";
+print(Int.toString(fib 1));
+print "\n";
+print(Int.toString(fib 10));
+print "\n";
+</pre>
+
+<p>Překlad do jazyka Lua odpovídá verzi bez pattern matchingu:</p>
+
+<pre>
+  local function <strong>fib</strong>(n)
+    if n == 0 then
+      return 0
+    elseif n == 1 then
+      return 1
+    end
+    local tmp1 = fib(_Int_sub(n, 1))
+    local tmp2 = fib(_Int_sub(n, 2))
+    return _Int_add(tmp1, tmp2)
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  local tmp1 = fib(0)
+  local tmp2 = gsub(tostring(tmp1), "-", "~")
+  outputAndFlush(stdOut, tmp2)
+  outputAndFlush(stdOut, "\n")
+  local tmp3 = fib(1)
+  local tmp4 = gsub(tostring(tmp3), "-", "~")
+  outputAndFlush(stdOut, tmp4)
+  outputAndFlush(stdOut, "\n")
+  tmp = fib(10)
+end
+local tmp1 = gsub(tostring(tmp), "-", "~")
+outputAndFlush(stdOut, tmp1)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>Naprosto totéž platí i pro variantu přeloženou do JavaScriptu:</p>
+
+<pre>
+ fib = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp19 = fib(_Int54_sub(n, 1));
+   const tmp20 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp19, tmp20);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const tmp13 = fib(0);
+ const tmp14 = toString(tmp13);
+ outputAndFlush(stdOut[0], tmp14);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp15 = fib(1);
+ const tmp16 = toString(tmp15);
+ outputAndFlush(stdOut[0], tmp16);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp17 = fib(10);
+ const tmp18 = toString(tmp17);
+ outputAndFlush(stdOut[0], tmp18);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: to tedy znamená, že samotný <i>pattern
+matching</i>, i když se jedná o poměrně abstraktní jazykovou konstrukci, nemusí
+znamenat, že výsledný kód je pomalý či jinak neefektivní.</div></p>
+
+
+
+<h2 id="k07">Komplikovanější varianty výpočtu Fibonacciho posloupnosti</h2>
+
+<p>V&nbsp;dalším kroku se pokusíme o to, abychom práci (trans)překladači
+poněkud znepříjemnili. Namísto výpočtu n-1 a n-2 budeme volat nové uživatelské
+funkce <strong>dec1</strong> a <strong>dec2</strong>, u kterých si musí
+překladač odvodit typy a následně jejich volání eliminovat (inliningem):</p>
+
+<pre>
+<i>(* Implementace výpočtu Fibonacciho posloupnosti s využitím pattern matchingu *)</i>
+&nbsp;
+fun <strong>dec1</strong> x = x - 1;
+fun <strong>dec2</strong> x = x - 2;
+&nbsp;
+&nbsp;
+fun <strong>fib</strong> 0 = 0
+  | <strong>fib</strong> 1 = 1
+  | <strong>fib</strong> n = fib (dec1 n) + fib (dec2 n);
+&nbsp;
+&nbsp;
+print(Int.toString(fib 0));
+print "\n";
+print(Int.toString(fib 1));
+print "\n";
+print(Int.toString(fib 10));
+print "\n";
+</pre>
+
+<p>Překladač LunarML skutečně takové optimalizace provede:</p>
+
+<pre>
+  local function <strong>fib</strong>(n)
+    if n == 0 then
+      return 0
+    elseif n == 1 then
+      return 1
+    end
+    local tmp1 = fib(_Int_sub(n, 1))
+    local tmp2 = fib(_Int_sub(n, 2))
+    return _Int_add(tmp1, tmp2)
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  local tmp1 = fib(0)
+  local tmp2 = gsub(tostring(tmp1), "-", "~")
+  outputAndFlush(stdOut, tmp2)
+  outputAndFlush(stdOut, "\n")
+  local tmp3 = fib(1)
+  local tmp4 = gsub(tostring(tmp3), "-", "~")
+  outputAndFlush(stdOut, tmp4)
+  outputAndFlush(stdOut, "\n")
+  tmp = fib(10)
+end
+local tmp1 = gsub(tostring(tmp), "-", "~")
+outputAndFlush(stdOut, tmp1)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>Varianta pro JavaScript:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp19 = fib(_Int54_sub(n, 1));
+   const tmp20 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp19, tmp20);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const tmp13 = fib(0);
+ const tmp14 = toString(tmp13);
+ outputAndFlush(stdOut[0], tmp14);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp15 = fib(1);
+ const tmp16 = toString(tmp15);
+ outputAndFlush(stdOut[0], tmp16);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp17 = fib(10);
+ const tmp18 = toString(tmp17);
+ outputAndFlush(stdOut[0], tmp18);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p>Podobné optimalizace by se měly provést i v&nbsp;případě, že funkce
+<strong>dec2</strong> závisí na dříve definované funkci
+<strong>dec1</strong>:</p>
+
+<pre>
+<i>(* Implementace výpočtu Fibonacciho posloupnosti s využitím pattern matchingu *)</i>
+&nbsp;
+fun <strong>dec1</strong> x = x - 1;
+fun <strong>dec2</strong> x = dec1 (dec1 x);
+&nbsp;
+&nbsp;
+fun <strong>fib</strong> 0 = 0
+  | <strong>fib</strong> 1 = 1
+  | <strong>fib</strong> n = fib (dec1 n) + fib (dec2 n);
+&nbsp;
+&nbsp;
+print(Int.toString(fib 0));
+print "\n";
+print(Int.toString(fib 1));
+print "\n";
+print(Int.toString(fib 10));
+print "\n";
+</pre>
+
+<p>Překlad s&nbsp;optimalizacemi do jazyka Lua:</p>
+
+<pre>
+  local function <strong>fib</strong>(n)
+    if n == 0 then
+      return 0
+    elseif n == 1 then
+      return 1
+    end
+    local tmp1 = fib(_Int_sub(n, 1))
+    local tmp2 = fib(_Int_sub(_Int_sub(n, 1), 1))
+    return _Int_add(tmp1, tmp2)
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  local tmp1 = fib(0)
+  local tmp2 = gsub(tostring(tmp1), "-", "~")
+  outputAndFlush(stdOut, tmp2)
+  outputAndFlush(stdOut, "\n")
+  local tmp3 = fib(1)
+  local tmp4 = gsub(tostring(tmp3), "-", "~")
+  outputAndFlush(stdOut, tmp4)
+  outputAndFlush(stdOut, "\n")
+  tmp = fib(10)
+end
+local tmp1 = gsub(tostring(tmp), "-", "~")
+outputAndFlush(stdOut, tmp1)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>Překlad s&nbsp;optimalizacemi do JavaScriptu:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp19 = fib(_Int54_sub(n, 1));
+   const tmp20 = fib(_Int54_sub(_Int54_sub(n, 1), 1));
+   return _Int54_add(tmp19, tmp20);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const tmp13 = fib(0);
+ const tmp14 = toString(tmp13);
+ outputAndFlush(stdOut[0], tmp14);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp15 = fib(1);
+ const tmp16 = toString(tmp15);
+ outputAndFlush(stdOut[0], tmp16);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+ const tmp17 = fib(10);
+ const tmp18 = toString(tmp17);
+ outputAndFlush(stdOut[0], tmp18);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+
+
+<h2 id="k08">Za jakých okolností již LunarML nedokáže provést úplnou optimalizaci?</h2>
+
+<p>Mohlo by se zdát, že možnosti &bdquo;inliningu&ldquo;, který transpřekladač
+LunarML provádí, nejsou prakticky omezené. Ovšem není tomu tak, což si ukážeme
+na příkladu, ve kterém se nejdříve vypočtou dva prvky Fibonacciho posloupnosti,
+které se mají následně sečíst. Je to tedy opačný postup, než jaký byl ukázaný
+v&nbsp;předchozí kapitole &ndash; tam jsme volali pomocné funkce z&nbsp;funkce
+pro výpočet Fibonacciho posloupnosti, zde je tomu naopak:</p>
+
+<pre>
+<i>(* Naivní implementace výpočtu Fibonacciho posloupnosti *)</i>
+&nbsp;
+fun <strong>fib</strong> n =
+    if n = 0 then 0 else
+    if n = 1 then 1 else
+    fib (n - 1) + fib (n - 2);
+&nbsp;
+&nbsp;
+fun <strong>add</strong> (x, y) = x + y;
+&nbsp;
+val a = fib 10;
+val b = fib 20;
+val c = add(a, b);
+print(Int.toString c);
+print "\n";
+</pre>
+
+<p>Překlad ze Standard ML do jazyka Lua ukazuje, že se <strong>fib</strong>
+stále volá:</p>
+
+<pre>
+local function <strong>fib</strong>(n)
+  if n == 0 then
+    return 0
+  elseif n == 1 then
+    return 1
+  end
+  local tmp = fib(_Int_sub(n, 1))
+  local tmp1 = fib(_Int_sub(n, 2))
+  return _Int_add(tmp, tmp1)
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local a = fib(10)
+local b = fib(20)
+local c = _Int_add(a, b)
+local result = gsub(tostring(c), "-", "~")
+outputAndFlush(stdOut, result)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>Totéž platí i pro překlad do JavaScriptu:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp14 = fib(_Int54_sub(n, 1));
+   const tmp15 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp14, tmp15);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const a = fib(10);
+ const b = fib(20);
+ const c = _Int54_add(a, b);
+ let tmp13;
+ if (c &gt;= 0) {
+  const tmp14 = c.toString();
+  tmp13 = _encodeUtf8(tmp14);
+ } else {
+  const tmp14 = (- c).toString();
+  tmp13 = _encodeUtf8("~" + tmp14);
+ }
+ outputAndFlush(stdOut[0], tmp13);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p>Nepatrně složitější výpočet součtu realizovaný funkcí <strong>add3</strong>
+ukazuje, že inlining se provede pro tuto funkci, ovšem nikoli pro složitější
+funkci <strong>fib</strong>:</p>
+
+<pre>
+<i>(* Naivní implementace výpočtu Fibonacciho posloupnosti *)</i>
+&nbsp;
+fun <strong>fib</strong> n =
+    if n = 0 then 0 else
+    if n = 1 then 1 else
+    fib (n - 1) + fib (n - 2);
+&nbsp;
+&nbsp;
+fun <strong>add3</strong> (x, y, z) = x + y + z;
+&nbsp;
+val a = fib 1;
+val b = fib 2;
+val c = fib 3;
+val d = add3(a, b, c);
+print(Int.toString d);
+print "\n";
+</pre>
+
+<p>Výsledek překladu do jazyka Lua:</p>
+
+<pre>
+local function <strong>fib</strong>(n)
+  if n == 0 then
+    return 0
+  elseif n == 1 then
+    return 1
+  end
+  local tmp = fib(_Int_sub(n, 1))
+  local tmp1 = fib(_Int_sub(n, 2))
+  return _Int_add(tmp, tmp1)
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local a = fib(1)
+local b = fib(2)
+local c = fib(3)
+local d = _Int_add(_Int_add(a, b), c)
+local result = gsub(tostring(d), "-", "~")
+outputAndFlush(stdOut, result)
+outputAndFlush(stdOut, "\n")
+</pre>
+
+<p>Výsledek překladu do JavaScriptu:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp14 = fib(_Int54_sub(n, 1));
+   const tmp15 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp14, tmp15);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const a = fib(1);
+ const b = fib(2);
+ const c = fib(3);
+ const d = _Int54_add(_Int54_add(a, b), c);
+ let tmp13;
+ if (d &gt;= 0) {
+  const tmp14 = d.toString();
+  tmp13 = _encodeUtf8(tmp14);
+ } else {
+  const tmp14 = (- d).toString();
+  tmp13 = _encodeUtf8("~" + tmp14);
+ }
+ outputAndFlush(stdOut[0], tmp13);
+ outputAndFlush(stdOut[0], Uint8Array.of(10));
+</pre>
+
+<p>Připomeňme si, že ve Standard ML lze využívat jazykovou konstrukci
+<strong>let in</strong> umožňující definici lokálních symbolů. Otázkou je, zda
+použití této konstrukce nějakým způsobem vylepší výsledek transpřekladu:</p>
+
+<pre>
+<i>(* Naivní implementace výpočtu Fibonacciho posloupnosti *)</i>
+&nbsp;
+fun <strong>fib</strong> n =
+    if n = 0 then 0 else
+    if n = 1 then 1 else
+    fib (n - 1) + fib (n - 2);
+&nbsp;
+&nbsp;
+<i>(* Realizace funkce pro součet tří celočíselných hodnot *)</i>
+fun <strong>add3</strong> (x, y, z) = x + y + z;
+&nbsp;
+let
+    val a = fib 1
+    val b = fib 2
+    val c = fib 3
+    val d = add3(a, b, c)
+in
+    print(Int.toString d);
+    print "\n"
+end;
+</pre>
+
+<p>Ve skutečnosti je výsledek zcela totožný s&nbsp;výsledkem překladu
+předchozího příkladu:</p>
+
+<pre>
+local function <strong>fib</strong>(n)
+  if n == 0 then
+    return 0
+  elseif n == 1 then
+    return 1
+  end
+  local tmp = fib(_Int_sub(n, 1))
+  local tmp1 = fib(_Int_sub(n, 2))
+  return _Int_add(tmp, tmp1)
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local a = fib(1)
+local b = fib(2)
+local c = fib(3)
+local d = _Int_add(_Int_add(a, b), c)
+</pre>
+
+<p>a:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp14 = fib(_Int54_sub(n, 1));
+   const tmp15 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp14, tmp15);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const a = fib(1);
+ const b = fib(2);
+ const c = fib(3);
+ const d = _Int54_add(_Int54_add(a, b), c);
+</pre>
+
+
+
+<h2 id="k09">Výpočet délky seznamu a způsob reprezentace seznamu v&nbsp;jazycích Lua a JavaScript</h2>
+
+<p>Rekurze, neboli volání nějaké funkce v&nbsp;těle té samé funkce (přímá
+rekurze) nebo prostřednictvím funkce jiné (takzvaná nepřímá rekurze),
+představuje jednu ze základních programátorských technik, na kterých je SML
+postaven, podobně jako další funkcionální jazyky. Můžeme zde spatřovat velkou
+inspiraci Lispem, ve kterém se rekurze také velmi často používá; ostatně
+samotné Lispovské příkazy, například <i>apply</i>, <i>map</i> či <i>forall</i>
+jsou definovány rekurzivně, podobně jako v&nbsp;dalším Lispovsky orientovaném
+jazyce &ndash; ve Scheme. Samotná myšlenka rekurze je však starší než všechny
+programovací jazyky, protože je hluboce zakořeněna jak v podstatě některých
+přírodních i umělých jevů či objektů, tak i v&nbsp;matematice, v&nbsp;například
+v&nbsp;definicích různých algebraických a geometrických struktur.</p>
+
+<p>Definice přímé rekurzivní funkce v&nbsp;jazyce ML je zcela bezproblémová
+&ndash; nejsou zapotřebí žádné dopředné (&bdquo;forward&ldquo;) deklarace atd.
+A pochopitelně jsou stále odvozovány popř.&nbsp;hlídány datové typy předávaných
+parametrů i návratových hodnot:</p>
+
+<pre>
+<i>(* Naivní implementace funkce length *)</i>
+&nbsp;
+<strong>fun length(x) = if null(x) then 0</strong>
+                <strong>else 1 + length(tl(x));</strong>
+</pre>
+
+<p>Typ této funkce je zajímavý &ndash; funkce bude akceptovat seznam
+libovolného typu, tj.&nbsp;jedná se o generickou funkci (<i>'a</i> zde značí
+&bdquo;any&ldquo;):</p>
+
+<pre>
+val length = fn: ∀ 'a . 'a list → int;
+</pre>
+
+<p>Otestování je snadné; provést ho můžeme například v&nbsp;online REPLu
+SOSML:</p>
+
+<pre>
+<strong>length([]);</strong>
+&gt; val it = 0: int;
+&nbsp;
+<strong>length([1]);</strong>
+&gt; val it = 1: int;
+&nbsp;
+<strong>length([1,2,3,4]);</strong>
+&gt; val it = 4: int;
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: toto řešení není nejvhodnější, protože
+se parametry zbytečně ukládají na zásobník. V&nbsp;dalším textu si ukážeme sice
+složitější, ale obecně rychlejší a méně paměťově náročnější řešení založené na
+<i>koncové rekurzi</i>.</div></p>
+
+<p>Výše uvedená implementace funkce <strong>length</strong> není pro jazyk ML
+idiomatická &ndash; spíše se podobá přímému přepisu z&nbsp;LISPu nebo ze
+Scheme. Častěji se setkáme s&nbsp;použitím pattern matchingu, kterým se
+(v&nbsp;tomto případě) určují těla funkce pro různé vstupní podmínky. Díky tomu
+lze velmi snadno a především přehledně vyjmenovat například všechny mezní
+podmínky. Pro funkci <strong>length</strong> je zde jediná mezní podmínka a tou
+je předání prázdného seznamu (další možnost je jen jedna &ndash; předal se
+neprázdný seznam; jiná možnost díky typovému systému není povolena):</p>
+
+<pre>
+<i>(* Implementace funkce length založená na pattern matchingu *)</i>
+&nbsp;
+<strong>fun length([]) = 0</strong>
+  <strong>| length(lst) = 1 + length(tl(lst));</strong>
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že v&nbsp;hlavičce funkce je jediný parametr
+(v&nbsp;obou případech), můžeme vynechat kulaté závorky:</p>
+
+<pre>
+<i>(* Implementace funkce length založená na pattern matchingu *)</i>
+&nbsp;
+<strong>fun length [] = 0</strong>
+  <strong>| length lst = 1 + length(tl(lst));</strong>
+</pre>
+
+<p>Předchozí použití pattern matchingu ovšem ani zdaleka neukazuje všechny
+možnosti programovacího jazyka ML v&nbsp;této oblasti. Díky existenci operátoru
+<strong>::</strong> (zápis připojení prvku k&nbsp;seznamu, obdoba
+<strong>cons</strong> z&nbsp;LISPu/Clojure) můžeme přímo ve druhé větvi
+specifikovat, že pokud se na vstupu objeví seznam s&nbsp;hlavičkou a tělem
+(tedy má alespoň jeden prvek), má se provést tato větev a funkce
+<strong>length</strong> se má rekurzivně volat s&nbsp;tělem seznamu (které už
+může být prázdné):</p>
+
+<pre>
+<i>(* Implementace funkce length založená na pattern matchingu *)</i>
+&nbsp;
+<strong>fun length([]) = 0</strong>
+  <strong>| length(head::tail) = 1 + length(tail);</strong>
+</pre>
+
+<p>Vzhledem k&nbsp;tomu, že se hodnota hlavičky seznamu (jeho prvního prvku)
+nikde nepoužívá, lze zápis ještě více zjednodušit náhradou identifikátoru za
+podtržítko:</p>
+
+<pre>
+<i>(* Implementace funkce length založená na pattern matchingu *)</i>
+&nbsp;
+<strong>fun length([]) = 0</strong>
+  <strong>| length(_::tail) = 1 + length(tail);</strong>
+</pre>
+
+<p>Pro otestování způsobu (trans)překladu použijeme tento demonstrační
+příklad:</p>
+
+<pre>
+<i>(* Implementace funkce length založená na pattern matchingu *)</i>
+&nbsp;
+fun <strong>length</strong>([]) = 0
+  | <strong>length</strong>(head::tail) = 1 + length(tail);
+&nbsp;
+&nbsp;
+val l1 = length([]);
+val l2 = length([1]);
+val l3 = length([1,2,3,4]);
+</pre>
+
+<p>Překlad do jazyka Lua naznačuje, jak jsou reprezentovány seznamy: jedná se o
+tabulky se dvěma prvky, přičemž druhým prvkem je buď další tabulka nebo hodnota
+<strong>nil</strong> (poznáváte zde LISP?):</p>
+
+<pre>
+  local function <strong>length</strong>(a)
+    if a == nil then
+      return 0
+    elseif a ~= nil then
+      local tmp = length(a[2])
+      return _Int_add(1, tmp)
+    else
+      _raise(_Match, "length.sml:3:5")
+    end
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  local l1 = length(nil)
+  local l2 = length({1, nil})
+  l3 = length({1, {2, {3, {4, nil}}}})
+</pre>
+
+<p>V&nbsp;JavaScriptu jsou seznamy konstruovány pomocnou funkcí (tedy jako pole
+se dvěma prvky):</p>
+
+<pre>
+function <strong>_list</strong>(a) {
+    let x = null;
+    for (let i = a.length - 1; i &gt;= 0; --i) {
+        x = [a[i], x];
+    }
+    return x;
+}
+</pre>
+
+<p>A použity jsou takto:</p>
+
+<pre>
+ <strong>length</strong> = function(a) {
+  if (a === null) {
+   return 0;
+  } else if (! (a === null)) {
+   const tmp16 = length(a[1]);
+   return _Int54_add(1, tmp16);
+  } else {
+   throw _Match;
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const l1 = length(null);
+ const l2 = length(_list([1]));
+ const l3 = length(_list([1, 2, 3, 4]));
+</pre>
+
+
+
+<h2 id="k10">Automatické určení typů parametrů funkce i její návratové hodnoty: typová inference</h2>
+
+<p>Pokusme se nyní definovat funkci, která provede součet hodnot prvků seznamu.
+Funkci ihned otestujeme:</p>
+
+<pre>
+<i>(* Výpočet součtu prvků v seznamu *)</i>
+&nbsp;
+fun <strong>sum</strong>([]) = 0
+  | <strong>sum</strong>(x::y) = x + sum y;
+&nbsp;
+&nbsp;
+val y = sum([1,2,3]);
+&nbsp;
+print(Int.toString(y));
+print "\n";
+</pre>
+
+<p>V&nbsp;předchozím zdrojovém kódu jsme nikde explicitně neuvedli typy, takže
+si je <i>LunarML</i> musí odvodit sám automaticky (použije tedy technologii
+<i>typové inference</i>):</p>
+
+<pre>
+local function <strong>sum</strong>(a)
+  if a == nil then
+    return 0
+  elseif a ~= nil then
+    local tmp = a[1]
+    local tmp1 = sum(a[2])
+    return _Int_add(tmp, tmp1)
+  else
+    _raise(_Match, "sum_int.sml:3:5")
+  end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local y = sum({1, {2, {3, nil}}})
+</pre>
+
+<p>Varianta pro JavaScript:</p>
+
+<pre>
+ <strong>sum</strong> = function(a) {
+  if (a === null) {
+   return 0;
+  } else if (! (a === null)) {
+   const tmp14 = a[0];
+   const tmp15 = sum(a[1]);
+   return _Int54_add(tmp14, tmp15);
+  } else {
+   throw _Match;
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const y = sum(_list([1, 2, 3]));
+</pre>
+
+<p>V&nbsp;obou případech se došlo tedy k&nbsp;odvození, že vstupem funkce
+<strong>sum</strong> je seznam obsahující celá čísla a výsledek je taktéž celé
+číslo. V&nbsp;obou výsledných kódech je to hlídáno operací (funkcí) součtu.</p>
+
+
+
+<h2 id="k11">Explicitní určení typů</h2>
+
+<p>Vraťme se opět k&nbsp;funkci <strong>sum</strong>, kterou jsme definovali
+následovně:</p>
+
+<pre>
+<i>(* Výpočet součtu prvků v seznamu *)</i>
+&nbsp;
+<strong>fun sum([]) = 0</strong>
+  <strong>| sum(x::y) = x + sum y;</strong>
+</pre>
+
+<p>U takto definované funkce je odvozen datový typ v&nbsp;podobě:</p>
+
+<pre>
+val sum = fn: int list → int;
+</pre>
+
+<p>Což znamená, že je funkce použitelná pouze pro seznamy celých čísel.</p>
+
+<p>Alternativně je možné náhradou 0 za 0.0 dosáhnout toho, že funkce bude
+použitelná pro seznamy reálných čísel (ovšem již ne čísel celých):</p>
+
+<pre>
+<i>(* Výpočet součtu prvků v seznamu *)</i>
+&nbsp;
+<strong>fun sum([]) = 0.0</strong>
+  <strong>| sum(x::y) = x + sum y;</strong>
+&nbsp;
+&nbsp;
+<strong>sum([1.1, 2.2, 3.3]);</strong>
+</pre>
+
+<p>Typ můžeme specifikovat i explicitně, například u parametru (a klidně i
+v&nbsp;jediné větvi):</p>
+
+<pre>
+<i>(* Výpočet součtu prvků v seznamu *)</i>
+&nbsp;
+fun <strong>sum</strong>([] : real list) = 0.0
+  | <strong>sum</strong>(x::y) = x + sum y;
+&nbsp;
+&nbsp;
+val y = sum([1.0, 2.0, 3.0]);
+&nbsp;
+print(Real.toString(y));
+print "\n";
+</pre>
+
+<p>Jak budou v&nbsp;posledním případě vypadat výsledky transpřekladu? Varianta
+v&nbsp;jazyce Lua ukazuje, že se používá běžná operace součtu, která
+v&nbsp;tomto jazyku platí pouze pro numerické hodnoty (s&nbsp;plovoucí řádovou
+čárkou):</p>
+
+<pre>
+local function <strong>sum</strong>(a)
+  if a == nil then
+    return 0.0
+  elseif a ~= nil then
+    local tmp = a[1]
+    local tmp1 = sum(a[2])
+    return tmp + tmp1
+  else
+    _raise(_Match, "sum_real.sml:3:5")
+  end
+end
+local tmp = 1.0
+local tmp1 = 2.0
+local y = sum({tmp, {tmp1, {3.0, nil}}})
+</pre>
+
+<p>I varianta přeložená do JavaScriptu má podobné vlastnosti, protože i
+v&nbsp;tomto jazyku se pracuje s&nbsp;hodnotami s&nbsp;plovoucí řádovou
+čárkou:</p>
+
+<pre>
+ sum = function(a) {
+  if (a === null) {
+   return 0.0;
+  } else if (! (a === null)) {
+   const tmp16 = a[0];
+   const tmp17 = sum(a[1]);
+   return tmp16 + tmp17;
+  } else {
+   throw _Match;
+  }
+ };
+ const tmp13 = 1.0;
+ const tmp14 = 2.0;
+ const y = sum(_list([tmp13, tmp14, 3.0]));
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;obou případech je výsledkem
+rekurzivní funkce!</div></p>
+
+
+
+<h2 id="k12">Realizace operace spojení řetězců předaných v&nbsp;seznamu</h2>
+
+<p>Spojení dvou řetězců je možné v&nbsp;jazyce Standard ML provést operátorem
+<strong>^</strong>, takže je snadné napsat rekurzivní podobu funkce, která
+spojí všechny řetězce předané v&nbsp;seznamu. Stále přitom používáme stejný
+základ &ndash; <i>pattern matching</i>, rozdělení seznamu na hlavu a tělo a
+rekurzi:</p>
+
+<pre>
+<i>(* Spojení řetězců předaných v seznamu *)</i>
+&nbsp;
+fun <strong>join</strong>([] : string list) = ""
+  | <strong>join</strong>(x::y) = x ^ join y;
+&nbsp;
+&nbsp;
+val x = join(["foo", " ", "bar", " ", "baz"]);
+&nbsp;
+print x;
+print "\n";
+</pre>
+
+<p>V&nbsp;jazyce Lua se pro spojení řetězců pro nepoužívá operátor ^, ale
+operátor .. (dvě tečky), takže transpřeklad do tohoto jazyka dopadl
+následovně:</p>
+
+<pre>
+local function <strong>join</strong>(a)
+  if a == nil then
+    return ""
+  elseif a ~= nil then
+    local tmp = a[1]
+    local tmp1 = join(a[2])
+    return tmp .. tmp1
+  else
+    _raise(_Match, "string_join.sml:3:5")
+  end
+end
+</pre>
+
+<p>Realizace v&nbsp;JavaScriptu dopadne následovně:</p>
+
+<pre>
+ <strong>join</strong> = function(a) {
+  if (a === null) {
+   return Uint8Array.of();
+  } else if (! (a === null)) {
+   const tmp13 = a[0];
+   const tmp14 = join(a[1]);
+   return _String_append(tmp13, tmp14);
+  } else {
+   throw _Match;
+  }
+ };
+</pre>
+
+<p>Pokud si nyní říkáte, jak je možné, že se v&nbsp;obou kódech liší indexy
+druhého prvku &ndash; je to proto, že jazyk Lua implicitně indexuje prvky
+tabulek od jedničky, nikoli od nuly.</p>
+
+<p><div class="rs-tip-major">Poznámka: opět si povšimněte, jak jsou
+reprezentovány seznamy a že se stále jedná o rekurzivní výpočet.</div></p>
+
+
+
+<h2 id="k13">Typ <strong>option</strong></h2>
+
+<p>Na závěr se musíme zmínit o velmi užitečném datovém typu nazvaném
+<strong>option</strong> (ten jsme si již popsali <a
+href="https://www.root.cz/serialy/programovaci-jazyk-rust/">v&nbsp;seriálu o
+Rustu</a>). Tento datový typ se používá například ve chvílích, kdy je zapotřebí
+reprezentovat neznámou hodnotu, chybovou hodnotu (ovšem bez vyvolání výjimky),
+vytvořit funkci s&nbsp;volitelnými parametry či vytvořit typově bezpečnou
+obdobu odkazu typu <strong>null</strong> (<strong>null</strong> samo o sobě je
+v&nbsp;IT zlo :-). Typ <strong>option</strong> si můžeme představit jako unii
+se dvěma hodnotami <strong>NONE</strong> a <strong>SOME</strong>, přičemž
+hodnota <strong>SOME</strong> je kontejnerem pro jinou hodnotu, například
+výsledek výpočtu.</p>
+
+<p>Poměrně typickým příkladem je funkce pro dělení, která ve chvíli, kdy je
+dělitel nulový, vrátí hodnotu <strong>NONE</strong> a při nenulovém děliteli
+pak hodnotu <strong>SOME</strong>, která obaluje vypočtený podíl:</p>
+
+<pre>
+fun <strong>divide</strong>(x, 0) = NONE
+  | <strong>divide</strong>(x, y) = SOME(x div y);
+</pre>
+
+<p>Příklad volání z&nbsp;REPLu:</p>
+
+<pre>
+divide(10, 5);
+divide(10, 0);
+</pre>
+
+<p>Typ funkce je vypočten typovou inferencí:</p>
+
+<pre>
+val divide = fn: int * int → int option;
+</pre>
+
+<p>A vypočtené výsledky:</p>
+
+<pre>
+val it = SOME 2: int option;
+val it = NONE: int option;
+</pre>
+
+<p>V&nbsp;praxi je nutné rozlišit mezi konkrétní hodnotou a NONE další
+realizací pattern matchingu, což je ukázáno u funkce <strong>to_string</strong>
+realizující převod SOME(int)/NONE na řetězec. Celý skript tedy může vypadat
+následovně:</p>
+
+<pre>
+<i>(* Použití typu option *)</i>
+&nbsp;
+fun <strong>divide</strong>(x, 0) = NONE
+  | <strong>divide</strong>(x, y) = SOME(x div y);
+&nbsp;
+&nbsp;
+fun <strong>to_string</strong> NONE = "NONE"
+  | <strong>to_string</strong> (SOME n) = Int.toString n
+&nbsp;
+&nbsp;
+val x = divide(10, 5);
+val y = divide(10, 0);
+&nbsp;
+print(to_string(x));
+print "\n";
+&nbsp;
+print(to_string(y));
+print "\n";
+</pre>
+
+<p>Způsob překladu do jazyka Lua (ovšem bez funkce pro výpočet podílu &ndash;
+ta je opět optimalizována na konstantu):</p>
+
+<pre>
+local <strong>to_string</strong> = function(a)
+  if a.tag == "NONE" then
+    return "NONE"
+  elseif a.tag == "SOME" then
+    local n = a.payload
+    local result = gsub(tostring(n), "-", "~")
+    return result
+  else
+    _raise(_Match, "some_none.sml:7:5")
+  end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local x = {tag = "SOME", payload = 2}
+local y = {tag = "NONE"}
+local tmp = to_string(x)
+</pre>
+
+<p>Dtto, nyní ovšem překlad do JavaScriptu:</p>
+
+<pre>
+ const <strong>to_string</strong> = function(a) {
+  if (a.tag === "NONE") {
+   return Uint8Array.of(78, 79, 78, 69);
+  } else if (a.tag === "SOME") {
+   const n = a.payload;
+   if (n &gt;= 0) {
+    const tmp15 = n.toString();
+    return _encodeUtf8(tmp15);
+   } else {
+    const tmp15 = (- n).toString();
+    return _encodeUtf8("~" + tmp15);
+   }
+  } else {
+   throw _Match;
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const x = {tag: "SOME", payload: 2};
+ const y = {tag: "NONE"};
+ const tmp13 = to_string(x);
+</pre>
+
+
+
+<h2 id="k14">Vynucení zavolání funkce <strong>divide</strong> a zpracování hodnoty SOME/NONE</h2>
+
+<p>V&nbsp;dnešním posledním demonstračním příkladu si &bdquo;vynutíme&ldquo;
+výpočet podílu s&nbsp;výsledkem SOME(int)/NONE. Použijeme již známý trik
+&ndash; oba parametry jsou vypočteny funkcí <strong>fib</strong>, která není
+transpřekladačem optimalizována na konstantu. Upravený zdrojový kód vypadá
+takto:</p>
+
+<pre>
+<i>(* Použití typu option *)</i>
+&nbsp;
+fun <strong>fib</strong> 0 = 0
+  | <strong>fib</strong> 1 = 1
+  | <strong>fib</strong> n = fib (n - 1) + fib (n - 2);
+&nbsp;
+&nbsp;
+fun <strong>divide</strong>(x, 0) = NONE
+  | <strong>divide</strong>(x, y) = SOME(x div y);
+&nbsp;
+&nbsp;
+fun <strong>to_string</strong> NONE = "NONE"
+  | <strong>to_string</strong> (SOME n) = Int.toString n;
+&nbsp;
+&nbsp;
+let
+    val a = fib 0
+    val b = fib 1
+    val c = fib 2
+    val x = divide(c, b)
+    val y = divide(a, a)
+in
+    print(to_string(x));
+    print "\n";
+&nbsp;
+    print(to_string(y));
+    print "\n";
+end;
+</pre>
+
+<p>Překlad tohoto příkladu do jazyka Lua dopadne takto (vynechávám nepodstatné detaily):</p>
+
+<pre>
+  local function <strong>fib</strong>(n)
+    if n == 0 then
+      return 0
+    elseif n == 1 then
+      return 1
+    end
+    local tmp = fib(_Int_sub(n, 1))
+    local tmp1 = fib(_Int_sub(n, 2))
+    return _Int_add(tmp, tmp1)
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  <strong>to_string</strong> = function(a1)
+    if a1.tag == "NONE" then
+      return "NONE"
+    elseif a1.tag == "SOME" then
+      local n = a1.payload
+      local result = gsub(tostring(n), "-", "~")
+      return result
+    else
+      _raise(_Match, "some_none_2.sml:13:5")
+    end
+  end
+&nbsp;
+&nbsp;
+&nbsp;
+  a = fib(0)
+  local b = fib(1)
+  local c = fib(2)
+  if b == 0 then
+    x = {tag = "NONE"}
+  else
+    x = {tag = "SOME", payload = _Int_div(c, b)}
+  end
+end
+&nbsp;
+&nbsp;
+&nbsp;
+local y
+if a == 0 then
+  y = {tag = "NONE"}
+else
+  y = {tag = "SOME", payload = _Int_div(a, a)}
+end
+local tmp = to_string(x)
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si explicitního rozlišování
+mezi <i>tagem</i> <strong>SOME</strong> a <strong>NONE</strong>.</div></p>
+
+<p>Varianta překladu do JavaScriptu:</p>
+
+<pre>
+ <strong>fib</strong> = function(n) {
+  if (n === 0) {
+   return 0;
+  } else if (n === 1) {
+   return 1;
+  } else {
+   const tmp15 = fib(_Int54_sub(n, 1));
+   const tmp16 = fib(_Int54_sub(n, 2));
+   return _Int54_add(tmp15, tmp16);
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const <strong>to_string</strong> = function(a1) {
+  if (a1.tag === "NONE") {
+   return Uint8Array.of(78, 79, 78, 69);
+  } else if (a1.tag === "SOME") {
+   const n = a1.payload;
+   if (n &gt;= 0) {
+    const tmp15 = n.toString();
+    return _encodeUtf8(tmp15);
+   } else {
+    const tmp15 = (- n).toString();
+    return _encodeUtf8("~" + tmp15);
+   }
+  } else {
+   throw _Match;
+  }
+ };
+&nbsp;
+&nbsp;
+&nbsp;
+ const a = fib(0);
+ const b = fib(1);
+ const c = fib(2);
+ let x;
+ if (b === 0) {
+  x = {tag: "NONE"};
+ } else {
+  x = {tag: "SOME", payload: _Int54_div(c, b)};
+ }
+ let y;
+ if (a === 0) {
+  y = {tag: "NONE"};
+ } else {
+  y = {tag: "SOME", payload: _Int54_div(a, a)};
+ }
+ const tmp13 = to_string(x);
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: opět je zde patrný stejný postup při
+rozlišování <i>tagů</i> <strong>SOME</strong> a
+<strong>NONE</strong>.</div></p>
+
+
+
+<h2 id="k15">Příloha A: Makefile pro transpřeklad všech dnes ukázaných demonstračních příkladů</h2>
+
+<p>Všechny dnes použité demonstrační příklady byly přeloženy z&nbsp;jazyka
+Standard ML do jazyků Lua a JavaScript následujícím souborem Makefile:</p>
+
+<pre>
+programs := \
+        accumulate.lua \
+        add_1.lua \
+        add_2.lua \
+        add_3.lua \
+        add_4.lua \
+        add_5.lua \
+        exists.lua \
+        fibonacci_func_call_1.lua \
+        fibonacci_func_call_2.lua \
+        fibonacci_naive.lua \
+        fibonacci_pattern_matching.lua \
+        hello.lua \
+        length.lua \
+        mutual_recursion.lua \
+        pipe.lua \
+        some_none.lua \
+        string_join.lua \
+        sum_int.lua \
+        sum_real.lua \
+        tuples.lua \
+        accumulate.js \
+        add_1.js \
+        add_2.js \
+        add_3.js \
+        add_4.js \
+        add_5.js \
+        exists.js \
+        fibonacci_func_call_1.js \
+        fibonacci_func_call_2.js \
+        fibonacci_naive.js \
+        fibonacci_pattern_matching.js \
+        hello.js \
+        length.js \
+        mutual_recursion.js \
+        pipe.js \
+        some_none.js \
+        string_join.js \
+        sum_int.js \
+        sum_real.js \
+        tuples.js
+&nbsp;
+&nbsp;
+all: $(programs)
+&nbsp;
+clean:
+        rm -f *.lua
+&nbsp;
+.PHONY: all clean
+&nbsp;
+%.lua: %.sml
+        docker run -v work1:/work -w /work ghcr.io/minoki/lunarml:latest lunarml compile $&lt;
+&nbsp;
+%.js: %.sml
+        docker run -v work1:/work -w /work ghcr.io/minoki/lunarml:latest lunarml compile --webjs $&lt;
+
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: jak je patrné, využívám Docker/Podman
+obraz nástroje <i>LunarML</i>.</div></p>
+
+
+
+<h2 id="k16">Příloha B: online varianta jazyka Standard ML</h2>
+
+<p>Překlad resp.&nbsp;transpřeklad jazyka Standard ML není jediná možnost, jak
+si tento v&nbsp;několika ohledech revoluční jazyk můžete v&nbsp;současnosti
+prakticky vyzkoušet. Nejjednodušší resp.&nbsp;časově nejméně náročné je použití
+online verze tohoto jazyka, pro jejíž zprovoznění postačuje pouze nějaký
+moderní webový prohlížeč (s&nbsp;JavaScriptem, jaká to ironie) a není tedy
+vyžadována instalace klasického interaktivního prostředí a překladače SML.
+Online verzí jazyka ML v&nbsp;současnosti existuje několik, přičemž jedním
+z&nbsp;příkladů takového jednoduše pojatého vývojového prostředí je online
+<i>REPL (Read Eval Print Loop)</i> dostupný na adrese <a
+href="https://sosml.org/">https://sosml.org/</a> (<i>SOSML</i>). Předností této
+varianty je fakt, že dlouhotrvající výpočty jsou automaticky ukončeny, čímž je
+například zajištěno, že se program &bdquo;zotaví&ldquo; z&nbsp;nekonečné
+rekurze či špatně napsaných programových smyček.</p>
+
+<p>Použití <i>SOSML</i> je v&nbsp;praxi až triviálně jednoduché &ndash; do
+levého textového pole se zapisují poznámky, výrazy a definice. Po ukončení
+výrazu či definice středníkem je ihned provedeno vyhodnocení a výsledek se
+zapíše do pravého textového pole (středník je zde tedy velmi důležitý). Jak
+příkazy, tak i jejich výsledky jsou barevně odlišeny (můžeme si tedy nechat
+vyhodnotit více výrazů, například více volání stejné funkce s&nbsp;různými
+parametry); navíc je barevně odlišeno i případné hlášení o chybě.</p>
+
+<a href="https://www.root.cz/obrazek/562540/"><img src="https://i.iinfo.cz/images/361/ml1-1-prev.png" class="image-562540" alt="&#160;" title="Autor: tisnik, podle licence: &lt;a href=&quot;https://creativecommons.org/publicdomain/mark/1.0/deed.en&quot;&gt;Public Domain&lt;/a&gt;" width="370" height="112" /></a>
+<p><i>Obrázek 1: Interaktivní webové prostředí SOSML.</i></p>
+
+<p><div class="rs-tip-major">Poznámka: demonstrační příklady, které jsme
+použili v&nbsp;předchozích kapitolách, byly otestovány mj.&nbsp;i právě ve
+webovém prostředí SOSML (a pochopitelně i přeloženy s&nbsp;využitím
+<i>LunarML</i> do jazyka Lua i JavaScriptu).</div></p>
+
+
+
+<h2 id="k17">Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny výše popsané demonstrační příklady (a to jak zdrojové kódy
+v&nbsp;SML, tak i výsledek transpřekladu do jazyka Lua) byly uloženy do
+repositáře dostupného na adrese <a
+href="https://github.com/tisnik/ml-examples/">https://github.com/tisnik/ml-examples/</a>.
+V&nbsp;tabulce umístěné pod tímto odstavcem jsou uvedeny odkazy na tyto
+příklady:</p>
+
+<table>
+<tr><th> #</th><th>Příklad</th><th>Popis příkladu</th><th>Cesta</th></tr>
+<tr><td> 1</td><td>hello.sml</td><td>klasický program typu &bdquo;Hello world&ldquo;</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/hello.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/hello.sml</a></td></tr>
+<tr><td> 2</td><td>hello.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/hello.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/hello.lua</a></td></tr>
+<tr><td> 3</td><td>hello.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/hello.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/hello.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 4</td><td>add_1.sml</td><td>součet dvou proměnných se zobrazením výsledku součtu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_1.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_1.sml</a></td></tr>
+<tr><td> 5</td><td>add_1.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_1.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_1.lua</a></td></tr>
+<tr><td> 6</td><td>add_1.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_1.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_1.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>add_2.sml</td><td>součet realizovaný uživatelskou funkcí</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_2.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_2.sml</a></td></tr>
+<tr><td> 8</td><td>add_2.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_2.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_2.lua</a></td></tr>
+<tr><td> 9</td><td>add_2.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_2.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_2.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>10</td><td>add_3.sml</td><td>součet, který není možné snadno optimalizovat</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_3.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_3.sml</a></td></tr>
+<tr><td>11</td><td>add_3.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_3.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_3.lua</a></td></tr>
+<tr><td>12</td><td>add_3.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_3.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_3.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>add_4.sml</td><td>součet, který není možné snadno optimalizovat, druhá varianta</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_4.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_4.sml</a></td></tr>
+<tr><td>14</td><td>add_4.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_4.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_4.lua</a></td></tr>
+<tr><td>15</td><td>add_4.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_4.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_4.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>16</td><td>add_5.sml</td><td>součet, který není možné snadno optimalizovat, třetí varianta</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_5.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_5.sml</a></td></tr>
+<tr><td>17</td><td>add_5.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_5.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_5.lua</a></td></tr>
+<tr><td>18</td><td>add_5.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/add_5.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/add_5.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>19</td><td>fibonacci_naive.sml</td><td>výpočet n-tého členu Fibonacciho posloupnosti, rekurzivní varianta</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_naive.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_naive.sml</a></td></tr>
+<tr><td>20</td><td>fibonacci_naive.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_naive.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_naive.lua</a></td></tr>
+<tr><td>21</td><td>fibonacci_naive.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_naive.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_naive.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>22</td><td>fibonacci_pattern_matching.sml</td><td>výpočet n-tého členu Fibonacciho posloupnosti, založeno na pattern matchingu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_pattern_matching.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_pattern_matching.sml</a></td></tr>
+<tr><td>23</td><td>fibonacci_pattern_matching.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_pattern_matching.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_pattern_matching.lua</a></td></tr>
+<tr><td>24</td><td>fibonacci_pattern_matching.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_pattern_matching.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_pattern_matching.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>25</td><td>fibonacci_func_call_1.sml</td><td>složitější varianta výpočtu n-tého členu Fibonacciho posloupnosti</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_1.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_1.sml</a></td></tr>
+<tr><td>26</td><td>fibonacci_func_call_1.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_1.lua     ">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_1.lua</a></td></tr>
+<tr><td>27</td><td>fibonacci_func_call_1.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_1.lua     ">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_1.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>28</td><td>fibonacci_func_call_2.sml</td><td>složitější varianta výpočtu n-tého členu Fibonacciho posloupnosti</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_2.sml     ">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_2.sml</a></td></tr>
+<tr><td>29</td><td>fibonacci_func_call_2.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_2.lua     ">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_2.lua</a></td></tr>
+<tr><td>30</td><td>fibonacci_func_call_2.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_2.lua     ">https://github.com/tisnik/ml-examples/tree/master/LunarML/fibonacci_func_call_2.lua</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>31</td><td>length.sml</td><td>výpočet délky seznamu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/length.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/length.sml</a></td></tr>
+<tr><td>32</td><td>length.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/length.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/length.lua</a></td></tr>
+<tr><td>33</td><td>length.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/length.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/length.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>34</td><td>sum_int.sml</td><td>součet všech prvků uložených v&nbsp;seznamu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_int.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_int.sml</a></td></tr>
+<tr><td>35</td><td>sum_int.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_int.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_int.lua</a></td></tr>
+<tr><td>36</td><td>sum_int.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_int.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_int.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>37</td><td>sum_real.sml</td><td>součet prvků s&nbsp;explicitním určením typu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_real.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_real.sml</a></td></tr>
+<tr><td>38</td><td>sum_real.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_real.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_real.lua</a></td></tr>
+<tr><td>39</td><td>sum_real.js </td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_real.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/sum_real.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>40</td><td>string_join.sml</td><td>realizace operace spojení řetězců předaných v&nbsp;seznamu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/string_join.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/string_join.sml</a></td></tr>
+<tr><td>41</td><td>string_join.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/string_join.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/string_join.lua</a></td></tr>
+<tr><td>42</td><td>string_join.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/string_join.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/string_join.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>43</td><td>some_none.sml</td><td>typ <strong>option</strong></td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none.sml</a></td></tr>
+<tr><td>44</td><td>some_none.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none.lua</a></td></tr>
+<tr><td>45</td><td>some_none.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>46</td><td>some_none_2.sml</td><td>vynucení zavolání funkce <strong>divide</strong> a zpracování hodnoty SOME/NONE</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none_2.sml">https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none_2.sml</a></td></tr>
+<tr><td>47</td><td>some_none_2.lua</td><td>výsledek transpřekladu ze Standard ML do jazyka Lua</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none_2.lua">https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none_2.lua</a></td></tr>
+<tr><td>48</td><td>some_none_2.js</td><td>výsledek transpřekladu ze Standard ML do JavaScriptu</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none_2.js">https://github.com/tisnik/ml-examples/tree/master/LunarML/some_none_2.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>49</td><td>Makefile</td><td>pravidla (cíle) pro transpřeklad všech demonstračních příkladů</td><td><a href="https://github.com/tisnik/ml-examples/tree/master/LunarML/Makefile">https://github.com/tisnik/ml-examples/tree/master/LunarML/Makefile</a></td></tr>
+</table>
+
+
+
+<h2 id="k18">Literatura</h2>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;této kapitole jsou uvedeny
+nejenom knihy o jazyku ML resp.&nbsp;Standard ML, ale i knihy o programovacím
+jazyku OCaml, který ze Standard ML ze značné míry vychází.</div></p>
+
+<ol>
+
+<li>ML for the Working Programmer<br />
+<a href="https://www.cl.cam.ac.uk/~lp15/MLbook/pub-details.html">https://www.cl.cam.ac.uk/~lp15/MLbook/pub-details.html</a>
+</li>
+
+<li>Elements of ML Programming, 2nd Edition (ML97)<br />
+<a href="http://infolab.stanford.edu/~ullman/emlp.html">http://infolab.stanford.edu/~ullman/emlp.html</a>
+</li>
+
+<li>A tour of Standard ML<br />
+<a href="https://saityi.github.io/sml-tour/tour/welcome">https://saityi.github.io/sml-tour/tour/welcome</a>
+</li>
+
+<li>The History of Standard ML<br />
+<a href="https://smlfamily.github.io/history/SML-history.pdf">https://smlfamily.github.io/history/SML-history.pdf</a>
+</li>
+
+<li>The Standard ML Basis Library<br />
+<a href="https://smlfamily.github.io/Basis/">https://smlfamily.github.io/Basis/</a>
+</li>
+
+<li>Programming in Standard ML<br />
+<a href="http://www.cs.cmu.edu/~rwh/isml/book.pdf">http://www.cs.cmu.edu/~rwh/isml/book.pdf</a>
+</li>
+
+<li>Programming in Standard ML '97: A Tutorial Introduction<br />
+<a href="http://www.lfcs.inf.ed.ac.uk/reports/97/ECS-LFCS-97-364/">http://www.lfcs.inf.ed.ac.uk/reports/97/ECS-LFCS-97-364/</a>
+</li>
+
+<li>Programming in Standard ML '97: An On-line Tutorial<br />
+<a href="https://homepages.inf.ed.ac.uk/stg/NOTES/">https://homepages.inf.ed.ac.uk/stg/NOTES/</a>
+</li>
+
+<li>The OCaml system  release 4.13<br />
+<a href="https://ocaml.org/releases/4.13/htmlman/index.html">https://ocaml.org/releases/4.13/htmlman/index.html</a>
+</li>
+
+<li>Real World OCaml: Functional programming for the masses<br />
+<a href="https://dev.realworldocaml.org/">https://dev.realworldocaml.org/</a>
+</li>
+
+<li>OCaml from the Very Beginning<br />
+<a href="http://ocaml-book.com/">http://ocaml-book.com/</a>
+</li>
+
+<li>OCaml from the Very Beginning: More OCaml : Algorithms, Methods &amp; Diversions<br />
+<a href="http://ocaml-book.com/more-ocaml-algorithms-methods-diversions/">http://ocaml-book.com/more-ocaml-algorithms-methods-diversions/</a>
+</li>
+
+<li>Unix system programming in OCaml<br />
+<a href="http://ocaml.github.io/ocamlunix/">http://ocaml.github.io/ocamlunix/</a>
+</li>
+
+<li>OCaml for Scientists<br />
+<a href="https://www.ffconsultancy.com/products/ocaml_for_scientists/index.html">https://www.ffconsultancy.com/products/ocaml_for_scientists/index.html</a>
+</li>
+
+<li>Using, Understanding, and Unraveling The OCaml Language<br />
+<a href="https://caml.inria.fr/pub/docs/u3-ocaml/">https://caml.inria.fr/pub/docs/u3-ocaml/</a>
+</li>
+
+<li>Developing Applications With objective Caml<br />
+<a href="https://caml.inria.fr/pub/docs/oreilly-book/index.html">https://caml.inria.fr/pub/docs/oreilly-book/index.html</a>
+</li>
+
+<li>Introduction to Objective Caml<br />
+<a href="http://courses.cms.caltech.edu/cs134/cs134b/book.pdf">http://courses.cms.caltech.edu/cs134/cs134b/book.pdf</a>
+</li>
+
+<li>How to Think Like a (Functional) Programmer<br />
+<a href="https://greenteapress.com/thinkocaml/index.html">https://greenteapress.com/thinkocaml/index.html</a>
+</li>
+
+<li>Types and Programming Languages<br />
+<a href="https://i.warosu.org/data/sci/img/0163/64/1725651701869705.pdf">https://i.warosu.org/data/sci/img/0163/64/1725651701869705.pdf</a>
+</li>
+
+</ol>
+
+
+
+<h2 id="k19">Předchozí články o jazyku ML/SML i o jazycích OCaml a F#</h2>
+
+<p>Jak již bylo napsáno v&nbsp;úvodu dnešního článku, na stránkách Roota jsme
+se již seznámili jak se základními koncepty jazyka ML/Standard ML, tak i
+s&nbsp;jazyky OCaml a F#, které z&nbsp;původního ML vychází:</p>
+
+<ol>
+
+<li>ML – funkcionální jazyk s revolučním typovým systémem<br />
+<a href="https://www.root.cz/clanky/ml-funkcionalni-jazyk-s-revolucnim-typovym-systemem/">https://www.root.cz/clanky/ml-funkcionalni-jazyk-s-revolucnim-typovym-systemem/</a>
+</li>
+
+<li>Funkce a typový systém programovacího jazyka ML<br />
+<a href="https://www.root.cz/clanky/funkce-a-typovy-system-programovaciho-jazyka-ml/">https://www.root.cz/clanky/funkce-a-typovy-system-programovaciho-jazyka-ml/</a>
+</li>
+
+<li>Curryfikace (currying), výjimky a vlastní operátory v jazyku ML<br />
+<a href="https://www.root.cz/clanky/curryfikace-currying-vyjimky-a-vlastni-operatory-v-jazyku-ml/">https://www.root.cz/clanky/curryfikace-currying-vyjimky-a-vlastni-operatory-v-jazyku-ml/</a>
+</li>
+
+<li>Funkcionální programovací jazyk F#<br />
+<a href="https://www.root.cz/clanky/funkcionalni-programovaci-jazyk-f/">https://www.root.cz/clanky/funkcionalni-programovaci-jazyk-f/</a>
+</li>
+
+<li>Programovací jazyk OCaml<br />
+<a href="https://www.root.cz/clanky/programovaci-jazyk-ocaml/">https://www.root.cz/clanky/programovaci-jazyk-ocaml/</a>
+</li>
+
+<li>Programovací jazyk F#: proměnné, funkce a datové typy<br />
+<a href="https://www.root.cz/clanky/programovaci-jazyk-f-promenne-funkce-a-datove-typy/">https://www.root.cz/clanky/programovaci-jazyk-f-promenne-funkce-a-datove-typy/</a>
+</li>
+
+<li>Proměnné, funkce a datové typy v jazyku OCaml<br />
+<a href="https://www.root.cz/clanky/promenne-funkce-a-datove-typy-v-jazyku-ocaml/">https://www.root.cz/clanky/promenne-funkce-a-datove-typy-v-jazyku-ocaml/</a>
+</li>
+
+<li>Rekurze a pattern matching v programovacím jazyku F# <br />
+<a href="https://www.root.cz/clanky/rekurze-a-pattern-matching-v-programovacim-jazyku-f/">https://www.root.cz/clanky/rekurze-a-pattern-matching-v-programovacim-jazyku-f/</a>
+</li>
+
+<li>Práce se seznamy v jazyce F#<br />
+<a href="https://www.root.cz/clanky/prace-se-seznamy-v-jazyce-f/">https://www.root.cz/clanky/prace-se-seznamy-v-jazyce-f/</a>
+</li>
+
+<li>Programovací jazyk OCaml: rekurze, pattern matching a práce se seznamy<br />
+<a href="https://www.root.cz/clanky/programovaci-jazyk-ocaml-rekurze-pattern-matching-a-prace-se-seznamy/">https://www.root.cz/clanky/programovaci-jazyk-ocaml-rekurze-pattern-matching-a-prace-se-seznamy/</a>
+</li>
+
+<li>Datové typy Option, Result a Array v programovacím jazyku F#<br />
+<a href="https://www.root.cz/clanky/datove-typy-option-result-a-array-v-programovacim-jazyku-f/">https://www.root.cz/clanky/datove-typy-option-result-a-array-v-programovacim-jazyku-f/</a>
+</li>
+
+<li>Datové typy Option, Result a Array v programovacím jazyku OCaml <br />
+<a href="https://www.root.cz/clanky/datove-typy-option-result-a-array-v-programovacim-jazyku-ocaml/">https://www.root.cz/clanky/datove-typy-option-result-a-array-v-programovacim-jazyku-ocaml/</a>
+</li>
+
+<li>Operátory v programovacím jazyku OCaml<br />
+<a href="https://www.root.cz/clanky/operatory-v-programovacim-jazyku-ocaml/">https://www.root.cz/clanky/operatory-v-programovacim-jazyku-ocaml/</a>
+</li>
+
+<li>Operátory v programovacím jazyku F#<br />
+<a href="https://www.root.cz/clanky/operatory-v-programovacim-jazyku-f/">https://www.root.cz/clanky/operatory-v-programovacim-jazyku-f/</a>
+</li>
+
+<li>Definice uživatelských datových typů v jazyku F#<br />
+<a href="https://www.root.cz/clanky/definice-uzivatelskych-datovych-typu-v-jazyku-f/">https://www.root.cz/clanky/definice-uzivatelskych-datovych-typu-v-jazyku-f/</a>
+</li>
+
+<li>Definice uživatelských datových typů v jazyku OCaml<br />
+<a href="https://www.root.cz/clanky/definice-uzivatelskych-datovych-typu-v-jazyku-ocaml/">https://www.root.cz/clanky/definice-uzivatelskych-datovych-typu-v-jazyku-ocaml/</a>
+</li>
+
+<li>Rekurzivní datové typy v jazyku OCaml <br />
+<a href="https://www.root.cz/clanky/rekurzivni-datove-typy-v-jazyku-ocaml/">https://www.root.cz/clanky/rekurzivni-datove-typy-v-jazyku-ocaml/</a>
+</li>
+
+<li>Řídicí konstrukce v programovacím jazyku OCaml<br />
+<a href="https://www.root.cz/clanky/ridici-konstrukce-v-programovacim-jazyku-ocaml/">https://www.root.cz/clanky/ridici-konstrukce-v-programovacim-jazyku-ocaml/</a>
+</li>
+
+</ol>
+
+
+
+<h2 id="k20">Odkazy na Internetu</h2>
+
+<ol>
+
+<li>LunarML documentation<br />
+<a href="https://lunarml.readthedocs.io/en/latest/index.html">https://lunarml.readthedocs.io/en/latest/index.html</a>
+</li>
+
+<li>Standard ML of New Jersey<br />
+<a href="https://www.smlnj.org/">https://www.smlnj.org/</a>
+</li>
+
+<li>Programming Languages: Standard ML - 1 (a navazující videa)<br />
+<a href="https://www.youtube.com/watch?v=2sqjUWGGzTo">https://www.youtube.com/watch?v=2sqjUWGGzTo</a>
+</li>
+
+<li>6 Excellent Free Books to Learn Standard ML<br />
+<a href="https://www.linuxlinks.com/excellent-free-books-learn-standard-ml/">https://www.linuxlinks.com/excellent-free-books-learn-standard-ml/</a>
+</li>
+
+<li>SOSML: The Online Interpreter for Standard ML<br />
+<a href="https://sosml.org/">https://sosml.org/</a>
+</li>
+
+<li>ML (Computer program language)<br />
+<a href="https://www.barnesandnoble.com/b/books/other-programming-languages/ml-computer-program-language/_/N-29Z8q8Zvy7">https://www.barnesandnoble.com/b/books/other-programming-languages/ml-computer-program-language/_/N-29Z8q8Zvy7</a>
+</li>
+
+<li>Strong Typing<br />
+<a href="https://perl.plover.com/yak/typing/notes.html">https://perl.plover.com/yak/typing/notes.html</a>
+</li>
+
+<li>What to know before debating type systems<br />
+<a href="http://blogs.perl.org/users/ovid/2010/08/what-to-know-before-debating-type-systems.html">http://blogs.perl.org/users/ovid/2010/08/what-to-know-before-debating-type-systems.html</a>
+</li>
+
+<li>Types, and Why You Should Care (Youtube)<br />
+<a href="https://www.youtube.com/watch?v=0arFPIQatCU">https://www.youtube.com/watch?v=0arFPIQatCU</a>
+</li>
+
+<li>DynamicTyping (Martin Fowler)<br />
+<a href="https://www.martinfowler.com/bliki/DynamicTyping.html">https://www.martinfowler.com/bliki/DynamicTyping.html</a>
+</li>
+
+<li>DomainSpecificLanguage (Martin Fowler)<br />
+<a href="https://www.martinfowler.com/bliki/DomainSpecificLanguage.html">https://www.martinfowler.com/bliki/DomainSpecificLanguage.html</a>
+</li>
+
+<li>Language Workbenches: The Killer-App for Domain Specific Languages?<br />
+<a href="https://www.martinfowler.com/articles/languageWorkbench.html">https://www.martinfowler.com/articles/languageWorkbench.html</a>
+</li>
+
+<li>Effective ML (Youtube)<br />
+<a href="https://www.youtube.com/watch?v=-J8YyfrSwTk">https://www.youtube.com/watch?v=-J8YyfrSwTk</a>
+</li>
+
+<li>Why OCaml (Youtube)<br />
+<a href="https://www.youtube.com/watch?v=v1CmGbOGb2I">https://www.youtube.com/watch?v=v1CmGbOGb2I</a>
+</li>
+
+<li>CSE 341: Functions and patterns<br />
+<a href="https://courses.cs.washington.edu/courses/cse341/04wi/lectures/03-ml-functions.html">https://courses.cs.washington.edu/courses/cse341/04wi/lectures/03-ml-functions.html</a>
+</li>
+
+<li>Comparing Objective Caml and Standard ML<br />
+<a href="http://adam.chlipala.net/mlcomp/">http://adam.chlipala.net/mlcomp/</a>
+</li>
+
+<li>What are the key differences between Standard ML and OCaml?<br />
+<a href="https://www.quora.com/What-are-the-key-differences-between-Standard-ML-and-OCaml?share=1">https://www.quora.com/What-are-the-key-differences-between-Standard-ML-and-OCaml?share=1</a>
+</li>
+
+<li>Cheat Sheets (pro OCaml)<br />
+<a href="https://www.ocaml.org/docs/cheat_sheets.html">https://www.ocaml.org/docs/cheat_sheets.html</a>
+</li>
+
+<li>Syllabus (FAS CS51)<br />
+<a href="https://cs51.io/college/syllabus/">https://cs51.io/college/syllabus/</a>
+</li>
+
+<li>Abstraction and Design In Computation<br />
+<a href="http://book.cs51.io/">http://book.cs51.io/</a>
+</li>
+
+<li>Learn X in Y minutes Where X=Standard ML<br />
+<a href="https://learnxinyminutes.com/docs/standard-ml/">https://learnxinyminutes.com/docs/standard-ml/</a>
+</li>
+
+<li>CSE307 Online - Summer 2018: Principles of Programing Languages course<br />
+<a href="https://www3.cs.stonybrook.edu/~pfodor/courses/summer/cse307.html">https://www3.cs.stonybrook.edu/~pfodor/courses/summer/cse307.html</a>
+</li>
+
+<li>CSE307 Principles of Programming Languages course: SML part 1<br />
+<a href="https://www.youtube.com/watch?v=p1n0_PsM6hw">https://www.youtube.com/watch?v=p1n0_PsM6hw</a>
+</li>
+
+<li>CSE 307 &ndash; Principles of Programming Languages &ndash; SML<br />
+<a href="https://www3.cs.stonybrook.edu/~pfodor/courses/summer/CSE307/L01_SML.pdf">https://www3.cs.stonybrook.edu/~pfodor/courses/summer/CSE307/L01_SML.pdf</a>
+</li>
+
+<li>SML, Some Basic Examples<br />
+<a href="https://cs.fit.edu/~ryan/sml/intro.html">https://cs.fit.edu/~ryan/sml/intro.html</a>
+</li>
+
+<li>History of programming languages<br />
+<a href="https://devskiller.com/history-of-programming-languages/">https://devskiller.com/history-of-programming-languages/</a>
+</li>
+
+<li>History of programming languages (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/History_of_programming_languages">https://en.wikipedia.org/wiki/History_of_programming_languages</a>
+</li>
+
+<li>Jemný úvod do rozsáhlého světa jazyků LISP a Scheme<br />
+<a href="https://www.root.cz/clanky/jemny-uvod-do-rozsahleho-sveta-jazyku-lisp-a-scheme/">https://www.root.cz/clanky/jemny-uvod-do-rozsahleho-sveta-jazyku-lisp-a-scheme/</a>
+</li>
+
+<li>The Evolution Of Programming Languages<br />
+<a href="https://www.i-programmer.info/news/98-languages/8809-the-evolution-of-programming-languages.html">https://www.i-programmer.info/news/98-languages/8809-the-evolution-of-programming-languages.html</a>
+</li>
+
+<li>Evoluce programovacích jazyků<br />
+<a href="https://ccrma.stanford.edu/courses/250a-fall-2005/docs/ComputerLanguagesChart.png">https://ccrma.stanford.edu/courses/250a-fall-2005/docs/ComputerLanguagesChart.png</a>
+</li>
+
+<li>Poly/ML Homepage<br />
+<a href="https://polyml.org/">https://polyml.org/</a>
+</li>
+
+<li>PolyConf 16: A brief history of F# / Rachel Reese<br />
+<a href="https://www.youtube.com/watch?v=cbDjpi727aY">https://www.youtube.com/watch?v=cbDjpi727aY</a>
+</li>
+
+<li>Programovací jazyk Clojure 18: základní techniky optimalizace aplikací<br />
+<a href="https://www.root.cz/clanky/programovaci-jazyk-clojure-18-zakladni-techniky-optimalizace-aplikaci/">https://www.root.cz/clanky/programovaci-jazyk-clojure-18-zakladni-techniky-optimalizace-aplikaci/</a>
+</li>
+
+<li>Moscow ML Language Overview<br />
+<a href="https://itu.dk/people/sestoft/mosml/mosmlref.pdf">https://itu.dk/people/sestoft/mosml/mosmlref.pdf</a>
+</li>
+
+<li>ForLoops<br />
+<a href="http://mlton.org/ForLoops">http://mlton.org/ForLoops</a>
+</li>
+
+<li>Funkcionální dobrodružství v&nbsp;JavaScriptu<br />
+<a href="https://blog.kolman.cz/2015/12/funkcionalni-dobrodruzstvi-v-javascriptu.html">https://blog.kolman.cz/2015/12/funkcionalni-dobrodruzstvi-v-javascriptu.html</a>
+</li>
+
+<li>Recenze knihy Functional Thinking (Paradigm over syntax)<br />
+<a href="https://www.root.cz/clanky/recenze-knihy-functional-thinking-paradigm-over-syntax/">https://www.root.cz/clanky/recenze-knihy-functional-thinking-paradigm-over-syntax/</a>
+</li>
+
+<li>Currying<br />
+<a href="https://sw-samuraj.cz/2011/02/currying/">https://sw-samuraj.cz/2011/02/currying/</a>
+</li>
+
+<li>Používání funkcí v&nbsp;F#<br />
+<a href="https://docs.microsoft.com/cs-cz/dotnet/fsharp/tutorials/using-functions">https://docs.microsoft.com/cs-cz/dotnet/fsharp/tutorials/using-functions</a>
+</li>
+
+<li>Funkce vyššího řádu<br />
+<a href="http://naucte-se.haskell.cz/funkce-vyssiho-radu">http://naucte-se.haskell.cz/funkce-vyssiho-radu</a>
+</li>
+
+<li>Currying (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/Currying">https://en.wikipedia.org/wiki/Currying</a>
+</li>
+
+<li>Currying (Haskell wiki)<br />
+<a href="https://wiki.haskell.org/Currying">https://wiki.haskell.org/Currying</a>
+</li>
+
+<li>Haskell Curry<br />
+<a href="https://en.wikipedia.org/wiki/Haskell_Curry">https://en.wikipedia.org/wiki/Haskell_Curry</a>
+</li>
+
+<li>Moses Schönfinkel<br />
+<a href="https://en.wikipedia.org/wiki/Moses_Sch%C3%B6nfinkel">https://en.wikipedia.org/wiki/Moses_Sch%C3%B6nfinkel</a>
+</li>
+
+<li>Fibonacci sequence<br />
+<a href="https://en.wikipedia.org/wiki/Fibonacci_sequence">https://en.wikipedia.org/wiki/Fibonacci_sequence</a>
+</li>
+
+<li>Moonscript: jazyk inspirovaný CoffeeScriptem určený pro ekosystém jazyka Lua<br />
+<a href="https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua/">https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua/</a>
+</li>
+
+<li>Moonscript: jazyk inspirovaný CoffeeScriptem určený pro ekosystém jazyka Lua (2)<br />
+<a href="https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua-2/">https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua-2/</a>
+</li>
+
+<li>Moonscript: jazyk inspirovaný CoffeeScriptem určený pro ekosystém jazyka Lua (dokončení)<br />
+<a href="https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua-dokonceni/">https://www.root.cz/clanky/moonscript-jazyk-inspirovany-coffeescriptem-urceny-pro-ekosystem-jazyka-lua-dokonceni/</a>
+</li>
+
+<li>Programovací jazyk Lua v&nbsp;roli skriptovacího jazyka pro WWW stránky<br />
+<a href="https://www.root.cz/clanky/programovaci-jazyk-lua-v-roli-skriptovaciho-jazyka-pro-www-stranky/">https://www.root.cz/clanky/programovaci-jazyk-lua-v-roli-skriptovaciho-jazyka-pro-www-stranky/</a>
+</li>
+
+<li>Transcrypt: technologie umožňující použití Pythonu v&nbsp;prohlížeči<br />
+<a href="https://www.root.cz/clanky/transcrypt-technologie-umoznujici-pouziti-pythonu-v-prohlizeci/">https://www.root.cz/clanky/transcrypt-technologie-umoznujici-pouziti-pythonu-v-prohlizeci/</a>
+</li>
+
+<li>GopherJS: transpřekladač z&nbsp;jazyka Go do JavaScriptu<br />
+<a href="https://www.root.cz/clanky/gopherjs-transprekladac-z-jazyka-go-do-javascriptu/">https://www.root.cz/clanky/gopherjs-transprekladac-z-jazyka-go-do-javascriptu/</a>
+</li>
+
+<li>Rychlost CPythonu 3.11 a 3.12 v&nbsp;porovnání s&nbsp;JIT a AOT překladači<br />
+<a href="https://www.root.cz/clanky/rychlost-cpythonu-3-11-a-3-12-v-porovnani-s-jit-a-aot-prekladaci-pythonu/">https://www.root.cz/clanky/rychlost-cpythonu-3-11-a-3-12-v-porovnani-s-jit-a-aot-prekladaci-pythonu/</a>
+</li>
+
+<li>Seriál F# a OCaml<br />
+<a href="https://www.root.cz/serialy/f-a-ocaml/">https://www.root.cz/serialy/f-a-ocaml/</a>
+</li>
+
+<li>Haskell or Standard ML for beginners?<br />
+<a href="https://stackoverflow.com/questions/810409/haskell-or-standard-ml-for-beginners#813646">https://stackoverflow.com/questions/810409/haskell-or-standard-ml-for-beginners#813646</a>
+</li>
+
+</ol>
