@@ -51,7 +51,7 @@
 <p><a href="#k12">12. Implementace zařízení, které dokáže provádět manipulace se sprity na obrazovce</a></p>
 <p><a href="#k13">13. Základní schopnosti nabízené zařízeními G1 až G4</a></p>
 <p><a href="#k14">14. Kopie dat z&nbsp;jednoho zařízení G do jiného zařízení G</a></p>
-<p><a href="#k15">*** 15. Realizace jednotlivých CIO operací v&nbsp;assembleru</a></p>
+<p><a href="#k15">15. Realizace jednotlivých CIO operací v&nbsp;assembleru</a></p>
 <p><a href="#k16">16. Úplný zdrojový kód demonstračního příkladu s&nbsp;realizací ovladače zařízení G</a></p>
 <p><a href="#k17">17. Komplexní demo ukazující všechny možnosti zařízení G</a></p>
 <p><a href="#k18">18. Příloha: Makefile pro překlad všech demonstračních příkladů</a></p>
@@ -1643,6 +1643,27 @@ visual_markers:
     .byte $08, $08, $08, $49, $2A, $1C, $08, $FF
 </pre>
 
+<p>Poslední &bdquo;datová část&ldquo; obsahuje definici dvojice bajtů
+z&nbsp;nulté stránky, které použijeme pro nepřímé adresování:</p>
+
+<pre>
+<i>; address of two bytes allocated on zero page:</i>
+<i>; $CE, $CF    ; cur_base_l :L,:H</i>t
+cur_base_l = $ce
+cur_base_h = cur_base_l + 1
+<i>; the following address will be used in the code</i>
+cur_base = cur_base_l
+</pre>
+
+<p>Samotný kód ovladače zařízení je rozdělen do několika subrutin. První
+subrutina (zdaleka nejdelší) je volána v&nbsp;případě, že se má zařízení
+otevřít. Na základě zvoleného režimu (čtení/zápis) jsou provedeny různé operace
+s&nbsp;bufferem a taktéž se provede vykreslení šipek (sprite) na obrazovku.
+Povšimněte si, jak se zde pracuje s&nbsp;číslem zařízení, které je uloženo na
+adrese <strong>ICDNOZ</strong> ($21, tedy na nulté stránce). Taktéž se pracuje
+adresou <strong>ICAX1Z</strong>, na kterou je uloženo první číslo použité
+v&nbsp;příkazu OPEN:</p>
+
 <pre>
 <i>; ============</i>
 <i>; HATABS_OPEN</i>
@@ -1701,6 +1722,9 @@ open_exit:
         rts
 </pre>
 
+<p>Realizace operace CLOSE je mnohem jednodušší, protože postačuje posunout
+odpovídající sprite mimo obrazovku (před její levý okraj):</p>
+
 <pre>
 <i>; ============</i>
 <i>; HATABS_CLOSE</i>
@@ -1718,11 +1742,130 @@ open_exit:
         rts
 </pre>
 
-<pre>
-</pre>
+<p>Následuje realizace operace čtení, která dokáže vrátit data zapsaná do
+bufferu zařízení. Samozřejmě se testuje, zda se program nesnaží číst
+neexistující (nezapsaná) data, zda se nenacházíme na konci bufferu atd. A navíc
+by měl korektní ovladač vrátit chybu v&nbsp;případě, kdy se pokoušíme číst data
+ze zařízení určeného pouze pro zápis (reálně tiskárna, v&nbsp;našem případě
+zařízení otevřené v&nbsp;režimu 8):</p>
 
 <pre>
+<i>; ============</i>
+<i>; HATABS_GET_CHAR</i>
+<i>; ============</i>
+<i>; IN:  X - channel number * $10</i>
+<i>; OUT: Y: 01 = success</i>
+<i>;        &gt;80 = error (see the CIO err_code list)</i>
+<i>;      A: the byte read</i>
+<strong>g_get</strong>:
+        lda ICAX1, x
+        cmp #$09
+        bne no_wr_append
+        ldy #WRONLY   <i>; error_code "attempted to read a write-only device"</i>
+        rts
+&nbsp;
+no_wr_append:
+        lda ICDNO, x
+        tax
+        dex           <i>; dev number 0-3 to X</i>
+        jsr get_dev_base
+        lda read_cursors, x   <i>; read_cursor</i>
+        cmp write_cursors, x  <i>; is lower then write_cursor?</i>
+        bcc read_ok
+        ldy #EOFERR      <i>; error_code "end of file"</i>
+        rts
+&nbsp;
+read_ok:
+        tay
+        lda (cur_base), y     <i>; read byte from the device</i>
+        inc read_cursors, x
+        ldy #SUCCES
+        rts
 </pre>
+
+<p>Podobným způsobem je realizována i subrutina pro zápis dat na zařízení. Opět
+je nutné testovat, zda je zařízení otevřeno v&nbsp;režimu zápisu či připojení
+dat, jestli je v&nbsp;bufferu dostatek místa pro zápis atd. A úspěšný zápis
+pochopitelně znamená, že se změní tvar příslušného spritu na obrazovce:</p>
+
+<pre>
+<i>; ============</i>
+<i>; HATABS_PUT_CHAR</i>
+<i>; ============</i>
+<i>; IN:  A: the byte to write</i>
+<i>; OUT: Y: 01 = success</i>
+<i>;        >80 = error (see the CIO err_code list)</i>
+g_put:
+        pha
+        ldy #FNCNOT   <i>; error_code "function not implemented in handler"</i>
+        lda #$08
+        bit ICAX1Z    <i>; throw the error</i>
+        beq exit_w_error
+        lda ICDNO, x
+        tax
+        dex                        <i>; dev number 0-3 to X</i>
+        jsr get_dev_base
+        lda write_cursors, x
+        cmp #cursor_top_limit      <i>; still a space in the buff?</i>
+        bcc write_ok
+        ldy #EOFERR                <i>; error_code "end of file"</i>
+exit_w_error:
+        pla
+        rts
+&nbsp;
+write_ok:
+        tay
+        pla
+        sta (cur_base),y          <i>; store the byte in the device</i>
+        inc write_cursors, x
+        ldy #SUCCES
+        rts
+</pre>
+
+<p>Počáteční inicializace zařízení implementovaná v&nbsp;subrutině
+<strong>init_dev_data</strong> sice vypadá komplikovaně, ovšem provádí se zde
+pouze vykreslení šipek (horní a dolní <i>marker</i>):</p>
+
+<pre>
+<i>; ============</i>
+<i>; Init Device Data</i>
+<i>; ============</i>
+<i>; IN:   cur_base must be set</i>
+<i>; OUT:  device data cleared + markers drawn</i>
+<strong>init_dev_data</strong>:
+        ldy #$80
+        lda #$00
+null_loop:
+        dey
+        sta (cur_base),y
+        bne null_loop
+        txa
+        pha
+        ldx #$07	<i>; draw visual markers - top</i>
+        ldy #$0F
+marker_bot:
+        lda visual_markers, x
+        sta (cur_base),y
+        dey
+        dex
+        bne marker_bot
+&nbsp;
+        ldx #$07	<i>; draw visual markers - bottom</i>
+        ldy #$70
+marker_top:
+        lda visual_markers, x
+        sta (cur_base),y
+        iny
+        dex
+        bne marker_top
+&nbsp;
+        pla
+        tax
+        rts
+</pre>
+
+<p>Pomocná subrutina <strong>show_dev</strong> nastaví barvu a pozici spritu
+(hráče), jehož index odpovídá číslu zařízení:</p>
 
 <pre>
 <i>; ============</i>
@@ -1737,6 +1880,72 @@ open_exit:
         lda dev_hpos, x
         sta HPOSP0, x
         rts
+</pre>
+
+<p>A konečně inicializační rutina <strong>g_init</strong>, která je volaná
+z&nbsp;BASICu příkazem PRINT USR, zaregistruje nová zařízení do tabulky HATABS
+(voláním rutiny operačního systému &ndash; to je novinka), povolí zobrazení
+hráčů (PMG), nastaví priority spritů, adresy, na kterých jsou sprity (a buffery
+zařízení) uloženy, jejich horizontální pozice mimo obrazovku atd.:</p>
+
+<pre>
+<i>; ============</i>
+<i>; main()</i>
+<i>; ============</i>
+<i>; !!! contains extra PLA at the end</i>
+<i>;     to be called from BASIC using USR()</i>
+<strong>g_init</strong>:
+        pha
+        txa
+        pha
+        tya
+        pha
+&nbsp;
+&nbsp;
+<i>; Add device using OS method</i>
+&nbsp;
+        ldx #'G'      <i>; device name</i>
+        ldy #&lt;hatabs_handler
+        lda #&gt;hatabs_handler
+        jsr PHENTV    <i>; ADD_NEWDEV</i>
+        bcs exit_init
+&nbsp;
+<i>; set space in RAM and init GTIA</i>
+&nbsp;
+        lda #&lt;begin
+        sta MEMTOP
+        lda #&gt;begin
+        sta MEMTOP+1
+&nbsp;
+        sta PMBASE
+        ldx #$03          <i>; init all devices data</i>
+loop_init:
+        jsr get_dev_base
+        jsr init_dev_data
+        dex
+        bpl loop_init
+&nbsp;
+        lda #$00
+        sta HPOSP0
+        sta HPOSP1
+        sta HPOSP2
+        sta HPOSP3
+        lda #$01
+        sta GPRIOR
+        lda #$03    <i>; enable sprites</i>
+        sta GRACTL
+        lda #$2E    <i>; enable DMA for display list and sprites, set normal playfield width</i>
+        sta SDMCTL
+exit_init:
+        pla
+        tay
+        pla
+        tax
+        pla
+        pla
+        rts
+&nbsp;
+end:
 </pre>
 
 
@@ -3085,7 +3294,12 @@ skripty naprogramované v&nbsp;Atari BASICu:</p>
 <tr><td>456</td><td>g_device_list.asm</td><td>&bdquo;listing&ldquo; vygenerovaný assemblerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/g_device_list.asm">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/g_device_list.asm</a></td></tr>
 <tr><td>457</td><td>g_device.map</td><td>mapa paměti; soubor vytvořený linkerem</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/g_device.map">https://github.com/tisnik/8bit-fame/blob/master/Atari800-ca65/g_device.map</a></td></tr>
 <tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-<tr><td>458</td><td>g_device.bas</td><td>demo ukazující možnosti zařízení G (Atari Basic), realizace přes <strong>XIO</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device.bas</a></td></tr>
+<tr><td>458</td><td>g_device.bas</td><td>komplexní demo ukazující možnosti zařízení G (Atari Basic), realizace přes <strong>CIO</strong></td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device.bas</a></td></tr>
+<tr><td>459</td><td>g_device_1.bas</td><td>demo ukazující možnosti zařízení G (Atari Basic): otevření a zavření</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_1.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_1.bas</a></td></tr>
+<tr><td>460</td><td>g_device_2.bas</td><td>demo ukazující možnosti zařízení G (Atari Basic): práce s&nbsp;více zařízeními</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_2.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_2.bas</a></td></tr>
+<tr><td>461</td><td>g_device_3.bas</td><td>demo ukazující možnosti zařízení G (Atari Basic): zápis dat na jedno zařízení</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_3.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_3.bas</a></td></tr>
+<tr><td>461</td><td>g_device_4.bas</td><td>demo ukazující možnosti zařízení G (Atari Basic): zápis dat na více zařízení</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_4.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_4.bas</a></td></tr>
+<tr><td>462</td><td>g_device_5.bas</td><td>demo ukazující možnosti zařízení G (Atari Basic): kopie dat mezi dvěma zařízeními</td><td><a href="https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_5.bas">https://github.com/tisnik/8bit-fame/blob/master/Atari%20BASIC/g_device_5.bas</a></td></tr>
 </table>
 
 
