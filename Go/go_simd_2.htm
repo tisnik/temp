@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html>
 <head>
-<title></title>
+<title>Dlouho očekávaná podpora SIMD operací v programovacím jazyku Go (2. část)</title>
 <meta name="Author" content="Pavel Tisnovsky" />
 <meta name="Generator" content="vim" />
 <meta http-equiv="content-type" content="text/html; charset=utf-8" />
@@ -23,7 +23,7 @@
 
 <body>
 
-<h1></h1>
+<h1>Dlouho očekávaná podpora SIMD operací v programovacím jazyku Go (2. část)</h1>
 
 <h3>Pavel Tišnovský</h3>
 
@@ -37,9 +37,9 @@
 
 <h2>Obsah</h2>
 
-<p><a href="#k01">*** 1. </a></p>
-<p><a href="#k02">*** 2. </a></p>
-<p><a href="#k03">*** 3. </a></p>
+<p><a href="#k01">*** 1. Dlouho očekávaná podpora SIMD operací v&nbsp;programovacím jazyku Go (2. část)</a></p>
+<p><a href="#k02">*** 2. Podpora instrukcí z&nbsp;podmnožiny FMA</a></p>
+<p><a href="#k03">*** 3. Demonstrační příklad: základní varianta operace fused multiply-add</a></p>
 <p><a href="#k04">*** 4. </a></p>
 <p><a href="#k05">*** 5. </a></p>
 <p><a href="#k06">*** 6. </a></p>
@@ -55,23 +55,93 @@
 <p><a href="#k16">*** 16. </a></p>
 <p><a href="#k17">*** 17. </a></p>
 <p><a href="#k18">*** 18. Repositář s&nbsp;demonstračními příklady</a></p>
-<p><a href="#k19">*** 19. </a></p>
+<p><a href="#k19">*** 19. Seznam všech předchozích částí seriálu a článků o SIMD instrukcích</a></p>
 <p><a href="#k20">*** 20. Odkazy na Internetu</a></p>
 
 
 
 <p><a name="k01"></a></p>
-<h2 id="k01">1. </h2>
+<h2 id="k01">1. Dlouho očekávaná podpora SIMD operací v&nbsp;programovacím jazyku Go (2. část)</h2>
 
 
 
 <p><a name="k02"></a></p>
-<h2 id="k02">2. </h2>
+<h2 id="k02">2. Podpora instrukcí z&nbsp;podmnožiny FMA</h2>
+
+<p>První rozšíření instrukční sady, se kterým se v&nbsp;dnešním článku setkáme, se jmenuje <i>FMA</i>, což je zkratka odvozená z&nbsp;celého názvu <i>Fused Multiply–Add</i>. Z&nbsp;tohoto názvu je možné odvodit, že v&nbsp;tomto rozšíření nalezneme instrukci pro provedení operace <strong>a·b + c</strong>, ale i další varianty této instrukce, v&nbsp;nichž se navíc mění znaménka jednotlivých operandů popř.&nbsp;pořadí operandů (má význam především ve chvíli, kdy je jeden z&nbsp;operandů uložen v&nbsp;paměti a nikoli v&nbsp;pracovním registru). Účelem tohoto rozšíření je (relativně nepatrně) zvýšit výpočetní rychlost, ale především provést výpočet bez mezizaokrouhlení výsledků. Výpočty probíhají nad typem <i>single</i> či <i>double</i> (skalární varianta) popř.&nbsp;nad vektory s&nbsp;typy <i>single</i> a <i>double</i>.</p>
+
+<p>Ve skutečnosti <i>FMA</i> existuje ve dvou variantách &ndash; FMA3 a FMA4.  V&nbsp;dnešním článku se zaměříme na FMA3, protože toto rozšíření je v&nbsp;současnosti podporováno jak čipy od AMD, tak i od Intelu (na rozdíl od FMA4, které je prozatím podporováno jen čipy od AMD).</p>
+
+<p>V&nbsp;rozšíření FMA3 lze nalézt jen malé množství nových instrukcí, k&nbsp;jejichž jménům je ještě přidán postfixový kód popsaný níže:</p>
+
+<table>
+<tr><th>Instrukce</th><th>Stručný popis instrukce</th><th>Poznámka</th></tr>
+<tr><td>VFMADD</td><td>x = +a · b + c</td><td>&nbsp;</td></tr>
+<tr><td>VFNMADD</td><td>x = -a · b + c</td><td>N - negate</td></tr>
+<tr><td>VFMSUB</td><td>x = +a · b - c</td><td>&nbsp;</td></tr>
+<tr><td>VFMADDSUB</td><td>x = +a · b + c nebo x = +a · b - c</td><td>otočení znaménka u vybraných prvků vektoru c</td></tr>
+<tr><td>VFMSUBADD</td><td>x = +a · b − c nebo x = +a · b + c</td><td>otočení znaménka u vybraných prvků vektoru c</td></tr>
+</table>
+
+<p>U konkrétních instrukcí se uvádí i postfixový kód, který určuje pořadí operandů. Tento postfix uvidíme i v&nbsp;následujících kapitolách:</p>
+
+<table>
+<tr><th>Postfixový kód</th><th>Význam</th></tr>
+<tr><td>132</td><td>a = a · c + b</td></tr>
+<tr><td>213</td><td>a = b · a + c</td></tr>
+<tr><td>231</td><td>a = b · c + a</td></tr>
+</table>
+
+<p><div class="rs-tip-major">Poznámka: z&nbsp;tabulky je patrné, že kód uvádí pořadí operandů oproti standardnímu pořadí, které by se zapsalo postfixem 123.</div></p>
 
 
 
 <p><a name="k03"></a></p>
-<h2 id="k03">3. </h2>
+<h2 id="k03">3. Demonstrační příklad: základní varianta operace fused multiply-add</h2>
+
+<p></p>
+
+<pre>
+// ----------------------------------------------------------------------
+// Podpora nativních SIMD operací v experimentálním balíčku simd/archsimd
+// ----------------------------------------------------------------------
+
+package main
+
+import (
+        "fmt"
+        "simd/archsimd"
+)
+
+func main() {
+        // konstrukce a inicializace pole s odvozením počtu prvků
+        a1 := [...]float32{1.0, 2.0, 3.0, 4.0}
+        a2 := [...]float32{2.0, 2.0, 2.0, 2.0}
+        a3 := [...]float32{100.0, 100.0, 100.0, 100.0}
+
+        // výpis obsahu polí
+        fmt.Println("a1 =       ", a1)
+        fmt.Println("a2 =       ", a2)
+        fmt.Println("a3 =       ", a3)
+
+        // převod pole na vektor se čtyřmi prvky
+        v1 := archsimd.LoadFloat32x4Array(&amp;a1)
+        v2 := archsimd.LoadFloat32x4Array(&amp;a2)
+        v3 := archsimd.LoadFloat32x4Array(&amp;a3)
+
+        // výpočet
+        v4 := v1.MulAdd(v2, v3)
+
+        // konstrukce řezu
+        result := make([]float32, 4)
+
+        // zápis prvků vektoru do řezu
+        v4.Store(result)
+
+        // výpis obsahu řezu
+        fmt.Println("a1*a2+a3 = ", result)
+}
+</pre>
 
 
 
@@ -146,17 +216,65 @@
 
 
 <p><a name="k18"></a></p>
-<h2 id="k18">18. </h2>
+<h2 id="k18">18. Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Zdrojové kódy všech dnes použitých demonstračních příkladů byly uloženy do
+Git repositáře, který je dostupný na adrese <a
+href="https://github.com/tisnik/go-root">https://github.com/tisnik/go-root</a>.
+Všechny příklady vyžadují Go verze 1.26 nebo 1.27.  V&nbsp;případě, že nebudete
+chtít klonovat celý repositář (ten je ovšem &ndash; alespoň prozatím &ndash;
+relativně malý, dnes má přibližně šest až sedm megabajtů), můžete namísto toho
+použít odkazy na jednotlivé demonstrační příklady, které naleznete
+v&nbsp;následující tabulce:</p>
+
+<table>
+<tr><th> #</th><th>Příklad</th><th>Stručný popis</th><th>Cesta</th></tr>
+<tr><td> 1</td><td>test_avx.go</td><td>runtime test, zda procesor podporuje instrukční sadu AVX</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/test_avx.go">https://github.com/tisnik/go-root/blob/master/simd/test_avx.go</a></td></tr>
+<tr><td> 2</td><td>test_other_variants.go</td><td>runtime test, zda procesor podporuje další rozšíření instrukční sady o SIMD operace</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/test_other_variants.go">https://github.com/tisnik/go-root/blob/master/simd/test_other_variants.go</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>vector_add_1.go</td><td>součet dvou vektorů typu Float32x4</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_add_1.go">https://github.com/tisnik/go-root/blob/master/simd/vector_add_1.go</a></td></tr>
+<tr><td> 4</td><td>vector_add_2.go</td><td>součet dvou vektorů typu Float32x4 (upraveno do samostatné funkce)</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_add_2.go">https://github.com/tisnik/go-root/blob/master/simd/vector_add_2.go</a></td></tr>
+<tr><td> 5</td><td>vector_add_3.go</td><td>součet dvou vektorů typu Float32x8</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_add_3.go">https://github.com/tisnik/go-root/blob/master/simd/vector_add_3.go</a></td></tr>
+<tr><td> 6</td><td>vector_add_4.go</td><td>součet dvou vektorů typu Float32x16</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_add_4.go">https://github.com/tisnik/go-root/blob/master/simd/vector_add_4.go</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>vector_unary.go</td><td>základní unární operace s&nbsp;vektory</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_unary.go">https://github.com/tisnik/go-root/blob/master/simd/vector_unary.go</a></td></tr>
+<tr><td> 8</td><td>vector_binary.go</td><td>základní binární operace s&nbsp;vektory</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_binary.go">https://github.com/tisnik/go-root/blob/master/simd/vector_binary.go</a></td></tr>
+<tr><td> 9</td><td>vector_round.go</td><td>zaokrouhlení a podobné operace s&nbsp;vektory</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_round.go">https://github.com/tisnik/go-root/blob/master/simd/vector_round.go</a></td></tr>
+<tr><td>10</td><td>vector_broadcast.go</td><td>naplnění všech prvků vektoru stejnou hodnotou</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_broadcast.go">https://github.com/tisnik/go-root/blob/master/simd/vector_broadcast.go</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>vector_comparison.go</td><td>porovnání prvků dvou vektorů</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_comparison.go">https://github.com/tisnik/go-root/blob/master/simd/vector_comparison.go</a></td></tr>
+<tr><td>12</td><td>vector_masked.go</td><td>základní operace s&nbsp;maskou</td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_masked.go">https://github.com/tisnik/go-root/blob/master/simd/vector_masked.go</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>vector_mul_add_1.go</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_mul_add_1.go">https://github.com/tisnik/go-root/blob/master/simd/vector_mul_add_1.go</a></td></tr>
+<tr><td>14</td><td>vector_mul_add_2.go</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_mul_add_2.go">https://github.com/tisnik/go-root/blob/master/simd/vector_mul_add_2.go</a></td></tr>
+<tr><td>15</td><td>vector_mul_add_3.go</td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/vector_mul_add_3.go">https://github.com/tisnik/go-root/blob/master/simd/vector_mul_add_3.go</a></td></tr>
+<tr><td>16</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/">https://github.com/tisnik/go-root/blob/master/simd/</a></td></tr>
+<tr><td>17</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/">https://github.com/tisnik/go-root/blob/master/simd/</a></td></tr>
+<tr><td>18</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/">https://github.com/tisnik/go-root/blob/master/simd/</a></td></tr>
+<tr><td>19</td><td></td><td></td><td><a href="https://github.com/tisnik/go-root/blob/master/simd/">https://github.com/tisnik/go-root/blob/master/simd/</a></td></tr>
+</table>
+
+int_vectors_add_1.go
+int_vectors_add_2.go
+int_vectors_add_3.go
+int_vectors_add_normal.go
+int_vectors_add_saturated.go
+uint_vectors_add_normal.go
+uint_vectors_add_saturated.go
+uint_vectors_sub_normal.go
+uint_vectors_sub_saturated.go
+dot_product_1.go
+dot_product_2.go
 
 
 
 <p><a name="k19"></a></p>
 <h2 id="k19">19. Seznam všech předchozích částí seriálu a článků o SIMD instrukcích</h2>
 
-<p>Podporou SIMD instrukcí na úrovni <i>intrinsic</i>
-(v&nbsp;céčku) jsme se už na Rootu zabývali, stejně jako samotnými
-SIMD instrukcemi na úrovni assembleru. Pro úplnost jsou
-v&nbsp;této příloze uvedeny odkazy na příslušné články:</p>
+<p>Podporou SIMD instrukcí na úrovni <i>intrinsic</i> (v&nbsp;céčku, nikoli
+v&nbsp;jazyku Go) jsme se už na Rootu zabývali, stejně jako samotnými SIMD
+instrukcemi na úrovni assembleru. Pro úplnost jsou v&nbsp;této příloze uvedeny
+odkazy na příslušné články:</p>
 
 <ol>
 
@@ -485,6 +603,14 @@ Intel corporation, 1996</li>
 
 <li>Aligned and unaligned memory accesses?<br />
 <a href="https://stackoverflow.com/questions/1063809/aligned-and-unaligned-memory-accesses">https://stackoverflow.com/questions/1063809/aligned-and-unaligned-memory-accesses</a>
+</li>
+
+<li>Go finally gets SIMD in 1.26<br />
+<a href="https://hexfusion.io/posts/go-simd-art/">https://hexfusion.io/posts/go-simd-art/</a>
+</li>
+
+<li>simd/archsimd: architecture-specific SIMD intrinsics under a GOEXPERIMENT #73787<br />
+<a href="https://github.com/golang/go/issues/73787">https://github.com/golang/go/issues/73787</a>
 </li>
 
 </ol>
