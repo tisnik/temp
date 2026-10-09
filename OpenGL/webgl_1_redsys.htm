@@ -1,0 +1,1252 @@
+<h2 id="k01">WebGL: tvorba 3D grafiky s&nbsp;využitím programovatelné vykreslovací pipeline</h2>
+
+<p>Programy, ve kterých je nějakým způsobem využita (interaktivní) 3D grafika,
+nejsou omezeny na hry běžící v&nbsp;celoobrazovkovém režimu ani na desktopové
+aplikace. Podpora pro 3D grafiku je totiž integrována i do webových prohlížečů,
+které díky technologii nazvané <i>WebGL</i> umožňují nakonfigurovat
+vykreslovací řetězec (pipeline) i naprogramovat takzvané <i>shadery</i>, které
+jsou vykreslovacím řetězcem použity. Využívá se přitom <i>OpenGL ES</i>,
+přičemž zkratka ES znamená &bdquo;embedded systems&ldquo;. Striktně řečeno
+webové prohlížeče do této kategorie nespadají, ovšem díky tomu, že je <i>OpenGL
+ES</i> podporováno jak v&nbsp;prohlížečích, tak i například ve smartphonech, se
+jedná o zajímavou a užitečnou technologii, kterou je vhodné prozkoumat a
+porovnat ji s&nbsp;původní myšlenkou OpenGL (která byla společně s&nbsp;vývojem
+programovatelných GPU rozšířena).</p>
+
+<p>V&nbsp;praktické části článku si ukážeme základy OpenGL ES. Využijeme přitom
+pouze webový prohlížeč (a programátorský textový editor). Žádné další nástroje
+(překladače, NPM atd.) nejsou zapotřebí.</p>
+
+
+
+<h2 id="k02">Původní neměnitelný vykreslovací řetězec (pipeline) v&nbsp;OpenGL</h2>
+
+<p>V&nbsp;této kapitole si ve stručnosti a s&nbsp;malými nepřesnostmi popíšeme
+původní pevný (neprogramovatelný) vykreslovací řetězec OpenGL, který se
+používal na pracovních stanicích i v&nbsp;PC (typicky před příchodem
+programovatelných GPU). Při vykreslování 2D obrazců či celých 3D scén se do
+vykreslovacího řetězce (<i>rendering pipeline</i>) OpenGL nahrávají dva odlišné
+typy dat: údaje o vrcholech (vertex) a rastrová data. Tato data jsou průběžně
+vykreslovacím řetězcem zpracovávána, přičemž se na výstupu (ve framebufferu)
+vytváří rastrová podoba zadané scény, která je následně zobrazena na monitoru.
+Jednotlivé moduly vykreslovacího řetězce jsou zobrazeny na následujícím
+obrázku:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332213" data-alignment="center" data-link-type="modal">Obrázek #1332213 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332213">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332213" src="https://i.iinfo.cz/images/25/opengl-pipeline-prev.gif" width="370" height="226" data-prev-filename="https://i.iinfo.cz/images/25/opengl-pipeline-prev.gif" data-prev-width="370" data-prev-height="226" data-large-filename="https://i.iinfo.cz/images/25/opengl-pipeline.gif" data-large-width="512" data-large-height="313">
+<p class="description">Obrázek 1: Pevná vykreslovací pipeline OpenGL.</p>
+</div>
+</div>
+
+<p>V&nbsp;dalších odstavcích budou tyto moduly podrobněji popsány. Všimněme si
+však nejprve celkové koncepce systému. Vykreslovaná data jsou logicky rozdělena
+na geometrickou část (vrcholy neboli vertexy grafických primitiv) a rastrovou
+část (bitmapy, pixmapy, textury). Tato data jsou ze začátku zpracovávána
+odděleně a teprve při rasterizaci v&nbsp;modulu označeném <i>Rasterization</i>
+dojde k&nbsp;jejich vzájemnému spojení. Po vykreslení dat do framebufferu je
+možné některé údaje z&nbsp;framebufferu přečíst zpátky do hlavní paměti
+procesoru nebo již vykreslený snímek zkombinovat se snímkem, který právě
+vzniká. Tato technika se používá například při <i>blendingu</i> nebo vykreslení
+scén se zrcadlícími povrchy.</p>
+
+<p>Důležité je, že jednotlivé moduly pracují relativně nezávisle na ostatních
+modulech a mezi moduly se nepředávají žádné řídicí informace. Vše je řízeno
+pouze daty (jedná se tedy o architekturu <i>data-flow</i>), které do
+vykreslovacího řetězce postupně vstupují, což je významný rozdíl například vůči
+klasickému procesoru, který je řízen programem. Z&nbsp;tohoto faktu také
+vyplývá velká rychlost vykreslování pomocí grafických akcelerátorů, která je
+umožněna čtyřmi faktory:</p>
+
+<ol>
+
+<li>Geometrická a rastrová data jsou zpracovávána odděleně odlišnými
+jednotkami, které tak mohou pracovat paralelně. Při zpracování rastrových dat
+jsou výpočetní jednotky celkem jednoduché a proto jich může být implementováno
+více.</li>
+
+<li>Moduly zobrazené na předchozím obrázku mohou pracovat nezávisle na sobě a
+jsou řízeny pouze daty. Proto lze vytvořit zřetězené zpracování dat
+(<i>pipeline</i>) s&nbsp;velkým počtem řezů, kde jednotlivé moduly představují
+řezy pipeline.</li>
+
+<li>Uvnitř modulů se provádí operace, které lze rozložit na velké množství
+jednodušších operací, a ty lze opět vykonávat zřetězeně. Například násobení
+matice vektorem lze rozložit na jednotlivá násobení a sčítání prvků matice a
+vektoru, které se provádí za sebou. V&nbsp;jednom modulu může tato pipeline
+obsahovat i stovky řezů.</li>
+
+<li>Tok většiny dat (zejména geometrických) je jednosměrný, takže se používá
+technika streamingu a zmenší se tok dat přenesených mezi grafickým čipem a
+pamětí na grafickém akcelerátoru.</li>
+
+</ol>
+
+<p>Jedním ze dvou typů dat, které vstupují do vykreslovacího řetězce OpenGL,
+jsou údaje o vrcholech grafických primitiv (vertexech). Pro každý vertex musíme
+v&nbsp;klasickém OpenGL (ovšem ne v&nbsp;ES!) zadat minimálně jeho souřadnice
+příkazem <strong>glVertex*()</strong>(souřadnice jsou zadány ve dvojici [x, y],
+trojici [x, y, z] nebo čtveřici [x, y, z, w]). Dále je možné u každého vertexu
+specifikovat další parametry: barvu, normálový vektor, souřadnice
+v&nbsp;prostoru textury, parametry materiálu či vlastnosti hrany (u úseček,
+trojúhelníků atd.).</p>
+
+<p>Druhým typem dat, které vstupují do vykreslovacího řetězce, jsou rastrová
+data. Ta se používají ve třech případech:</p>
+
+<ol>
+
+<li>Vykreslování <i>bitmap</i> (jednobarevných rastrových obrázků). Bitmapy se
+používají zejména pro výpis řetězců resp.&nbsp;jednotlivých znaků. Vzhledem k&nbsp;tomu, že u bitmap je pro každý
+pixel rezervovaný pouze jeden bit, je nutné před vlastním vykreslováním
+příkazem <strong>glColor*()</strong> zadat barvu bitmapy.</li>
+
+<li>Vykreslování rastrových obrázků s&nbsp;vyšší barevnou hloubkou.
+V&nbsp;terminologii OpenGL se tyto obrázky nazývají <i>pixmapy</i>. Pixmapy
+mohou být zadány v&nbsp;několika barevných modelech a jsou podporovány různé
+barevné hloubky, aby bylo možné použít různé typy rastrových obrázků bez
+nutnosti programové konverze.</li>
+
+<li>Pokrytí povrchu těles <i>texturou</i>. Textury se obecně po jejich zadání
+nikam přímo nevykreslují, ale zůstávají v&nbsp;<i>texturovací paměti</i>. Odtud
+je lze použít při nanášení na povrch těles. V&nbsp;ideálním případě je
+texturovací paměť umístěna přímo na grafickém akcelerátoru, ale je možné, že
+při větším množství velkých textur se tyto umístí do hlavní paměti
+počítače.</li>
+
+</ol>
+
+<h4>Per-vertex operation and primitive assembly</h4>
+
+<p>Na každý vertex (specifikovaný buď příkazem <strong>glVertex*()</strong>,
+uložený v&nbsp;<i>display listu</i> nebo vyhodnocený pomocí <i>evaluátorů</i>)
+jsou aplikovány <i>per-vertex operace</i>. Jedná se zejména o transformaci
+souřadnic vertexu s&nbsp;použitím matice <i>ModelView</i>. Pokud jsou
+specifikovány i texturovací souřadnice, jsou transformovány s použitím
+<i>Texture</i> matice. Dále může být na základě údajů o materiálu vertexu a
+jeho normály vypočteno osvětlení.</p>
+
+<p>Jednotlivé vertexy mohou být dále ořezány některou předem zadanou ořezávací
+rovinou. Pokud je vertex umístěn za ořezávací rovinou, je odstraněn
+z&nbsp;dalšího zpracování. V&nbsp;případě úseček nebo polygonů mohou být po
+ořezání další vertexy přidány, aby se vykreslil zbytek viditelné části
+primitiva.</p>
+
+<p>Po ořezání jsou souřadnice vertexů transformovány pomocí transformační
+matice <i>Projection</i>, kde je u 3D scén většinou provedena perspektivní
+projekce. Po této transformaci je provedeno další ořezání, teď už však pro šest
+základních ořezávacích rovin (jsou paralelní s&nbsp;osami souřadného
+systému).</p>
+
+<h4>Pixel operations</h4>
+
+<p>Operace nad pixely spočívají v&nbsp;dekódování barev jednotlivých pixelů
+z&nbsp;formátu zadaného aplikací do interního formátu, který je na grafické
+kartě používán. Po tomto dekódování, které spočívá v&nbsp;rozložení
+(<i>unpack</i>) tří nebo čtyř barvových složek, jejich případném prohození
+(<i>swap</i>), posunutí (<i>bias</i>), změně kontrastu (<i>scale</i>) a
+přemapování (<i>map</i>) se pixely buď uloží do texturovací paměti jako rastr
+textury, nebo jsou přímo poslány dále do rasterizační jednotky.</p>
+
+<h4>Rasterization</h4>
+
+<p>Grafická primitiva specifikovaná svými vrcholy jsou vykreslena tak, že se
+vygenerují ty fragmenty, které dané primitivum pokrývá. Toto vygenerování se
+nazývá <i>rasterizace</i>. Při rasterizaci je zapotřebí brát v&nbsp;úvahu jak
+transformované souřadnice jednotlivých vertexů, tak i případná rastrová data
+(textury nebo pixely bitmap a pixmap).</p>
+
+<h4>Texture assembly</h4>
+
+<p>V&nbsp;tomto bloku se provádí různé algoritmy nad daty uloženými
+v&nbsp;texturovací paměti a rastrovými daty, které posílá aplikace. Jedná se
+většinou o jednoduché (a tím i rychlé) algoritmy pro kombinování více textur,
+mipmaping apod. Textury jsou v&nbsp;ideálním případě uloženy přímo
+v&nbsp;paměti grafického akcelerátoru. V&nbsp;horším případě jsou uloženy
+v&nbsp;hlavní paměti počítače a v&nbsp;době, kdy jsou zapotřebí pro
+vykreslování jsou postupně nahrávány do grafického akcelerátoru, což může
+znamenat značné zatížení sběrnice procesoru.</p>
+
+<h4>Per-fragment operations</h4>
+
+<p>Pokud je povoleno texturování, je pro každý <i>fragment</i> vygenerován
+jeden pixel z&nbsp;texturovací paměti nazývaný <i>texel</i>. Tento texel je
+potom na fragment aplikován. V&nbsp;nejjednodušším případě je barva fragmentu
+změněna přímo na barvu texelu, ve složitějších případech se mohou provést další
+operace nad daty fragmentu a texelu, například smíchání barev
+(<i>blending</i>).</p>
+
+<p>Dále je pro každý fragment proveden výpočet mlhy (<i>fog</i>) a antialias.
+Poté se provedou operace s&nbsp;jednotlivými buffery (pokud jsou povoleny),
+tedy test na hodnotu alfa složky fragmentu (<i>alpha test</i>), test
+s&nbsp;hodnotou uloženou ve stencil bufferu (<i>stencil test</i>) a test
+s&nbsp;hloubkou uloženou v&nbsp;Z-bufferu (<i>depth test</i>). Následně může
+být proveden <i>dithering</i> a v&nbsp;true-color režimu se může provést
+<i>blending</i> (smíchání barev více fragmentů, které obsazují stejné místo na
+obrazovce).</p>
+
+<p>Všechny tyto operace se samozřejmě mohou buď povolit nebo zakázat. Pokud
+všechny operace nad fragmenty zakážeme, vykreslí se grafická primitiva postupně
+tak, jak jsou posílána do vykreslovacího řetězce (mohou se tedy postupně
+překreslovat) a není nijak změněna jejich barva. Zapnutím texturování, mlhy,
+antialiasingu, ditheringu nebo operací s&nbsp;buffery lze zásadně ovlivnit
+výsledný vzhled jednotlivých fragmentů a tím i vzhled celé scény.</p>
+
+<h4>Framebuffer</h4>
+
+<p>Výstup je uložen do takzvaného <i>framebufferu</i>, který se skládá
+z&nbsp;několika samostatných bufferů. Mezi nejdůležitější buffery patří barvový
+buffer (<i>color buffer</i>), paměť hloubky (<i>Z-buffer</i>), paměť šablony
+(<i>stencil buffer</i>) a akumulační buffer (<i>accumulation buffer</i>).
+Podobně jako jsou v&nbsp;bitmapách uloženy jednotlivé pixely, jsou ve
+framebufferu uloženy takzvané <i>fragmenty</i>, které představují průřez všemi
+buffery. Pro uživatele je jistě nejdůležitější <i>color buffer</i>, neboť
+v&nbsp;něm jsou uloženy barvy všech fragmentů. Tento buffer je většinou přímo
+zobrazen na obrazovce, i když jsou možné i další (netypické) režimy
+zobrazení.</p>
+
+
+
+<h2 id="k03">Od klasického OpenGL k&nbsp;OpenGL ES</h2>
+
+<p>WebGL je technologie založená nikoli na klasické knihovně OpenGL
+s&nbsp;pevnou vykreslovací pipeline, ale na <i>OpenGL ES</i>, která se též
+někdy označuje zkratkou <i>GLES</i>. Jedná se o variantu známé knihovny <a
+href="http://www.root.cz/serialy/graficka-knihovna-opengl/">OpenGL</a>, ovšem
+upravené takovým způsobem, aby se tato knihovna dala efektivně použít na
+smartphonech a tabletech vybavených <i>programovatelným</i> GPU (právě
+z&nbsp;tohoto důvodu je v&nbsp;názvu použito &bdquo;ES&ldquo;, což v&nbsp;tomto
+kontextu znamená &bdquo;for Embedded Systems&ldquo;). V&nbsp;současnosti
+existuje již několik specifikací OpenGL ES. Nás bude v&nbsp;dnešním článku
+nejvíce zajímat OpenGL ES 2.0, protože právě tato verze je podporována webovými
+prohlížeči. A nejenom tam: OpenGL ES 2.0 je totiž dostupná například i pro
+Raspberry Pi (několik vývojářů se dokonce vyjádřilo v&nbsp;tom smyslu, že na
+RPi je specifikace dodržována velmi dobře a proto je RPi ideální pro ladění
+aplikací, které OpenGL ES 2.0 používají).</p>
+
+<p>Již na začátku je nutné zdůraznit, že OpenGL ES 2.0 je v&nbsp;mnoha ohledech
+odlišná od &bdquo;klasické desktopové&ldquo; knihovny OpenGL (ta vznikla
+z&nbsp;dnešního pohledu v&nbsp;počítačovém &bdquo;středověku&ldquo; pro
+grafické pracovní stanice společnosti SGI, ostatně některé funkce OpenGL
+nalezneme i ve starší knihovně IRIS GL). To znamená, že není možné například
+převzít zdrojové kódy aplikace postavené na klasickém OpenGL a GLUTu a přeložit
+je beze změny pro Raspberry Pi nebo převést do WebGL. Provedené úpravy
+v&nbsp;API GLESu však mají svůj smysl, protože konstrukce GPU se velmi změnila
+&ndash; namísto pevně nastavené vykreslovací pipeline dnes máme
+k&nbsp;dispozici programovatelná GPU, takže například všechny funkce, které se
+v&nbsp;původní OpenGL zabývaly výpočtem osvětlení, již není nutné mít
+zafixovány, protože je možné implementovat si vlastní <i>shadery</i>. Navíc je
+možné vhodným naprogramováním GPU použít tento čip i pro jiné výpočty (FFT,
+kodeky, dnes pochopitelně i pro AI a LLM apod.)</p>
+
+<p><div class="rs-tip-major">Poznámka: někdy se můžeme setkat s&nbsp;názorem,
+že OpenGL ES je jednodušší než původní OpenGL. Na jednu stranu je v&nbsp;OpenGL
+ES definováno méně funkcí, ovšem na stranu druhou je nutné implementovat
+vlastní <i>shadery</i>, překládat je atd. a navíc se do pipeline OpenGL ES data
+předávají poněkud složitějším způsobem, než v&nbsp;klasické OpenGL (jednotlivé
+vykreslování primitiv popř.&nbsp;display listy).</div></p>
+
+
+
+<h2 id="k04">Shadery a OpenGL Shading Language (GLSL)</h2>
+
+<p>V&nbsp;OpenGL ES je celá vykreslovací pipeline programovatelná, což
+vývojářům přináší větší svobodu, protože je možné realizovat velké množství
+různých efektů, které by při použití pevné pipeline buď vůbec nebyly možné,
+nebo by vyžadovaly mnohem více výpočetního výkonu popř.&nbsp;přesuny dat mezi
+buffery a operační pamětí. Ovšem na druhou stranu je v&nbsp;OpenGL ES
+<i>nutné</i> nahradit původní &bdquo;pevné&ldquo; výpočty s&nbsp;vertexy a
+fragmenty vlastními algoritmy. Implementace těchto algoritmů se nazývá
+<i>shader</i> a i v&nbsp;těch nejjednodušších aplikacích postavených nad OpenGL
+ES se setkáme se dvěma shadery: <i>vertex shaderem</i> a <i>fragment
+shaderem</i>.</p>
+
+<p>Shadery budeme muset definovat i dnes, ovšem prozatím si vystačíme
+s&nbsp;jejich značně zjednodušenou (až primitivní) formou. Nejjednodušší bude
+fragment shader, protože ten bude nastavovat neměnnou barvu vykreslovaných
+fragmentů. Vertex shader může být stejně jednoduchý, ovšem v&nbsp;praxi je
+nutné, aby alespoň pracoval se souřadnicemi vykreslovaných entit.</p>
+
+
+
+<h2 id="k05">WebGL: podpora OpenGL ES ve webových prohlížečích</h2>
+
+<p>Samotná knihovna OpenGL ES slouží ke konfiguraci vykreslovací pipeline i
+k&nbsp;následnému vykreslení 3D scény do framebufferu. Ovšem zde její role
+končí, takže je nutné nějakým jiným způsobem zajistit zobrazení obsahu
+framebufferu na monitoru (a to buď na celé obrazovce nebo v&nbsp;okně).
+K&nbsp;tomuto účelu lze využít několik knihoven, například EGL apod. Ovšem
+existuje i (z&nbsp;pohledu vývojáře) jednodušší způsob &ndash; vykreslení 3D
+scény přímo na ploše webové stránky. A právě k&nbsp;tomuto účelu slouží
+<i>WebGL</i>.</p>
+
+<p>Jedná se o aplikační programové rozhraní, které umožňuje volání funkcí
+OpenGL ES (včetně překladu shaderů) z&nbsp;JavaScriptu. To znamená, že si
+můžeme vyzkoušet zobrazení 3D scén s&nbsp;využitím OpenGL ES bez nutnosti
+instalace a &bdquo;rozcházení&ldquo; různých vývojářských knihoven, nemusíme
+ani instalovat překladač shaderů atd. Využijeme pouze dva nástroje, které má
+(prakticky) každý vývojář k&nbsp;dispozici: programátorský textový editor a
+jakýkoli moderní webový prohlížeč.</p>
+
+
+
+<h2 id="k06">Praktická část</h2>
+
+<p>Všechny dále popsané demonstrační příklady mají shodnou strukturu. Každý
+příklad je tvořen dvojicí souborů: HTML stránkou a JavaScriptovým kódem.
+V&nbsp;HTML stránce je deklarováno kreslicí plátno (<i>canvas</i>), což je
+čtvercová či obdélníková plocha, do které je možné vykreslit 2D či 3D scénu.
+HTML stránka navíc obsahuje i značku pro načtení kódu v&nbsp;JavaScriptu, který
+nějakým způsobem provede vykreslení scény na plátno. HTML stránky všech
+příkladů jsou prakticky shodné a liší se pouze titulkem a taktéž jménem
+souboru, který obsahuje JavaScriptový kód (ten je schválně načten až poté, co
+je do dokumentu umístěno plátno):</p>
+
+<pre>
+&lt;!doctype html&gt;
+&lt;html&gt;
+    &lt;head&gt;
+        &lt;title&gt;WebGL: step1&lt;/title&gt;
+    &lt;/head&gt;
+    &lt;body&gt;
+        <i>&lt;!-- kreslicí plátno --&gt;</i>
+        &lt;canvas id="web_gl_canvas" width="256" height="256"&gt;&lt;/canvas&gt;
+&nbsp;
+        <i>&lt;!-- skript, který kreslicí plátno využije --&gt;</i>
+        &lt;script type="application/javascript" src="step1.js"&gt;&lt;/script&gt;
+    &lt;/body&gt;
+&lt;/html&gt;
+</pre>
+
+<p>Všechny příklady by měly být spustitelné pouze otevřením příslušné HTML
+stránky v&nbsp;prohlížeči &ndash; nemělo by tedy být nutné spouštět lokální
+webový server.</p>
+
+<p><div class="rs-tip-major">Poznámka: není tajemstvím, že autor článku
+v&nbsp;žádném případě není fanoušek jazyka JavaScript. My z&nbsp;tohoto jazyka
+ovšem využijeme pouze samotné základy, takže nebude nutné bojovat s&nbsp;jeho
+prapodivným typovým systémem atd. V&nbsp;některém z&nbsp;navazujících článků si
+navíc ukážeme i zápis programů v&nbsp;Pythonu s&nbsp;(trans)překladem tohoto
+programu do JavaScriptu s&nbsp;využitím <a
+href="https://www.root.cz/clanky/transcrypt-technologie-umoznujici-pouziti-pythonu-v-prohlizeci/">Transcryptu</a>.</div></p>
+
+
+
+<h2 id="k07">První krok: webová stránka s&nbsp;kreslicím plátnem (canvasem)</h2>
+
+<p>Dnešní první demonstrační příklad bude velmi jednoduchý. Pouze v&nbsp;něm
+zjistíme, jakým způsobem se v&nbsp;JavaScriptu získá reference na objekt
+představující kreslicí plátno a jak se následně čtou atributy tohoto objektu.
+Na HTML stránce (viz předchozí kapitolu) má značka <strong>canvas</strong>
+přidělen identifikátor <strong>web_gl_canvas</strong>, takže získání reference
+na objekt je snadná. A přístup k&nbsp;atributům objektu (jejich čtení),
+konkrétně k&nbsp;jeho šířce a výšce, zajistí standardní operátor tečky:</p>
+
+<pre>
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// zobrazení základních informací o získaném objektu</i>
+window.alert("Canvas: " + canvas.width + "x" + canvas.height);
+</pre>
+
+<p>Po otevření HTML stránky s&nbsp;příkladem (<a
+href="https://tisnik.github.io/temp/step1.html">https://tisnik.github.io/temp/step1.html</a>)
+by se měl otevřít dialog s&nbsp;informací o velikosti kreslicího plátna:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332192" data-alignment="center" data-link-type="modal">Obrázek #1332192 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332192">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332192" src="https://i.iinfo.cz/images/462/webgl-01-1-prev.png" width="370" height="149" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-1-prev.png" data-prev-width="370" data-prev-height="149" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-1.png" data-large-width="445" data-large-height="179">
+<p class="description"> Obrázek 2: Rozměry kreslicího plátna vypsané dnešním prvním demonstračním příkladem.</p>
+</div>
+</div>
+
+
+
+<h2 id="k08">Kontext pro vykreslování: 2D a WebGL</h2>
+
+<p>Canvas ve skutečnosti představuje &bdquo;pouhou&ldquo; oblast umístěnou na
+plochu webové stránky. Samotné vykreslování je na tuto plochu prováděno přes
+takzvaný <i>kontext</i>. V&nbsp;současnosti lze využít dva kontexty: první
+z&nbsp;nich se používá pro vykreslování 2D grafiky (interaktivní mapy, grafy
+apod.), druhý pro 3D grafiku. Příslušný kontext je nejdříve nutné získat.
+Z&nbsp;pohledu JavaScriptu se jedná o další objekt, jehož reference se přečte
+metodou <strong>canvas.getContext</strong>, které se předá textový
+identifikátor kontextu. V&nbsp;případě, že vyžadovaný kontext ještě neexistuje,
+je vytvořen.</p>
+
+<p>Pro tvorbu 2D grafiky se používá kontext získaný takto:</p>
+
+<pre>
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu 2D (2D grafika)</i>
+const ctx = canvas.getContext("2d");
+</pre>
+
+<p>Naopak pro vizualizaci 3D scény použijeme kontext získaný následujícím
+způsobem:</p>
+
+<pre>
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+</pre>
+
+
+
+<h2 id="k09">Druhý demonstrační příklad: využití kreslicího plátna s&nbsp;2D kontextem</h2>
+
+<p>V&nbsp;případě, že získáme objekt představující 2D kontext, je možné voláním
+metod tohoto objektu provádět vykreslování v&nbsp;rovině. V&nbsp;následujícím
+demonstračním příkladu je ukázán způsob vykreslení kružnice, která je
+definována formou cesty (<i>path</i>) tvořené jediným obloukem. Povšimněte si,
+jakým způsobem se nastavuje styl vykreslování přímou modifikací atributů
+objektu představujícího kontext (alternativně lze kružnici vykreslit jako
+elipsu s&nbsp;totožnou šířkou a výškou):</p>
+
+<pre>
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu 2D (2D grafika)</i>
+const ctx = canvas.getContext("2d");
+&nbsp;
+<i>// styl vykreslování</i>
+ctx.strokeStyle = "red"
+ctx.lineWidth = 5
+&nbsp;
+<i>// cesta tvořená kružnicovým obloukem</i>
+ctx.beginPath()
+ctx.arc(canvas.width/2, canvas.height/2, canvas.width/3, 0, 2 * Math.PI);
+ctx.stroke();
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: popis atributů a metod tohoto objektu
+lze získat například na stránce <a
+href="https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D">https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D</a>.</div></p>
+
+<p>HTML stránka dnešního druhého demonstračního příkladu vypadá takto (u
+dalších příkladů ji již nebudeme uvádět):</p>
+
+<pre>
+&lt;!doctype html&gt;
+&lt;html&gt;
+    &lt;head&gt;
+        &lt;title&gt;WebGL: step2&lt;/title&gt;
+    &lt;/head&gt;
+    &lt;body&gt;
+        <i>&lt;!-- kreslicí plátno --&gt;</i>
+        &lt;canvas id="web_gl_canvas" width="256" height="256"&gt;&lt;/canvas&gt;
+&nbsp;
+        <i>&lt;!-- skript, který kreslicí plátno využije --&gt;</i>
+        &lt;script type="application/javascript" src="step2.js"&gt;&lt;/script&gt;
+    &lt;/body&gt;
+&lt;/html&gt;
+</pre>
+
+<p>Po otevření webové stránky s&nbsp;příkladem by se do canvasu měla vykreslit
+červená kružnice:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332195" data-alignment="center" data-link-type="modal">Obrázek #1332195 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332195">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332195" src="https://i.iinfo.cz/images/462/webgl-01-2-prev.png" width="370" height="186" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-2-prev.png" data-prev-width="370" data-prev-height="186" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-2.png" data-large-width="600" data-large-height="302">
+<p class="description">Obrázek 3: Využití canvasu s&nbsp;kontextem "2D" pro kreslení 2D grafiky.</p>
+</div>
+</div>
+
+
+
+<h2 id="k10">Třetí demonstrační příklad: vymazání barvového bufferu pro kontext WebGL</h2>
+
+<p>Objekt představující 3D kontext (<i>WebGL</i>) nabízí naprosto odlišné
+aplikační programové rozhraní než objekt s&nbsp;2D kontextem, protože se zde
+namísto přímého umisťování 2D tvarů do plochy musí pracovat
+s&nbsp;programovatelnou vykreslovací pipeline. Ostatně si to můžeme ukázat na
+jednoduchém příkladu, ve kterém nejdříve získáme 3D kontext (<i>WebGL</i>) a
+následně vyplníme celý barvový buffer (<i>color buffer</i> &ndash; viz druhou
+kapitolu) nastavenou barvou:</p>
+
+<pre>
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0.8, 1.0, 0.8, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+</pre>
+
+<p>V&nbsp;případě, že webový prohlížeč podporuje WebGL, měla by plocha webové
+stránky vypadat následovně:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332198" data-alignment="center" data-link-type="modal">Obrázek #1332198 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332198">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332198" src="https://i.iinfo.cz/images/462/webgl-01-3-prev.png" width="370" height="186" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-3-prev.png" data-prev-width="370" data-prev-height="186" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-3.png" data-large-width="600" data-large-height="302">
+<p class="description">Obrázek 4: Vymazání barvového bufferu zvolenou barvou.</p>
+</div>
+</div>
+
+<p>Mimochodem &ndash; to, že referenci na kontext umisťuji do proměnné nazvané
+<strong>gl</strong>, není náhoda. Výsledný kód totiž do značné míry
+&bdquo;kopíruje&ldquo; původní řešení v&nbsp;tradičním OpenGL (a v&nbsp;jazyce
+C), které by vypadalo zhruba takto:</p>
+
+<pre>
+glClearColor(0.8, 1.0, 0.8, 0.0);           <i>// nastaveni mazaci barvy na cernou</i>
+glClear(GL_COLOR_BUFFER_BIT);               <i>// vymazani bitovych rovin barvoveho bufferu</i>
+</pre>
+
+
+
+<h2 id="k11">Transformace souřadnic: z&nbsp;normalizovaných souřadnic zařízení na souřadnice na kreslicím plátnu</h2>
+
+<p>Jednou z&nbsp;transformací, která se při vykreslování 3D scény provádí, je
+transformace z&nbsp;takzvaných normalizovaných souřadnic zařízení na souřadnice
+odpovídající pozicím pixelů na kreslicím plátnu (canvasu). Parametry této
+transformace jsou interně vypočteny automaticky na základě čtyř předaných
+hodnot popisujících takzvaný <i>viewport</i>:</p>
+
+<ol>
+<li>Horizontální souřadnice levého horního rohu</li>
+<li>Vertikální souřadnice levého horního rohu</li>
+<li>Šířka</li>
+<li>Výška</li>
+</ol>
+
+<p>Tyto souřadnice a rozměry se předávají metodě <strong>viewport</strong>.
+V&nbsp;našem konkrétním případě nastavíme šířku a výšku získanou
+z&nbsp;informací o rozměrech canvasu, tedy konkrétně atributy
+<strong>canvas.width</strong> a <strong>canvas.height</strong>:</p>
+
+<pre>
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0.8, 1.0, 0.8, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+</pre>
+
+<p>Vykreslená scéna by měla být naprosto shodná s&nbsp;předchozím příkladem,
+což ovšem není překvapivé, protože prozatím pouze mažeme obsah barvového
+bufferu:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332201" data-alignment="center" data-link-type="modal">Obrázek #1332201 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332201">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332201" src="https://i.iinfo.cz/images/462/webgl-01-4-prev.png" width="370" height="186" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-4-prev.png" data-prev-width="370" data-prev-height="186" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-4.png" data-large-width="600" data-large-height="302">
+<p class="description">Obrázek 5: Vymazání barvového bufferu zvolenou barvou + nastavení transformace.</p>
+</div>
+</div>
+
+
+
+<h2 id="k12">Registrace a překlad shaderů</h2>
+
+<p>Prozatím se mohlo zdát, že je vykreslování 2D i 3D scény prováděno prakticky
+totožným způsobem. Je tomu tak z&nbsp;toho důvodu, že jsme se nepokusili o
+vykreslení skutečných 3D primitiv. Abychom toho dosáhli, je nutné zaregistrovat
+a přeložit vertex i fragment shader. Pokusím se o co nejjednodušší variantu
+shaderů a i z&nbsp;tohoto důvodu bude vykreslovaná scéna značně primitivní
+&ndash; bude totiž obsahovat pouze jediný (červený) bod umístěný do počátku
+souřadné soustavy.</p>
+
+<p>Vertex shader bude v&nbsp;takovém případě značně zjednodušen. Pouze
+v&nbsp;něm nastavíme souřadnice (bodu) tak, aby byl bod umístěn do počátku
+souřadné soustavy. Čtvrtá souřadnice 4D vektoru bude jedničková, protože
+souřadnice zadáváme v&nbsp;homogenní souřadné soustavě (ve stručnosti &ndash;
+hodnoty x, y a z jsou děleny poslední hodnotou w). A nastavíme i velikost bodu.
+Povšimněte si, že zápis shaderu v&nbsp;jazyce GLSL se do značné míry podobá
+céčku:</p>
+
+<pre>
+void main() {
+    gl_Position = vec4(0.0, 0.0, 0.0, 1);
+    gl_PointSize = 20.0;
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: zejména v&nbsp;počítačové grafice, ale
+například i v&nbsp;geometrii, je zapotřebí nějakým způsobem rozlišit body a
+vektory. Řešení spočívá v&nbsp;použití výše zmíněných <i>homogenních
+souřadnic</i>, kdy místo třech souřadnic <i>(x, y, z)</i> používáme souřadnice
+čtyři <i>(x, y, z, w)</i>. Čtvrtá souřadnice je nazývána váha &ndash; odtud
+plyne její označení symbolem <i>w</i> (<i>weight</i>). Pokud je váha nastavena
+na jedničku, tj. (x, y, z, 1), jedná se o zadání bodu, pokud je váha nastavena
+na nulu, tj. (x, y, z, 0) jedná se o vektor (představte si spíše paprsek). Jiné
+(nenulové) hodnoty váhy <i>w</i> se eliminují tak, že se provede transformace z
+(x, y, z, w) na (x/w, y/w, z/w, 1).</div></p>
+
+<p>Fragment shader musí pouze nastavit barvu vykreslování (bodu). Ovšem typicky
+se ještě setkáme s&nbsp;tím, že je shader doplněn o řádek se specifikací
+použitého formátu hodnot. V&nbsp;našem konkrétním případě odpovídá <i>mediump
+float</i> formátu <i>single</i> resp.&nbsp;<i>float32</i>:</p>
+
+<pre>
+precision mediump float;
+&nbsp;
+void main() {
+    gl_FragColor = vec4(1, 0, 0, 1);
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: <strong>gl_Position</strong>,
+<strong>gl_PointSize</strong> a <strong>gl_FragColor</strong> jsou atributy,
+které jsou součástí interního stavu vykreslovací pipeline.</div></p>
+
+<p>Oba shadery je nutné zaregistrovat a přeložit. Samotné zdrojové kódy shaderů
+pro jednoduchost uložíme do řetězců:</p>
+
+<pre>
+const vertexShaderSource = `
+    void main() {
+        gl_Position = vec4(0.0, 0.0, 0, 1);
+        gl_PointSize = 20.0;
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+
+    void main() {
+        gl_FragColor = vec4(1, 0, 0, 1);
+    }
+`
+</pre>
+
+<p>Registrace a překlad obou shaderů se provede takto:</p>
+
+<pre>
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+&nbsp;
+<i>// překlad fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: prozatím nekontrolujeme výsledek
+prováděných operací, takže se v&nbsp;žádném případě nejedná o produkční kód! (o
+to čitelnější však celé řešení je) Podrobnosti o kontrole stavu celého WebGL si
+vysvětlíme příště.</div></p>
+
+
+
+<h2 id="k13">Vykreslení jediného bodu na plátno v&nbsp;kontextu WebGL</h2>
+
+<p>V&nbsp;dalším kroku celou vykreslovací pipeline zkonstruujeme, připojíme do
+ní oba shadery a spustíme ji (opět: v&nbsp;klasickém OpenGL žádná obdoba tohoto
+postupu není vyžadována):</p>
+
+<pre>
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+</pre>
+
+<p>Konečně následuje poslední řádek. Ten do vykreslovací pipeline pošle příkaz
+pro vykreslení jediného bodu:</p>
+
+<pre>
+<i>// vykreslení jednoho bodu (nepředáváme souřadnice)</i>
+gl.drawArrays(gl.POINTS, 0, 1);
+</pre>
+
+<p>Vykreslovací pipeline zavolá oba shadery, které (zjednodušeně řečeno)
+provedou tyto tři operace:</p>
+
+<pre>
+gl_Position = vec4(0.0, 0.0, 0, 1);
+gl_PointSize = 20.0;
+gl_FragColor = vec4(1, 0, 0, 1);
+</pre>
+
+<p>Díky tomu, že je známa poslední transformace definovaná přes
+<strong>gl.viewport</strong>, bude bod vykreslen přesně doprostřed canvasu. Bod
+bude mít červenou barvu a rozměry přibližně 20&times;20 pixelů (ovšem různé GPU
+mohou provádět antialiasing atd.):</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332204" data-alignment="center" data-link-type="modal">Obrázek #1332204 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332204">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332204" src="https://i.iinfo.cz/images/462/webgl-01-5-prev.png" width="370" height="186" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-5-prev.png" data-prev-width="370" data-prev-height="186" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-5.png" data-large-width="600" data-large-height="302">
+<p class="description">Obrázek 6: Vykreslení bodu do počátku souřadného systému.</p>
+</div>
+</div>
+
+
+
+<h2 id="k14">Úplný zdrojový kód pátého demonstračního příkladu</h2>
+
+<p>Následuje výpis úplného zdrojového kódu dnešního pátého demonstračního
+příkladu, který by po svém spuštění měl vykreslit jediný bod doprostřed plochy
+canvasu:</p>
+
+<pre>
+const vertexShaderSource = `
+    void main() {
+        gl_Position = vec4(0.0, 0.0, 0, 1);
+        gl_PointSize = 20.0;
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+
+    void main() {
+        gl_FragColor = vec4(1, 0, 0, 1);
+    }
+`
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+&nbsp;
+<i>// překlad fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// vykreslení jednoho bodu (nepředáváme souřadnice)</i>
+gl.drawArrays(gl.POINTS, 0, 1);
+</pre>
+
+
+
+<h2 id="k15">Vertex shader, kterému se předávají 2D souřadnice grafických entit</h2>
+
+<p>První verze vertex shaderu, kterou jsme si ukázali v&nbsp;předchozím textu,
+pouze nastavovala souřadnice vykreslovaného bodu na hodnotu [0, 0, 0, 1].
+V&nbsp;praxi však pochopitelně budeme vyžadovat vykreslení bodů na jakémkoli
+místě v&nbsp;rovině či prostoru. Omezme se prozatím na rovinu, tj.&nbsp;na
+situaci, kdy budeme potřebovat nastavit interní atribut vykreslovací pipeline
+<strong>gl_Position</strong> nikoli na hodnotu [0, 0, 0, 1] ale na [x, y, 0,
+1], kde <strong>x</strong> a <strong>y</strong> jsou hodnoty nějakým způsobem
+předané do vykreslovací pipeline.  To lze pochopitelně zařídit, a to
+následovně:</p>
+
+<pre>
+attribute vec2 position;
+&nbsp;
+void main() {
+    gl_Position = vec4(position, 0, 1);
+    gl_PointSize = 20.0;
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: povšimněte si, že jsme vlastně
+nespecifikovali parametry funkce <strong>main</strong>, ale atribut nazvaný
+<strong>position</strong>, který je typu dvourozměrný vektor
+<strong>vec2</strong>. Obě souřadnice uložené v&nbsp;tomto vektoru se předají
+do konstruktoru <strong>vec4</strong>, který k&nbsp;nim přidá další dvě
+souřadnice <strong>z</strong> a <strong>w</strong> nastavené na hodnotu 0,0
+resp. 1,0.</div></p>
+
+
+
+<h2 id="k16">Vykreslení bodu s&nbsp;určením jeho souřadnic ve scéně</h2>
+
+<p>Nyní následuje poslední neznámý krok, který musíme vyřešit &ndash; jak se
+vlastně předávají souřadnice (v&nbsp;našem případě bodů) do vykreslovací
+pipeline? Začneme definicí souřadnice bodu, který se má vykreslit. Souřadnice
+by měly ležet v&nbsp;rozsahu -1,0 až 1,0 (viz nastavení viewportu):</p>
+
+<pre>
+<i>// souřadnice bodu</i>
+vertexes = [
+   // x   y
+    0.9, 0.9
+];
+</pre>
+
+<p>Zatím je to snadné, ovšem souřadnice i další data se předávají přes takzvané
+<i>buffery</i>, které je nutné zkonstruovat a zapsat do nich data ve
+specifikovaném formátu:</p>
+
+<pre>
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexes), gl.STATIC_DRAW);
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: souřadnice jsou konstruktorem
+<strong>Float32Array</strong> převedeny z&nbsp;obecného seznamu na pole
+obsahující hodnoty typu <i>float32</i>.</div></p>
+
+<p>To ovšem nestačí, protože musíme říci, kterému atributu vertex či fragment
+shaderu vlastně předávaná data odpovídají. V&nbsp;našem vertex shaderu jsme
+specifikovali atribut nazvaný <strong>position</strong>:</p>
+
+<pre>
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+</pre>
+
+<p>Poslání obsah bufferu do vykreslovací pipeline se provede takto (význam
+předávaných parametrů je popsán v&nbsp;komentářích):</p>
+
+<pre>
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       2,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       2*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: v&nbsp;klasickém OpenGL bychom si
+namísto toho vystačili s&nbsp;jediným řádkem <strong>glVertex2f(x,
+y)</strong>.</div></p>
+
+<p>Zopakujme si tedy celý postup:</p>
+
+<ol>
+<li>Vložení canvasu do plochy webové stránky</li>
+<li>Získání objektu představujícího canvas</li>
+<li>Získání kontextu pro WebGL</li>
+<li>Překlad a registrace vertex shaderu</li>
+<li>Překlad a registrace fragment shaderu</li>
+<li>Vytvoření a spuštění naprogramované pipeline</li>
+<li>Konstrukce bufferu s vložením souřadnic bodu (bodů) do tohoto bufferu</li>
+<li>Poslání obsahu bufferu do pipeline</li>
+<li>Vymazání barvového bufferu</li>
+<li>Vykreslení bodu (bodů) příkazem <strong>gl.drawArrays(gl.POINTS, ..., ...)</strong></li>
+</ol>
+
+<p>Úplný zdrojový kód příkladu, který vykreslení bodu provede, vypadá
+následovně:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec2 position;
+&nbsp;
+    void main() {
+        gl_Position = vec4(position, 0, 1);
+        gl_PointSize = 20.0;
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+&nbsp;
+    void main() {
+        gl_FragColor = vec4(1, 0, 0, 1);
+    }
+`
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+&nbsp;
+<i>// překlad fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+&nbsp;
+<i>// souřadnice bodu</i>
+vertexes = [
+   // x   y
+    0.9, 0.9
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexes), gl.STATIC_DRAW);
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       2,                                // počet prvků v každém atributu
+                       gl.FLOAT,                         // typ prvků
+                       gl.FALSE,                         // data nejsou normalizována
+                       2*Float32Array.BYTES_PER_ELEMENT, // velikost vertexu v bajtech
+                       0                                 // offset
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// vykreslení jednoho bodu s předáním souřadnic</i>
+gl.drawArrays(gl.POINTS, 0, 1);
+</pre>
+
+<p>Výsledkem by měla být tato scéna vykreslená do plochy webové stránky:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332207" data-alignment="center" data-link-type="modal">Obrázek #1332207 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332207">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332207" src="https://i.iinfo.cz/images/462/webgl-01-6-prev.png" width="370" height="186" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-6-prev.png" data-prev-width="370" data-prev-height="186" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-6.png" data-large-width="600" data-large-height="302">
+<p class="description">Obrázek 7: Vykreslení bodu na zvolených souřadnicích.</p>
+</div>
+</div>
+
+
+
+<h2 id="k17">Vykreslení většího množství bodů do scény</h2>
+
+<p>Nepatrnou úpravou zdrojového kódu lze docílit vykreslení většího množství
+bodů. Nejdříve je pochopitelně nutné definovat souřadnice těchto bodů:</p>
+
+<pre>
+<i>// souřadnice bodů</i>
+vertexes = [
+   // x   y
+    0.0, 0.0,
+    0.9, 0.9,
+    0.9, -0.9,
+   -0.9, 0.9,
+   -0.9, -0.9,
+];
+</pre>
+
+<p>Další změna spočívá v&nbsp;úpravě druhého parametru předávaného do metody
+<strong>gl.drawArrays</strong>. Musíme určit, že se bude předávat deset hodnot
+(pět dvourozměrných souřadnic):</p>
+
+<pre>
+<i>// vykreslení pěti bodů s předáním souřadnic</i>
+gl.drawArrays(gl.POINTS, 0, 5);
+</pre>
+
+<p>To je vše &ndash; výsledek by měl vypadat následovně:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1332210" data-alignment="center" data-link-type="modal">Obrázek #1332210 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1332210">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1332210" src="https://i.iinfo.cz/images/462/webgl-01-7-prev.png" width="370" height="186" data-prev-filename="https://i.iinfo.cz/images/462/webgl-01-7-prev.png" data-prev-width="370" data-prev-height="186" data-large-filename="https://i.iinfo.cz/images/462/webgl-01-7.png" data-large-width="600" data-large-height="302">
+<p class="description">Obrázek 8: Vykreslení pětice bodů na zvolených souřadnicích.</p>
+</div>
+</div>
+
+<p>Úplný zdrojový kód sedmého a současně i posledního demonstračního příkladu,
+který jsme si dnes popsali, vypadá následovně:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec2 position;
+&nbsp;
+    void main() {
+        gl_Position = vec4(position, 0, 1);
+        gl_PointSize = 20.0;
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+&nbsp;
+    void main() {
+        gl_FragColor = vec4(1, 0, 0, 1);
+    }
+`
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+&nbsp;
+<i>// překlad fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+&nbsp;
+<i>// souřadnice bodů</i>
+vertexes = [
+   // x   y
+    0.0, 0.0,
+    0.9, 0.9,
+    0.9, -0.9,
+   -0.9, 0.9,
+   -0.9, -0.9,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexes), gl.STATIC_DRAW);
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       2,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       2*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// vykreslení pěti bodů s předáním souřadnic</i>
+gl.drawArrays(gl.POINTS, 0, 5);
+</pre>
+
+
+
+<h2 id="k18">Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny demonstrační příklady, které jsme si v&nbsp;dnešním článku ukázali,
+je možné spustit přímo z&nbsp;odkazů uvedených v&nbsp;tabulce pod tímto
+odstavcem. Doplněny jsou i odkazy na zdrojové kódy psané
+v&nbsp;JavaScriptu:</p>
+
+<table>
+<tr><th>#<th>Příklad</th><th>Stručný popis</th><th>Adresa příkladu</th></tr></i>
+<tr><td> 1</td><td>step1.html</td><td>webová stránka s&nbsp;kreslicím plátnem (canvasem)</td><td><a href="https://tisnik.github.io/temp/step1.html">https://tisnik.github.io/temp/step1.html</a></td></tr>
+<tr><td> 2</td><td>step1.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step1.js">https://tisnik.github.io/temp/step1.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>step2.html</td><td>využití kreslicího plátna s&nbsp;2D kontextem</td><td><a href="https://tisnik.github.io/temp/step2.html">https://tisnik.github.io/temp/step2.html</a></td></tr>
+<tr><td> 4</td><td>step2.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step2.js">https://tisnik.github.io/temp/step2.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 5</td><td>step3.html</td><td>vymazání barvového bufferu pro kontext WebGL</td><td><a href="https://tisnik.github.io/temp/step3.html">https://tisnik.github.io/temp/step3.html</a></td></tr>
+<tr><td> 6</td><td>step3.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step3.js">https://tisnik.github.io/temp/step3.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>step4.html</td><td>transformace souřadnic: z&nbsp;normalizovaných souřadnic na souřadnice na plátnu</td><td><a href="https://tisnik.github.io/temp/step4.html">https://tisnik.github.io/temp/step4.html</a></td></tr>
+<tr><td> 8</td><td>step4.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step4.js">https://tisnik.github.io/temp/step4.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 9</td><td>step5.html</td><td>vykreslení jediného bodu na plátno v&nbsp;kontextu WebGL</td><td><a href="https://tisnik.github.io/temp/step5.html">https://tisnik.github.io/temp/step5.html</a></td></tr>
+<tr><td>10</td><td>step5.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step5.js">https://tisnik.github.io/temp/step5.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>step6.html</td><td>vykreslení bodu s&nbsp;určením jeho souřadnic ve scéně</td><td><a href="https://tisnik.github.io/temp/step6.html">https://tisnik.github.io/temp/step6.html</a></td></tr>
+<tr><td>12</td><td>step6.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step6.js">https://tisnik.github.io/temp/step6.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>step7.html</td><td>vykreslení většího množství bodů do scény</td><td><a href="https://tisnik.github.io/temp/step7.html">https://tisnik.github.io/temp/step7.html</a></td></tr>
+<tr><td>14</td><td>step7.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step7.js">https://tisnik.github.io/temp/step7.js</a></td></tr>
+</table>
+
+
+
+<h2 id="k19">Seriály a články o OpenGL i přidružených technologiích</h2>
+
+<p></p>
+
+<ol>
+
+<li>Seriál Grafická knihovna OpenGL<br />
+<a href="https://www.root.cz/serialy/graficka-knihovna-opengl/">https://www.root.cz/serialy/graficka-knihovna-opengl/</a>
+</li>
+
+<li>Seriál OpenGL a nadstavbová knihovna GLU<br />
+<a href="https://www.root.cz/serialy/opengl-a-nadstavbova-knihovna-glu/">https://www.root.cz/serialy/opengl-a-nadstavbova-knihovna-glu/</a>
+</li>
+
+<li>Seriál OpenGL evaluátory<br />
+<a href="https://www.root.cz/serialy/opengl-evaluatory/">https://www.root.cz/serialy/opengl-evaluatory/</a>
+</li>
+
+<li>Seriál OpenGL Imaging Subset<br />
+<a href="https://www.root.cz/serialy/opengl-imaging-subset/">https://www.root.cz/serialy/opengl-imaging-subset/</a>
+</li>
+
+<li>Seriál Tvorba přenositelných grafických aplikací využívajících knihovnu GLUT<br />
+<a href="https://www.root.cz/serialy/tvorba-prenositelnych-grafickych-aplikaci-vyuzivajicich-knihovnu-glut/">https://www.root.cz/serialy/tvorba-prenositelnych-grafickych-aplikaci-vyuzivajicich-knihovnu-glut/</a>
+</li>
+
+<li>Stručný přehled grafických knihoven pro Raspberry Pi<br />
+<a href="https://www.root.cz/clanky/strucny-prehled-grafickych-knihoven-pro-raspberry-pi/">https://www.root.cz/clanky/strucny-prehled-grafickych-knihoven-pro-raspberry-pi/</a>
+</li>
+
+<li>Práce s&nbsp;rastrovými obrázky v&nbsp;knihovně OpenVG<br />
+<a href="https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg/">https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg/</a>
+</li>
+
+<li>Práce s&nbsp;rastrovými obrázky v&nbsp;knihovně OpenVG (pokračování)<br />
+<a href="https://www.root.cz/clanky/prace-s-nbsp-rastrovymi-obrazky-v-nbsp-knihovne-openvg-pokracovani/">https://www.root.cz/clanky/prace-s-nbsp-rastrovymi-obrazky-v-nbsp-knihovne-openvg-pokracovani/</a>
+</li>
+
+<li>Práce s&nbsp;rastrovými obrázky v&nbsp;knihovně OpenVG (okomentované demonstrační příklady)<br />
+<a href="https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg-okomentovane-demonstracni-priklady/">https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg-okomentovane-demonstracni-priklady/</a>
+</li>
+
+<li>Použití knihoven OpenVG a EGL (nejenom) na Raspberry Pi<br />
+<a href="https://www.root.cz/clanky/pouziti-knihoven-openvg-a-egl-nejenom-na-raspberry-pi/">https://www.root.cz/clanky/pouziti-knihoven-openvg-a-egl-nejenom-na-raspberry-pi/</a>
+</li>
+
+</ol>
+
+
+
+<h2 id="k20">Odkazy na Internetu</h2>
+
+<ol>
+
+<li>WebGL: 3D Graphics for the Web<br />
+<a href="https://www.khronos.org/webgl/">https://www.khronos.org/webgl/</a>
+</li>
+
+<li>OpenGL Shading Language<br />
+<a href="https://en.wikipedia.org/wiki/OpenGL_Shading_Language">https://en.wikipedia.org/wiki/OpenGL_Shading_Language</a>
+</li>
+
+<li>WebGL (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/WebGL">https://en.wikipedia.org/wiki/WebGL</a>
+</li>
+
+<li>WebGL<br />
+<a href="https://wikis.khronos.org/webgl/Main_Page">https://wikis.khronos.org/webgl/Main_Page</a>
+</li>
+
+<li>OpenGL ES (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/OpenGL_ES">https://en.wikipedia.org/wiki/OpenGL_ES</a>
+</li>
+
+<li>Float32Array<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array">https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array</a>
+</li>
+
+<li>ECMAScript compatibility table<br />
+<a href="https://compat-table.github.io/compat-table/es6/">https://compat-table.github.io/compat-table/es6/</a>
+</li>
+
+<li>Learn-OpenGLES-Tutorials<br />
+<a href="https://github.com/learnopengles/Learn-OpenGLES-Tutorials">https://github.com/learnopengles/Learn-OpenGLES-Tutorials</a>
+</li>
+
+<li>Implement OpenGL ES and EGL<br />
+<a href="https://source.android.com/docs/core/graphics/implement-opengl-es">https://source.android.com/docs/core/graphics/implement-opengl-es</a>
+</li>
+
+<li>Khronos Group<br />
+<a href="https://www.khronos.org/">https://www.khronos.org/</a>
+</li>
+
+<li>Khronos Group (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wi­ki/Khronos_Group">https://en.wikipedia.org/wi­ki/Khronos_Group</a>
+</li>
+
+<li>Raspberry Pi VideoCore APIs<br />
+<a href="http://elinux.org/Raspberry_Pi_Vi­deoCore_APIs">http://elinux.org/Raspberry_Pi_Vi­deoCore_APIs</a>
+</li>
+
+<li>EGL quick reference card<br />
+<a href="https://www.khronos.org/files/egl-1–4-quick-reference-card.pdf">https://www.khronos.org/files/egl-1–4-quick-reference-card.pdf</a>
+</li>
+
+<li>EGL Reference Pages Index<br />
+<a href="https://www.khronos.org/re­gistry/egl/sdk/docs/man/html/in­dexflat.php">https://www.khronos.org/re­gistry/egl/sdk/docs/man/html/in­dexflat.php</a>
+</li>
+
+<li>GLSL<br />
+<a href="https://glsl.app/">https://glsl.app/</a>
+</li>
+
+<li>Shader Tutorials by Ronja<br />
+<a href="https://www.ronja-tutorials.com/">https://www.ronja-tutorials.com/</a>
+</li>
+
+<li>CanvasRenderingContext2D<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D">https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D</a>
+</li>
+
+<li>WebGL2RenderingContext<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext">https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext</a>
+</li>
+
+<li>WebGLRenderingContext<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext">https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext</a>
+</li>
+
+</ol>
+
