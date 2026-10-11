@@ -63,14 +63,12 @@ function matrix_rotate_around_y(a) {
     ]);
 }
 
-function matrix_perspective(fovy, aspect, near, far) {
-    const f = 1.0 / Math.tan(fovy / 2);
-    const nf = 1 / (near - far);
+function matrix_perspective() {
     return new Float32Array([
-        f / aspect, 0, 0, 0,
-        0, f, 0, 0,
-        0, 0, (far + near) * nf, -1,
-        0, 0, (2 * far * near) * nf, 0
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1.5,
+        0, 0, 0, 0
     ]);
 }
 
@@ -270,11 +268,9 @@ gl.clear(gl.COLOR_BUFFER_BIT);
 gl.useProgram(program);
 
 // matice rotace
-const perspective = matrix_perspective(Math.PI / 3, canvas.width / canvas.height, 0.1, 100);
-const translate = matrix_translate(-2.0);
-const rx = matrix_rotate_around_x(Math.PI / 6);
-const ry = matrix_rotate_around_y(Math.PI / 6);
-const matrix = matrix_multiply(perspective, matrix_multiply(translate, matrix_multiply(rx, ry)));
+const perspective = matrix_perspective();
+const translate = matrix_translate(1.0);
+const matrix = matrix_multiply(perspective, translate);
 
 // navázání na proměnnou dostupnou ve vertex shaderu
 const umatrix = gl.getUniformLocation(program, "umatrix");
