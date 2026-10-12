@@ -221,5 +221,5 @@ const umatrix = gl.getUniformLocation(program, "umatrix");
 gl.uniformMatrix4fv(umatrix, false, matrix);
 
 // vykreslení dvanácti úseček s předáním souřadnic a barev
-gl.drawArrays(gl.LINES, 0, 12);
+gl.drawArrays(gl.LINES, 0, 24);
 

@@ -269,7 +269,7 @@ gl.clear(gl.COLOR_BUFFER_BIT);
 // spuštění programu
 gl.useProgram(program);
 
-// matice rotace
+// transformační matice
 const aspect = canvas.width / canvas.height;
 const perspective_fov = matrix_perspective_fov(Math.PI / 3, aspect, 0.1, 100);
 const translate = matrix_translate(-2.0);

@@ -204,5 +204,5 @@ gl.clear(gl.COLOR_BUFFER_BIT);
 gl.useProgram(program);
 
 // vykreslení dvanácti úseček s předáním souřadnic a barev
-gl.drawArrays(gl.LINES, 0, 12);
+gl.drawArrays(gl.LINES, 0, 24);
 
