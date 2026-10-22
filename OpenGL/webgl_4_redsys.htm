@@ -1,0 +1,2562 @@
+<h2 id="k01">WebGL: tvorba 3D grafiky s&nbsp;využitím programovatelné vykreslovací pipeline: zobrazení 3D scén</h2>
+
+<p>V&nbsp;předchozí trojici článků [<a
+href="https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline/">1</a>]
+[<a
+href="https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline-2-cast/">2</a>]
+[<a
+href="https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline-3-cast/">3</a>]
+jsme si popsali prakticky všechny důležité koncepty WebGL a OpenGL ES (zbývá
+ještě popsat texturování). Nyní je tedy ideální čas pro to, abychom si
+vykreslili první skutečnou 3D scénu. Začneme jednoduchým příkladem &ndash;
+zobrazením krychle reprezentované drátovým modelem (<i>wireframe</i>),
+tj.&nbsp;dvanácti úsečkami, které tvoří hrany krychle. 3D zobrazení bude
+realizováno v&nbsp;několika krocích:</p>
+
+<ol>
+<li>Úprava vertex shaderu tak, aby akceptoval 3D souřadnice vrcholů úseček</li>
+<li>Úprava polí/bufferů s&nbsp;koncovými body úseček: nyní budou obsahovat 3D souřadnice</li>
+<li>Vylepšení vertex shaderu o vynásobení vstupního vektoru transformační maticí</li>
+<li>Výpočet transformační matice umožňující rotaci krychle okolo dvou os</li>
+<li>Úprava transformační matice: přidání výpočtu perspektivy</li>
+</ol>
+
+
+
+<h2 id="k02">Vertex shader akceptující souřadnice koncových bodů reprezentované 3D vektorem</h2>
+
+<p>Prozatím jsme do vertex shaderu předávali koncové body úseček atd., které
+byly definovány v&nbsp;2D ploše, tj.&nbsp;jednalo se o dvojici souřadnic (typ
+<strong>vec2</strong>).  Vertex shader k&nbsp;těmto dvěma souřadnicím přidal
+nulovou z-ovou souřadnici a jedničkovou váhu (W):</p>
+
+<pre>
+attribute <strong>vec2 position</strong>;
+attribute vec4 aColor;
+varying vec4 vColor;
+&nbsp;
+void main() {
+    vColor = aColor;
+    gl_Position = <strong>vec4(position, 0, 1)</strong>;
+}
+</pre>
+
+<p>Nyní budeme muset do shaderu předávat pro každý koncový bod tři souřadnice
+(typ <strong>vec3</strong>), ke kterým shader přidá pouze váhu:</p>
+
+<pre>
+attribute <strong>vec3 position</strong>;
+attribute vec4 aColor;
+varying vec4 vColor;
+&nbsp;
+void main() {
+    vColor = aColor;
+    gl_Position = vec4(position, 1);
+}
+</pre>
+
+<p>V&nbsp;praxi tak můžeme nadeklarovat pole vrcholů dvanácti úseček, které
+tvoří hrany 3D krychle:</p>
+
+<pre>
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+</pre>
+
+<p>Nadeklarujeme i pole s&nbsp;barvami úseček (bude konstantní):</p>
+
+<pre>
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+&nbsp;
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+&nbsp;
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+</pre>
+
+<p>Při specifikaci, jaké vrcholy se budou předávat do vertex shaderu, nesmíme
+zapomenout na to, že druhý parametr musí obsahovat hodnotu 3 a nikoli 2 (dtto
+pátý parametr):</p>
+
+<pre>
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+</pre>
+
+<p>Samotné vykreslení dvanácti úseček vypadá takto (hodnota 24 odpovídá 24
+vrcholům):</p>
+
+<pre>
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337828" data-alignment="center" data-link-type="modal">Obrázek #1337828 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337828">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337828" src="https://i.iinfo.cz/images/314/webgl-04-1-prev.png" width="270" height="270" data-prev-filename="https://i.iinfo.cz/images/314/webgl-04-1-prev.png" data-prev-width="270" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/314/webgl-04-1.png" data-large-width="275" data-large-height="275">
+<p class="description">Obrázek 1: Scéna s&nbsp;krychlí, ovšem zobrazená v&nbsp;půdorysu.</p>
+</div>
+</div>
+
+
+
+<h2 id="k03">První demonstrační příklad: 3D krychle vykreslená do 2D plochy bez aplikace transformací</h2>
+
+<p>Úplný zdrojový kód dnešního prvního demonstračního příkladu, který po svém
+spuštění ve webovém prohlížeči (otestovat <a
+href="https://tisnik.github.io/temp/cube1.html">je možné zde</a>) vykreslí 3D
+krychli do 2D plochy (prozatím bez aplikace transformací typu rotace či
+aplikace perspektivy), vypadá následovně:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec3 position;
+    attribute vec4 aColor;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        vColor = aColor;
+        gl_Position = vec4(position, 1);
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        gl_FragColor = vColor;
+    }
+`
+&nbsp;
+function print(message) {
+    console.log(message);
+}
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+if (!canvas) {
+    throw new Error("Canvas with id 'web_gl_canvas' not found");
+}
+print("Canvas object retrieved");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+if (!gl) {
+    throw new Error("WebGL is not supported or context creation failed");
+}
+print("WebGL context created");
+&nbsp;
+<i>// vytvoření vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+if (!vertexShader) {
+    throw new Error("Failed to create vertex shader.");
+}
+print("Vertex shader created");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(vertexShader);
+    gl.deleteShader(vertexShader);
+    throw new Error(`Vertex shader compile failed: ${log}`);
+}
+print("Vertex shader compiled");
+&nbsp;
+<i>// vytvoření fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+if (!fragmentShader) {
+    throw new Error("Failed to create fragment shader.");
+}
+print("Fragment shader created");
+&nbsp;
+<i>// překlad fragment shaderu</i>
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(fragmentShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error(`fragment shader compile failed: ${log}`);
+}
+print("Fragment shader compiled");
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+if (!program) {
+    throw new Error("Failed to create program.");
+}
+print("Program created");
+&nbsp;
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+print("Shaders attached to the program");
+&nbsp;
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link failed: ${log}`);
+}
+print("Program linked");
+&nbsp;
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+&nbsp;
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+&nbsp;
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+&nbsp;
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const vertexBuffer = gl.createBuffer();
+if (!vertexBuffer) {
+    throw new Error("Failed to create buffer.");
+}
+print("Vertex buffer created");
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+&nbsp;
+const data = new Float32Array(vertexes);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+print("Vertex buffer filled-in by vertexes");
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+if (p === -1) {
+    throw new Error("Attribute 'position' not found in shader program");
+}
+print("Attribute 'position' found in shader program")
+&nbsp;
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// barvový buffer</i>
+const colorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+&nbsp;
+const cdata = new Float32Array(colors);
+gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
+&nbsp;
+const aColor = gl.getAttribLocation(program, "aColor");
+gl.enableVertexAttribArray(aColor);
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(aColor,
+                       4,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       0,
+                       0                                 <i>// offset</i>
+);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+
+
+<h2 id="k04">Transformační matice, homogenní souřadnice a lineární transformace v&nbsp;3D grafice</h2>
+
+<p><i>Transformační matice</i> představují v&nbsp;počítačové grafice prostředek
+pro vyjádření <i>lineárních transformací</i>. Mezi základní lineární
+transformace patří posun, otáčení, změna měřítka a zkosení. Jestliže máme tři
+body, které leží na jedné přímce, tak po aplikaci libovolné lineární
+transformace získáme nové tři body, které také leží na přímce (ovšem jejich
+vzdálenost může být odlišná). Všechny lineární transformace lze vyjádřit maticí
+o rozměrech <i>n x n</i>, kde <i>n</i> je dimenze vektoru či bodu, který
+transformujeme.</p>
+
+<p>V&nbsp;případě, že provádíme lineární transformace v&nbsp;ploše, vyjadřujeme souřadnici dvěma
+složkami - <i>x</i> a <i>y</i>. Lineární transformaci lze zapsat jako výpočet
+nových souřadnic <i>x'</i> a <i>y'</i>:<br>
+<i>x'=x*a<sub>11</sub>+y*a<sub>12</sub></i>,<br>
+<i>y'=x*a<sub>21</sub>+y*a<sub>22</sub></i>.</p>
+
+<p>Členy <i>a<sub>11</sub></i>, <i>a<sub>12</sub></i>, <i>a<sub>21</sub></i> a
+<i>a<sub>22</sub></i> představují parametry lineární transformace.</p>
+
+<p>Přehlednější je však vektorově/maticový zápis, kdy dvojici <i>[x, y]</i> označíme
+jako <i>v</i>, dvojici <i>[x', y']</i> jako <i>v'</i> a hodnoty
+<i>a<sub>11</sub></i>, <i>a<sub>12</sub></i>, <i>a<sub>21</sub></i> a
+<i>a<sub>22</sub></i> zapíšeme jako prvky do matice <i>M</i> o rozměrech 2x2.
+Potom lze celou lineární transformaci zapsat jedním vztahem:<br>
+<i>v'=M*v</i> - v tomto případě jsou <i>v</i> a <i>v'</i> sloupcové vektory.</p>
+
+<p><div class="rs-tip-major">Poznámka: můžeme se setkat i s&nbsp;alternativním
+&bdquo;otočeným&ldquo; zápisem se řádkovými vektory, ovšem v&nbsp;grafice je
+transformační matice většinou zapsána před vektorem, tedy tak, jako
+v&nbsp;předchozím odstavci.</div></p>
+
+<p>Pro zadání lineárních transformací v&nbsp;trojrozměrném prostoru by nám měla
+stačit transformační matice o rozměrech 3&times;3 prvky. To je skutečně pravda,
+ale v&nbsp;počítačové grafice často potřebujeme kromě lineárních transformací
+vyjádřit i <i>perspektivní projekci</i>. Proto se ke třem souřadnicím <i>[x, y,
+z]</i> přidává ještě čtvrtá souřadnice označovaná <i>w</i> ze slova
+<b>w</b>eight - váha. Bod je potom vyjádřen čtveřicí <i>[x, y, z, 1]</i> a
+vektor <i>[x, y, z, 0]</i>. Transformační matice je poté zvětšena na rozměry
+4&times;4 prvky (a mluvíme o <i>homogenních souřadnicích</i>).</p>
+
+<p>Po provedení transformace získáme souřadnice nového bodu, které mají obecně
+tvar <i>[x', y', z', w']</i>. My však víme, že pro body platí, že čtvrtá
+souřadnice je rovna jedničce. Z&nbsp;tohoto důvodu musíme ostatní tři
+souřadnice vydělit souřadnicí poslední (<i>w'</i>), čímž získáme normovaný bod:
+<i>[x'/w', y'/w', z'/w', w'/w']=[x'/w', y'/w', z'/w', 1]</i>. Toto vydělení
+poslední souřadnicí se v počítačové grafice někdy poněkud nesprávně nazývá
+<i>perspektivní korekce</i>.</p>
+
+<p>Důležitou vlastností lineárních transformací je, že je lze skládat. Složením
+dvou transformací vyjádřených maticemi <i>M<sub>1</sub></i> a
+<i>M<sub>2</sub></i> vznikne transformace <i>M<sub>c</sub>=M<sub>2</sub>x
+M<sub>1</sub></i>, kde operátor <i>x</i> značí maticový součin. Takto lze
+skládat libovolné množství transformací, což přináší značné urychlení při
+vlastním vykreslování, neboť složení transformací se provede pouze jednou a
+teprve výsledná transformace se aplikuje na body v&nbsp;rovině nebo prostoru.
+Je pouze zapotřebí zajistit správné pořadí provádění transformací, protože
+maticový součin není komutativní operace (což si ostatně můžeme snadno ověřit
+v&nbsp;praxi).</p>
+
+
+
+<h2 id="k05">Vertex shader provádějící lineární transformaci</h2>
+
+<p>V&nbsp;klasickém OpenGL existují tři transformační matice, které se postupně
+aplikují na body (vrcholy, vertexy) popř. i na normály vrcholů. První
+transformační matice se jmenuje <b>ModelView matrix</b>. Na tuto matici se
+můžeme dívat jako na spojení modelové matice a pohledové matice, protože se
+používá jak pro nastavení pozice kamery, tak i pro manipulaci s&nbsp;objekty
+(modely) ve scéně. Druhá transformační matice se jmenuje <b>Projection
+matrix</b> a používá se pro nastavení perspektivní projekce kamery. Třetí
+transformační matice se jmenuje <b>Viewport matrix</b> a používá se po
+provedení perspektivní projekce k&nbsp;mapování objektů z&nbsp;abstraktních
+souřadnic do souřadnic okna. Tato poslední matice ve skutečnosti pouze provádí
+transformaci v&nbsp;dvojrozměrné ploše, proto se s&nbsp;ní v&nbsp;OpenGL
+nepracuje jako s&nbsp;&bdquo;plnohodnotnou maticí&ldquo;. Kromě těchto tří
+matic můžeme měnit matici, která se používá při mapování textur na povrch
+objektů. Tato matice se nazývá <b>Texture matrix</b>.</p>
+
+<p>V&nbsp;případě OpenGL ES je provedení transformací nutně explicitně
+naprogramovat (až na <i>viewport matrix</i>). Celý problém se rozděluje na dvě
+části:</p>
+
+<ol>
+<li>Výpočet matice transformace &ndash; lze provést pro celý snímek jen jedenkrát</li>
+<li>Transformace všech vrcholů těles (bodů, úseček, trojúhelníků) ze světových
+souřadnic do &bdquo;prostoru kamery&ldquo; (<i>camera space, eye
+space</i>).</li>
+</ol>
+
+<p>Druhá část je realizována ve vertex shaderu. Příkladem může být následující
+vertex shader, kterému se předávají trojrozměrné souřadnice vrcholů
+v&nbsp;parametru <strong>position</strong> (to již známe, pouze je
+<strong>position</strong> rozšířen o třetí dimenzi). Z&nbsp;předaného vrcholu
+se vytvoří 4D vektor přidáním čtvrté souřadnice s&nbsp;hodnotou 1 (1=bod,
+0=vektor). Vertex shader vypočte souřadnice v&nbsp;prostoru kamery tak, že
+provede součin matice transformace (<strong>umatrix</strong>) s&nbsp;právě
+vypočteným 4D vektorem. Výsledek je uložen do interní stavové proměnné
+<strong>gl_Position</strong> (což již známe):</p>
+
+<pre>
+attribute vec3 position;
+uniform mat4 umatrix;
+attribute vec4 aColor;
+varying vec4 vColor;
+&nbsp;
+void main() {
+    vColor = aColor;
+    gl_Position = umatrix * vec4(position, 1);
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: operátor * zde znamená násobení matice
+se sloupcovým vektorem.</div></p>
+
+
+
+<h2 id="k06">Výpočet transformační matice: základní varianta</h2>
+
+<p>Zbývá nám dopočítat transformační matici a předat ji vykreslovacímu řetězci
+v&nbsp;parametru <strong>umatrix</strong>. Vše si otestujeme na jednotkové
+matici. Vynásobení této matice s&nbsp;nějakým 4D vektorem vrací stejný vektor,
+jaký vstupoval do výpočtu:</p>
+
+<pre>
+function <strong>matrix_identity</strong>() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+</pre>
+
+<p>Způsob předání této matice do vykreslovacího řetězce může vypadat
+následovně:</p>
+
+<pre>
+<i>// jednotková matice</i>
+const matrix = matrix_identity();
+&nbsp;
+<i>// navázání na proměnnou dostupnou ve vertex shaderu</i>
+const umatrix = gl.getUniformLocation(program, "umatrix");
+gl.uniformMatrix4fv(umatrix, false, matrix);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+<p>Povšimněte si, že skutečně používáme identifikátor <strong>umatrix</strong>.
+Výsledkem bude scéna se stejnou krychlí, jako tomu bylo v&nbsp;předchozím
+příkladu (ovšem souřadnice se skutečně transformují):</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337831" data-alignment="center" data-link-type="modal">Obrázek #1337831 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337831">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337831" src="https://i.iinfo.cz/images/314/webgl-04-2-prev.png" width="270" height="270" data-prev-filename="https://i.iinfo.cz/images/314/webgl-04-2-prev.png" data-prev-width="270" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/314/webgl-04-2.png" data-large-width="275" data-large-height="275">
+<p class="description">Obrázek 2: Scéna s&nbsp;krychlí, ovšem zobrazená v&nbsp;půdorysu po aplikaci transformační matice.</p>
+</div>
+</div>
+
+
+
+<h2 id="k07">Druhý demonstrační příklad: transformace reprezentovaná jednotkovou maticí</h2>
+
+<p>Následuje výpis celého zdrojového kódu dnešního druhého demonstračního
+příkladu, který po svém <a
+href="https://tisnik.github.io/temp/cube2.html">otevření ve webovém
+prohlížeči</a> opět vykreslí přední stěnu 3D krychle, protože aplikace
+jednotkové matice při provádění transformací nemá vliv na pozici vrcholů
+v&nbsp;prostoru. Důležité ovšem je, že se tato transformace provádí, čehož
+využijeme v&nbsp;dalších čtyřech příkladech:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec3 position;
+    uniform mat4 umatrix;
+    attribute vec4 aColor;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        vColor = aColor;
+        gl_Position = umatrix * vec4(position, 1);
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        gl_FragColor = vColor;
+    }
+`
+&nbsp;
+function print(message) {
+    console.log(message);
+}
+&nbsp;
+function matrix_identity() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+if (!canvas) {
+    throw new Error("Canvas with id 'web_gl_canvas' not found");
+}
+print("Canvas object retrieved");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+if (!gl) {
+    throw new Error("WebGL is not supported or context creation failed");
+}
+print("WebGL context created");
+&nbsp;
+<i>// vytvoření vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+if (!vertexShader) {
+    throw new Error("Failed to create vertex shader.");
+}
+print("Vertex shader created");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(vertexShader);
+    gl.deleteShader(vertexShader);
+    throw new Error(`Vertex shader compile failed: ${log}`);
+}
+print("Vertex shader compiled");
+&nbsp;
+<i>// vytvoření fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+if (!fragmentShader) {
+    throw new Error("Failed to create fragment shader.");
+}
+print("Fragment shader created");
+&nbsp;
+<i>// překlad fragment shaderu</i>
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(fragmentShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error(`fragment shader compile failed: ${log}`);
+}
+print("Fragment shader compiled");
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+if (!program) {
+    throw new Error("Failed to create program.");
+}
+print("Program created");
+&nbsp;
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+print("Shaders attached to the program");
+&nbsp;
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link failed: ${log}`);
+}
+print("Program linked");
+&nbsp;
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+&nbsp;
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+&nbsp;
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+&nbsp;
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const vertexBuffer = gl.createBuffer();
+if (!vertexBuffer) {
+    throw new Error("Failed to create buffer.");
+}
+print("Vertex buffer created");
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+&nbsp;
+const data = new Float32Array(vertexes);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+print("Vertex buffer filled-in by vertexes");
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+if (p === -1) {
+    throw new Error("Attribute 'position' not found in shader program");
+}
+print("Attribute 'position' found in shader program")
+&nbsp;
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// barvový buffer</i>
+const colorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+&nbsp;
+const cdata = new Float32Array(colors);
+gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
+&nbsp;
+const aColor = gl.getAttribLocation(program, "aColor");
+gl.enableVertexAttribArray(aColor);
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(aColor,
+                       4,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       0,
+                       0                                 <i>// offset</i>
+);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// jednotková matice</i>
+const matrix = matrix_identity();
+&nbsp;
+<i>// navázání na proměnnou dostupnou ve vertex shaderu</i>
+const umatrix = gl.getUniformLocation(program, "umatrix");
+gl.uniformMatrix4fv(umatrix, false, matrix);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+
+
+<h2 id="k08">Rotace kostky v&nbsp;3D prostoru</h2>
+
+<p>Dalším krokem, který musíme udělat, je zajistit rotaci kostky (krychle)
+v&nbsp;3D prostoru. Budeme tedy muset nadefinovat transformační matici
+s&nbsp;realizací rotace okolo osy <strong>x</strong> a nezávislou rotaci okolo
+osy <strong>y</strong>. Ve 2D ploše vypadá matice rotace takto:</p>
+
+<pre>
+| cos θ   -sin θ |
+| sin θ    cos θ |
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: to lze snadno odvodit, pokud vstupní
+vektor bude reprezentován v&nbsp;polárních souřadnicích a aplikujeme <a
+href="https://mathworld.wolfram.com/TrigonometricAdditionFormulas.html">vzorce
+pro siny a cosiny součtu dvou úhlů</a> (původního úhlu a úhlu
+rotace).</div></p>
+
+<p>Výše uvedenou matici můžeme rozšířit do 3D a vytvořit tak matici
+reprezentující rotaci okolo osy <strong>x</strong>:</p>
+
+<pre>
+| 1        0        0 |
+| 0    cos θ   -sin θ |
+| 0    sin θ    cos θ |
+</pre>
+
+<p>A po rozšíření na matici 4&times;4 (váha se transformuje na stejnou váhu):</p>
+
+<pre>
+| 1        0        0      0|
+| 0    cos θ   -sin θ      0|
+| 0    sin θ    cos θ      0|
+| 0        0        0      1|
+</pre>
+
+<p>Uložení matice v&nbsp;paměti je ovšem realizováno jednorozměrným polem a
+prvky jsou z&nbsp;pohledu WebGL uloženy po sloupcích (nejprve čtyři prvky
+prvního sloupce, poté čtyři prvky sloupce druhého atd.). Z&nbsp;tohoto důvodu
+při definici matice v&nbsp;JavaScriptu musíme matici transponovat:</p>
+
+<pre>
+function <strong>matrix_rotate_around_x</strong>(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, c, s, 0,
+        0, -s, c, 0,
+        0, 0, 0, 1
+    ]);
+}  
+</pre>
+
+<p>Naprosto stejným způsobem lze realizovat matici pro otočení okolo y-ové
+osy:</p>
+
+<pre>
+function <strong>matrix_rotate_around_y</strong>(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        c, 0, -s, 0,
+        0, 1, 0, 0,
+        s, 0, c, 0,
+        0, 0, 0, 1
+    ]);
+}
+</pre>
+
+
+
+<h2 id="k09">Složení transformací</h2>
+
+<p>Nyní již dokážeme vytvořit matici reprezentující transformaci rotace okolo
+osy <strong>x</strong> a jinou matici reprezentující rotaci okolo osy
+<strong>y</strong>. My ovšem potřebujeme, aby se na vrcholy úseček aplikovala
+jediná transformace. A zde přichází na řadu velmi elegantní vlastnost známá
+z&nbsp;lineární algebry: pokud provedeme maticový součin dvou matic
+představujících určité transformace, získáme novou matici, která reprezentuje
+složení obou transformací.</p>
+
+<p><div class="rs-tip-major">Poznámka: Maticový součin není komutativní operací
+(záleží na pořadí operandů); to ovšem není ani složení transformací: posun
+následovaný rotací je odlišný od rotace následované posunem.</p></div></p>
+
+<p>Realizace maticového součinu v&nbsp;JavaScriptu může vypadat takto:</p>
+
+<pre>
+function <strong>matrix_multiply</strong>(a, b) {
+    const out = new Float32Array(16);
+    for (let col = 0; col &lt;; col++) {
+        for (let row = 0; row &lt; 4; row++) {
+            out[col * 4 + row] =
+              a[0 * 4 + row] * b[col * 4 + 0] +
+              a[1 * 4 + row] * b[col * 4 + 1] +
+              a[2 * 4 + row] * b[col * 4 + 2] +
+              a[3 * 4 + row] * b[col * 4 + 3];
+        }
+    }
+    return out;
+}
+</pre>
+
+<p>A složení transformací (rotace okolo dvou os) může vypadat následovně:</p>
+
+<pre>
+<i>// matice rotace</i>
+const rx = matrix_rotate_around_x(Math.PI / 6);
+const ry = matrix_rotate_around_y(Math.PI / 6);
+const matrix = matrix_multiply(rx, ry);
+</pre>
+
+<p>Výsledkem je již (konečně!) nějaká skutečná 3D scéna:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337834" data-alignment="center" data-link-type="modal">Obrázek #1337834 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337834">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337834" src="https://i.iinfo.cz/images/314/webgl-04-3-prev.png" width="270" height="270" data-prev-filename="https://i.iinfo.cz/images/314/webgl-04-3-prev.png" data-prev-width="270" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/314/webgl-04-3.png" data-large-width="275" data-large-height="275">
+<p class="description">Obrázek 3:Rotace krychle okolo osy x a y.</p>
+</div>
+</div>
+
+
+
+<h2 id="k10">Třetí demonstrační příklad: zobrazení 3D kostky z&nbsp;různých úhlů pohledu</h2>
+
+<p>Opět si ukažme úplný zdrojový kód demonstračního příkladu, který již dokáže
+vykreslit 3D kostku <a href="https://tisnik.github.io/temp/cube3.html">na
+webové stránce</a> z&nbsp;libovolného úhlu, přičemž tento úhel je reprezentován
+dvojicí rotací: kolem x-ové osy a okolo osy y-ové:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec3 position;
+    uniform mat4 umatrix;
+    attribute vec4 aColor;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        vColor = aColor;
+        gl_Position = umatrix * vec4(position, 1);
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        gl_FragColor = vColor;
+    }
+`
+&nbsp;
+function print(message) {
+    console.log(message);
+}
+&nbsp;
+function matrix_identity() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_rotate_around_x(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, c, s, 0,
+        0, -s, c, 0,
+        0, 0, 0, 1
+    ]);
+}  
+&nbsp;
+function matrix_rotate_around_y(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        c, 0, -s, 0,
+        0, 1, 0, 0,
+        s, 0, c, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let col = 0; col &lt;; col++) {
+        for (let row = 0; row &lt; 4; row++) {
+            out[col * 4 + row] =
+              a[0 * 4 + row] * b[col * 4 + 0] +
+              a[1 * 4 + row] * b[col * 4 + 1] +
+              a[2 * 4 + row] * b[col * 4 + 2] +
+              a[3 * 4 + row] * b[col * 4 + 3];
+        }
+    }
+    return out;
+}
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+if (!canvas) {
+    throw new Error("Canvas with id 'web_gl_canvas' not found");
+}
+print("Canvas object retrieved");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+if (!gl) {
+    throw new Error("WebGL is not supported or context creation failed");
+}
+print("WebGL context created");
+&nbsp;
+<i>// vytvoření vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+if (!vertexShader) {
+    throw new Error("Failed to create vertex shader.");
+}
+print("Vertex shader created");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(vertexShader);
+    gl.deleteShader(vertexShader);
+    throw new Error(`Vertex shader compile failed: ${log}`);
+}
+print("Vertex shader compiled");
+&nbsp;
+<i>// vytvoření fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+if (!fragmentShader) {
+    throw new Error("Failed to create fragment shader.");
+}
+print("Fragment shader created");
+&nbsp;
+<i>// překlad fragment shaderu</i>
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(fragmentShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error(`fragment shader compile failed: ${log}`);
+}
+print("Fragment shader compiled");
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+if (!program) {
+    throw new Error("Failed to create program.");
+}
+print("Program created");
+&nbsp;
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+print("Shaders attached to the program");
+&nbsp;
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link failed: ${log}`);
+}
+print("Program linked");
+&nbsp;
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+&nbsp;
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+&nbsp;
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+&nbsp;
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const vertexBuffer = gl.createBuffer();
+if (!vertexBuffer) {
+    throw new Error("Failed to create buffer.");
+}
+print("Vertex buffer created");
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+&nbsp;
+const data = new Float32Array(vertexes);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+print("Vertex buffer filled-in by vertexes");
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+if (p === -1) {
+    throw new Error("Attribute 'position' not found in shader program");
+}
+print("Attribute 'position' found in shader program")
+&nbsp;
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// barvový buffer</i>
+const colorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+&nbsp;
+const cdata = new Float32Array(colors);
+gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
+&nbsp;
+const aColor = gl.getAttribLocation(program, "aColor");
+gl.enableVertexAttribArray(aColor);
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(aColor,
+                       4,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       0,
+                       0                                 <i>// offset</i>
+);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// matice rotace</i>
+const rx = matrix_rotate_around_x(Math.PI / 6);
+const ry = matrix_rotate_around_y(Math.PI / 6);
+const matrix = matrix_multiply(rx, ry);
+&nbsp;
+<i>// navázání na proměnnou dostupnou ve vertex shaderu</i>
+const umatrix = gl.getUniformLocation(program, "umatrix");
+gl.uniformMatrix4fv(umatrix, false, matrix);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+
+
+<h2 id="k11">Perspektivní projekce</h2>
+
+<p>Díky rotaci krychle jsme sice dosáhli určitého pokroku, ovšem výsledné 3D
+scéně stále něco chybí. Prozatím je totiž použita takzvaná <i>ortogonální
+projekce</i> (ovšem korektnější je mluvit o <i>rovnoběžné projekci</i>), která
+zachovává velikost objektů nezávisle na jejich vzdálenosti od kamery
+(pozorovatele). Taktéž jsou zachovány další vlastnosti: například dvě
+rovnoběžné hrany ve světovém prostoru zůstanou rovnoběžné i po jejich zobrazení
+do 2D roviny s&nbsp;využitím rovnoběžné projekce. V&nbsp;technické praxi se
+ortogonální projekce používá pro zobrazení nárysu, půdorysu a bokorysu, ovšem
+do této kategorie spadá i axonometrická a isometrická projekce, s&nbsp;nimiž se
+taktéž můžeme setkat (například i v&nbsp;některých počítačových hrách).</p>
+
+<p>Našim cílem ovšem není tvorba technických výkresů, ale vizualizace 3D scény,
+která by měla vypadat podobně, jako při sledování reálné scény pozorovatelem.
+V&nbsp;takovém případě se musí namísto ortogonální (resp.&nbsp;rovnoběžné)
+projekce použít projekce <i>perspektivní</i>. Existuje více variant
+perspektivní projekce (jednobodová, dvoubodová, tříbodová), ovšem tyto varianty
+se využívají v&nbsp;případě, kdy jsou 3D objekty zobrazovány na výkres
+&bdquo;ručně&ldquo; s&nbsp;využitím pravítka a kružítka.</p>
+
+<p>My ovšem máme k&nbsp;dispozici odlišnou techniku: transformaci vektorů
+představujících souřadnice úseček nebo trojúhelníků, které se mají zobrazit.
+Vykreslovací pipeline po transformaci s&nbsp;využitím transformační matice (viz
+předchozí kapitoly) výsledné souřadnice [<strong>x</strong>,
+<strong>y</strong>, <strong>z</strong>, <strong>w</strong>] upraví. Konkrétně
+vydělí souřadnice <strong>x</strong>, <strong>y</strong> a <strong>z</strong>
+čtvrtou souřadnicí <strong>w</strong>, takže výsledkem bude vektor
+[<strong>x/w</strong>, <strong>y/w</strong>, <strong>z/w</strong>,
+<strong>1</strong>]. A právě toho můžeme využít, protože ta nejjednodušší
+implementace perspektivní projekce spočívá v&nbsp;tom, že se souřadnice
+<strong>x</strong> a <strong>y</strong> vydělí souřadnicí <strong>z</strong>
+(tedy čím dále je bod od pozorovatele &ndash; tedy má vyšší hodnotu
+<strong>z</strong> &ndash; tím blíže se bude výsledná souřadnice nacházet ke
+středu [<strong>0</strong>, <strong>0</strong>]. Takže vlastně postačuje
+zajistit maličkost: transformovat souřadnice takovým způsobem, aby se do
+<strong>w</strong> uložila původní hodnota <strong>z</strong>, vynásobená
+určitým koeficientem (&bdquo;mírou perspektivy&ldquo;).</p>
+
+
+
+<h2 id="k12">Matice reprezentující základní perspektivní projekci</h2>
+
+<p>Ve skutečnosti je základní matice, která reprezentuje perspektivní projekci
+ve směru osy <strong>z</strong>, velmi jednoduchá. Musíme si totiž uvědomit, že
+se musí modifikovat čtvrtá souřadnice <strong>w</strong> výsledného vektoru, a
+to na základě souřadnice <strong>z</strong> vektoru vstupního. Výsledkem
+aplikace transformace bude vektor, jehož čtvrtá souřadnice <strong>w</strong>
+už nebude rovna jedničce. Vykreslovací řetězec automaticky provede úpravu
+složek vektoru a právě v&nbsp;této chvíli vlastně dojde k&nbsp;výpočtu
+perspektivy.</p>
+
+<p>Předchozí matice počítaly složku <strong>w</strong> takto:</p>
+
+<pre>
+w'= 0x + 0y + 0z + 1w
+</pre>
+
+<p>Proveďme úpravu do podoby:</p>
+
+<pre>
+w'= 0x + 0y + 1,5z + 0w
+</pre>
+
+<p>To znamená: čím dále se nachází souřadnice vrcholu úsečky od pozorovatele,
+tím větší bude hodnota w' a tím se do větší míry projeví perspektiva (vlastně
+se zmenší hodnoty x' a y' &ndash; souřadnice budou blíže středu).</p>
+
+<p>Výsledná matice bude vypadat následovně:</p>
+
+<pre>
+function <strong>matrix_perspective</strong>() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1.5,
+        0, 0, 0, 0
+    ]);
+}
+</pre>
+
+<p>Aplikace perspektivy:</p>
+
+<pre>
+<i>// matice rotace</i>
+const perspective = matrix_perspective();
+const translate = matrix_translate(1.0);
+const matrix = matrix_multiply(perspective, translate);
+</pre>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337837" data-alignment="center" data-link-type="modal">Obrázek #1337837 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337837">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337837" src="https://i.iinfo.cz/images/314/webgl-04-4-prev.png" width="270" height="270" data-prev-filename="https://i.iinfo.cz/images/314/webgl-04-4-prev.png" data-prev-width="270" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/314/webgl-04-4.png" data-large-width="275" data-large-height="275">
+<p class="description">Obrázek 4: Základní perspektivní projekce.</p>
+</div>
+</div>
+
+
+
+<h2 id="k13">Čtvrtý demonstrační příklad: zobrazení 3D kostky s&nbsp;využitím základní perspektivní projekce</h2>
+
+<p>Úplný zdrojový kód příkladu, který po svém otevření ve <a
+href="https://tisnik.github.io/temp/cube4.html">webovém prohlížeči</a> zobrazí
+3D kostku s&nbsp;využitím základní perspektivní projekce (bez rotace atd),
+vypadá následovně:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec3 position;
+    uniform mat4 umatrix;
+    attribute vec4 aColor;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        vColor = aColor;
+        gl_Position = umatrix * vec4(position, 1);
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        gl_FragColor = vColor;
+    }
+`
+&nbsp;
+function print(message) {
+    console.log(message);
+}
+&nbsp;
+function matrix_identity() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_translate(z) {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, z, 1
+    ]);
+}
+&nbsp;
+function matrix_rotate_around_x(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, c, s, 0,
+        0, -s, c, 0,
+        0, 0, 0, 1
+    ]);
+}  
+&nbsp;
+function matrix_rotate_around_y(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        c, 0, -s, 0,
+        0, 1, 0, 0,
+        s, 0, c, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_perspective() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 1.5,
+        0, 0, 0, 0
+    ]);
+}
+&nbsp;
+function matrix_multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let col = 0; col &lt; 4; col++) {
+        for (let row = 0; row &lt; 4; row++) {
+            out[col * 4 + row] =
+              a[0 * 4 + row] * b[col * 4 + 0] +
+              a[1 * 4 + row] * b[col * 4 + 1] +
+              a[2 * 4 + row] * b[col * 4 + 2] +
+              a[3 * 4 + row] * b[col * 4 + 3];
+        }
+    }
+    return out;
+}
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+if (!canvas) {
+    throw new Error("Canvas with id 'web_gl_canvas' not found");
+}
+print("Canvas object retrieved");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+if (!gl) {
+    throw new Error("WebGL is not supported or context creation failed");
+}
+print("WebGL context created");
+&nbsp;
+<i>// vytvoření vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+if (!vertexShader) {
+    throw new Error("Failed to create vertex shader.");
+}
+print("Vertex shader created");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(vertexShader);
+    gl.deleteShader(vertexShader);
+    throw new Error(`Vertex shader compile failed: ${log}`);
+}
+print("Vertex shader compiled");
+&nbsp;
+<i>// vytvoření fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+if (!fragmentShader) {
+    throw new Error("Failed to create fragment shader.");
+}
+print("Fragment shader created");
+&nbsp;
+<i>// překlad fragment shaderu</i>
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(fragmentShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error(`fragment shader compile failed: ${log}`);
+}
+print("Fragment shader compiled");
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+if (!program) {
+    throw new Error("Failed to create program.");
+}
+print("Program created");
+&nbsp;
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+print("Shaders attached to the program");
+&nbsp;
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link failed: ${log}`);
+}
+print("Program linked");
+&nbsp;
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+&nbsp;
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+&nbsp;
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+&nbsp;
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const vertexBuffer = gl.createBuffer();
+if (!vertexBuffer) {
+    throw new Error("Failed to create buffer.");
+}
+print("Vertex buffer created");
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+&nbsp;
+const data = new Float32Array(vertexes);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+print("Vertex buffer filled-in by vertexes");
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+if (p === -1) {
+    throw new Error("Attribute 'position' not found in shader program");
+}
+print("Attribute 'position' found in shader program")
+&nbsp;
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// barvový buffer</i>
+const colorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+&nbsp;
+const cdata = new Float32Array(colors);
+gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
+&nbsp;
+const aColor = gl.getAttribLocation(program, "aColor");
+gl.enableVertexAttribArray(aColor);
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(aColor,
+                       4,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       0,
+                       0                                 <i>// offset</i>
+);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// matice rotace</i>
+const perspective = matrix_perspective();
+const translate = matrix_translate(1.0);
+const matrix = matrix_multiply(perspective, translate);
+&nbsp;
+<i>// navázání na proměnnou dostupnou ve vertex shaderu</i>
+const umatrix = gl.getUniformLocation(program, "umatrix");
+gl.uniformMatrix4fv(umatrix, false, matrix);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+
+
+<h2 id="k14">Zorný úhel a přední a zadní rovina</h2>
+
+<p>V&nbsp;praxi se ovšem projekce nastavuje poněkud sofistikovanějším způsobem.
+Většinou je totiž nutné specifikovat tzv.&nbsp;<i>view frustum</i>, což je
+oblast ve tvaru komolého jehlanu, která je (po provedení projekce) viditelná ve
+výsledné scéně. Tělesa nebo jejich části, které se nachází mimo tuto oblast,
+jsou ořezány (pokud by se nepoužila perspektivní projekce, namísto jehlanu by
+se jednalo o kvádr):</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337846" data-alignment="center" data-link-type="modal">Obrázek #1337846 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337846">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337846" src="https://i.iinfo.cz/images/14/view-frustum-prev.png" width="325" height="270" data-prev-filename="https://i.iinfo.cz/images/14/view-frustum-prev.png" data-prev-width="325" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/14/view-frustum-large.png" data-large-width="632" data-large-height="525">
+<p class="description">Obrázek 5: Komolý jehlan obsahující tu část prostoru, která se promítne do výsledné scény.</p>
+</div>
+</div>
+
+<p>Výpočet projekce se může (minimálně ve výuce) rozdělit na dvě transformační
+matice. První matice transformuje pouze souřadnice <strong>x</strong> a
+<strong>y</strong> tak, že se započítá zorný úhel a poměr výšky a šířky. Jedná
+se vlastně o transformaci změny měřítka v&nbsp;osách <strong>x</strong> a
+<strong>y</strong>:</p>
+
+<pre>
+function <strong>matrix_fov</strong>(fovy, aspect) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+</pre>
+
+<p>Druhá matice je již složitější. Zatímco souřadnice <strong>x</strong> a
+<strong>y</strong> se zde nemění, modifikují se souřadnice <strong>z</strong> a
+<strong>w</strong> (což naznačuje, že se zde vlastně připravujeme na výpočet
+perspektivy):</p>
+
+<pre>
+function <strong>matrix_near_far</strong>(near, far) {
+    const nf = 1.0 / (near - far);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, (2 * far * near) * nf, 0,
+    ]);
+}
+</pre>
+
+<p><div class="rs-tip-major">Poznámka: pravděpodobně nejkomplexnější vysvětlení
+této matice naleznete na stránkách <a
+href="https://vitaminac.github.io/Matrices-in-Computer-Graphics/">Matrix
+Transformations</a> a <a
+href="https://songho.ca/opengl/gl_projectionmatrix.html">OpenGL Projection
+Matrix</a>. V&nbsp;případě zájmu se můžeme k&nbsp;této velmi zajímavé
+problematice vrátit.</div></p>
+
+<p>Opět je důležité pořadí násobení matic, protože to není komutativní
+operace:</p>
+
+<pre>
+<i>// transformační matice</i>
+const aspect = canvas.width / canvas.height;
+const fov = matrix_fov(Math.PI / 3, aspect);
+const near_far = matrix_near_far(0.1, 100);
+const near_far_fov = matrix_multiply(near_far, fov);
+const translate = matrix_translate(-2.0);
+const rx = matrix_rotate_around_x(Math.PI / 6);
+const ry = matrix_rotate_around_y(Math.PI / 6);
+const matrix = matrix_multiply(near_far_fov, matrix_multiply(translate, matrix_multiply(rx, ry)));
+</pre>
+
+<p>Výsledkem aplikace této transformační matice by měl být trojrozměrný model
+krychle s&nbsp;korektně vypočtenou perspektivou:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337840" data-alignment="center" data-link-type="modal">Obrázek #1337840 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337840">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337840" src="https://i.iinfo.cz/images/314/webgl-04-5-prev.png" width="270" height="270" data-prev-filename="https://i.iinfo.cz/images/314/webgl-04-5-prev.png" data-prev-width="270" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/314/webgl-04-5.png" data-large-width="275" data-large-height="275">
+<p class="description">Obrázek 6: Kombinace rotace a perspektivní projekce.</p>
+</div>
+</div>
+
+
+
+<h2 id="k15">Pátý demonstrační příklad: krychle v&nbsp;3D prostoru</h2>
+
+<p>V&nbsp;dnešním pátém demonstračním příkladu je ukázán praktický výpočet
+transformační matice, která kromě rotace krychle okolo dvou os umožňuje i
+výpočet perspektivní projekce. Tento příklad je možné otestovat <a
+href="https://tisnik.github.io/temp/cube5.html">na této stránce</a> a jeho
+úplný zdrojový kód vypadá následovně:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec3 position;
+    uniform mat4 umatrix;
+    attribute vec4 aColor;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        vColor = aColor;
+        gl_Position = umatrix * vec4(position, 1);
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        gl_FragColor = vColor;
+    }
+`
+&nbsp;
+function print(message) {
+    console.log(message);
+}
+&nbsp;
+function matrix_identity() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_translate(z) {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, z, 1
+    ]);
+}
+&nbsp;
+function matrix_rotate_around_x(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, c, s, 0,
+        0, -s, c, 0,
+        0, 0, 0, 1
+    ]);
+}  
+&nbsp;
+function matrix_rotate_around_y(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        c, 0, -s, 0,
+        0, 1, 0, 0,
+        s, 0, c, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_fov(fovy, aspect) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_near_far(near, far) {
+    const nf = 1.0 / (near - far);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, (2 * far * near) * nf, 0,
+    ]);
+}
+&nbsp;
+function matrix_multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let col = 0; col &lt; 4; col++) {
+        for (let row = 0; row &lt; 4; row++) {
+            out[col * 4 + row] =
+              a[0 * 4 + row] * b[col * 4 + 0] +
+              a[1 * 4 + row] * b[col * 4 + 1] +
+              a[2 * 4 + row] * b[col * 4 + 2] +
+              a[3 * 4 + row] * b[col * 4 + 3];
+        }
+    }
+    return out;
+}
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+if (!canvas) {
+    throw new Error("Canvas with id 'web_gl_canvas' not found");
+}
+print("Canvas object retrieved");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+if (!gl) {
+    throw new Error("WebGL is not supported or context creation failed");
+}
+print("WebGL context created");
+&nbsp;
+<i>// vytvoření vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+if (!vertexShader) {
+    throw new Error("Failed to create vertex shader.");
+}
+print("Vertex shader created");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(vertexShader);
+    gl.deleteShader(vertexShader);
+    throw new Error(`Vertex shader compile failed: ${log}`);
+}
+print("Vertex shader compiled");
+&nbsp;
+<i>// vytvoření fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+if (!fragmentShader) {
+    throw new Error("Failed to create fragment shader.");
+}
+print("Fragment shader created");
+&nbsp;
+<i>// překlad fragment shaderu</i>
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(fragmentShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error(`fragment shader compile failed: ${log}`);
+}
+print("Fragment shader compiled");
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+if (!program) {
+    throw new Error("Failed to create program.");
+}
+print("Program created");
+&nbsp;
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+print("Shaders attached to the program");
+&nbsp;
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link failed: ${log}`);
+}
+print("Program linked");
+&nbsp;
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+&nbsp;
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+&nbsp;
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+&nbsp;
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const vertexBuffer = gl.createBuffer();
+if (!vertexBuffer) {
+    throw new Error("Failed to create buffer.");
+}
+print("Vertex buffer created");
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+&nbsp;
+const data = new Float32Array(vertexes);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+print("Vertex buffer filled-in by vertexes");
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+if (p === -1) {
+    throw new Error("Attribute 'position' not found in shader program");
+}
+print("Attribute 'position' found in shader program")
+&nbsp;
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// barvový buffer</i>
+const colorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+&nbsp;
+const cdata = new Float32Array(colors);
+gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
+&nbsp;
+const aColor = gl.getAttribLocation(program, "aColor");
+gl.enableVertexAttribArray(aColor);
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(aColor,
+                       4,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       0,
+                       0                                 <i>// offset</i>
+);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// transformační matice</i>
+const aspect = canvas.width / canvas.height;
+const fov = matrix_fov(Math.PI / 3, aspect);
+const near_far = matrix_near_far(0.1, 100);
+const near_far_fov = matrix_multiply(near_far, fov);
+const translate = matrix_translate(-2.0);
+const rx = matrix_rotate_around_x(Math.PI / 6);
+const ry = matrix_rotate_around_y(Math.PI / 6);
+const matrix = matrix_multiply(near_far_fov, matrix_multiply(translate, matrix_multiply(rx, ry)));
+&nbsp;
+<i>// navázání na proměnnou dostupnou ve vertex shaderu</i>
+const umatrix = gl.getUniformLocation(program, "umatrix");
+gl.uniformMatrix4fv(umatrix, false, matrix);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+
+
+<h2 id="k16">Jediná matice realizující perspektivní projekci</h2>
+
+<p>V&nbsp;praxi, resp.&nbsp;možná přesněji řečeno v&nbsp;sociální bublině
+vývojářů používajících OpenGL, se většinou obě výše popsané matice spojují do
+matice jediné. V&nbsp;JavaScriptu lze tuto matici zkonstruovat s&nbsp;využitím
+následující funkce:</p>
+
+<pre>
+function <strong>matrix_perspective_fov</strong>(fovy, aspect, near, far) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, (2 * far * near) * nf, 0
+    ]);
+}
+</pre>
+
+<p>Výpočet transformační matice předávané do vertex shaderu se změní na:</p>
+
+<pre>
+<i>// transformační matice</i>
+const aspect = canvas.width / canvas.height;
+const perspective_fov = matrix_perspective_fov(Math.PI / 3, aspect, 0.1, 100);
+const translate = matrix_translate(-2.0);
+const rx = matrix_rotate_around_x(Math.PI / 6);
+const ry = matrix_rotate_around_y(Math.PI / 6);
+const matrix = matrix_multiply(perspective_fov, matrix_multiply(translate, matrix_multiply(rx, ry)));
+</pre>
+
+<p>Výsledek transformace s&nbsp;využitím této matice by měl vypadat
+následovně:</p>
+
+<div class="rs-picture-widget-wrap">
+<div class="rs-picture-widget" data-image-id="1337843" data-alignment="center" data-link-type="modal">Obrázek #1337843 <span class="img-edit-link" data-edit-link="/redsys/images_widget_wysiwyg/edit/?primary%5Bimage_id%5D=1337843">(editovat)</span></div>
+<div class="rs-img-center"><img class="image-1337843" src="https://i.iinfo.cz/images/314/webgl-04-6-prev.png" width="270" height="270" data-prev-filename="https://i.iinfo.cz/images/314/webgl-04-6-prev.png" data-prev-width="270" data-prev-height="270" data-large-filename="https://i.iinfo.cz/images/314/webgl-04-6.png" data-large-width="275" data-large-height="275">
+<p class="description">Obrázek 7:Kombinace rotace a perspektivní projekce.</p>
+</div>
+</div>
+
+<p><div class="rs-tip-major">Poznámka: modifikovat tedy lze tyto parametry:
+úhel pohledu, bližší a vzdálenější ořezovou rovinu, rotaci okolo osy
+<strong>x</strong> a rotaci okolo osy <strong>y</strong>.</div></p>
+
+
+
+<h2 id="k17">Šestý demonstrační příklad: rotace krychle v&nbsp;3D prostoru s&nbsp;perspektivní projekcí</h2>
+
+<p>Upravený výpočet transformační matice je implementován v&nbsp;dnešním šestém
+a současně i posledním demonstračním příkladu, který si můžete otestovat <a
+href="https://tisnik.github.io/temp/cube6.html">na této stránce</a>. Úplný
+zdrojový kód tohoto demonstračního příkladu vypadá následovně:</p>
+
+<pre>
+const vertexShaderSource = `
+    attribute vec3 position;
+    uniform mat4 umatrix;
+    attribute vec4 aColor;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        vColor = aColor;
+        gl_Position = umatrix * vec4(position, 1);
+    }
+`
+&nbsp;
+const fragmentShaderSource = `
+    precision mediump float;
+    varying vec4 vColor;
+&nbsp;
+    void main() {
+        gl_FragColor = vColor;
+    }
+`
+&nbsp;
+function print(message) {
+    console.log(message);
+}
+&nbsp;
+function matrix_identity() {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_translate(z) {
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, z, 1
+    ]);
+}
+&nbsp;
+function matrix_rotate_around_x(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        1, 0, 0, 0,
+        0, c, s, 0,
+        0, -s, c, 0,
+        0, 0, 0, 1
+    ]);
+}  
+&nbsp;
+function matrix_rotate_around_y(a) {
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return new Float32Array([
+        c, 0, -s, 0,
+        0, 1, 0, 0,
+        s, 0, c, 0,
+        0, 0, 0, 1
+    ]);
+}
+&nbsp;
+function matrix_perspective_fov(fovy, aspect, near, far) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, (2 * far * near) * nf, 0
+    ]);
+}
+&nbsp;
+function matrix_multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let col = 0; col &lt; 4; col++) {
+        for (let row = 0; row &lt; 4; row++) {
+            out[col * 4 + row] =
+              a[0 * 4 + row] * b[col * 4 + 0] +
+              a[1 * 4 + row] * b[col * 4 + 1] +
+              a[2 * 4 + row] * b[col * 4 + 2] +
+              a[3 * 4 + row] * b[col * 4 + 3];
+        }
+    }
+    return out;
+}
+&nbsp;
+<i>// reference na objekt představující kreslicí plátno umístěné na webové stránce</i>
+const canvas = document.getElementById("web_gl_canvas");
+if (!canvas) {
+    throw new Error("Canvas with id 'web_gl_canvas' not found");
+}
+print("Canvas object retrieved");
+&nbsp;
+<i>// vytvoření a získání kontextu WebGL (3D grafika)</i>
+const gl = canvas.getContext("webgl");
+if (!gl) {
+    throw new Error("WebGL is not supported or context creation failed");
+}
+print("WebGL context created");
+&nbsp;
+<i>// vytvoření vertex shaderu</i>
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+if (!vertexShader) {
+    throw new Error("Failed to create vertex shader.");
+}
+print("Vertex shader created");
+&nbsp;
+<i>// překlad vertex shaderu</i>
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(vertexShader);
+    gl.deleteShader(vertexShader);
+    throw new Error(`Vertex shader compile failed: ${log}`);
+}
+print("Vertex shader compiled");
+&nbsp;
+<i>// vytvoření fragment shaderu</i>
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+if (!fragmentShader) {
+    throw new Error("Failed to create fragment shader.");
+}
+print("Fragment shader created");
+&nbsp;
+<i>// překlad fragment shaderu</i>
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(fragmentShader);
+    gl.deleteShader(fragmentShader);
+    throw new Error(`fragment shader compile failed: ${log}`);
+}
+print("Fragment shader compiled");
+&nbsp;
+<i>// registrace obou shaderů</i>
+const program = gl.createProgram();
+if (!program) {
+    throw new Error("Failed to create program.");
+}
+print("Program created");
+&nbsp;
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+print("Shaders attached to the program");
+&nbsp;
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Program link failed: ${log}`);
+}
+print("Program linked");
+&nbsp;
+<i>// omezeno tak, aby bylo možné později rotovat</i>
+const min_x = -0.5
+const max_x = 0.5
+const min_y = min_x
+const max_y = max_x
+const min_z = min_x
+const max_z = max_x
+&nbsp;
+<i>// souřadnice úseček</i>
+const vertexes = [
+   <i>// přední stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   max_x, min_y, min_z,
+    min_x, max_y, min_z,   max_x, max_y, min_z,
+    min_x, min_y, min_z,   min_x, max_y, min_z,
+    max_x, min_y, min_z,   max_x, max_y, min_z,
+&nbsp;
+   <i>// zadní stěna</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, max_z,   max_x, min_y, max_z,
+    min_x, max_y, max_z,   max_x, max_y, max_z,
+    min_x, min_y, max_z,   min_x, max_y, max_z,
+    max_x, min_y, max_z,   max_x, max_y, max_z,
+&nbsp;
+   <i>// propojení přední a zadní stěny</i>
+   <i>// x      y      z        x      y      z</i>
+    min_x, min_y, min_z,   min_x, min_y, max_z,
+    min_x, max_y, min_z,   min_x, max_y, max_z,
+    max_x, min_y, min_z,   max_x, min_y, max_z,
+    max_x, max_x, min_z,   max_x, max_x, max_z,
+];
+&nbsp;
+<i>// barvy koncových bodů úseček</i>
+const colors = [
+    <i>// přední stěna</i>
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+    0, 1, 0, 1,   0, 1, 0, 1,
+  
+    <i>// zadní stěna</i>
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+    1, 0, 0, 1,   1, 0, 0, 1,
+   
+    <i>// propojení přední a zadní stěny</i>
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+    1, 1, 0, 1,   1, 1, 0, 1,
+];
+&nbsp;
+<i>// buffer, do kterého se překopírují souřadnice bodu</i>
+const vertexBuffer = gl.createBuffer();
+if (!vertexBuffer) {
+    throw new Error("Failed to create buffer.");
+}
+print("Vertex buffer created");
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+&nbsp;
+const data = new Float32Array(vertexes);
+gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+print("Vertex buffer filled-in by vertexes");
+&nbsp;
+<i>// navázání na parametr předávaný do vertex shaderu</i>
+const p = gl.getAttribLocation(program, "position");
+if (p === -1) {
+    throw new Error("Attribute 'position' not found in shader program");
+}
+print("Attribute 'position' found in shader program")
+&nbsp;
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(p,
+                       3,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       3*Float32Array.BYTES_PER_ELEMENT, <i>// velikost vertexu v bajtech</i>
+                       0                                 <i>// offset</i>
+);
+gl.enableVertexAttribArray(p);
+&nbsp;
+<i>// barvový buffer</i>
+const colorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+&nbsp;
+const cdata = new Float32Array(colors);
+gl.bufferData(gl.ARRAY_BUFFER, cdata, gl.STATIC_DRAW);
+&nbsp;
+const aColor = gl.getAttribLocation(program, "aColor");
+gl.enableVertexAttribArray(aColor);
+&nbsp;
+<i>// seznam předávaný do vertex shaderu</i>
+gl.vertexAttribPointer(aColor,
+                       4,                                <i>// počet prvků v každém atributu</i>
+                       gl.FLOAT,                         <i>// typ prvků</i>
+                       gl.FALSE,                         <i>// data nejsou normalizována</i>
+                       0,
+                       0                                 <i>// offset</i>
+);
+&nbsp;
+<i>// transformace souřadnic: z normalizovaných souřadnic na souřadnice na plátnu</i>
+gl.viewport(0, 0, canvas.width, canvas.height);
+&nbsp;
+<i>// nastavení barvy pro vymazání barvového bufferu</i>
+gl.clearColor(0, 0, 0, 1);
+&nbsp;
+<i>// vymazání barvového bufferu</i>
+gl.clear(gl.COLOR_BUFFER_BIT);
+&nbsp;
+<i>// spuštění programu</i>
+gl.useProgram(program);
+&nbsp;
+<i>// transformační matice</i>
+const aspect = canvas.width / canvas.height;
+const perspective_fov = matrix_perspective_fov(Math.PI / 3, aspect, 0.1, 100);
+const translate = matrix_translate(-2.0);
+const rx = matrix_rotate_around_x(Math.PI / 6);
+const ry = matrix_rotate_around_y(Math.PI / 6);
+const matrix = matrix_multiply(perspective_fov, matrix_multiply(translate, matrix_multiply(rx, ry)));
+&nbsp;
+<i>// navázání na proměnnou dostupnou ve vertex shaderu</i>
+const umatrix = gl.getUniformLocation(program, "umatrix");
+gl.uniformMatrix4fv(umatrix, false, matrix);
+&nbsp;
+<i>// vykreslení dvanácti úseček s předáním souřadnic a barev</i>
+gl.drawArrays(gl.LINES, 0, 24);
+</pre>
+
+
+
+<h2 id="k18">Repositář s&nbsp;demonstračními příklady</h2>
+
+<p>Všechny demonstrační příklady, které jsme si v&nbsp;předminulém, minulém i
+v&nbsp;dnešním článku ukázali, je možné spustit přímo ve webovém prohlížeči
+přes odkazy uvedené v&nbsp;tabulce pod tímto odstavcem. Doplněny jsou i odkazy
+na zdrojové kódy psané v&nbsp;JavaScriptu (ty se automaticky načítají do HTML
+stránek):</p>
+
+<table>
+<tr><th>#<th>Příklad</th><th>Stručný popis</th><th>Adresa příkladu</th></tr></i>
+<tr><td> 1</td><td>step1.html</td><td>webová stránka s&nbsp;kreslicím plátnem (canvasem)</td><td><a href="https://tisnik.github.io/temp/step1.html">https://tisnik.github.io/temp/step1.html</a></td></tr>
+<tr><td> 2</td><td>step1.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step1.js">https://tisnik.github.io/temp/step1.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 3</td><td>step2.html</td><td>využití kreslicího plátna s&nbsp;2D kontextem</td><td><a href="https://tisnik.github.io/temp/step2.html">https://tisnik.github.io/temp/step2.html</a></td></tr>
+<tr><td> 4</td><td>step2.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step2.js">https://tisnik.github.io/temp/step2.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 5</td><td>step3.html</td><td>vymazání barvového bufferu pro kontext WebGL</td><td><a href="https://tisnik.github.io/temp/step3.html">https://tisnik.github.io/temp/step3.html</a></td></tr>
+<tr><td> 6</td><td>step3.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step3.js">https://tisnik.github.io/temp/step3.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 7</td><td>step4.html</td><td>transformace souřadnic: z&nbsp;normalizovaných souřadnic na souřadnice na plátnu</td><td><a href="https://tisnik.github.io/temp/step4.html">https://tisnik.github.io/temp/step4.html</a></td></tr>
+<tr><td> 8</td><td>step4.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step4.js">https://tisnik.github.io/temp/step4.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td> 9</td><td>step5.html</td><td>vykreslení jediného bodu na plátno v&nbsp;kontextu WebGL</td><td><a href="https://tisnik.github.io/temp/step5.html">https://tisnik.github.io/temp/step5.html</a></td></tr>
+<tr><td>10</td><td>step5.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step5.js">https://tisnik.github.io/temp/step5.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>11</td><td>step6.html</td><td>vykreslení bodu s&nbsp;určením jeho souřadnic ve scéně</td><td><a href="https://tisnik.github.io/temp/step6.html">https://tisnik.github.io/temp/step6.html</a></td></tr>
+<tr><td>12</td><td>step6.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step6.js">https://tisnik.github.io/temp/step6.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>13</td><td>step7.html</td><td>vykreslení většího množství bodů do scény</td><td><a href="https://tisnik.github.io/temp/step7.html">https://tisnik.github.io/temp/step7.html</a></td></tr>
+<tr><td>14</td><td>step7.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step7.js">https://tisnik.github.io/temp/step7.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>15</td><td>step8.html</td><td>kontrola provedení jednotlivých operací</td><td><a href="https://tisnik.github.io/temp/step8.html">https://tisnik.github.io/temp/step8.html</a></td></tr>
+<tr><td>16</td><td>step8.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step8.js">https://tisnik.github.io/temp/step8.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>17</td><td>step9.html</td><td>vykreslení trojice úseček na plochu kreslicího plátna</td><td><a href="https://tisnik.github.io/temp/step9.html">https://tisnik.github.io/temp/step9.html</a></td></tr>
+<tr><td>18</td><td>step9.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/step9.js">https://tisnik.github.io/temp/step9.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>19</td><td>stepA.html</td><td>nastavení konstantní barvy úseček</td><td><a href="https://tisnik.github.io/temp/stepA.html">https://tisnik.github.io/temp/stepA.html</a></td></tr>
+<tr><td>20</td><td>stepA.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/stepA.js">https://tisnik.github.io/temp/stepA.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>21</td><td>stepB.html</td><td>vykreslení na sebe navazujících úseček s&nbsp;předáním souřadnic</td><td><a href="https://tisnik.github.io/temp/stepB.html">https://tisnik.github.io/temp/stepB.html</a></td></tr>
+<tr><td>22</td><td>stepB.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/stepB.js">https://tisnik.github.io/temp/stepB.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>23</td><td>stepC.html</td><td>vykreslení uzavřené sekvence úseček s&nbsp;předáním souřadnic</td><td><a href="https://tisnik.github.io/temp/stepC.html">https://tisnik.github.io/temp/stepC.html</a></td></tr>
+<tr><td>24</td><td>stepC.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/stepC.js">https://tisnik.github.io/temp/stepC.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>25</td><td>stepD.html</td><td>vykreslení bodů, každý bod může mít libovolnou barvu</td><td><a href="https://tisnik.github.io/temp/stepD.html">https://tisnik.github.io/temp/stepD.html</a></td></tr>
+<tr><td>26</td><td>stepD.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/stepD.js">https://tisnik.github.io/temp/stepD.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>27</td><td>stepE.html</td><td>vykreslení úseček, barva je vypočtena interpolací barev</td><td><a href="https://tisnik.github.io/temp/stepE.html">https://tisnik.github.io/temp/stepE.html</a></td></tr>
+<tr><td>28</td><td>stepE.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/stepE.js">https://tisnik.github.io/temp/stepE.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>29</td><td>triangle1.html</td><td>vykreslení trojúhelníku konstantní barvou</td><td><a href="https://tisnik.github.io/temp/triangle1.html">https://tisnik.github.io/temp/triangle1.html</a></td></tr>
+<tr><td>30</td><td>triangle1.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle1.js">https://tisnik.github.io/temp/triangle1.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>31</td><td>triangle2.html</td><td>interpolace barev při vyplňování trojúhelníku</td><td><a href="https://tisnik.github.io/temp/triangle2.html">https://tisnik.github.io/temp/triangle2.html</a></td></tr>
+<tr><td>32</td><td>triangle2.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle2.js">https://tisnik.github.io/temp/triangle2.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>33</td><td>triangle3.html</td><td>vykreslení pásu trojúhelníků</td><td><a href="https://tisnik.github.io/temp/triangle3.html">https://tisnik.github.io/temp/triangle3.html</a></td></tr>
+<tr><td>34</td><td>triangle3.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle3.js">https://tisnik.github.io/temp/triangle3.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>35</td><td>triangle4.html</td><td>vykreslení trsu trojúhelníků &ndash; neúplná varianta</td><td><a href="https://tisnik.github.io/temp/triangle4.html">https://tisnik.github.io/temp/triangle4.html</a></td></tr>
+<tr><td>36</td><td>triangle4.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle4.js">https://tisnik.github.io/temp/triangle4.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>37</td><td>triangle5.html</td><td>vykreslení trsu trojúhelníků &ndash; úplná varianta</td><td><a href="https://tisnik.github.io/temp/triangle5.html">https://tisnik.github.io/temp/triangle5.html</a></td></tr>
+<tr><td>38</td><td>triangle5.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle5.js">https://tisnik.github.io/temp/triangle5.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>39</td><td>triangle6.html</td><td>překrývající se trojúhelníky (Z-buffer není použit)</td><td><a href="https://tisnik.github.io/temp/triangle6.html">https://tisnik.github.io/temp/triangle6.html</a></td></tr>
+<tr><td>40</td><td>triangle6.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle6.js">https://tisnik.github.io/temp/triangle6.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>41</td><td>triangle7.html</td><td>překrývající se trojúhelníky (Z-buffer je použit)</td><td><a href="https://tisnik.github.io/temp/triangle7.html">https://tisnik.github.io/temp/triangle7.html</a></td></tr>
+<tr><td>42</td><td>triangle7.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/triangle7.js">https://tisnik.github.io/temp/triangle7.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>43</td><td>cube1.html</td><td>3D krychle vykreslená do 2D plochy bez aplikace transformací</td><td><a href="https://tisnik.github.io/temp/cube1.html">https://tisnik.github.io/temp/cube1.html</a></td></tr>
+<tr><td>44</td><td>cube1.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/cube1.js">https://tisnik.github.io/temp/cube1.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>45</td><td>cube2.html</td><td>transformace reprezentovaná jednotkovou maticí</td><td><a href="https://tisnik.github.io/temp/cube2.html">https://tisnik.github.io/temp/cube2.html</a></td></tr>
+<tr><td>46</td><td>cube2.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/cube2.js">https://tisnik.github.io/temp/cube2.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>47</td><td>cube3.html</td><td>zobrazení 3D kostky z&nbsp;různých úhlů pohledu</td><td><a href="https://tisnik.github.io/temp/cube3.html">https://tisnik.github.io/temp/cube3.html</a></td></tr>
+<tr><td>48</td><td>cube3.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/cube3.js">https://tisnik.github.io/temp/cube3.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>49</td><td>cube4.html</td><td>zobrazení 3D kostky s&nbsp;využitím základní perspektivní projekce</td><td><a href="https://tisnik.github.io/temp/cube4.html">https://tisnik.github.io/temp/cube4.html</a></td></tr>
+<tr><td>50</td><td>cube4.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/cube4.js">https://tisnik.github.io/temp/cube4.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>51</td><td>cube5.html</td><td>krychle v&nbsp;3D prostoru</td><td><a href="https://tisnik.github.io/temp/cube5.html">https://tisnik.github.io/temp/cube5.html</a></td></tr>
+<tr><td>52</td><td>cube5.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/cube5.js">https://tisnik.github.io/temp/cube5.js</a></td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+<tr><td>53</td><td>cube6.html</td><td>rotace krychle v&nbsp;3D prostoru s&nbsp;perspektivní projekcí</td><td><a href="https://tisnik.github.io/temp/cube6.html">https://tisnik.github.io/temp/cube6.html</a></td></tr>
+<tr><td>54</td><td>cube6.js</td><td>skript s&nbsp;implementací tohoto příkladu</td><td><a href="https://tisnik.github.io/temp/cube6.js">https://tisnik.github.io/temp/cube6.js</a></td></tr>
+</table>
+
+
+
+<h2 id="k19">Seriály a články o OpenGL i o přidružených technologiích</h2>
+
+<p><i>OpenGL ES</i> a <i>shadery</i> jsou sice nové téma, ovšem na stránkách
+Roota jsme se již několikrát setkali s&nbsp;podobnými technologiemi. Především
+byla (a nutno přiznat, že to bylo hodně dávno) popsána původní knihovna OpenGL
+(pro pamětníky: tehdy testovaná přímo na pracovní stanici SGI), dále OpenGL
+evaluátory, OpenGL IS (Imaging Subset) a taktéž knihovna GLUT a OpenVG. Odkazy
+na tyto seriály a články jsou uvedeny pod odstavcem. Pro úplnost byly přidány i
+předchozí tři články o WebGL a OpenGL ES:</p>
+
+<ol>
+
+<li>Seriál Grafická knihovna OpenGL<br />
+<a href="https://www.root.cz/serialy/graficka-knihovna-opengl/">https://www.root.cz/serialy/graficka-knihovna-opengl/</a>
+</li>
+
+<li>Seriál OpenGL a nadstavbová knihovna GLU<br />
+<a href="https://www.root.cz/serialy/opengl-a-nadstavbova-knihovna-glu/">https://www.root.cz/serialy/opengl-a-nadstavbova-knihovna-glu/</a>
+</li>
+
+<li>Seriál OpenGL evaluátory<br />
+<a href="https://www.root.cz/serialy/opengl-evaluatory/">https://www.root.cz/serialy/opengl-evaluatory/</a>
+</li>
+
+<li>Seriál OpenGL Imaging Subset<br />
+<a href="https://www.root.cz/serialy/opengl-imaging-subset/">https://www.root.cz/serialy/opengl-imaging-subset/</a>
+</li>
+
+<li>Seriál Tvorba přenositelných grafických aplikací využívajících knihovnu GLUT<br />
+<a href="https://www.root.cz/serialy/tvorba-prenositelnych-grafickych-aplikaci-vyuzivajicich-knihovnu-glut/">https://www.root.cz/serialy/tvorba-prenositelnych-grafickych-aplikaci-vyuzivajicich-knihovnu-glut/</a>
+</li>
+
+<li>Stručný přehled grafických knihoven pro Raspberry Pi<br />
+<a href="https://www.root.cz/clanky/strucny-prehled-grafickych-knihoven-pro-raspberry-pi/">https://www.root.cz/clanky/strucny-prehled-grafickych-knihoven-pro-raspberry-pi/</a>
+</li>
+
+<li>Práce s&nbsp;rastrovými obrázky v&nbsp;knihovně OpenVG<br />
+<a href="https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg/">https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg/</a>
+</li>
+
+<li>Práce s&nbsp;rastrovými obrázky v&nbsp;knihovně OpenVG (pokračování)<br />
+<a href="https://www.root.cz/clanky/prace-s-nbsp-rastrovymi-obrazky-v-nbsp-knihovne-openvg-pokracovani/">https://www.root.cz/clanky/prace-s-nbsp-rastrovymi-obrazky-v-nbsp-knihovne-openvg-pokracovani/</a>
+</li>
+
+<li>Práce s&nbsp;rastrovými obrázky v&nbsp;knihovně OpenVG (okomentované demonstrační příklady)<br />
+<a href="https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg-okomentovane-demonstracni-priklady/">https://www.root.cz/clanky/prace-s-rastrovymi-obrazky-v-knihovne-openvg-okomentovane-demonstracni-priklady/</a>
+</li>
+
+<li>Použití knihoven OpenVG a EGL (nejenom) na Raspberry Pi<br />
+<a href="https://www.root.cz/clanky/pouziti-knihoven-openvg-a-egl-nejenom-na-raspberry-pi/">https://www.root.cz/clanky/pouziti-knihoven-openvg-a-egl-nejenom-na-raspberry-pi/</a>
+</li>
+
+<li>WebGL: tvorba 3D grafiky s&nbsp;využitím programovatelné vykreslovací pipeline<br />
+<a href="https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline/">https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline/</a>
+</li>
+
+<li>WebGL: tvorba 3D grafiky s&nbsp;využitím programovatelné vykreslovací pipeline (2. část)<br />
+<a href="https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline-2-cast/">https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline-2-cast/</a>
+</li>
+
+</ol>
+
+
+
+<h2 id="k20">Odkazy na Internetu</h2>
+
+<ol>
+
+<li>WebGL: 3D Graphics for the Web<br />
+<a href="https://www.khronos.org/webgl/">https://www.khronos.org/webgl/</a>
+</li>
+
+<li>OpenGL Shading Language<br />
+<a href="https://en.wikipedia.org/wiki/OpenGL_Shading_Language">https://en.wikipedia.org/wiki/OpenGL_Shading_Language</a>
+</li>
+
+<li>WebGL (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/WebGL">https://en.wikipedia.org/wiki/WebGL</a>
+</li>
+
+<li>WebGL<br />
+<a href="https://wikis.khronos.org/webgl/Main_Page">https://wikis.khronos.org/webgl/Main_Page</a>
+</li>
+
+<li>OpenGL ES (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wiki/OpenGL_ES">https://en.wikipedia.org/wiki/OpenGL_ES</a>
+</li>
+
+<li>Float32Array<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array">https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Float32Array</a>
+</li>
+
+<li>ECMAScript compatibility table<br />
+<a href="https://compat-table.github.io/compat-table/es6/">https://compat-table.github.io/compat-table/es6/</a>
+</li>
+
+<li>Learn-OpenGLES-Tutorials<br />
+<a href="https://github.com/learnopengles/Learn-OpenGLES-Tutorials">https://github.com/learnopengles/Learn-OpenGLES-Tutorials</a>
+</li>
+
+<li>Implement OpenGL ES and EGL<br />
+<a href="https://source.android.com/docs/core/graphics/implement-opengl-es">https://source.android.com/docs/core/graphics/implement-opengl-es</a>
+</li>
+
+<li>Khronos Group<br />
+<a href="https://www.khronos.org/">https://www.khronos.org/</a>
+</li>
+
+<li>Khronos Group (Wikipedia)<br />
+<a href="https://en.wikipedia.org/wi­ki/Khronos_Group">https://en.wikipedia.org/wi­ki/Khronos_Group</a>
+</li>
+
+<li>Raspberry Pi VideoCore APIs<br />
+<a href="http://elinux.org/Raspberry_Pi_Vi­deoCore_APIs">http://elinux.org/Raspberry_Pi_Vi­deoCore_APIs</a>
+</li>
+
+<li>EGL quick reference card<br />
+<a href="https://www.khronos.org/files/egl-1–4-quick-reference-card.pdf">https://www.khronos.org/files/egl-1–4-quick-reference-card.pdf</a>
+</li>
+
+<li>EGL Reference Pages Index<br />
+<a href="https://www.khronos.org/re­gistry/egl/sdk/docs/man/html/in­dexflat.php">https://www.khronos.org/re­gistry/egl/sdk/docs/man/html/in­dexflat.php</a>
+</li>
+
+<li>GLSL<br />
+<a href="https://glsl.app/">https://glsl.app/</a>
+</li>
+
+<li>Shader Tutorials by Ronja<br />
+<a href="https://www.ronja-tutorials.com/">https://www.ronja-tutorials.com/</a>
+</li>
+
+<li>CanvasRenderingContext2D<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D">https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D</a>
+</li>
+
+<li>WebGL2RenderingContext<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext">https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext</a>
+</li>
+
+<li>WebGLRenderingContext<br />
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext">https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext</a>
+</li>
+
+<li>Matrix Transformations<br />
+<a href="https://vitaminac.github.io/Matrices-in-Computer-Graphics/">https://vitaminac.github.io/Matrices-in-Computer-Graphics/</a>
+</li>
+
+<li>Homogeneous coordinates<br />
+<a href="https://en.wikipedia.org/wiki/Homogeneous_coordinates">https://en.wikipedia.org/wiki/Homogeneous_coordinates</a>
+</li>
+
+<li>Transformation matrix<br />
+<a href="https://en.wikipedia.org/wiki/Transformation_matrix">https://en.wikipedia.org/wiki/Transformation_matrix</a>
+</li>
+
+<li>Affine transformation<br />
+<a href="https://en.wikipedia.org/wiki/Affine_transformation">https://en.wikipedia.org/wiki/Affine_transformation</a>
+</li>
+
+<li>OpenGL Projection Matrix<br />
+<a href="https://songho.ca/opengl/gl_projectionmatrix.html">https://songho.ca/opengl/gl_projectionmatrix.html</a>
+</li>
+
+</ol>
