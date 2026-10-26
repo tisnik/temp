@@ -16,7 +16,9 @@ if (!gl) {
 }
 print("WebGL context created");
 
+// zjistit maximální rozlišení textury
 const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
 
+// zápis rozlišení zpět na HTML stránku
 document.getElementById("tsize").innerHTML = maxTextureSize + "&times;" + maxTextureSize + " texels";
 
