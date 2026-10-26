@@ -94,6 +94,7 @@ const min_x = -0.9
 const max_x = 0.9
 const min_y = min_x
 const max_y = max_x
+const height = Math.sqrt(3) / 2
 
 // souřadnice vrcholů trojúhelníku + souřadnice v prostoru textury
 const vertexes = [
