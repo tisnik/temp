@@ -1,3 +1,14 @@
+// Technologie WebGL a OpenGL ES
+// -----------------------------
+//
+// Vykreslení jediného bodu na plátno v kontextu WebGL
+//
+// Použito v článku:
+//
+// WebGL: tvorba 3D grafiky s využitím programovatelné vykreslovací pipeline
+// https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline/
+
+
 const vertexShaderSource = `
     void main() {
         gl_Position = vec4(0.0, 0.0, 0, 1);
