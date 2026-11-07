@@ -1,3 +1,14 @@
+// Technologie WebGL a OpenGL ES
+// -----------------------------
+//
+// Vykreslení většího množství bodů do scény
+// Přidání kontrol u většiny volání funkcí a metod OpenGL ES
+//
+// Použito v článku:
+//
+// WebGL: tvorba 3D grafiky s využitím programovatelné vykreslovací pipeline (2. část)
+// https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline-2-cast/
+
 const vertexShaderSource = `
     attribute vec2 position;
 
