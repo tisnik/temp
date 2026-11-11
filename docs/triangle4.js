@@ -1,3 +1,13 @@
+// Technologie WebGL a OpenGL ES
+// -----------------------------
+//
+// Vykreslení trsu trojúhelníků – neúplná varianta
+//
+// Použito v článku:
+//
+// WebGL: tvorba 3D grafiky s využitím programovatelné vykreslovací pipeline (3. část)
+// https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-s-vyuzitim-programovatelne-vykreslovaci-pipeline-3-cast/
+
 const vertexShaderSource = `
     attribute vec2 position;
     attribute vec4 aColor;
