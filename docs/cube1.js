@@ -1,3 +1,13 @@
+// Technologie WebGL a OpenGL ES
+// -----------------------------
+//
+// 3D krychle vykreslená do 2D plochy bez aplikace transformací
+//
+// Použito v článku:
+//
+// WebGL: tvorba 3D grafiky a zobrazení 3D scén
+// https://www.root.cz/clanky/webgl-tvorba-3d-grafiky-a-zobrazeni-3d-scen/
+
 const vertexShaderSource = `
     attribute vec3 position;
     attribute vec4 aColor;
